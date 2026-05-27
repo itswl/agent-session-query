@@ -30,11 +30,14 @@ GET /health
 import json
 import os
 import re
+import sys
+import traceback
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from typing import Optional, Dict, Any, List, Tuple
 import argparse
+import select
 
 # 默认模式（自动检测）
 MODE = 'auto'
@@ -510,11 +513,14 @@ class RequestHandler(BaseHTTPRequestHandler):
         return False
 
     def _send_json(self, data: Any, status: int = 200):
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-        self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+        try:
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass  # 客户端已断开，忽略
 
     def _parse_path(self) -> Tuple[str, str, Dict]:
         """解析路径，返回 (path, query)"""
@@ -525,6 +531,17 @@ class RequestHandler(BaseHTTPRequestHandler):
         return parsed.path, query
 
     def do_GET(self):
+        try:
+            self._do_GET_impl()
+        except Exception as e:
+            print(f"[ERROR] Unhandled exception in do_GET: {e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            try:
+                self._send_json({'error': 'Internal server error'}, 500)
+            except Exception:
+                pass
+
+    def _do_GET_impl(self):
         path, query = self._parse_path()
 
         # 检查认证
@@ -649,6 +666,25 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
 
+    def log_message(self, format, *args):
+        """覆写日志方法，防止 stdout 写入阻塞导致服务卡死"""
+        try:
+            sys.stderr.write("%s - - [%s] %s\n" %
+                             (self.client_address[0],
+                              self.log_date_time_string(),
+                              format % args))
+        except Exception:
+            pass  # 忽略日志写入失败
+
+    def handle(self):
+        """覆写 handle，捕获连接级异常防止服务崩溃"""
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        except Exception as e:
+            print(f"[ERROR] Unhandled exception in handle: {e}", file=sys.stderr)
+
 
 def main():
     parser = argparse.ArgumentParser(description='OpenClaw/Hermes Session HTTP API (自动检测模式)')
@@ -673,7 +709,7 @@ def main():
     else:
         print("警告: 未设置认证hook_token，API 公开访问")
 
-    server = HTTPServer((args.host, args.port), RequestHandler)
+    server = ThreadingHTTPServer((args.host, args.port), RequestHandler)
     print(f"\nSession API 启动成功")
     print(f"监听地址: http://{args.host}:{args.port}")
     print(f"\nAPI 端点:")
@@ -695,6 +731,10 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n正在停止服务...")
+        server.shutdown()
+    except Exception as e:
+        print(f"\n[FATAL] 服务异常退出: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         server.shutdown()
 
 

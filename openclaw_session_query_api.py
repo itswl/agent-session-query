@@ -31,6 +31,8 @@ import json
 import os
 import re
 import sys
+import socket
+import threading
 import traceback
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -502,6 +504,42 @@ class RequestHandler(BaseHTTPRequestHandler):
     def set_auth_token(cls, token: str):
         cls._auth_token = token
 
+    @classmethod
+    def init_semaphore(cls, max_connections: int = 50):
+        cls._max_connections = max_connections
+        cls._semaphore = threading.BoundedSemaphore(max_connections)
+
+    @classmethod
+    def stats(cls) -> dict:
+        with cls._stat_lock:
+            active = 0
+            if cls._semaphore:
+                active = cls._max_connections - cls._semaphore._value
+            return {
+                'max_connections': cls._max_connections,
+                'active_connections': active,
+                'total_connections': cls._total_connections,
+                'bad_requests': cls._bad_requests,
+            }
+
+    def setup(self):
+        """设置连接级别参数：超时和统计"""
+        super().setup()
+        try:
+            self.connection.settimeout(self._socket_timeout)
+        except Exception:
+            pass
+        with self._stat_lock:
+            RequestHandler._total_connections += 1
+
+    # 信号量和统计计数器
+    _semaphore = None
+    _max_connections = 50
+    _socket_timeout = 30
+    _total_connections = 0
+    _bad_requests = 0
+    _stat_lock = threading.Lock()
+
     def _check_auth(self) -> bool:
         """检查 Authorization header"""
         if not self._auth_token:
@@ -544,14 +582,39 @@ class RequestHandler(BaseHTTPRequestHandler):
     def _do_GET_impl(self):
         path, query = self._parse_path()
 
-        # 检查认证
-        if not self._check_auth():
-            self._send_json({'error': 'Unauthorized'}, 401)
+        # 健康检查 - 不要求认证，便于监控探活
+        if path == '/health':
+            stats = self.stats()
+            self._send_json({
+                'status': 'ok',
+                'mode': PATHS['mode'],
+                'stats': stats,
+            })
             return
 
-        # 健康检查
-        if path == '/health':
-            self._send_json({'status': 'ok'})
+        # 根路径 - 不要求认证
+        if path == '/' or path == '':
+            self._send_json({
+                'name': 'OpenClaw Session API',
+                'endpoints': [
+                    'GET /sessions - 列出所有 session',
+                    'GET /sessions/<pattern> - 查询单个 session',
+                    'GET /sessions/<pattern>/messages?limit=50 - 获取消息',
+                    'GET /sessions/<pattern>/final - 获取最终结果',
+                    'GET /health - 健康检查',
+                    'GET /stats - 服务器统计',
+                ]
+            })
+            return
+
+        # 服务器统计 - 不要求认证
+        if path == '/stats':
+            self._send_json(self.stats())
+            return
+
+        # 检查认证（其余所有端点）
+        if not self._check_auth():
+            self._send_json({'error': 'Unauthorized'}, 401)
             return
 
         # 列出所有 session
@@ -644,19 +707,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json(session)
             return
 
-        # 根路径
-        if path == '/' or path == '':
-            self._send_json({
-                'name': 'OpenClaw Session API',
-                'endpoints': [
-                    'GET /sessions - 列出所有 session',
-                    'GET /sessions/<pattern> - 查询单个 session',
-                    'GET /sessions/<pattern>/messages?limit=50 - 获取消息',
-                    'GET /health - 健康检查',
-                ]
-            })
-            return
-
         self._send_json({'error': 'Not found'}, 404)
 
     def do_OPTIONS(self):
@@ -676,14 +726,88 @@ class RequestHandler(BaseHTTPRequestHandler):
         except Exception:
             pass  # 忽略日志写入失败
 
+    def handle_one_request(self):
+        """覆写 handle_one_request，捕获 HTTP 协议解析层的所有异常。
+        这是防御恶意扫描（TLS握手字节、HTTP/2 PRI等）发送到 HTTP 端口的关键层。"""
+        try:
+            super().handle_one_request()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            self.close_connection = True
+        except TimeoutError:
+            self.close_connection = True
+            with self._stat_lock:
+                RequestHandler._bad_requests += 1
+        except ValueError:
+            # 畸形请求行解析失败（日志中常见的 Bad request version/syntax）
+            self.close_connection = True
+            with self._stat_lock:
+                RequestHandler._bad_requests += 1
+        except Exception:
+            self.close_connection = True
+            with self._stat_lock:
+                RequestHandler._bad_requests += 1
+
     def handle(self):
-        """覆写 handle，捕获连接级异常防止服务崩溃"""
+        """覆写 handle，使用信号量限制并发连接数，捕获连接级异常防止服务崩溃"""
+        acquired = False
+        if self._semaphore:
+            try:
+                acquired = self._semaphore.acquire(timeout=10)
+            except Exception:
+                pass
+            if not acquired:
+                try:
+                    # 过载时返回 503
+                    self.send_error(503, "Service temporarily overloaded")
+                except Exception:
+                    pass
+                return
+
         try:
             super().handle()
-        except (BrokenPipeError, ConnectionResetError, OSError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            pass
+        except TimeoutError:
             pass
         except Exception as e:
             print(f"[ERROR] Unhandled exception in handle: {e}", file=sys.stderr)
+        finally:
+            if acquired and self._semaphore:
+                try:
+                    self._semaphore.release()
+                except ValueError:
+                    pass
+
+
+class RobustThreadingHTTPServer(ThreadingHTTPServer):
+    """增强版 ThreadingHTTPServer，配置防御性 socket 选项"""
+
+    allow_reuse_address = True
+    daemon_threads = True  # 线程随主进程退出，防止残留
+
+    def server_bind(self):
+        """绑定地址并设置 socket 选项"""
+        super().server_bind()
+        try:
+            # TCP keepalive: 检测死连接，60秒空闲后开始探测
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        except Exception:
+            pass
+        try:
+            # TCP_NODELAY: 禁用 Nagle 算法，减少延迟
+            self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except Exception:
+            pass
+
+    def server_activate(self):
+        """激活服务器，设置 accept 队列大小"""
+        super().server_activate()
+
+    def handle_error(self, request, client_address):
+        """处理 accept 级别的错误"""
+        print(f"[SERVER_ERROR] 处理来自 {client_address} 的连接时出错",
+              file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
 
 
 def main():
@@ -692,6 +816,8 @@ def main():
     parser.add_argument('--port', type=int, default=8080, help='端口 (默认: 8080)')
     parser.add_argument('--mode', choices=['auto', 'openclaw', 'hermes'], default='auto', help='模式 (默认: auto 自动检测)')
     parser.add_argument('--hook_token', default=None, help='Bearer hook_token for authentication')
+    parser.add_argument('--max-connections', type=int, default=50, help='最大并发连接数 (默认: 50)')
+    parser.add_argument('--timeout', type=int, default=30, help='连接超时秒数 (默认: 30)')
     args = parser.parse_args()
 
     # 设置模式
@@ -709,15 +835,20 @@ def main():
     else:
         print("警告: 未设置认证hook_token，API 公开访问")
 
-    server = ThreadingHTTPServer((args.host, args.port), RequestHandler)
+    # 初始化连接限制
+    RequestHandler._socket_timeout = args.timeout
+    RequestHandler.init_semaphore(args.max_connections)
+    print(f"最大并发连接数: {args.max_connections}, 连接超时: {args.timeout}s")
+
+    server = RobustThreadingHTTPServer((args.host, args.port), RequestHandler)
     print(f"\nSession API 启动成功")
     print(f"监听地址: http://{args.host}:{args.port}")
     print(f"\nAPI 端点:")
-    print(f"  GET /sessions                      - 列出所有 session")
-    print(f"  GET /sessions/<pattern>            - 查询单个 session")
-    print(f"  GET /sessions/<pattern>/messages  - 获取消息")
-    print(f"  GET /sessions/<pattern>/final       - 获取最终结果")
-    print(f"  GET /health                        - 健康检查")
+    print(f"  GET /sessions                        - 列出所有 session")
+    print(f"  GET /sessions/<pattern>              - 查询单个 session")
+    print(f"  GET /sessions/<pattern>/messages    - 获取消息")
+    print(f"  GET /sessions/<pattern>/final         - 获取最终结果")
+    print(f"  GET /health                          - 健康检查 (含服务统计)")
     print(f"\n示例:")
     print(f"  curl http://localhost:{args.port}/sessions")
     if MODE == 'hermes':

@@ -32,6 +32,7 @@ import os
 import re
 import sys
 import socket
+import sqlite3
 import threading
 import traceback
 from pathlib import Path
@@ -243,6 +244,84 @@ class OpenClawAPI:
             'content': parts
         }
 
+    def _load_sqlite_final_message(self, session_id: str, status: str = 'done') -> Optional[Dict]:
+        """Hermes webhook sessions may persist final messages in state.db only."""
+        if PATHS.get('mode') != 'hermes' or not session_id:
+            return None
+
+        db_path = Path.home() / ".hermes/state.db"
+        if not db_path.exists():
+            return None
+
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=3)
+            conn.row_factory = sqlite3.Row
+            try:
+                session = conn.execute(
+                    """
+                    SELECT message_count, input_tokens, output_tokens, cache_read_tokens,
+                           cache_write_tokens, reasoning_tokens, estimated_cost_usd
+                    FROM sessions
+                    WHERE id = ?
+                    """,
+                    (session_id,),
+                ).fetchone()
+                row = conn.execute(
+                    """
+                    SELECT id, content, finish_reason, reasoning, timestamp, token_count
+                    FROM messages
+                    WHERE session_id = ?
+                      AND role = 'assistant'
+                      AND COALESCE(active, 1) = 1
+                      AND finish_reason = 'stop'
+                      AND COALESCE(content, '') <> ''
+                    ORDER BY timestamp DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (session_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+
+                message_count = session['message_count'] if session else None
+                if not message_count:
+                    count_row = conn.execute(
+                        "SELECT COUNT(*) AS count FROM messages WHERE session_id = ? AND COALESCE(active, 1) = 1",
+                        (session_id,),
+                    ).fetchone()
+                    message_count = count_row['count'] if count_row else 0
+
+                usage = {}
+                if session:
+                    usage = {
+                        'inputTokens': session['input_tokens'] or 0,
+                        'outputTokens': session['output_tokens'] or 0,
+                        'cacheReadTokens': session['cache_read_tokens'] or 0,
+                        'cacheWriteTokens': session['cache_write_tokens'] or 0,
+                        'reasoningTokens': session['reasoning_tokens'] or 0,
+                        'estimatedCostUsd': session['estimated_cost_usd'] or 0,
+                    }
+
+                return {
+                    'status': status,
+                    'isFinal': True,
+                    'isProcessing': False,
+                    'messageCount': int(message_count or 0),
+                    'id': row['id'],
+                    'timestamp': row['timestamp'],
+                    'stopReason': row['finish_reason'] or 'stop',
+                    'text': row['content'] or '',
+                    'thinking': row['reasoning'] or '',
+                    'toolCalls': [],
+                    'usage': usage,
+                    'source': 'sqlite',
+                }
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[WARN] Failed to read Hermes SQLite final message for {session_id}: {e}", file=sys.stderr)
+            return None
+
     def list_sessions(self) -> List[Dict]:
         """列出所有 session - 每次都重新加载"""
         sessions = self._load_sessions()
@@ -373,6 +452,9 @@ class OpenClawAPI:
                 path = alt_path
 
         if path is None:
+            sqlite_result = self._load_sqlite_final_message(session_id, status)
+            if sqlite_result is not None:
+                return sqlite_result
             return {
                 'status': status,
                 'isFinal': False,
@@ -431,6 +513,9 @@ class OpenClawAPI:
                         pass
 
         if first_stop_message is None:
+            sqlite_result = self._load_sqlite_final_message(session_id, status)
+            if sqlite_result is not None:
+                return sqlite_result
             return {
                 'status': status,
                 'isFinal': False,

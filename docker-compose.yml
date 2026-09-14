@@ -3,23 +3,30 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # 国内构建可换成镜像源，例如：
+        #   PYTHON_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.10-slim
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.10-slim}
     container_name: agent-session-query
     ports:
       - "8080:8080"
     volumes:
-      # 挂载 OpenClaw 数据目录（可选）
-      - ~/.openclaw/agents/default/sessions:/root/.openclaw/agents/default/sessions:ro
-      # 挂载 Hermes 数据目录（可选）
+      # 六个数据源目录都可以挂；没数据的源服务会自动跳过。
+      # 注意：宿主机上不存在的目录会被 Docker 自动建成空目录（root 属主）。
       - ~/.hermes/sessions:/root/.hermes/sessions:ro
-    environment:
-      # 运行模式：auto（自动检测，存在的数据源都用）/ all / openclaw / hermes
-      - MODE=${SESSION_MODE:-auto}
-      # 认证令牌
-      - HOOK_TOKEN=${HOOK_TOKEN:-}
+      - ~/.openclaw/agents/default/sessions:/root/.openclaw/agents/default/sessions:ro
+      - ~/.pi/agent/sessions:/root/.pi/agent/sessions:ro
+      - ~/.claude/projects:/root/.claude/projects:ro
+      - ~/.codex/sessions:/root/.codex/sessions:ro
+      - ~/.gemini/tmp:/root/.gemini/tmp:ro
+    # 参数直接透传给脚本：SESSION_MODE 默认 auto；HOOK_TOKEN 留空则不启用认证
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--mode"
+      - "${SESSION_MODE:-auto}"
+      - "--hook_token"
+      - "${HOOK_TOKEN:-}"
     restart: unless-stopped
-    healthcheck:
-      # 基础镜像（python:*-slim）里没有 curl，用 python 自己探活
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).status == 200 else 1)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3

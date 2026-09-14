@@ -62,26 +62,32 @@ python3 session_query_api.py --port 8080 --hook_token mysecrethooktoken
 ### Docker 运行
 
 ```bash
-# 构建镜像
+# 构建镜像（默认官方 python:3.10-slim；国内加 --build-arg PYTHON_IMAGE=... 换源）
 docker build -t agent-session-query .
 
-# 运行容器
+# 运行容器：把要查的会话目录挂进去，挂几个就查几个
 docker run -d \
   --name agent-session-query \
   -p 8080:8080 \
-  -v ~/.openclaw/agents/default/sessions:/root/.openclaw/agents/default/sessions \
-  -e HOOK_TOKEN=your_hook_token_here \
-  agent-session-query
+  -v ~/.claude/projects:/root/.claude/projects:ro \
+  -v ~/.codex/sessions:/root/.codex/sessions:ro \
+  -v ~/.pi/agent/sessions:/root/.pi/agent/sessions:ro \
+  -v ~/.gemini/tmp:/root/.gemini/tmp:ro \
+  -v ~/.hermes/sessions:/root/.hermes/sessions:ro \
+  -v ~/.openclaw/agents/default/sessions:/root/.openclaw/agents/default/sessions:ro \
+  agent-session-query --hook_token your_hook_token_here
 ```
+
+镜像的 ENTRYPOINT 就是脚本本身，`docker run` 后面的参数会直接透传（`--mode`、`--hook_token`、`--port` 等）；只想查某一种时加 `--mode claude` 这样即可。
 
 ### Docker Compose 运行
 
 ```bash
-# 使用默认配置运行
+# 六个数据源目录都已挂上，没数据的会自动跳过
 docker-compose up -d
 
-# 或者设置环境变量后运行
-HOOK_TOKEN=your_hook_token_here docker-compose up -d
+# 设置认证令牌 / 指定模式
+HOOK_TOKEN=your_hook_token_here SESSION_MODE=auto docker-compose up -d
 ```
 
 ## 使用示例
@@ -138,7 +144,7 @@ curl http://localhost:8080/sessions/hook:alert:prometheus:b5123b01/final
 curl http://localhost:8080/sessions/20260419_143935_73e269b4/final
 ```
 
-**注意**: 返回的是第一个 `stopReason/finish_reason="stop"` 的助手消息，而非最后一条消息。
+**注意**: OpenClaw/Hermes 返回的是第一个 `stopReason/finish_reason="stop"` 的助手消息（不是最后一条）；Pi / Claude Code / Codex / Gemini 返回最后一条助手消息。
 
 ### 5. 带认证的请求
 
@@ -150,6 +156,25 @@ curl -H 'Authorization: Bearer your_hook_token_here' http://localhost:8080/sessi
 
 ```bash
 curl http://localhost:8080/health
+```
+
+### 7. 其它数据源（Pi / Claude Code / Codex / Gemini）
+
+```bash
+# 列出全部（六源合并，每条带 source 字段）
+curl -H 'Authorization: Bearer xxx' http://localhost:8080/sessions
+
+# Claude Code：直接用 session uuid（文件名）
+curl -H 'Authorization: Bearer xxx' http://localhost:8080/sessions/e4b2b405-88ea-4782-a84c-92574380ed16/final
+
+# Codex：用 rollout 文件名的一部分
+curl -H 'Authorization: Bearer xxx' http://localhost:8080/sessions/rollout-2026-09-13T23-07-05
+
+# Pi / Gemini：用文件名的片段
+curl -H 'Authorization: Bearer xxx' http://localhost:8080/sessions/2026-09-13T12-50-41
+
+# 只看某一类：把结果按 source 过滤（服务端也可以直接用 --mode 只启用一个源）
+curl -s -H 'Authorization: Bearer xxx' http://localhost:8080/sessions | jq '.sessions[] | select(.source=="claude")'
 ```
 
 ## 响应格式
@@ -274,12 +299,13 @@ curl http://localhost:8080/health
 | `--max-connections` | `50` | 最大并发连接数，超出返回 503 |
 | `--timeout` | `30` | 单连接超时秒数 |
 
-### 环境变量（Docker）
+### 环境变量 / 构建参数（Docker）
 
-| 环境变量 | 描述 |
-|----------|------|
-| `HOOK_TOKEN` | 用于 API 认证的 Bearer hook_token |
-| `OPENCLAW_HOOK_TOKEN` | docker-compose.yml 中使用的 hook_token 变量 |
+| 变量 | 用途 |
+|------|------|
+| `HOOK_TOKEN` | compose 传给 `--hook_token` 的 Bearer 令牌（留空则不启用认证） |
+| `SESSION_MODE` | compose 传给 `--mode`，默认 `auto` |
+| `PYTHON_IMAGE` | 构建参数：基础镜像，默认 `python:3.10-slim`，国内可用镜像源覆盖 |
 
 ## 数据源
 
@@ -323,15 +349,20 @@ curl http://localhost:8080/health
 
 ### 常见问题
 
-1. **会话文件未找到**
-   - 确保 OpenClaw 已运行并生成了会话数据
-   - 检查 `~/.openclaw/agents/default/sessions/` 目录权限
+1. **某个数据源查不到（/health 的 sources 里没有它）**
+   - 该数据源在本机不存在：对照上表检查会话文件/目录是否存在
+   - 跑在容器里时，还要确认对应目录挂载进去了（compose 默认挂了六个，手动 docker run 时按需加 `-v`）
+   - 注意：镜像不预建会话目录；空的挂载目录不会被当成"有数据源"
 
-2. **认证失败 (401 Unauthorized)**
+2. **会话列表是空的**
+   - `/health` 看启用了哪些源；再用 `--mode all` 强制启用全部（会打印缺哪个）
+   - 确认服务进程有读取这些目录的权限
+
+3. **认证失败 (401 Unauthorized)**
    - 确认请求中包含了正确的 Bearer hook_token
    - 检查启动时设置的 hook_token 是否与请求中的一致
 
-3. **端口冲突**
+4. **端口冲突**
    - 修改 `--port` 参数使用其他端口
    - 检查是否有其他服务占用了 8080 端口
 
@@ -372,6 +403,30 @@ docker-compose logs -f
 - **jsonl 格式**: `{"role": "assistant", "content": "text", "reasoning": "thinking", "finish_reason": "stop"}`
 - **content 类型**: 字符串
 
+#### Pi 格式
+
+- **会话文件**: `~/.pi/agent/sessions/<项目>/<时间>_<uuid>.jsonl`
+- **首行**: `{"type": "session", "id": "...", "timestamp": "...", "cwd": "..."}`
+- **消息行**: `{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "..."}], "stopReason": "stop"}}`
+
+#### Claude Code 格式
+
+- **会话文件**: `~/.claude/projects/<项目 slug>/<session-uuid>.jsonl`
+- **消息行**: `{"type": "user|assistant", "message": {"role": "...", "content": [{"type": "text|thinking|tool_use|tool_result", ...}]}}`
+- 跳过 `isSidechain`（子代理）与 `queue-operation` / `attachment` 等非对话行
+
+#### Codex 格式
+
+- **会话文件**: `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl`
+- **首行**: `{"type": "session_meta", "payload": {"session_id": "...", "cwd": "..."}}`
+- **消息行**: `{"type": "response_item", "payload": {"type": "message", "role": "user|assistant", "content": [{"type": "input_text|output_text", "text": "..."}]}}`
+
+#### Gemini CLI 格式
+
+- **会话文件**: `~/.gemini/tmp/<项目>/chats/session-*.jsonl`
+- **形式**: 追加日志——首行元数据（`sessionId` / `startTime`）、`{"$set": {...}}` 补丁、以及消息行
+- **消息行**: `{"type": "user|gemini", "timestamp": "...", "content": [...] 或 "字符串", "thoughts": "...", "tokens": {...}}`
+
 ### 本地开发
 
 ```bash
@@ -384,9 +439,8 @@ cd agent-session-query
 # 自动检测模式运行（推荐）
 python3 session_query_api.py --port 8080
 
-# 或强制指定模式
-python3 session_query_api.py --port 8080 --mode hermes
-python3 session_query_api.py --port 8080 --mode openclaw
+# 或强制指定单个数据源
+python3 session_query_api.py --port 8080 --mode claude   # 也支持 pi / codex / gemini / hermes / openclaw / all
 ```
 
 ## 许可证

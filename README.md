@@ -19,7 +19,8 @@
 | 端点 | 方法 | 描述 |
 |------|------|------|
 | `/` | GET | API 信息和使用说明 |
-| `/health` | GET | 健康检查 |
+| `/health` | GET | 健康检查（含连接统计） |
+| `/stats` | GET | 服务器统计（连接数等） |
 | `/sessions` 或 `/api/sessions` | GET | 列出所有会话 |
 | `/sessions/<pattern>` 或 `/api/sessions/<pattern>` | GET | 查询单个会话信息 |
 | `/sessions/<pattern>/messages?limit=50` 或 `/api/sessions/<pattern>/messages?limit=50` | GET | 获取会话消息 |
@@ -251,6 +252,8 @@ curl http://localhost:8080/health
 | `--port` | `8080` | 监听端口 |
 | `--mode` | `auto` | 运行模式：`auto`（自动检测）/`openclaw`/`hermes` |
 | `--hook_token` | `None` | Bearer 认证令牌 |
+| `--max-connections` | `50` | 最大并发连接数，超出返回 503 |
+| `--timeout` | `30` | 单连接超时秒数 |
 
 ### 环境变量（Docker）
 
@@ -310,9 +313,10 @@ docker-compose logs -f
 
 ```
 .
-├── openclaw_session_query_api.py    # 主应用程序
+├── openclaw_session_query_api.py    # 主应用程序（仅标准库）
 ├── Dockerfile               # Docker 镜像构建文件
 ├── docker-compose.yml       # Docker Compose 配置
+├── LICENSE                  # MIT
 └── README.md               # 项目文档
 ```
 
@@ -337,8 +341,7 @@ docker-compose logs -f
 git clone <repository-url>
 cd openclaw-session-query-api
 
-# 安装依赖（如有）
-pip install -r requirements.txt
+# 无需安装依赖：只用 Python 标准库（3.8+），没有 requirements.txt
 
 # 自动检测模式运行（推荐）
 python3 openclaw_session_query_api.py --port 8080

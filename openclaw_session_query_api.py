@@ -27,6 +27,7 @@ GET /health
     - 健康检查
 """
 
+import hmac
 import json
 import os
 import re
@@ -37,7 +38,7 @@ import threading
 import traceback
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 from typing import Optional, Dict, Any, List, Tuple
 import argparse
 import select
@@ -157,26 +158,21 @@ class OpenClawAPI:
         if not path.exists():
             return messages
 
-        # 读取所有行，因为前面的行可能不是 message 类型
-        all_lines = []
+        # 流式读取：取到 limit 条就停，不必把整个 jsonl 读进内存
         with open(path, 'r') as f:
             for line in f:
-                all_lines.append(line)
-
-        # 提取消息，最多返回 limit 条
-        for line in all_lines:
-            if len(messages) >= limit:
-                break
-            try:
-                data = json.loads(line.strip())
-                # OpenClaw 格式: type=message
-                if data.get('type') == 'message':
-                    messages.append(data)
-                # Hermes 格式: role=user/assistant
-                elif data.get('role') in ['user', 'assistant']:
-                    messages.append(data)
-            except json.JSONDecodeError:
-                continue
+                if len(messages) >= limit:
+                    break
+                try:
+                    data = json.loads(line.strip())
+                    # OpenClaw 格式: type=message
+                    if data.get('type') == 'message':
+                        messages.append(data)
+                    # Hermes 格式: role=user/assistant
+                    elif data.get('role') in ['user', 'assistant']:
+                        messages.append(data)
+                except json.JSONDecodeError:
+                    continue
 
         return messages
 
@@ -323,33 +319,53 @@ class OpenClawAPI:
             return None
 
     def list_sessions(self) -> List[Dict]:
-        """列出所有 session - 每次都重新加载"""
+        """列出所有 session - 每次都重新加载（按当前模式取字段）"""
         sessions = self._load_sessions()
+        session_id_field = PATHS['session_id_field']
+        is_openclaw = PATHS['mode'] == 'openclaw'
 
         result = []
         for key, info in sessions.items():
-            session_id = info.get('sessionId', '')
+            session_id = info.get(session_id_field, '')
+            # 兼容两种命名的兜底，避免数据里字段名不一致时列表为空
+            if not session_id:
+                session_id = info.get('sessionId', '') or info.get('session_id', '')
             session_file = info.get('sessionFile', '')
             file_exists = Path(session_file).exists() if session_file else False
 
-            updated = info.get('updatedAt', 0)
-            updated_str = ''
-            if updated:
-                from datetime import datetime
-                dt = datetime.fromtimestamp(updated/1000)
-                updated_str = dt.strftime('%Y-%m-%d %H:%M:%S')
-
-            result.append({
+            item = {
                 'key': key,
-                'shortKey': key.replace('agent:default:', ''),
+                'shortKey': key.replace('agent:default:', '') if is_openclaw else key,
                 'sessionId': session_id,
-                'status': info.get('status', 'unknown'),
-                'updatedAt': updated_str,
                 'hasFile': file_exists,
-                'model': info.get('model', ''),
-                'runtimeMs': info.get('runtimeMs', 0),
-                'totalTokens': info.get('totalTokens', 0),
-            })
+            }
+
+            if is_openclaw:
+                updated = info.get('updatedAt', 0)
+                updated_str = ''
+                if updated:
+                    from datetime import datetime
+                    dt = datetime.fromtimestamp(updated/1000)
+                    updated_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+                item.update({
+                    'status': info.get('status', 'unknown'),
+                    'updatedAt': updated_str,
+                    'model': info.get('model', ''),
+                    'runtimeMs': info.get('runtimeMs', 0),
+                    'totalTokens': info.get('totalTokens', 0),
+                })
+            else:  # hermes
+                item.update({
+                    'status': 'done',
+                    'updatedAt': info.get('updated_at', ''),
+                    'createdAt': info.get('created_at', ''),
+                    'displayName': info.get('display_name', ''),
+                    'platform': info.get('platform', ''),
+                    'totalTokens': info.get('total_tokens', 0),
+                    'estimatedCostUsd': info.get('estimated_cost_usd', 0),
+                })
+
+            result.append(item)
         return result
 
     def get_session(self, pattern: str) -> Optional[Dict]:
@@ -377,8 +393,8 @@ class OpenClawAPI:
             'hasFile': file_exists,
         }
         
-        # 根据模式添加不同字段
-        if MODE == 'openclaw':
+        # 根据模式添加不同字段（用 PATHS['mode']，--mode auto 时它与 MODE 不一定相同）
+        if PATHS['mode'] == 'openclaw':
             result.update({
                 'status': info.get('status', 'unknown'),
                 'updatedAt': info.get('updatedAt', 0),
@@ -463,54 +479,47 @@ class OpenClawAPI:
                 'error': 'Session file not available yet (session may be still initializing)'
             }
 
-        # 读取所有消息，找到第一个 finish_reason/stopReason="stop" 的 assistant 消息
+        # 单次读取：收集 assistant 消息、第一个 "stop" 消息、以及 toolResult 的 parentId
         all_messages = []
         first_stop_message = None
-        
+        tool_result_parents = set()
+
         with open(path, 'r') as f:
             for line in f:
                 try:
                     data = json.loads(line.strip())
-                    # OpenClaw 格式
-                    if data.get('type') == 'message':
-                        msg = data.get('message', {})
-                        if msg.get('role') == 'assistant':
-                            # 保存时包含 msg 里的 finish_reason/stopReason
-                            msg_stop_reason = msg.get(stop_reason_field) or data.get(stop_reason_field) or ''
-                            data['_msg_stopReason'] = msg_stop_reason
-                            all_messages.append(data)
-                            # 记录第一个 finish_reason/stopReason="stop" 的消息
-                            if first_stop_message is None and msg_stop_reason == 'stop':
-                                first_stop_message = data
-                    # Hermes 格式
-                    elif data.get('role') == 'assistant':
-                        # 保存时包含 finish_reason/stopReason
-                        msg_stop_reason = data.get(stop_reason_field, '')
+                except json.JSONDecodeError:
+                    continue
+                # OpenClaw 格式
+                if data.get('type') == 'message':
+                    msg = data.get('message', {})
+                    role = msg.get('role')
+                    if role == 'assistant':
+                        # 保存时包含 msg 里的 finish_reason/stopReason
+                        msg_stop_reason = msg.get(stop_reason_field) or data.get(stop_reason_field) or ''
                         data['_msg_stopReason'] = msg_stop_reason
                         all_messages.append(data)
                         # 记录第一个 finish_reason/stopReason="stop" 的消息
                         if first_stop_message is None and msg_stop_reason == 'stop':
                             first_stop_message = data
-                except json.JSONDecodeError:
-                    continue
+                    elif role == 'toolResult':
+                        parent_id = data.get('parentId')
+                        if parent_id:
+                            tool_result_parents.add(parent_id)
+                # Hermes 格式
+                elif data.get('role') == 'assistant':
+                    # 保存时包含 finish_reason/stopReason
+                    msg_stop_reason = data.get(stop_reason_field, '')
+                    data['_msg_stopReason'] = msg_stop_reason
+                    all_messages.append(data)
+                    # 记录第一个 finish_reason/stopReason="stop" 的消息
+                    if first_stop_message is None and msg_stop_reason == 'stop':
+                        first_stop_message = data
 
-        # 检查是否还有 toolResult 消息在第一个 stop 消息之后（可能还在处理中）
+        # 第一个 stop 消息之后还有指向它的 toolResult，说明可能仍在处理中
         is_processing = False
-        if first_stop_message and status == 'running':
-            last_msg_id = first_stop_message.get('id', '')
-            with open(path, 'r') as f:
-                for line in f:
-                    try:
-                        data = json.loads(line.strip())
-                        # OpenClaw 格式
-                        if data.get('type') == 'message':
-                            msg = data.get('message', {})
-                            if msg.get('role') == 'toolResult' and data.get('parentId') == last_msg_id:
-                                is_processing = True
-                                break
-                        # Hermes 格式没有 toolResult 概念，跳过
-                    except:
-                        pass
+        if first_stop_message and status == 'running' and first_stop_message.get('id', '') in tool_result_parents:
+            is_processing = True
 
         if first_stop_message is None:
             sqlite_result = self._load_sqlite_final_message(session_id, status)
@@ -632,16 +641,22 @@ class RequestHandler(BaseHTTPRequestHandler):
         auth_header = self.headers.get('Authorization', '')
         if auth_header.startswith('Bearer '):
             token = auth_header[7:]
-            return token == self._auth_token
+            # 常量时间比较，避免按字符比较带来的时序侧信道
+            try:
+                return hmac.compare_digest(token, self._auth_token)
+            except TypeError:
+                return token == self._auth_token
         return False
 
     def _send_json(self, data: Any, status: int = 200):
         try:
+            body = json.dumps(data, ensure_ascii=False).encode('utf-8')
             self.send_response(status)
-            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
-            self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+            self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass  # 客户端已断开，忽略
 
@@ -697,13 +712,17 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json(self.stats())
             return
 
+        # /api 前缀兼容：统一在这里去掉，下面的路由只写一遍
+        if path.startswith('/api/'):
+            path = path[4:]
+
         # 检查认证（其余所有端点）
         if not self._check_auth():
             self._send_json({'error': 'Unauthorized'}, 401)
             return
 
         # 列出所有 session
-        if path == '/sessions' or path == '/api/sessions':
+        if path == '/sessions':
             sessions = self.api.list_sessions()
             self._send_json({'sessions': sessions, 'total': len(sessions)})
             return
@@ -711,31 +730,12 @@ class RequestHandler(BaseHTTPRequestHandler):
         # 获取单个 session 消息 - 需要在 /sessions/<pattern> 之前匹配
         match = re.match(r'^/sessions/([^/]+)/messages$', path)
         if match:
-            pattern = match.group(1)
-            pattern = pattern.replace('%3A', ':').replace('%20', ' ')
+            pattern = unquote(match.group(1))
             limit = 50
             if 'limit' in query:
                 try:
                     limit = int(query['limit'])
-                except Exception as e:
-                    limit = 50
-            messages = self.api.get_messages(pattern, limit)
-            if messages is None:
-                self._send_json({'error': 'Session not found'}, 404)
-                return
-            self._send_json({'messages': messages, 'total': len(messages)})
-            return
-
-        # API 前缀兼容 - 消息
-        match = re.match(r'^/api/sessions/([^/]+)/messages$', path)
-        if match:
-            pattern = match.group(1)
-            pattern = pattern.replace('%3A', ':').replace('%20', ' ')
-            limit = 50
-            if 'limit' in query:
-                try:
-                    limit = int(query['limit'])
-                except:
+                except Exception:
                     limit = 50
             messages = self.api.get_messages(pattern, limit)
             if messages is None:
@@ -747,23 +747,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         # 获取单个 session 最终结果
         match = re.match(r'^/sessions/([^/]+)/final$', path)
         if match:
-            pattern = match.group(1)
-            pattern = pattern.replace('%3A', ':').replace('%20', ' ')
+            pattern = unquote(match.group(1))
             result = self.api.get_final_message(pattern)
             if result is None:
                 self._send_json({'error': 'Session not found'}, 404)
-                return
-            self._send_json(result)
-            return
-
-        # API 前缀兼容 - 最终结果
-        match = re.match(r'^/api/sessions/([^/]+)/final$', path)
-        if match:
-            pattern = match.group(1)
-            pattern = pattern.replace('%3A', ':').replace('%20', ' ')
-            result = self.api.get_final_message(pattern)
-            if result is None:
-                self._send_json({'error': 'Session not found or no final message'}, 404)
                 return
             self._send_json(result)
             return
@@ -771,20 +758,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         # 获取单个 session 信息
         match = re.match(r'^/sessions/([^/]+)$', path)
         if match:
-            pattern = match.group(1)
-            pattern = pattern.replace('%3A', ':').replace('%20', ' ')
-            session = self.api.get_session(pattern)
-            if session is None:
-                self._send_json({'error': 'Session not found'}, 404)
-                return
-            self._send_json(session)
-            return
-
-        # API 前缀兼容 - session 信息
-        match = re.match(r'^/api/sessions/([^/]+)$', path)
-        if match:
-            pattern = match.group(1)
-            pattern = pattern.replace('%3A', ':').replace('%20', ' ')
+            pattern = unquote(match.group(1))
             session = self.api.get_session(pattern)
             if session is None:
                 self._send_json({'error': 'Session not found'}, 404)
@@ -916,7 +890,7 @@ def main():
     # 设置认证 hook_token
     if args.hook_token:
         RequestHandler.set_auth_token(args.hook_token)
-        print(f"已启用认证，Bearer hook_token: {args.hook_token[:8]}...")
+        print("已启用认证（Bearer hook_token 已设置，不回显）")
     else:
         print("警告: 未设置认证hook_token，API 公开访问")
 

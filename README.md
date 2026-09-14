@@ -1,21 +1,30 @@
-# OpenClaw/Hermes Session HTTP API
+# 本地 Agent 会话查询 HTTP API
 
-一个用于查询和管理 OpenClaw/Hermes Agent 会话的轻量级 HTTP API 服务。该服务通过 RESTful API 提供对会话数据的访问，包括会话列表、消息查询和最终结果获取。
+一个用于查询本机各种 Agent 会话的轻量级 HTTP API 服务。只读，不改动任何会话数据。
 
-**✨ 自动检测模式**: 无需手动指定，自动识别数据源并适配格式！
+支持六种数据源，**都在跑就一起查**：
 
-**🔀 两个数据源可以同时用**: OpenClaw 和 Hermes 都在跑时，同一个接口同时查两边，每条结果带 `source` 字段标明来源。
+| 数据源 | 位置 |
+|--------|------|
+| **Hermes** | `~/.hermes/sessions/` |
+| **OpenClaw** | `~/.openclaw/agents/default/sessions/` |
+| **Pi** | `~/.pi/agent/sessions/` |
+| **Claude Code** | `~/.claude/projects/` |
+| **Codex** | `~/.codex/sessions/` |
+| **Gemini CLI** | `~/.gemini/tmp/` |
+
+**✨ 自动检测模式**: 无需手动指定，存在的数据源都启用，两个服务同时开着就同时查询。
 
 ## 功能特性
 
-- 🔍 **自动检测**: 自动识别 OpenClaw / Hermes 数据源，无需手动配置
-- 🔀 **多数据源合并**: 两个服务同时开着时一并查询，结果按更新时间倒序、每条带 `source` 标记（`--mode all` 可强制两个都开）
-- 📋 根据 Run ID、Session ID 或 Session pattern 查询单个会话
+- 🔍 **自动检测**: 自动识别上述六种数据源，无需手动配置
+- 🔀 **多数据源合并**: 结果按更新时间倒序合并，每条带 `source` 字段标明来源（`--mode all` 强制全部启用）
+- 📋 按 Session ID、会话 key 或路径片段查询单个会话（精确匹配优先于模糊匹配，跨数据源不互相遮蔽）
 - 💬 获取会话的详细消息内容
-- ✅ 获取会话的最终结果（第一个 `finish_reason/stopReason="stop"` 的助手消息）
+- ✅ 获取会话的最终结果（OpenClaw/Hermes 取第一个 `stopReason=stop` 的助手消息；其余取最后一条助手消息）
 - 🔒 支持 Bearer hook_token 认证
 - 🐳 提供 Docker 和 Docker Compose 部署方式
-- 🏥 内置健康检查端点
+- 🏥 内置健康检查端点（含启用的数据源清单与连接统计）
 
 ## API 端点
 
@@ -34,13 +43,17 @@
 ### 本地运行
 
 ```bash
-# 自动检测模式（推荐）- 存在的数据源都用（两个都开着就都查）
+# 自动检测模式（推荐）- 存在的数据源都用，同时查询
 python3 openclaw_session_query_api.py [--port 8080]
 
 # 强制指定模式（可选）
-python3 openclaw_session_query_api.py --mode all       # 两个数据源都用（缺的会警告）
-python3 openclaw_session_query_api.py --mode hermes    # 强制 Hermes
-python3 openclaw_session_query_api.py --mode openclaw  # 强制 OpenClaw
+python3 openclaw_session_query_api.py --mode all      # 六个数据源都启用（缺的会警告）
+python3 openclaw_session_query_api.py --mode claude   # 只看 Claude Code
+python3 openclaw_session_query_api.py --mode pi       # 只看 Pi
+python3 openclaw_session_query_api.py --mode codex    # 只看 Codex
+python3 openclaw_session_query_api.py --mode gemini   # 只看 Gemini CLI
+python3 openclaw_session_query_api.py --mode hermes   # 只看 Hermes
+python3 openclaw_session_query_api.py --mode openclaw # 只看 OpenClaw
 
 # 带认证运行
 python3 openclaw_session_query_api.py --port 8080 --hook_token mysecrethooktoken
@@ -256,7 +269,7 @@ curl http://localhost:8080/health
 |------|--------|------|
 | `--host` | `0.0.0.0` | 绑定主机地址 |
 | `--port` | `8080` | 监听端口 |
-| `--mode` | `auto` | 运行模式：`auto`（自动检测，存在的数据源都用）/`all`（两个都用）/`openclaw`/`hermes` |
+| `--mode` | `auto` | 运行模式：`auto`（自动检测，存在的数据源都用）/`all`（六个都启用）/`hermes`/`openclaw`/`pi`/`claude`/`codex`/`gemini` |
 | `--hook_token` | `None` | Bearer 认证令牌 |
 | `--max-connections` | `50` | 最大并发连接数，超出返回 503 |
 | `--timeout` | `30` | 单连接超时秒数 |
@@ -272,19 +285,32 @@ curl http://localhost:8080/health
 
 ### 自动检测逻辑
 
-服务启动时会检测两个数据源，**存在的数据源都启用**（两个服务同时开着就同时查询）：
+服务启动时会检测六种数据源，**存在的数据源都启用**（可以同时查询多个）：
 
-1. **Hermes**: `~/.hermes/sessions/sessions.json`
-2. **OpenClaw**: `~/.openclaw/agents/default/sessions/sessions.json`
-3. 如果都不存在，默认使用 OpenClaw 路径（`--mode all` 时会明确警告缺了哪个）
+| 数据源 | 会话文件 | 会话 ID 来源 |
+|--------|----------|--------------|
+| Hermes | `~/.hermes/sessions/sessions.json` + `<id>.jsonl` | `session_id` |
+| OpenClaw | `~/.openclaw/agents/default/sessions/sessions.json` + jsonl | `sessionId` |
+| Pi | `~/.pi/agent/sessions/<项目>/*.jsonl` | 首行 `id` |
+| Claude Code | `~/.claude/projects/<项目>/<uuid>.jsonl` | 文件名 / `sessionId` |
+| Codex | `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` | 首行 `payload.session_id` |
+| Gemini CLI | `~/.gemini/tmp/<项目>/chats/session-*.jsonl` | 首行 `sessionId` |
 
-**无需手动配置**，服务会自动识别并适配对应的数据格式。
+一个都检测不到时默认使用 OpenClaw 路径（`--mode all` 会明确警告缺了哪个）。
 
 ### 多数据源的查询语义
 
-- `/sessions` 返回两个数据源合并后的列表，按更新时间倒序，每条带 `source` 字段
-- `/sessions/<pattern>` 等接口先在所有数据源里按「精确 ID → 精确 key → key 后缀 → 子串 → 模糊 ID」的顺序匹配——一个数据源里的模糊命中不会盖掉另一个数据源里的精确命中
+- `/sessions` 返回所有启用数据源合并后的列表，按更新时间倒序，每条带 `source` 字段
+- `/sessions/<pattern>` 先在所有数据源里按「精确 ID → 精确 key → key 后缀 → 子串 → 模糊 ID」的顺序匹配——一个数据源里的模糊命中不会盖掉另一个数据源里的精确命中
 - `/health` 的 `sources` 字段列出本次实际启用的数据源
+- 排序用的更新时间：OpenClaw/Hermes 用记录里的时间字段，其余四种用会话文件的修改时间
+
+### 各数据源的解析说明
+
+- **Pi**：行类型为 `session` / `model_change` / `message`；消息取 `message` 行，最终结果取最后一条 assistant 消息（`stopReason=stop` 视为已完成）
+- **Claude Code**：取 `type=user/assistant` 的行，跳过 `isSidechain`（子代理）与 `queue-operation`/`attachment` 等噪声行；最终结果取最后一条 assistant 消息
+- **Codex**：取 `response_item` 中 `payload.type=message` 的行（跳过 `developer` 角色）；最终结果取最后一条 assistant 消息
+- **Gemini CLI**：文件是「首行元数据 + `$set` 补丁 + 消息行」的追加日志；消息取 `type=user/gemini` 的行，最终结果取最后一条 gemini 消息
 
 ## 安全注意事项
 

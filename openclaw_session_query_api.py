@@ -1,30 +1,36 @@
 #!/usr/bin/env python3
 """
-OpenClaw/Hermes Session HTTP API 服务
+本地 Agent 会话查询 HTTP API（OpenClaw / Hermes / Pi / Claude Code / Codex / Gemini CLI）
 
 启动方式:
-    python3 openclaw_session_query_api.py [--port 8080]
+    python3 openclaw_session_query_api.py [--port 8080] [--mode auto|all|hermes|openclaw|pi|claude|codex|gemini]
 
-自动检测模式:
-    - 优先检测 Hermes (~/.hermes/sessions/sessions.json)
-    - 其次检测 OpenClaw (~/.openclaw/agents/default/sessions/sessions.json)
-    - 可通过 --mode 强制指定模式
+数据源（auto 模式下，存在的数据源都启用；可同时查询多个）:
+    - Hermes      ~/.hermes/sessions/sessions.json
+    - OpenClaw    ~/.openclaw/agents/default/sessions/sessions.json
+    - Pi          ~/.pi/agent/sessions/<项目>/*.jsonl
+    - Claude Code ~/.claude/projects/<项目>/*.jsonl
+    - Codex       ~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl
+    - Gemini CLI  ~/.gemini/tmp/<项目>/chats/session-*.jsonl
 
 API 端点:
 
 GET /sessions
-    - 列出所有 session
+    - 列出所有会话（多数据源合并，按更新时间倒序，每条带 source 字段）
 
 GET /sessions/<pattern>
-    - 根据 Run ID 或 Session pattern 查询
+    - 根据 Session ID、会话 key 或路径片段查询
     - 例如: /sessions/5ab8e024-2740-422c-8503-89c01313f792
     - 例如: /sessions/hook:alert:prometheus:b5123b01-616a-4da0-ac48-d9c81e3be63c
 
 GET /sessions/<pattern>/messages?limit=50
-    - 获取 session 的消息内容
+    - 获取会话的消息内容
+
+GET /sessions/<pattern>/final
+    - 获取会话的最终结果
 
 GET /health
-    - 健康检查
+    - 健康检查（含启用的数据源与连接统计）
 """
 
 import hmac
@@ -43,11 +49,13 @@ from typing import Optional, Dict, Any, List, Tuple
 import argparse
 import select
 
+from datetime import datetime, timezone
+
 # 默认模式（自动检测）
 MODE = 'auto'
 
-# 两个数据源的路径与字段约定
-_SOURCE_DEFS = {
+# OpenClaw / Hermes：一个 sessions.json 索引 + 每会话一个 jsonl
+_JSON_MAP_DEFS = {
     'hermes': {
         'mode': 'hermes',
         'sessions_json': Path.home() / ".hermes/sessions/sessions.json",
@@ -64,185 +72,303 @@ _SOURCE_DEFS = {
     },
 }
 
+# 每会话一个文件的几个 CLI：会话目录
+PI_SESSIONS_DIR = Path.home() / ".pi/agent/sessions"
+CLAUDE_PROJECTS_DIR = Path.home() / ".claude/projects"
+CODEX_SESSIONS_DIR = Path.home() / ".codex/sessions"
+GEMINI_TMP_DIR = Path.home() / ".gemini/tmp"
 
-def source_definitions(mode='auto'):
-    """返回本次运行要启用的数据源列表——两个服务同时开着时就是两个都在。
+# 支持的数据源（--mode 可选值，auto 时按存在与否自动启用）
+KNOWN_MODES = ['hermes', 'openclaw', 'pi', 'claude', 'codex', 'gemini']
 
-    - hermes / openclaw: 只用指定的那一个
-    - auto: 存在的数据源都用（两个都存在就都用）
-    - all: 明确要求两个都用，缺的会警告
+
+# ---------------------------------------------------------------------------
+# 通用工具
+# ---------------------------------------------------------------------------
+
+def _read_jsonl(path, limit: Optional[int] = None) -> List[Dict]:
+    """逐行读 jsonl，坏行跳过；limit 不为空时最多读这么多条有效记录"""
+    out = []
+    try:
+        with open(path, 'r', errors='replace') as f:
+            for line in f:
+                if limit is not None and len(out) >= limit:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict):
+                    out.append(obj)
+    except OSError:
+        pass
+    return out
+
+
+def _content_text(value: Any) -> str:
+    """把各种形态的 content 收敛成纯文本（字符串 / 数组 / 单个字典）"""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ('text', 'content', 'thinking'):
+            inner = value.get(key)
+            if isinstance(inner, str):
+                return inner
+            if isinstance(inner, list):
+                return _content_text(inner)
+        return ''
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            text = _content_text(item)
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+    return ''
+
+
+def _iso(ts: Any) -> str:
+    """统一成 ISO 字符串，用于排序和展示"""
+    if ts is None or ts == '':
+        return ''
+    if isinstance(ts, (int, float)):
+        try:
+            seconds = ts / 1000 if ts > 1e11 else ts
+            return datetime.fromtimestamp(seconds, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
+        except (OverflowError, OSError, ValueError):
+            return ''
+    return str(ts)
+
+
+def _mtime_iso(path) -> str:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
+    except OSError:
+        return ''
+
+
+def _match_rank(pattern_lower: str, record: Dict) -> int:
+    """pattern 与会话记录的匹配度：0 最精确，-1 表示不匹配"""
+    sid = str(record.get('sessionId') or '').lower()
+    key = str(record.get('key') or '').lower()
+    if sid and pattern_lower == sid:
+        return 0
+    if key == pattern_lower:
+        return 1
+    if key.endswith(':' + pattern_lower) or key.endswith('/' + pattern_lower):
+        return 2
+    if pattern_lower in key:
+        return 3
+    if sid and pattern_lower in sid:
+        return 4
+    return -1
+
+
+def _trim(text: str, limit: int, mark: str = '...[truncated]') -> str:
+    if isinstance(text, str) and len(text) > limit:
+        return text[:limit] + mark
+    return text
+
+
+class SessionSource:
+    """数据源适配器基类：统一 list / find / messages / final 四个动作。
+
+    每条会话记录（record）统一成：
+        {'source', 'key', 'sessionId', 'file', 'hasFile', 'status', 'updatedAt', ...}
     """
-    hermes = dict(_SOURCE_DEFS['hermes'])
-    openclaw = dict(_SOURCE_DEFS['openclaw'])
+    mode = 'base'
+    location = ''
 
-    if mode == 'hermes':
-        return [hermes]
-    if mode == 'openclaw':
-        return [openclaw]
+    def exists(self) -> bool:
+        return True
 
-    enabled = []
-    for name, source in (('hermes', hermes), ('openclaw', openclaw)):
-        if source['sessions_json'].exists():
-            enabled.append(source)
-            if mode == 'auto':
-                print(f"自动检测到 {name} 数据源: {source['sessions_json']}")
-        elif mode == 'all':
-            print(f"警告: {name} 数据源不存在，已跳过: {source['sessions_json']}")
+    def list(self) -> List[Dict]:
+        return []
 
-    if enabled:
-        return enabled
+    def find(self, pattern: str) -> Optional[Dict]:
+        """按「精确 ID → 精确 key → 后缀 → 子串」的优先级返回最佳匹配"""
+        pattern_lower = (pattern or '').strip().lower()
+        if not pattern_lower:
+            return None
+        best, best_rank = None, 99
+        for record in self.list():
+            rank = _match_rank(pattern_lower, record)
+            if rank != -1 and rank < best_rank:
+                best, best_rank = record, rank
+                if rank == 0:
+                    break
+        return best
 
-    # auto 且一个都没有：沿用旧行为，默认 OpenClaw
-    print("警告: 未检测到数据源，默认使用 OpenClaw")
-    return [openclaw]
+    def messages(self, record: Dict, limit: int = 50) -> List[Dict]:
+        return []
 
-
-def init_paths(mode='auto'):
-    """兼容旧用法：返回第一个启用的数据源（多数据源请用 source_definitions）"""
-    return source_definitions(mode)[0]
-
-
-SOURCES = source_definitions(MODE)
-PATHS = SOURCES[0]  # 兼容旧引用：始终指向第一个启用的数据源
+    def final(self, record: Dict) -> Optional[Dict]:
+        return None
 
 
-class OpenClawAPI:
-    def __init__(self):
-        pass  # 不缓存任何数据
+# ---------------------------------------------------------------------------
+# 适配器 1/2：OpenClaw / Hermes（sessions.json 索引 + jsonl）
+# ---------------------------------------------------------------------------
 
-    def _load_sessions(self, source: Dict[str, Any]) -> Dict[str, Any]:
-        """读取某个数据源的 sessions.json（每次都重新加载，不缓存）"""
-        if not source['sessions_json'].exists():
+class JsonMapSource(SessionSource):
+    def __init__(self, definition: Dict[str, Any]):
+        self.mode = definition['mode']
+        self.sessions_json = definition['sessions_json']
+        self.sessions_dir = definition['sessions_dir']
+        self.session_id_field = definition['session_id_field']
+        self.stop_reason_field = definition['stop_reason_field']
+        self.location = str(self.sessions_json)
+
+    def exists(self) -> bool:
+        return self.sessions_json.exists()
+
+    def _load(self) -> Dict[str, Any]:
+        if not self.sessions_json.exists():
             return {}
-        with open(source['sessions_json'], 'r') as f:
-            return json.load(f)
+        try:
+            with open(self.sessions_json, 'r') as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
 
-    def _find_session(self, pattern: str) -> Tuple[Optional[Dict], Optional[str], Optional[Dict]]:
-        """在所有启用的数据源里查找 session，返回 (source, key, info)"""
-        pattern = pattern.strip()
+    def _file_of(self, record: Dict):
+        path = record.get('file')
+        if path and Path(path).exists():
+            return Path(path)
+        sid = record.get('sessionId')
+        if sid:
+            alt = self.sessions_dir / f"{sid}.jsonl"
+            if alt.exists():
+                return alt
+        return None
 
-        # 处理 Run: 或 Session: 前缀
-        if pattern.startswith("Run: "):
-            pattern = pattern[5:]
-        if pattern.startswith("Session: "):
-            pattern = pattern[9:]
+    def list(self) -> List[Dict]:
+        sessions = self._load()
+        is_openclaw = self.mode == 'openclaw'
+        out = []
+        for key, info in sessions.items():
+            if not isinstance(info, dict):
+                continue
+            sid = info.get(self.session_id_field) or info.get('sessionId') or info.get('session_id') or ''
+            file = info.get('sessionFile') or ''
+            file_exists = Path(file).exists() if file else False
+            if not file_exists and sid:
+                alt = self.sessions_dir / f"{sid}.jsonl"
+                if alt.exists():
+                    file, file_exists = str(alt), True
 
-        if not pattern:
-            return None, None, None
+            record = {
+                'source': self.mode,
+                'key': key,
+                'shortKey': key.replace('agent:default:', '') if is_openclaw else key,
+                'sessionId': sid,
+                'file': file if file_exists else None,
+                'hasFile': file_exists,
+            }
 
-        pattern_lower = pattern.lower()
+            if is_openclaw:
+                updated = info.get('updatedAt', 0)
+                updated_str = ''
+                sort_key = ''
+                if updated:
+                    try:
+                        dt = datetime.fromtimestamp(updated / 1000, tz=timezone.utc)
+                        updated_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+                        sort_key = dt.strftime('%Y-%m-%dT%H:%M:%S')
+                    except (OverflowError, OSError, ValueError):
+                        updated_str = str(updated)
+                record.update({
+                    'status': info.get('status', 'unknown'),
+                    'updatedAt': updated_str,
+                    'model': info.get('model', ''),
+                    'runtimeMs': info.get('runtimeMs', 0),
+                    'totalTokens': info.get('totalTokens', 0),
+                })
+            else:  # hermes
+                sort_key = str(info.get('updated_at', '') or '')
+                record.update({
+                    'status': 'done',
+                    'updatedAt': info.get('updated_at', ''),
+                    'createdAt': info.get('created_at', ''),
+                    'displayName': info.get('display_name', ''),
+                    'platform': info.get('platform', ''),
+                    'totalTokens': info.get('total_tokens', 0),
+                    'estimatedCostUsd': info.get('estimated_cost_usd', 0),
+                })
 
-        # 先把每个数据源各读一次，再按规则逐个试
-        loaded = [(source, self._load_sessions(source)) for source in SOURCES]
+            record['_sortKey'] = sort_key
+            out.append(record)
+        return out
 
-        # 注意顺序：每条规则都先扫完所有数据源，避免一个源的模糊命中
-        # 盖掉另一个源里的精确命中
-        rules = (
-            # 精确匹配 sessionId/session_id
-            lambda info, key, field: info.get(field, '').lower() == pattern_lower,
-            # 精确匹配完整 key
-            lambda info, key, field: key.lower() == pattern_lower,
-            # key 以 pattern 结尾（去掉 agent:default: 或 agent:main: 前缀后）
-            lambda info, key, field: key.lower().endswith(':' + pattern_lower),
-            # pattern 是 key 的一部分
-            lambda info, key, field: pattern_lower in key.lower(),
-            # 模糊匹配 ID 部分
-            lambda info, key, field: pattern_lower in info.get(field, '').lower(),
-        )
+    def messages(self, record: Dict, limit: int = 50) -> List[Dict]:
+        """OpenClaw / Hermes 的消息格式由行内容自辨（type=message 或 role=user/assistant）"""
+        path = self._file_of(record)
+        if path is None:
+            return []
 
-        for rule in rules:
-            for source, sessions in loaded:
-                session_id_field = source['session_id_field']
-                for key, info in sessions.items():
-                    if not isinstance(info, dict):
-                        continue
-                    if rule(info, key, session_id_field):
-                        return source, key, info
-
-        return None, None, None
-
-    def _extract_messages(self, session_file: str, limit: int = 50) -> List[Dict]:
-        """从 jsonl 文件提取消息"""
         messages = []
-        path = Path(session_file)
-
-        if not path.exists():
-            return messages
-
-        # 流式读取：取到 limit 条就停，不必把整个 jsonl 读进内存
-        with open(path, 'r') as f:
+        with open(path, 'r', errors='replace') as f:
             for line in f:
                 if len(messages) >= limit:
                     break
                 try:
                     data = json.loads(line.strip())
-                    # OpenClaw 格式: type=message
-                    if data.get('type') == 'message':
-                        messages.append(data)
-                    # Hermes 格式: role=user/assistant
-                    elif data.get('role') in ['user', 'assistant']:
-                        messages.append(data)
                 except json.JSONDecodeError:
                     continue
+                # OpenClaw 格式: type=message
+                if data.get('type') == 'message':
+                    messages.append(data)
+                # Hermes 格式: role=user/assistant
+                elif data.get('role') in ['user', 'assistant']:
+                    messages.append(data)
 
-        return messages
+        return [self._format_message(m) for m in messages]
 
     def _format_message(self, msg: Dict) -> Dict:
-        """格式化单条消息"""
-        # OpenClaw 格式
+        """格式化单条消息（OpenClaw content 数组 / Hermes 字符串）"""
         if msg.get('type') == 'message':
             content = msg.get('message', {}).get('content', [])
             role = msg.get('message', {}).get('role', 'unknown')
-        # Hermes 格式
         else:
             content = msg.get('content', '')
             role = msg.get('role', 'unknown')
 
         parts = []
-        
-        # OpenClaw: content 是数组
+
         if isinstance(content, list):
             for item in content:
-                if isinstance(item, dict):
-                    if item.get('type') == 'text':
-                        parts.append({'type': 'text', 'content': item.get('text', '')})
-                    elif item.get('type') == 'thinking':
-                        thinking = item.get('thinking', '')
-                        if len(thinking) > 1000:
-                            thinking = thinking[:1000] + '...[truncated]'
-                        parts.append({'type': 'thinking', 'content': thinking})
-                    elif item.get('type') == 'toolCall':
-                        parts.append({
-                            'type': 'toolCall',
-                            'name': item.get('name', ''),
-                            'arguments': item.get('arguments', {})
-                        })
-                    elif item.get('type') == 'toolResult':
-                        result = item.get('content', [])
-                        result_text = ''
-                        for r in result:
-                            if isinstance(r, dict) and r.get('type') == 'text':
-                                result_text = r.get('text', '')
-                                if len(result_text) > 500:
-                                    result_text = result_text[:500] + '...[truncated]'
-                        parts.append({
-                            'type': 'toolResult',
-                            'toolName': item.get('toolName', ''),
-                            'content': result_text
-                        })
-        # Hermes: content 是字符串
+                if not isinstance(item, dict):
+                    continue
+                if item.get('type') == 'text':
+                    parts.append({'type': 'text', 'content': item.get('text', '')})
+                elif item.get('type') == 'thinking':
+                    parts.append({'type': 'thinking', 'content': _trim(item.get('thinking', ''), 1000)})
+                elif item.get('type') == 'toolCall':
+                    parts.append({
+                        'type': 'toolCall',
+                        'name': item.get('name', ''),
+                        'arguments': item.get('arguments', {})
+                    })
+                elif item.get('type') == 'toolResult':
+                    result_text = ''
+                    for r in item.get('content', []) or []:
+                        if isinstance(r, dict) and r.get('type') == 'text':
+                            result_text = _trim(r.get('text', ''), 500)
+                    parts.append({
+                        'type': 'toolResult',
+                        'toolName': item.get('toolName', ''),
+                        'content': result_text
+                    })
         elif isinstance(content, str):
             if role == 'assistant':
-                # 提取 reasoning (thinking)
                 reasoning = msg.get('reasoning', '')
                 if reasoning:
-                    if len(reasoning) > 1000:
-                        reasoning = reasoning[:1000] + '...[truncated]'
-                    parts.append({'type': 'thinking', 'content': reasoning})
-                # 添加文本内容
-                parts.append({'type': 'text', 'content': content})
-            else:
-                parts.append({'type': 'text', 'content': content})
+                    parts.append({'type': 'thinking', 'content': _trim(reasoning, 1000)})
+            parts.append({'type': 'text', 'content': content})
 
         return {
             'id': msg.get('id', ''),
@@ -251,10 +377,9 @@ class OpenClawAPI:
             'content': parts
         }
 
-    def _load_sqlite_final_message(self, session_id: str, status: str = 'done',
-                                   source: Optional[Dict[str, Any]] = None) -> Optional[Dict]:
-        """Hermes webhook sessions may persist final messages in state.db only."""
-        if not source or source.get('mode') != 'hermes' or not session_id:
+    def _sqlite_final_message(self, session_id: str, status: str) -> Optional[Dict]:
+        """Hermes 的 webhook 会话有时只把最终消息落在 state.db 里"""
+        if self.mode != 'hermes' or not session_id:
             return None
 
         db_path = Path.home() / ".hermes/state.db"
@@ -315,6 +440,7 @@ class OpenClawAPI:
                     'isFinal': True,
                     'isProcessing': False,
                     'messageCount': int(message_count or 0),
+                    'source': self.mode,
                     'id': row['id'],
                     'timestamp': row['timestamp'],
                     'stopReason': row['finish_reason'] or 'stop',
@@ -322,184 +448,21 @@ class OpenClawAPI:
                     'thinking': row['reasoning'] or '',
                     'toolCalls': [],
                     'usage': usage,
-                    'source': 'sqlite',
                 }
             finally:
                 conn.close()
         except Exception as e:
-            print(f"[WARN] Failed to read Hermes SQLite final message for {session_id}: {e}", file=sys.stderr)
+            print(f"[WARN] 读取 Hermes SQLite 最终消息失败 {session_id}: {e}", file=sys.stderr)
             return None
 
-    def list_sessions(self) -> List[Dict]:
-        """列出所有启用的数据源里的 session（合并，每条带 source 标记）"""
-        result = []
-        for source in SOURCES:
-            result.extend(self._list_sessions_of(source))
-        # 按更新时间倒序；两个源的 updatedAt 都是 ISO 风格字符串，可直接比较
-        result.sort(key=lambda item: item.get('_sortKey', ''), reverse=True)
-        for item in result:
-            item.pop('_sortKey', None)
-        return result
-
-    def _list_sessions_of(self, source: Dict[str, Any]) -> List[Dict]:
-        """单个数据源的列表"""
-        sessions = self._load_sessions(source)
-        session_id_field = source['session_id_field']
-        is_openclaw = source['mode'] == 'openclaw'
-
-        result = []
-        for key, info in sessions.items():
-            if not isinstance(info, dict):
-                continue
-            session_id = info.get(session_id_field, '')
-            # 兼容两种命名的兜底，避免数据里字段名不一致时列表为空
-            if not session_id:
-                session_id = info.get('sessionId', '') or info.get('session_id', '')
-            session_file = info.get('sessionFile', '')
-            file_exists = Path(session_file).exists() if session_file else False
-
-            item = {
-                'key': key,
-                'shortKey': key.replace('agent:default:', '') if is_openclaw else key,
-                'sessionId': session_id,
-                'hasFile': file_exists,
-                'source': source['mode'],
-            }
-
-            if is_openclaw:
-                updated = info.get('updatedAt', 0)
-                updated_str = ''
-                sort_key = ''
-                if updated:
-                    from datetime import datetime
-                    dt = datetime.fromtimestamp(updated/1000)
-                    updated_str = dt.strftime('%Y-%m-%d %H:%M:%S')
-                    sort_key = dt.strftime('%Y-%m-%dT%H:%M:%S')
-                item.update({
-                    'status': info.get('status', 'unknown'),
-                    'updatedAt': updated_str,
-                    'model': info.get('model', ''),
-                    'runtimeMs': info.get('runtimeMs', 0),
-                    'totalTokens': info.get('totalTokens', 0),
-                })
-            else:  # hermes
-                sort_key = str(info.get('updated_at', '') or '')
-                item.update({
-                    'status': 'done',
-                    'updatedAt': info.get('updated_at', ''),
-                    'createdAt': info.get('created_at', ''),
-                    'displayName': info.get('display_name', ''),
-                    'platform': info.get('platform', ''),
-                    'totalTokens': info.get('total_tokens', 0),
-                    'estimatedCostUsd': info.get('estimated_cost_usd', 0),
-                })
-
-            item['_sortKey'] = sort_key
-            result.append(item)
-        return result
-
-    def get_session(self, pattern: str) -> Optional[Dict]:
-        """获取单个 session 信息"""
-        source, key, info = self._find_session(pattern)
-        if info is None:
-            return None
-
-        session_id_field = source['session_id_field']
-        session_id = info.get(session_id_field, '')
-        session_file = info.get('sessionFile', '')
-        file_exists = Path(session_file).exists() if session_file else False
-
-        # 如果 sessionFile 不存在但 sessionId 存在，尝试在 SESSIONS_DIR 中查找
-        if not file_exists and session_id:
-            alt_path = source['sessions_dir'] / f"{session_id}.jsonl"
-            if alt_path.exists():
-                session_file = str(alt_path)
-                file_exists = True
-
-        result = {
-            'key': key,
-            'sessionId': session_id,
-            'sessionFile': session_file if file_exists else None,
-            'hasFile': file_exists,
-            'source': source['mode'],
-        }
-
-        # 根据数据源类型添加不同字段
-        if source['mode'] == 'openclaw':
-            result.update({
-                'status': info.get('status', 'unknown'),
-                'updatedAt': info.get('updatedAt', 0),
-                'model': info.get('model', ''),
-                'runtimeMs': info.get('runtimeMs', 0),
-                'inputTokens': info.get('inputTokens', 0),
-                'outputTokens': info.get('outputTokens', 0),
-                'totalTokens': info.get('totalTokens', 0),
-                'estimatedCostUsd': info.get('estimatedCostUsd', 0),
-            })
-        else:  # hermes
-            result.update({
-                'status': 'done',  # hermes 可能没有 status 字段
-                'createdAt': info.get('created_at', ''),
-                'updatedAt': info.get('updated_at', ''),
-                'displayName': info.get('display_name', ''),
-                'platform': info.get('platform', ''),
-                'inputTokens': info.get('input_tokens', 0),
-                'outputTokens': info.get('output_tokens', 0),
-                'totalTokens': info.get('total_tokens', 0),
-                'estimatedCostUsd': info.get('estimated_cost_usd', 0),
-            })
-        
-        return result
-
-    def get_messages(self, pattern: str, limit: int = 50) -> Optional[List[Dict]]:
-        """获取 session 的消息"""
-        source, key, info = self._find_session(pattern)
-        if info is None:
-            return None
-
-        session_id_field = source['session_id_field']
-        session_id = info.get(session_id_field, '')
-        session_file = info.get('sessionFile', '')
-
-        # 查找实际文件
-        path = None
-        if session_file and Path(session_file).exists():
-            path = Path(session_file)
-        elif session_id:
-            alt_path = source['sessions_dir'] / f"{session_id}.jsonl"
-            if alt_path.exists():
-                path = alt_path
+    def final(self, record: Dict) -> Optional[Dict]:
+        stop_reason_field = self.stop_reason_field
+        session_id = record.get('sessionId', '')
+        status = record.get('status', 'done')
+        path = self._file_of(record)
 
         if path is None:
-            return []
-
-        messages = self._extract_messages(str(path), limit)
-        formatted = [self._format_message(m) for m in messages]
-        return formatted
-
-    def get_final_message(self, pattern: str) -> Optional[Dict]:
-        """获取 session 的最终结果（第一个 finish_reason/stopReason="stop" 的 assistant 消息）"""
-        source, key, info = self._find_session(pattern)
-        if info is None:
-            return None
-
-        session_id_field = source['session_id_field']
-        stop_reason_field = source['stop_reason_field']
-        session_id = info.get(session_id_field, '')
-        session_file = info.get('sessionFile', '')
-        status = info.get('status', 'done')  # hermes 默认 done
-
-        # 查找实际文件
-        path = None
-        if session_file and Path(session_file).exists():
-            path = Path(session_file)
-        elif session_id:
-            alt_path = source['sessions_dir'] / f"{session_id}.jsonl"
-            if alt_path.exists():
-                path = alt_path
-
-        if path is None:
-            sqlite_result = self._load_sqlite_final_message(session_id, status, source)
+            sqlite_result = self._sqlite_final_message(session_id, status)
             if sqlite_result is not None:
                 return sqlite_result
             return {
@@ -507,7 +470,7 @@ class OpenClawAPI:
                 'isFinal': False,
                 'isProcessing': status == 'running',
                 'messageCount': 0,
-                'source': source['mode'],
+                'source': self.mode,
                 'error': 'Session file not available yet (session may be still initializing)'
             }
 
@@ -516,7 +479,7 @@ class OpenClawAPI:
         first_stop_message = None
         tool_result_parents = set()
 
-        with open(path, 'r') as f:
+        with open(path, 'r', errors='replace') as f:
             for line in f:
                 try:
                     data = json.loads(line.strip())
@@ -527,11 +490,9 @@ class OpenClawAPI:
                     msg = data.get('message', {})
                     role = msg.get('role')
                     if role == 'assistant':
-                        # 保存时包含 msg 里的 finish_reason/stopReason
                         msg_stop_reason = msg.get(stop_reason_field) or data.get(stop_reason_field) or ''
                         data['_msg_stopReason'] = msg_stop_reason
                         all_messages.append(data)
-                        # 记录第一个 finish_reason/stopReason="stop" 的消息
                         if first_stop_message is None and msg_stop_reason == 'stop':
                             first_stop_message = data
                     elif role == 'toolResult':
@@ -540,11 +501,9 @@ class OpenClawAPI:
                             tool_result_parents.add(parent_id)
                 # Hermes 格式
                 elif data.get('role') == 'assistant':
-                    # 保存时包含 finish_reason/stopReason
                     msg_stop_reason = data.get(stop_reason_field, '')
                     data['_msg_stopReason'] = msg_stop_reason
                     all_messages.append(data)
-                    # 记录第一个 finish_reason/stopReason="stop" 的消息
                     if first_stop_message is None and msg_stop_reason == 'stop':
                         first_stop_message = data
 
@@ -554,7 +513,7 @@ class OpenClawAPI:
             is_processing = True
 
         if first_stop_message is None:
-            sqlite_result = self._load_sqlite_final_message(session_id, status, source)
+            sqlite_result = self._sqlite_final_message(session_id, status)
             if sqlite_result is not None:
                 return sqlite_result
             return {
@@ -562,25 +521,21 @@ class OpenClawAPI:
                 'isFinal': False,
                 'isProcessing': status == 'running',
                 'messageCount': len(all_messages),
+                'source': self.mode,
                 'text': '',
                 'thinking': '',
             }
 
-        # 返回第一个 finish_reason/stopReason="stop" 的消息
         last = first_stop_message
-        
-        # OpenClaw 格式
+
         if last.get('type') == 'message':
             msg_data = last.get('message', {})
             content = msg_data.get('content', [])
-            # 优先从 msg 里的 finish_reason/stopReason 获取，其次从顶层获取
             stop_reason = last.get('_msg_stopReason') or msg_data.get(stop_reason_field) or last.get(stop_reason_field, '')
-        # Hermes 格式
         else:
             content = last.get('content', '')
             stop_reason = last.get('_msg_stopReason', '')
 
-        # 如果 stopReason 是 "stop"，认为已结束
         is_stopped = stop_reason == 'stop'
         is_done = status == 'done' or is_stopped
 
@@ -589,7 +544,7 @@ class OpenClawAPI:
             'isFinal': bool(is_done and not is_processing),
             'isProcessing': bool(is_processing or (status == 'running' and not is_stopped)),
             'messageCount': len(all_messages),
-            'source': source['mode'],
+            'source': self.mode,
             'id': last.get('id', ''),
             'timestamp': last.get('timestamp', ''),
             'stopReason': stop_reason,
@@ -599,28 +554,638 @@ class OpenClawAPI:
             'usage': last.get('usage', {}),
         }
 
-        # OpenClaw: content 是数组
         if isinstance(content, list):
             for c in content:
-                if isinstance(c, dict):
-                    if c.get('type') == 'text':
-                        result['text'] = c.get('text', '')
-                    elif c.get('type') == 'thinking':
-                        result['thinking'] = c.get('thinking', '')
-                    elif c.get('type') == 'toolCall':
-                        result['toolCalls'].append({
-                            'name': c.get('name', ''),
-                            'arguments': c.get('arguments', {})
-                        })
-        # Hermes: content 是字符串
+                if not isinstance(c, dict):
+                    continue
+                if c.get('type') == 'text':
+                    result['text'] = c.get('text', '')
+                elif c.get('type') == 'thinking':
+                    result['thinking'] = c.get('thinking', '')
+                elif c.get('type') == 'toolCall':
+                    result['toolCalls'].append({
+                        'name': c.get('name', ''),
+                        'arguments': c.get('arguments', {})
+                    })
         elif isinstance(content, str):
             result['text'] = content
-            # 提取 reasoning
             result['thinking'] = last.get('reasoning', '')
 
         return result
 
 
+# ---------------------------------------------------------------------------
+# 适配器 3/6：Pi（~/.pi/agent/sessions/<项目>/<时间>_<uuid>.jsonl）
+# ---------------------------------------------------------------------------
+
+class PiSource(SessionSource):
+    mode = 'pi'
+
+    def __init__(self, root: Path = PI_SESSIONS_DIR):
+        self.root = root
+        self.location = str(root)
+
+    def exists(self) -> bool:
+        return self.root.exists()
+
+    def _files(self):
+        if not self.root.exists():
+            return []
+        return sorted(self.root.glob('*/*.jsonl'))
+
+    def list(self) -> List[Dict]:
+        out = []
+        for path in self._files():
+            head = _read_jsonl(path, limit=1)
+            meta = head[0] if head else {}
+            out.append({
+                'source': self.mode,
+                'key': str(path),
+                'shortKey': path.stem,
+                'sessionId': str(meta.get('id') or path.stem),
+                'file': str(path),
+                'hasFile': True,
+                'status': 'done',
+                'cwd': meta.get('cwd', ''),
+                'updatedAt': _mtime_iso(path),
+                '_sortKey': _mtime_iso(path),
+            })
+        return out
+
+    def messages(self, record: Dict, limit: int = 50) -> List[Dict]:
+        out = []
+        path = record.get('file')
+        if not path:
+            return out
+        for obj in _read_jsonl(path):
+            if len(out) >= limit:
+                break
+            if obj.get('type') != 'message':
+                continue
+            msg = obj.get('message') or {}
+            parts = []
+            for item in msg.get('content') or []:
+                if not isinstance(item, dict):
+                    continue
+                kind = item.get('type')
+                if kind == 'text' or 'text' in item:
+                    parts.append({'type': 'text', 'content': item.get('text', '')})
+                elif kind == 'thinking':
+                    parts.append({'type': 'thinking', 'content': _trim(item.get('thinking', ''), 1000)})
+                else:
+                    parts.append({'type': kind or 'unknown', 'content': _trim(_content_text(item), 500)})
+            out.append({
+                'id': obj.get('id', ''),
+                'role': msg.get('role', 'unknown'),
+                'timestamp': msg.get('timestamp', obj.get('timestamp', '')),
+                'content': parts,
+            })
+        return out
+
+    def final(self, record: Dict) -> Optional[Dict]:
+        path = record.get('file')
+        if not path:
+            return None
+        last_assistant = None
+        count = 0
+        for obj in _read_jsonl(path):
+            if obj.get('type') != 'message':
+                continue
+            count += 1
+            if (obj.get('message') or {}).get('role') == 'assistant':
+                last_assistant = obj
+        if last_assistant is None:
+            return {'status': 'done', 'isFinal': False, 'isProcessing': False,
+                    'messageCount': count, 'source': self.mode, 'text': '', 'thinking': ''}
+
+        msg = last_assistant.get('message') or {}
+        text_parts, think_parts = [], []
+        for item in msg.get('content') or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get('type') == 'thinking':
+                think_parts.append(item.get('thinking', ''))
+            else:
+                text_parts.append(_content_text(item))
+        stop_reason = msg.get('stopReason', '')
+        return {
+            'status': 'done',
+            'isFinal': stop_reason == 'stop',
+            'isProcessing': False,
+            'messageCount': count,
+            'source': self.mode,
+            'id': last_assistant.get('id', ''),
+            'timestamp': msg.get('timestamp', last_assistant.get('timestamp', '')),
+            'stopReason': stop_reason,
+            'model': msg.get('model', ''),
+            'text': "\n".join(p for p in text_parts if p),
+            'thinking': "\n".join(p for p in think_parts if p),
+            'toolCalls': [],
+            'usage': msg.get('usage', {}),
+        }
+
+
+# ---------------------------------------------------------------------------
+# 适配器 4/6：Claude Code（~/.claude/projects/<项目>/<session-uuid>.jsonl）
+# ---------------------------------------------------------------------------
+
+class ClaudeCodeSource(SessionSource):
+    mode = 'claude'
+
+    def __init__(self, root: Path = CLAUDE_PROJECTS_DIR):
+        self.root = root
+        self.location = str(root)
+
+    def exists(self) -> bool:
+        return self.root.exists()
+
+    def _files(self):
+        if not self.root.exists():
+            return []
+        return sorted(self.root.glob('*/*.jsonl'))
+
+    def list(self) -> List[Dict]:
+        out = []
+        for path in self._files():
+            head = _read_jsonl(path, limit=5)
+            sid, cwd = path.stem, ''
+            for obj in head:
+                if obj.get('sessionId'):
+                    sid = obj['sessionId']
+                if obj.get('cwd'):
+                    cwd = obj['cwd']
+            out.append({
+                'source': self.mode,
+                'key': str(path),
+                'shortKey': path.stem,
+                'sessionId': str(sid),
+                'file': str(path),
+                'hasFile': True,
+                'status': 'done',
+                'cwd': cwd,
+                'updatedAt': _mtime_iso(path),
+                '_sortKey': _mtime_iso(path),
+            })
+        return out
+
+    @staticmethod
+    def _parts(content) -> List[Dict]:
+        parts = []
+        if isinstance(content, str):
+            if content:
+                parts.append({'type': 'text', 'content': content})
+            return parts
+        if not isinstance(content, list):
+            return parts
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get('type')
+            if kind == 'text':
+                parts.append({'type': 'text', 'content': item.get('text', '')})
+            elif kind == 'thinking':
+                parts.append({'type': 'thinking', 'content': _trim(item.get('thinking', ''), 1000)})
+            elif kind == 'tool_use':
+                parts.append({'type': 'toolCall', 'name': item.get('name', ''),
+                              'arguments': item.get('input', {})})
+            elif kind == 'tool_result':
+                parts.append({'type': 'toolResult', 'toolName': '',
+                              'content': _trim(_content_text(item.get('content')), 500)})
+        return parts
+
+    def messages(self, record: Dict, limit: int = 50) -> List[Dict]:
+        out = []
+        path = record.get('file')
+        if not path:
+            return out
+        for obj in _read_jsonl(path):
+            if len(out) >= limit:
+                break
+            if obj.get('type') not in ('user', 'assistant'):
+                continue
+            if obj.get('isSidechain'):  # 子代理的消息不计入主线
+                continue
+            msg = obj.get('message') or {}
+            out.append({
+                'id': obj.get('uuid', ''),
+                'role': msg.get('role', obj.get('type')),
+                'timestamp': obj.get('timestamp', ''),
+                'content': self._parts(msg.get('content')),
+            })
+        return out
+
+    def final(self, record: Dict) -> Optional[Dict]:
+        path = record.get('file')
+        if not path:
+            return None
+        last_assistant = None
+        count = 0
+        for obj in _read_jsonl(path):
+            if obj.get('type') not in ('user', 'assistant') or obj.get('isSidechain'):
+                continue
+            count += 1
+            if obj.get('type') == 'assistant':
+                last_assistant = obj
+        if last_assistant is None:
+            return {'status': 'done', 'isFinal': False, 'isProcessing': False,
+                    'messageCount': count, 'source': self.mode, 'text': '', 'thinking': ''}
+
+        msg = last_assistant.get('message') or {}
+        parts = self._parts(msg.get('content'))
+        text = "\n".join(p['content'] for p in parts if p['type'] == 'text' and p.get('content'))
+        thinking = "\n".join(p['content'] for p in parts if p['type'] == 'thinking' and p.get('content'))
+        tool_calls = [{'name': p.get('name', ''), 'arguments': p.get('arguments', {})}
+                      for p in parts if p['type'] == 'toolCall']
+        stop_reason = msg.get('stop_reason') or ''
+        return {
+            'status': 'done',
+            'isFinal': stop_reason in ('end_turn', 'stop', 'stop_sequence'),
+            'isProcessing': False,
+            'messageCount': count,
+            'source': self.mode,
+            'id': msg.get('id', ''),
+            'timestamp': last_assistant.get('timestamp', ''),
+            'stopReason': stop_reason,
+            'model': msg.get('model', ''),
+            'text': text,
+            'thinking': thinking,
+            'toolCalls': tool_calls,
+            'usage': msg.get('usage', {}),
+        }
+
+
+# ---------------------------------------------------------------------------
+# 适配器 5/6：Codex（~/.codex/sessions/年/月/日/rollout-*.jsonl）
+# ---------------------------------------------------------------------------
+
+class CodexSource(SessionSource):
+    mode = 'codex'
+
+    def __init__(self, root: Path = CODEX_SESSIONS_DIR):
+        self.root = root
+        self.location = str(root)
+
+    def exists(self) -> bool:
+        return self.root.exists()
+
+    def _files(self):
+        if not self.root.exists():
+            return []
+        return sorted(self.root.glob('*/*/*/rollout-*.jsonl'))
+
+    def list(self) -> List[Dict]:
+        out = []
+        for path in self._files():
+            head = _read_jsonl(path, limit=1)
+            payload = (head[0].get('payload') if head else {}) or {}
+            out.append({
+                'source': self.mode,
+                'key': str(path),
+                'shortKey': path.stem,
+                'sessionId': str(payload.get('session_id') or payload.get('id') or path.stem),
+                'file': str(path),
+                'hasFile': True,
+                'status': 'done',
+                'cwd': payload.get('cwd', ''),
+                'cliVersion': payload.get('cli_version', ''),
+                'updatedAt': _mtime_iso(path),
+                '_sortKey': _mtime_iso(path),
+            })
+        return out
+
+    def messages(self, record: Dict, limit: int = 50) -> List[Dict]:
+        out = []
+        path = record.get('file')
+        if not path:
+            return out
+        for obj in _read_jsonl(path):
+            if len(out) >= limit:
+                break
+            if obj.get('type') != 'response_item':
+                continue
+            payload = obj.get('payload') or {}
+            if payload.get('type') != 'message':
+                continue
+            role = payload.get('role', 'unknown')
+            if role == 'developer':  # 系统拼装的指令，不算对话
+                continue
+            parts = []
+            for item in payload.get('content') or []:
+                if isinstance(item, dict) and isinstance(item.get('text'), str):
+                    parts.append({'type': 'text', 'content': item['text']})
+            out.append({
+                'id': payload.get('id', ''),
+                'role': role,
+                'timestamp': obj.get('timestamp', ''),
+                'content': parts,
+            })
+        return out
+
+    def final(self, record: Dict) -> Optional[Dict]:
+        path = record.get('file')
+        if not path:
+            return None
+        last_assistant = None
+        count = 0
+        usage = {}
+        for obj in _read_jsonl(path):
+            if obj.get('type') == 'token_usage_record':
+                usage = (obj.get('payload') or {}).get('usage', usage) or usage
+                continue
+            if obj.get('type') != 'response_item':
+                continue
+            payload = obj.get('payload') or {}
+            if payload.get('type') != 'message' or payload.get('role') == 'developer':
+                continue
+            count += 1
+            if payload.get('role') == 'assistant':
+                last_assistant = obj
+        if last_assistant is None:
+            return {'status': 'done', 'isFinal': False, 'isProcessing': False,
+                    'messageCount': count, 'source': self.mode, 'text': '', 'thinking': ''}
+
+        payload = last_assistant.get('payload') or {}
+        text = "\n".join(item.get('text', '') for item in payload.get('content') or []
+                         if isinstance(item, dict) and isinstance(item.get('text'), str))
+        return {
+            'status': 'done',
+            'isFinal': True,
+            'isProcessing': False,
+            'messageCount': count,
+            'source': self.mode,
+            'id': payload.get('id', ''),
+            'timestamp': last_assistant.get('timestamp', ''),
+            'stopReason': payload.get('stop_reason', ''),
+            'text': text,
+            'thinking': '',
+            'toolCalls': [],
+            'usage': usage,
+        }
+
+
+# ---------------------------------------------------------------------------
+# 适配器 6/6：Gemini CLI（~/.gemini/tmp/<项目>/chats/session-*.jsonl）
+# ---------------------------------------------------------------------------
+
+class GeminiSource(SessionSource):
+    mode = 'gemini'
+
+    def __init__(self, root: Path = GEMINI_TMP_DIR):
+        self.root = root
+        self.location = str(root)
+
+    def exists(self) -> bool:
+        return self.root.exists()
+
+    def _files(self):
+        if not self.root.exists():
+            return []
+        return sorted(self.root.glob('*/chats/session-*.jsonl'))
+
+    @staticmethod
+    def _entries(path):
+        """Gemini 的 jsonl 是「首行元数据 + $set 补丁 + 消息行」的追加日志"""
+        meta, messages = {}, []
+        for obj in _read_jsonl(path):
+            if '$set' in obj and isinstance(obj['$set'], dict):
+                patch = obj['$set']
+                if isinstance(patch.get('messages'), list):
+                    for m in patch['messages']:
+                        if isinstance(m, dict) and 'type' in m:
+                            messages.append(m)
+                if patch.get('lastUpdated'):
+                    meta['lastUpdated'] = patch['lastUpdated']
+                continue
+            if 'type' in obj:
+                if obj.get('sessionId'):
+                    meta.update(obj)
+                else:
+                    messages.append(obj)
+        return meta, messages
+
+    def list(self) -> List[Dict]:
+        out = []
+        for path in self._files():
+            meta, messages = self._entries(path)
+            last_ts = meta.get('lastUpdated') or meta.get('startTime') or ''
+            for m in messages:
+                ts = m.get('timestamp')
+                if ts:
+                    last_ts = ts
+            out.append({
+                'source': self.mode,
+                'key': str(path),
+                'shortKey': path.stem,
+                'sessionId': str(meta.get('sessionId') or path.stem),
+                'file': str(path),
+                'hasFile': True,
+                'status': 'done',
+                'project': path.parent.parent.name,
+                'updatedAt': last_ts,
+                '_sortKey': str(last_ts),
+            })
+        return out
+
+    def messages(self, record: Dict, limit: int = 50) -> List[Dict]:
+        path = record.get('file')
+        if not path:
+            return []
+        _, entries = self._entries(path)
+        out = []
+        for m in entries:
+            if len(out) >= limit:
+                break
+            if m.get('type') not in ('user', 'gemini'):
+                continue
+            content = m.get('content')
+            parts = []
+            if isinstance(content, str):
+                if content:
+                    parts.append({'type': 'text', 'content': content})
+            else:
+                for item in content or []:
+                    if isinstance(item, dict) and isinstance(item.get('text'), str):
+                        parts.append({'type': 'text', 'content': item['text']})
+            thoughts = m.get('thoughts')
+            if isinstance(thoughts, str) and thoughts:
+                parts.insert(0, {'type': 'thinking', 'content': _trim(thoughts, 1000)})
+            out.append({
+                'id': m.get('id', ''),
+                'role': 'assistant' if m.get('type') == 'gemini' else 'user',
+                'timestamp': m.get('timestamp', ''),
+                'content': parts,
+            })
+        return out
+
+    def final(self, record: Dict) -> Optional[Dict]:
+        path = record.get('file')
+        if not path:
+            return None
+        _, entries = self._entries(path)
+        last_gemini, count = None, 0
+        for m in entries:
+            if m.get('type') not in ('user', 'gemini'):
+                continue
+            count += 1
+            if m.get('type') == 'gemini':
+                last_gemini = m
+        if last_gemini is None:
+            return {'status': 'done', 'isFinal': False, 'isProcessing': False,
+                    'messageCount': count, 'source': self.mode, 'text': '', 'thinking': ''}
+
+        content = last_gemini.get('content')
+        text = content if isinstance(content, str) else _content_text(content)
+        return {
+            'status': 'done',
+            'isFinal': True,
+            'isProcessing': False,
+            'messageCount': count,
+            'source': self.mode,
+            'id': last_gemini.get('id', ''),
+            'timestamp': last_gemini.get('timestamp', ''),
+            'stopReason': 'stop',
+            'model': last_gemini.get('model', ''),
+            'text': text,
+            'thinking': _content_text(last_gemini.get('thoughts')) if last_gemini.get('thoughts') else '',
+            'toolCalls': [],
+            'usage': last_gemini.get('tokens', {}),
+        }
+
+
+# ---------------------------------------------------------------------------
+# 数据源装配
+# ---------------------------------------------------------------------------
+
+def build_sources(mode: str = 'auto') -> List[SessionSource]:
+    """按运行模式装配数据源。
+
+    - 指定单个模式：只启用它
+    - all：六个都启用（缺的会警告）
+    - auto：存在的数据源都启用（两个 json-map 源看 sessions.json，其它看目录）
+    """
+    factories = {
+        'hermes': lambda: JsonMapSource(dict(_JSON_MAP_DEFS['hermes'])),
+        'openclaw': lambda: JsonMapSource(dict(_JSON_MAP_DEFS['openclaw'])),
+        'pi': PiSource,
+        'claude': ClaudeCodeSource,
+        'codex': CodexSource,
+        'gemini': GeminiSource,
+    }
+
+    if mode in factories and mode != 'auto':
+        return [factories[mode]()]
+
+    enabled = []
+    for name in KNOWN_MODES:
+        source = factories[name]()
+        if source.exists():
+            enabled.append(source)
+        elif mode == 'all':
+            print(f"警告: 数据源不存在，已跳过: {name} ({source.location})")
+
+    if enabled:
+        return enabled
+
+    print("警告: 未检测到任何数据源，默认使用 OpenClaw")
+    return [JsonMapSource(dict(_JSON_MAP_DEFS['openclaw']))]
+
+
+# 兼容旧名字
+source_definitions = build_sources
+
+
+def init_paths(mode='auto'):
+    """兼容旧用法：返回第一个启用的数据源"""
+    return build_sources(mode)[0]
+
+
+# ---------------------------------------------------------------------------
+# 统一查询入口
+# ---------------------------------------------------------------------------
+
+class OpenClawAPI:
+    """把请求分发到各个数据源适配器（不缓存任何数据，每次重新读）"""
+
+    def list_sessions(self) -> List[Dict]:
+        out = []
+        for source in ADAPTERS:
+            try:
+                out.extend(source.list())
+            except Exception as e:
+                print(f"[WARN] {source.mode} 列出会话失败: {e}", file=sys.stderr)
+        out.sort(key=lambda item: item.get('_sortKey', ''), reverse=True)
+        for item in out:
+            item.pop('_sortKey', None)
+        return out
+
+    def _find(self):
+        raise NotImplementedError  # placeholder (never used)
+
+    def find_session(self, pattern: str) -> Tuple[Optional[SessionSource], Optional[Dict]]:
+        """在所有启用的数据源里找最佳匹配（精确优先，跨源不互相遮蔽）"""
+        pattern = (pattern or '').strip()
+        if pattern.startswith("Run: "):
+            pattern = pattern[5:]
+        if pattern.startswith("Session: "):
+            pattern = pattern[9:]
+        if not pattern:
+            return None, None
+
+        pattern_lower = pattern.lower()
+        best_source, best_record, best_score = None, None, None
+        for index, source in enumerate(ADAPTERS):
+            try:
+                record = source.find(pattern)
+            except Exception as e:
+                print(f"[WARN] {source.mode} 查找会话失败: {e}", file=sys.stderr)
+                continue
+            if record is None:
+                continue
+            rank = _match_rank(pattern_lower, record)
+            score = (rank, index)
+            if best_score is None or score < best_score:
+                best_source, best_record, best_score = source, record, score
+        return best_source, best_record
+
+    def get_session(self, pattern: str) -> Optional[Dict]:
+        source, record = self.find_session(pattern)
+        if record is None:
+            return None
+        detail = {k: v for k, v in record.items() if not k.startswith('_')}
+        detail.pop('file', None)
+        detail.setdefault('sessionFile', record.get('file'))
+        return detail
+
+    def get_messages(self, pattern: str, limit: int = 50) -> Optional[List[Dict]]:
+        source, record = self.find_session(pattern)
+        if record is None:
+            return None
+        return source.messages(record, limit)
+
+    def get_final_message(self, pattern: str) -> Optional[Dict]:
+        source, record = self.find_session(pattern)
+        if record is None:
+            return None
+        try:
+            result = source.final(record)
+        except Exception as e:
+            print(f"[WARN] {source.mode} 解析最终结果失败: {e}", file=sys.stderr)
+            result = None
+        if result is None:
+            result = {
+                'status': record.get('status', 'unknown'),
+                'isFinal': False,
+                'isProcessing': record.get('status') == 'running',
+                'messageCount': 0,
+                'source': record.get('source'),
+                'error': 'Session file not available yet (session may be still initializing)',
+            }
+        return result
+
+
+SOURCES = build_sources(MODE)
+ADAPTERS = SOURCES
+PATHS = SOURCES[0]
 class RequestHandler(BaseHTTPRequestHandler):
     api = OpenClawAPI()
 
@@ -721,7 +1286,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json({
                 'status': 'ok',
                 'mode': MODE,
-                'sources': [s['mode'] for s in SOURCES],
+                'sources': [s.mode for s in SOURCES],
                 'stats': stats,
             })
             return
@@ -731,7 +1296,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json({
                 'name': 'OpenClaw/Hermes Session API',
                 'mode': MODE,
-                'sources': [s['mode'] for s in SOURCES],
+                'sources': [s.mode for s in SOURCES],
                 'endpoints': [
                     'GET /sessions - 列出所有 session',
                     'GET /sessions/<pattern> - 查询单个 session',
@@ -909,8 +1474,8 @@ def main():
     parser = argparse.ArgumentParser(description='OpenClaw/Hermes Session HTTP API (自动检测模式)')
     parser.add_argument('--host', default='0.0.0.0', help='绑定主机 (默认: 0.0.0.0)')
     parser.add_argument('--port', type=int, default=8080, help='端口 (默认: 8080)')
-    parser.add_argument('--mode', choices=['auto', 'all', 'openclaw', 'hermes'], default='auto',
-                        help='模式 (默认: auto 自动检测；all 同时使用两个数据源)')
+    parser.add_argument('--mode', choices=['auto', 'all'] + KNOWN_MODES, default='auto',
+                        help='模式 (默认: auto 自动检测；all 全部启用；也可指定 ' + '/'.join(KNOWN_MODES) + ')')
     parser.add_argument('--hook_token', default=None, help='Bearer hook_token for authentication')
     parser.add_argument('--max-connections', type=int, default=50, help='最大并发连接数 (默认: 50)')
     parser.add_argument('--timeout', type=int, default=30, help='连接超时秒数 (默认: 30)')
@@ -923,7 +1488,7 @@ def main():
     PATHS = SOURCES[0]
     print(f"运行模式: {MODE}")
     for source in SOURCES:
-        print(f"数据源 [{source['mode']}]: {source['sessions_json']}")
+        print(f"数据源 [{source.mode}]: {source.location}")
 
     # 设置认证 hook_token
     if args.hook_token:
@@ -948,7 +1513,7 @@ def main():
     print(f"  GET /health                          - 健康检查 (含服务统计)")
     print(f"\n示例:")
     print(f"  curl -H 'Authorization: Bearer xxx' http://localhost:{args.port}/sessions")
-    enabled_modes = {s['mode'] for s in SOURCES}
+    enabled_modes = {s.mode for s in SOURCES}
     if 'hermes' in enabled_modes:
         print(f"  curl -H 'Authorization: Bearer xxx' http://localhost:{args.port}/sessions/20260419_143935_73e269b4/final")
     if 'openclaw' in enabled_modes:

@@ -1151,10 +1151,8 @@ class SessionQueryAPI:
         source, record = self.find_session(pattern)
         if record is None:
             return None
-        detail = {k: v for k, v in record.items() if not k.startswith('_')}
-        detail.pop('file', None)
-        detail.setdefault('sessionFile', record.get('file'))
-        return detail
+        # 与 /sessions 列表保持同一套字段（含 file）
+        return {k: v for k, v in record.items() if not k.startswith('_')}
 
     def get_messages(self, pattern: str, limit: int = 50) -> Optional[List[Dict]]:
         source, record = self.find_session(pattern)

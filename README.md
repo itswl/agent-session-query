@@ -1,464 +1,301 @@
 # 本地 Agent 会话查询 HTTP API
 
-一个用于查询本机各种 Agent 会话的轻量级 HTTP API 服务。只读，不改动任何会话数据。
+一个只读的 HTTP API，用来查询本机上各种 Agent / CLI 的会话记录：列表、消息、最终结果。不改动任何会话数据，只用 Python 标准库（无需 pip 安装）。
 
-支持六种数据源，**都在跑就一起查**：
+**一个接口，六种数据源**——存在哪几种就查哪几种，可以同时合并查询：
 
-| 数据源 | 位置 |
-|--------|------|
-| **Hermes** | `~/.hermes/sessions/` |
-| **OpenClaw** | `~/.openclaw/agents/default/sessions/` |
-| **Pi** | `~/.pi/agent/sessions/` |
-| **Claude Code** | `~/.claude/projects/` |
-| **Codex** | `~/.codex/sessions/` |
-| **Gemini CLI** | `~/.gemini/tmp/` |
-
-**✨ 自动检测模式**: 无需手动指定，存在的数据源都启用，两个服务同时开着就同时查询。
-
-## 功能特性
-
-- 🔍 **自动检测**: 自动识别上述六种数据源，无需手动配置
-- 🔀 **多数据源合并**: 结果按更新时间倒序合并，每条带 `source` 字段标明来源（`--mode all` 强制全部启用）
-- 📋 按 Session ID、会话 key 或路径片段查询单个会话（精确匹配优先于模糊匹配，跨数据源不互相遮蔽）
-- 💬 获取会话的详细消息内容
-- ✅ 获取会话的最终结果（OpenClaw/Hermes 取第一个 `stopReason=stop` 的助手消息；其余取最后一条助手消息）
-- 🔒 支持 Bearer hook_token 认证
-- 🐳 提供 Docker 和 Docker Compose 部署方式
-- 🏥 内置健康检查端点（含启用的数据源清单与连接统计）
-
-## API 端点
-
-| 端点 | 方法 | 描述 |
-|------|------|------|
-| `/` | GET | API 信息和使用说明 |
-| `/health` | GET | 健康检查（含连接统计） |
-| `/stats` | GET | 服务器统计（连接数等） |
-| `/sessions` 或 `/api/sessions` | GET | 列出所有会话 |
-| `/sessions/<pattern>` 或 `/api/sessions/<pattern>` | GET | 查询单个会话信息 |
-| `/sessions/<pattern>/messages?limit=50` 或 `/api/sessions/<pattern>/messages?limit=50` | GET | 获取会话消息 |
-| `/sessions/<pattern>/final` 或 `/api/sessions/<pattern>/final` | GET | 获取会话最终结果 |
+| 数据源 | 会话位置 | 会话 ID |
+|--------|----------|---------|
+| Hermes | `~/.hermes/sessions/` | `sessions.json` 里的 `session_id` |
+| OpenClaw | `~/.openclaw/agents/default/sessions/` | `sessions.json` 里的 `sessionId` |
+| Pi | `~/.pi/agent/sessions/<项目>/*.jsonl` | 会话文件首行 `id` |
+| Claude Code | `~/.claude/projects/<项目>/*.jsonl` | 文件名（uuid）/ `sessionId` 字段 |
+| Codex | `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` | 首行 `payload.session_id` |
+| Gemini CLI | `~/.gemini/tmp/<项目>/chats/session-*.jsonl` | 首行 `sessionId` |
 
 ## 快速开始
 
 ### 本地运行
 
 ```bash
-# 自动检测模式（推荐）- 存在的数据源都用，同时查询
-python3 session_query_api.py [--port 8080]
+# 自动检测：存在的数据源都启用
+python3 session_query_api.py --port 8080
 
-# 强制指定模式（可选）
-python3 session_query_api.py --mode all      # 六个数据源都启用（缺的会警告）
-python3 session_query_api.py --mode claude   # 只看 Claude Code
-python3 session_query_api.py --mode pi       # 只看 Pi
-python3 session_query_api.py --mode codex    # 只看 Codex
-python3 session_query_api.py --mode gemini   # 只看 Gemini CLI
-python3 session_query_api.py --mode hermes   # 只看 Hermes
-python3 session_query_api.py --mode openclaw # 只看 OpenClaw
+# 只看某一种
+python3 session_query_api.py --mode claude
 
-# 带认证运行
-python3 session_query_api.py --port 8080 --hook_token mysecrethooktoken
+# 强制全部启用（缺哪个会打印警告）
+python3 session_query_api.py --mode all
+
+# 带认证
+python3 session_query_api.py --port 8080 --hook_token mysecrettoken
 ```
 
-### Docker 运行
+启动后会打印本次启用的数据源：
+
+```
+运行模式: auto
+数据源 [pi]: /home/me/.pi/agent/sessions
+数据源 [claude]: /home/me/.claude/projects
+数据源 [codex]: /home/me/.codex/sessions
+已启用认证（Bearer hook_token 已设置，不回显）
+```
+
+### Docker
 
 ```bash
-# 构建镜像（默认官方 python:3.10-slim；国内加 --build-arg PYTHON_IMAGE=... 换源）
-docker build -t agent-session-query .
+docker build -t agent-session-query .          # 国内加 --build-arg PYTHON_IMAGE=<镜像源>
 
-# 运行容器：把要查的会话目录挂进去，挂几个就查几个
-docker run -d \
-  --name agent-session-query \
-  -p 8080:8080 \
+docker run -d --name agent-session-query -p 8080:8080 \
   -v ~/.claude/projects:/root/.claude/projects:ro \
   -v ~/.codex/sessions:/root/.codex/sessions:ro \
   -v ~/.pi/agent/sessions:/root/.pi/agent/sessions:ro \
   -v ~/.gemini/tmp:/root/.gemini/tmp:ro \
   -v ~/.hermes/sessions:/root/.hermes/sessions:ro \
   -v ~/.openclaw/agents/default/sessions:/root/.openclaw/agents/default/sessions:ro \
-  agent-session-query --hook_token your_hook_token_here
+  agent-session-query --hook_token mysecrettoken
 ```
 
-镜像的 ENTRYPOINT 就是脚本本身，`docker run` 后面的参数会直接透传（`--mode`、`--hook_token`、`--port` 等）；只想查某一种时加 `--mode claude` 这样即可。
+镜像的 ENTRYPOINT 就是脚本本身，`docker run` 之后的参数直接透传（`--mode`、`--hook_token`、`--port`…）。挂几个目录就查几个源。
 
-### Docker Compose 运行
+### Docker Compose
 
 ```bash
-# 六个数据源目录都已挂上，没数据的会自动跳过
-docker-compose up -d
-
-# 设置认证令牌 / 指定模式
-HOOK_TOKEN=your_hook_token_here SESSION_MODE=auto docker-compose up -d
+docker-compose up -d                                              # 六个源目录都已挂载
+HOOK_TOKEN=mysecrettoken SESSION_MODE=auto docker-compose up -d   # 带认证
 ```
 
-## 使用示例
+## API
 
-### 1. 列出所有会话
+所有端点都是 `GET`。`/sessions` 系列额外支持 `/api/sessions` 前缀写法（`/api/sessions` 与 `/sessions` 等价）；`/`、`/health`、`/stats` 没有别名。
+
+| 端点 | 认证 | 说明 |
+|------|------|------|
+| `/` | 免 | 服务信息（名称、模式、启用的数据源、端点清单） |
+| `/health` | 免 | 健康检查（模式、启用的数据源、连接统计） |
+| `/stats` | 免 | 连接统计 |
+| `/sessions` | 需要 | 列出所有会话（多源合并，按更新时间倒序） |
+| `/sessions/<pattern>` | 需要 | 单个会话的信息 |
+| `/sessions/<pattern>/messages?limit=50` | 需要 | 会话消息（默认 50 条，取最早的前 N 条） |
+| `/sessions/<pattern>/final` | 需要 | 会话的最终结果 |
+
+**认证**：配置了 `--hook_token` 后，上表标「需要」的端点要带 `Authorization: Bearer <token>`；未配置 token 时全部免认证（启动时会打印警告）。令牌比较用的是常量时间比较。
+
+**过载保护**：并发连接超过 `--max-connections`（默认 50）时，新连接直接返回 503；每个连接有 `--timeout`（默认 30 秒）超时。
+
+### `<pattern>` 的匹配规则
+
+按下面的顺序找，先命中先返回；**所有数据源一起参与每一轮**，所以某个源里的模糊命中不会盖掉另一个源里的精确命中：
+
+1. 精确等于 `sessionId`
+2. 精确等于 `key`（完整路径或完整 key）
+3. `key` 以 `:<pattern>` 或 `/<pattern>` 结尾
+4. `pattern` 是 `key` 的子串
+5. `pattern` 是 `sessionId` 的子串
+
+另外 `Session: ` 和 `Run: ` 前缀会被自动去掉。几个实际例子：
 
 ```bash
-# OpenClaw 模式
-curl http://localhost:8080/sessions
-
-# Hermes 模式
-curl http://localhost:8080/sessions
+/sessions/e4b2b405-88ea-4782-a84c-92574380ed16          # Claude Code：完整 uuid
+/sessions/ee64d13e                                       # 也可以只给片段
+/sessions/2026-09-13T12-50-41                            # Pi / Gemini：文件名片段
+/sessions/rollout-2026-09-13T23-07-05                    # Codex：rollout 文件名片段
+/sessions/hook:alert:prometheus:b5123b01-616a-4da0-...   # OpenClaw：完整 key 或后半段
+/sessions/agent%3Amain%3Awebhook%3Aagent%3A1776...       # 含冒号时记得 URL 编码
 ```
 
-### 2. 查询特定会话
+## 响应结构
 
-```bash
-# OpenClaw: 通过 Run ID 查询
-curl http://localhost:8080/sessions/5ab8e024-2740-422c-8503-89c01313f792
-
-# OpenClaw: 通过 Session pattern 查询
-curl http://localhost:8080/sessions/hook:alert:prometheus:b5123b01-616a-4da0-ac48-d9c81e3be63c
-
-# Hermes: 通过 delivery_id 查询
-curl http://localhost:8080/sessions/1776580775689
-
-# Hermes: 通过 session_id 查询
-curl http://localhost:8080/sessions/20260419_143935_73e269b4
-
-# Hermes: 通过完整 key 查询
-curl http://localhost:8080/sessions/agent:main:webhook:webhook:webhook:agent:1776580775689:webhook:agent
-```
-
-### 3. 获取会话消息
-
-```bash
-# OpenClaw: 获取前 50 条消息
-curl http://localhost:8080/sessions/hook:alert:prometheus:b5123b01/messages
-
-# OpenClaw: 自定义消息数量
-curl http://localhost:8080/sessions/hook:alert:prometheus:b5123b01/messages?limit=20
-
-# Hermes: 获取消息
-curl http://localhost:8080/sessions/20260419_143935_73e269b4/messages
-```
-
-### 4. 获取会话最终结果
-
-```bash
-# OpenClaw: 获取最终结果
-curl http://localhost:8080/sessions/hook:alert:prometheus:b5123b01/final
-
-# Hermes: 获取最终结果
-curl http://localhost:8080/sessions/20260419_143935_73e269b4/final
-```
-
-**注意**: OpenClaw/Hermes 返回的是第一个 `stopReason/finish_reason="stop"` 的助手消息（不是最后一条）；Pi / Claude Code / Codex / Gemini 返回最后一条助手消息。
-
-### 5. 带认证的请求
-
-```bash
-curl -H 'Authorization: Bearer your_hook_token_here' http://localhost:8080/sessions
-```
-
-### 6. 健康检查
-
-```bash
-curl http://localhost:8080/health
-```
-
-### 7. 其它数据源（Pi / Claude Code / Codex / Gemini）
-
-```bash
-# 列出全部（六源合并，每条带 source 字段）
-curl -H 'Authorization: Bearer xxx' http://localhost:8080/sessions
-
-# Claude Code：直接用 session uuid（文件名）
-curl -H 'Authorization: Bearer xxx' http://localhost:8080/sessions/e4b2b405-88ea-4782-a84c-92574380ed16/final
-
-# Codex：用 rollout 文件名的一部分
-curl -H 'Authorization: Bearer xxx' http://localhost:8080/sessions/rollout-2026-09-13T23-07-05
-
-# Pi / Gemini：用文件名的片段
-curl -H 'Authorization: Bearer xxx' http://localhost:8080/sessions/2026-09-13T12-50-41
-
-# 只看某一类：把结果按 source 过滤（服务端也可以直接用 --mode 只启用一个源）
-curl -s -H 'Authorization: Bearer xxx' http://localhost:8080/sessions | jq '.sessions[] | select(.source=="claude")'
-```
-
-## 响应格式
-
-### 会话列表示例（OpenClaw）
+### `GET /sessions`
 
 ```json
 {
   "sessions": [
     {
-      "key": "agent:default:hook:alert:prometheus:b5123b01-616a-4da0-ac48-d9c81e3be63c",
-      "shortKey": "hook:alert:prometheus:b5123b01-616a-4da0-ac48-d9c81e3be63c",
-      "sessionId": "b5123b01-616a-4da0-ac48-d9c81e3be63c",
-      "source": "openclaw",
-      "status": "done",
-      "updatedAt": "2024-01-15 10:30:45",
+      "source": "claude",
+      "key": "/root/.claude/projects/-home-me--proj/e4b2b405-88ea-4782-a84c-92574380ed16.jsonl",
+      "shortKey": "e4b2b405-88ea-4782-a84c-92574380ed16",
+      "sessionId": "e4b2b405-88ea-4782-a84c-92574380ed16",
+      "file": "/root/.claude/projects/-home-me--proj/e4b2b405-88ea-4782-a84c-92574380ed16.jsonl",
       "hasFile": true,
-      "model": "gpt-4",
-      "runtimeMs": 1234,
-      "totalTokens": 5678
+      "status": "done",
+      "cwd": "/home/me/proj",
+      "updatedAt": "2026-09-14T07:41:48"
     }
   ],
   "total": 1
 }
 ```
 
-### 会话列表示例（Hermes）
+各源共有的字段：`source`、`key`、`shortKey`、`sessionId`、`file`、`hasFile`、`status`、`updatedAt`。
+
+按源额外的字段：
+
+| 数据源 | 额外字段 |
+|--------|----------|
+| OpenClaw | `model`、`runtimeMs`、`totalTokens` |
+| Hermes | `createdAt`、`displayName`、`platform`、`totalTokens`、`estimatedCostUsd` |
+| Pi / Claude Code | `cwd` |
+| Codex | `cwd`、`cliVersion` |
+| Gemini CLI | `project` |
+
+字段来源：OpenClaw/Hermes 取自 `sessions.json` 里的记录（OpenClaw 的 `updatedAt` 由毫秒时间戳格式化）；其余四种用会话文件自身的元数据/修改时间。列表按 `updatedAt` 倒序，`source` 表示这条记录来自哪个数据源。
+
+### `GET /sessions/<pattern>`
+
+字段与列表中的同一条记录完全一致（包含 `file`）：
 
 ```json
 {
-  "sessions": [
-    {
-      "key": "agent:main:webhook:webhook:webhook:agent:1776580775689:webhook:agent",
-      "shortKey": "agent:main:webhook:webhook:webhook:agent:1776580775689:webhook:agent",
-      "sessionId": "20260419_143935_73e269b4",
-      "source": "hermes",
-      "status": "done",
-      "updatedAt": "2026-04-19T14:40:16.669448",
-      "hasFile": true,
-      "createdAt": "2026-04-19T14:39:35.690352",
-      "displayName": "webhook/agent",
-      "platform": "webhook",
-      "totalTokens": 0,
-      "estimatedCostUsd": 0.0
-    }
-  ],
-  "total": 1
+  "source": "claude",
+  "key": "/root/.claude/projects/-home-me--proj/e4b2b405-88ea-4782-a84c-92574380ed16.jsonl",
+  "shortKey": "e4b2b405-88ea-4782-a84c-92574380ed16",
+  "sessionId": "e4b2b405-88ea-4782-a84c-92574380ed16",
+  "file": "/root/.claude/projects/-home-me--proj/e4b2b405-88ea-4782-a84c-92574380ed16.jsonl",
+  "hasFile": true,
+  "status": "done",
+  "cwd": "/home/me/proj",
+  "updatedAt": "2026-09-14T07:41:48"
 }
 ```
 
-### 消息列表示例
+找不到返回 `404` + `{"error": "Session not found"}`。
+
+### `GET /sessions/<pattern>/messages?limit=50`
 
 ```json
 {
   "messages": [
     {
-      "id": "msg_123",
-      "role": "assistant",
-      "timestamp": "2024-01-15T10:30:45Z",
+      "id": "252e50d5-f6fe-4682-acaa-4f61e0df4285",
+      "role": "user",
+      "timestamp": "2026-09-14T07:14:06.596Z",
       "content": [
-        {
-          "type": "text",
-          "content": "Hello! How can I help you today?"
-        }
+        { "type": "text", "content": "写一句 10 个字以内的问候语" }
+      ]
+    },
+    {
+      "id": "abc123",
+      "role": "assistant",
+      "timestamp": "2026-09-14T07:14:08.100Z",
+      "content": [
+        { "type": "thinking", "content": "……（超过 1000 字会截断并加 ...[truncated]）" },
+        { "type": "text", "content": "您好，很高兴协助您！" }
       ]
     }
   ],
-  "total": 1
+  "total": 2
 }
 ```
 
-### 最终结果示例（OpenClaw）
+- `content` 是块数组，块类型：`text` / `thinking` / `toolCall` / `toolResult`，各自的键分别为 `content`、`content`、`name`+`arguments`、`toolName`+`content`
+- `limit` 取的是**最早的前 N 条**（默认 50），不是最近 N 条
+- 会话文件还不存在时返回空数组（不是 404）
+
+### `GET /sessions/<pattern>/final`
 
 ```json
 {
   "status": "done",
   "isFinal": true,
   "isProcessing": false,
-  "messageCount": 5,
-  "id": "msg_123",
-  "timestamp": "2024-01-15T10:30:45Z",
-  "stopReason": "stop",
-  "text": "Task completed successfully.",
+  "messageCount": 4,
+  "source": "codex",
+  "id": "msg_05c9...",
+  "timestamp": "2026-09-13T15:08:57.823Z",
+  "stopReason": "",
+  "model": "gpt-5.6-luna",
+  "text": "已轮询并回复该消息：……",
   "thinking": "",
   "toolCalls": [],
-  "usage": {
-    "inputTokens": 100,
-    "outputTokens": 50,
-    "totalTokens": 150
-  }
+  "usage": { "input_tokens": 18034, "output_tokens": 104 }
 }
 ```
 
-### 最终结果示例（Hermes）
+取值规则：
 
-```json
-{
-  "status": "done",
-  "isFinal": true,
-  "isProcessing": false,
-  "messageCount": 2,
-  "id": "",
-  "timestamp": "2026-04-19T14:40:16.636994",
-  "stopReason": "stop",
-  "text": "# 🔴 HighCPU 告警分析\n\n## 告警概要...",
-  "thinking": "The user is asking me to analyze a CPU alert...",
-  "toolCalls": [],
-  "usage": {}
-}
-```
+- **OpenClaw / Hermes**：取第一个 `stopReason`/`finish_reason` 为 `stop` 的助手消息；此时 `isFinal=true`。若该消息之后还有指向它的 `toolResult` 且会话仍在 `running`，则 `isProcessing=true`、`isFinal=false`
+- **Pi / Claude Code / Codex / Gemini**：取最后一条助手消息；`isFinal` 按各自的状态判定（Pi 看 `stopReason=stop`，Claude Code 看 `stop_reason` 属于 `end_turn`/`stop`/`stop_sequence`，Codex 与 Gemini 视为已完成）
+- Hermes 的 webhook 会话如果只把最终消息写进了 `~/.hermes/state.db`，服务会自动回退去查 SQLite
+- 会话文件还不存在时，返回 `isFinal=false` + `error` 字段说明原因（HTTP 仍是 200）
 
-## 配置选项
+### 错误响应
+
+| 场景 | 状态码 | 响应体 |
+|------|--------|--------|
+| 未带 / 错误的 token | 401 | `{"error": "Unauthorized"}` |
+| 找不到会话 | 404 | `{"error": "Session not found"}` |
+| 未知路径 | 404 | `{"error": "Not found"}` |
+| 服务内部异常 | 500 | `{"error": "Internal server error"}` |
+| 并发超限 | 503 | HTTP 状态行 `Service temporarily overloaded` |
+
+## 配置
 
 ### 命令行参数
 
-| 参数 | 默认值 | 描述 |
-|------|--------|------|
-| `--host` | `0.0.0.0` | 绑定主机地址 |
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `--host` | `0.0.0.0` | 监听地址 |
 | `--port` | `8080` | 监听端口 |
-| `--mode` | `auto` | 运行模式：`auto`（自动检测，存在的数据源都用）/`all`（六个都启用）/`hermes`/`openclaw`/`pi`/`claude`/`codex`/`gemini` |
-| `--hook_token` | `None` | Bearer 认证令牌 |
+| `--mode` | `auto` | `auto`（存在即启用）/ `all`（六个都启用）/ `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` |
+| `--hook_token` | 无 | Bearer 令牌；不设置则免认证 |
 | `--max-connections` | `50` | 最大并发连接数，超出返回 503 |
-| `--timeout` | `30` | 单连接超时秒数 |
+| `--timeout` | `30` | 单连接超时（秒） |
 
-### 环境变量 / 构建参数（Docker）
+### Docker 环境变量 / 构建参数
 
 | 变量 | 用途 |
 |------|------|
-| `HOOK_TOKEN` | compose 传给 `--hook_token` 的 Bearer 令牌（留空则不启用认证） |
+| `HOOK_TOKEN` | compose 传给 `--hook_token`（留空则不认证） |
 | `SESSION_MODE` | compose 传给 `--mode`，默认 `auto` |
-| `PYTHON_IMAGE` | 构建参数：基础镜像，默认 `python:3.10-slim`，国内可用镜像源覆盖 |
+| `PYTHON_IMAGE` | 构建参数，基础镜像，默认 `python:3.10-slim`（国内可换镜像源） |
 
-## 数据源
+## 各数据源的解析细节
 
-### 自动检测逻辑
+- **Hermes**：`sessions.json` 是 `key → 记录` 的映射，会话内容在同目录的 `<session_id>.jsonl`；消息取 `role` 为 `user`/`assistant` 的行，`content` 是字符串，推理在 `reasoning`
+- **OpenClaw**：同上结构，字段名是 `sessionId`/`stopReason`；消息取 `type=message` 的行，`message.content` 是块数组（`text`/`thinking`/`toolCall`/`toolResult`），`stopReason` 可能在 `message` 里也可能在行顶层
+- **Pi**：行类型有 `session`（首行元数据）、`model_change`、`message`；消息取 `message` 行（`message.role` + `message.content` 块数组）
+- **Claude Code**：消息行是 `type=user`/`assistant`，内容在 `message.content`（`text`/`thinking`/`tool_use`/`tool_result` 块）；跳过 `isSidechain`（子代理）以及 `queue-operation`、`attachment`、`mode` 等非对话行
+- **Codex**：消息行是 `type=response_item` 且 `payload.type=message`；`payload.role` 为 `developer` 的行（系统拼装的指令）不计入；用量取自 `token_usage_record`
+- **Gemini CLI**：文件是追加日志——首行元数据（`sessionId`/`startTime`）、`{"$set": {...}}` 补丁行、以及消息行；消息取 `type=user`/`type=gemini` 的行，`content` 可能是数组（user）或字符串（gemini），`thoughts` 作为 thinking
 
-服务启动时会检测六种数据源，**存在的数据源都启用**（可以同时查询多个）：
+## 安全
 
-| 数据源 | 会话文件 | 会话 ID 来源 |
-|--------|----------|--------------|
-| Hermes | `~/.hermes/sessions/sessions.json` + `<id>.jsonl` | `session_id` |
-| OpenClaw | `~/.openclaw/agents/default/sessions/sessions.json` + jsonl | `sessionId` |
-| Pi | `~/.pi/agent/sessions/<项目>/*.jsonl` | 首行 `id` |
-| Claude Code | `~/.claude/projects/<项目>/<uuid>.jsonl` | 文件名 / `sessionId` |
-| Codex | `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` | 首行 `payload.session_id` |
-| Gemini CLI | `~/.gemini/tmp/<项目>/chats/session-*.jsonl` | 首行 `sessionId` |
-
-一个都检测不到时默认使用 OpenClaw 路径（`--mode all` 会明确警告缺了哪个）。
-
-### 多数据源的查询语义
-
-- `/sessions` 返回所有启用数据源合并后的列表，按更新时间倒序，每条带 `source` 字段
-- `/sessions/<pattern>` 先在所有数据源里按「精确 ID → 精确 key → key 后缀 → 子串 → 模糊 ID」的顺序匹配——一个数据源里的模糊命中不会盖掉另一个数据源里的精确命中
-- `/health` 的 `sources` 字段列出本次实际启用的数据源
-- 排序用的更新时间：OpenClaw/Hermes 用记录里的时间字段，其余四种用会话文件的修改时间
-
-### 各数据源的解析说明
-
-- **Pi**：行类型为 `session` / `model_change` / `message`；消息取 `message` 行，最终结果取最后一条 assistant 消息（`stopReason=stop` 视为已完成）
-- **Claude Code**：取 `type=user/assistant` 的行，跳过 `isSidechain`（子代理）与 `queue-operation`/`attachment` 等噪声行；最终结果取最后一条 assistant 消息
-- **Codex**：取 `response_item` 中 `payload.type=message` 的行（跳过 `developer` 角色）；最终结果取最后一条 assistant 消息
-- **Gemini CLI**：文件是「首行元数据 + `$set` 补丁 + 消息行」的追加日志；消息取 `type=user/gemini` 的行，最终结果取最后一条 gemini 消息
-
-## 安全注意事项
-
-- 建议在生产环境中始终启用 Bearer hook_token 认证
-- 避免在公共网络暴露无认证的 API 服务
-- 使用 HTTPS 反向代理（如 Nginx）加密传输
-- 定期更新和轮换认证令牌
+- API 能读到完整的会话内容（含工具输出），**对外暴露时务必设置 `--hook_token`**
+- 建议放在 HTTPS 反向代理（Nginx/Caddy）之后，不要直接暴露到公网
+- 令牌定期轮换；不要把它写进镜像或仓库
+- 容器里挂载会话目录用 `:ro`（compose 默认已是只读）
 
 ## 故障排除
 
-### 常见问题
-
-1. **某个数据源查不到（/health 的 sources 里没有它）**
-   - 该数据源在本机不存在：对照上表检查会话文件/目录是否存在
-   - 跑在容器里时，还要确认对应目录挂载进去了（compose 默认挂了六个，手动 docker run 时按需加 `-v`）
-   - 注意：镜像不预建会话目录；空的挂载目录不会被当成"有数据源"
-
-2. **会话列表是空的**
-   - `/health` 看启用了哪些源；再用 `--mode all` 强制启用全部（会打印缺哪个）
-   - 确认服务进程有读取这些目录的权限
-
-3. **认证失败 (401 Unauthorized)**
-   - 确认请求中包含了正确的 Bearer hook_token
-   - 检查启动时设置的 hook_token 是否与请求中的一致
-
-4. **端口冲突**
-   - 修改 `--port` 参数使用其他端口
-   - 检查是否有其他服务占用了 8080 端口
-
-### 日志查看
-
-```bash
-# Docker 容器日志
-docker logs agent-session-query
-
-# Docker Compose 日志
-docker-compose logs -f
-```
+1. **某个数据源没被启用**（`/health` 的 `sources` 里没有它）
+   - 先对照上表确认本机会话目录存在；`--mode all` 会明确打印缺了哪个
+   - 容器里跑时确认对应目录挂进去了（compose 默认六个都挂；手动 `docker run` 要自己加 `-v`）
+   - 镜像不预建会话目录，空的挂载目录不会被视为"有数据源"
+2. **列表为空**
+   - `/health` 看启用了哪些源；确认服务进程对该目录有读权限
+3. **401 Unauthorized**
+   - 请求头是否带了 `Authorization: Bearer <token>`，与启动时的 `--hook_token` 是否一致
+4. **端口占用**
+   - 换 `--port`，或检查 8080 是否被别的服务占用
 
 ## 开发
 
-### 项目结构
-
 ```
 .
-├── session_query_api.py    # 主应用程序（仅标准库）
-├── Dockerfile               # Docker 镜像构建文件
-├── docker-compose.yml       # Docker Compose 配置
-├── LICENSE                  # MIT
-└── README.md               # 项目文档
+├── session_query_api.py    # 主程序（仅标准库；数据源适配器都在这个文件里）
+├── Dockerfile              # 镜像构建
+├── docker-compose.yml      # 六个源目录的挂载示例
+├── LICENSE                 # MIT
+└── README.md
 ```
 
-### 支持的数据格式
+新增一种数据源的做法：继承 `SessionSource`，实现 `list()` / `messages(record, limit)` / `final(record)`（以及可选的 `exists()`），再在 `build_sources()` 的 `factories` 里注册即可——多源合并、匹配排序、`source` 标记都是框架层统一处理的。
 
-#### OpenClaw 格式
+## 许可
 
-- **sessions.json 字段**: `sessionId`, `sessionFile`, `status`, `updatedAt`, `model`, `runtimeMs`, `totalTokens`
-- **jsonl 格式**: `{"type": "message", "message": {"role": "assistant", "content": [...], "stopReason": "stop"}}`
-- **content 类型**: 数组 `[{type: "text", ...}, {type: "thinking", ...}]`
-
-#### Hermes 格式
-
-- **sessions.json 字段**: `session_id`, `created_at`, `updated_at`, `display_name`, `platform`, `total_tokens`, `estimated_cost_usd`
-- **jsonl 格式**: `{"role": "assistant", "content": "text", "reasoning": "thinking", "finish_reason": "stop"}`
-- **content 类型**: 字符串
-
-#### Pi 格式
-
-- **会话文件**: `~/.pi/agent/sessions/<项目>/<时间>_<uuid>.jsonl`
-- **首行**: `{"type": "session", "id": "...", "timestamp": "...", "cwd": "..."}`
-- **消息行**: `{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "..."}], "stopReason": "stop"}}`
-
-#### Claude Code 格式
-
-- **会话文件**: `~/.claude/projects/<项目 slug>/<session-uuid>.jsonl`
-- **消息行**: `{"type": "user|assistant", "message": {"role": "...", "content": [{"type": "text|thinking|tool_use|tool_result", ...}]}}`
-- 跳过 `isSidechain`（子代理）与 `queue-operation` / `attachment` 等非对话行
-
-#### Codex 格式
-
-- **会话文件**: `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl`
-- **首行**: `{"type": "session_meta", "payload": {"session_id": "...", "cwd": "..."}}`
-- **消息行**: `{"type": "response_item", "payload": {"type": "message", "role": "user|assistant", "content": [{"type": "input_text|output_text", "text": "..."}]}}`
-
-#### Gemini CLI 格式
-
-- **会话文件**: `~/.gemini/tmp/<项目>/chats/session-*.jsonl`
-- **形式**: 追加日志——首行元数据（`sessionId` / `startTime`）、`{"$set": {...}}` 补丁、以及消息行
-- **消息行**: `{"type": "user|gemini", "timestamp": "...", "content": [...] 或 "字符串", "thoughts": "...", "tokens": {...}}`
-
-### 本地开发
-
-```bash
-# 克隆项目
-git clone <repository-url>
-cd agent-session-query
-
-# 无需安装依赖：只用 Python 标准库（3.8+），没有 requirements.txt
-
-# 自动检测模式运行（推荐）
-python3 session_query_api.py --port 8080
-
-# 或强制指定单个数据源
-python3 session_query_api.py --port 8080 --mode claude   # 也支持 pi / codex / gemini / hermes / openclaw / all
-```
-
-## 许可证
-
-本项目采用 MIT 许可证。详见 [LICENSE](LICENSE) 文件。
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request 来改进本项目。
-
-## 支持
-
-如有问题或建议，请通过以下方式联系：
-
-- 提交 GitHub Issue
-- 查看现有文档和示例
-- 参考代码注释
+MIT，见 [LICENSE](LICENSE)。
 
 ---
 
-**注意**: 本服务是一个只读 API，不会对 OpenClaw 的会话数据进行任何修改。
+**注意**：本服务是只读的，不会改动任何 OpenClaw / Hermes / Pi / Claude Code / Codex / Gemini 的会话数据。

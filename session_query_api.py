@@ -3,7 +3,7 @@
 本地 Agent 会话查询 HTTP API（OpenClaw / Hermes / Pi / Claude Code / Codex / Gemini CLI）
 
 启动方式:
-    python3 openclaw_session_query_api.py [--port 8080] [--mode auto|all|hermes|openclaw|pi|claude|codex|gemini]
+    python3 session_query_api.py [--port 8080] [--mode auto|all|hermes|openclaw|pi|claude|codex|gemini]
 
 数据源（auto 模式下，存在的数据源都启用；可同时查询多个）:
     - Hermes      ~/.hermes/sessions/sessions.json
@@ -1103,7 +1103,7 @@ def init_paths(mode='auto'):
 # 统一查询入口
 # ---------------------------------------------------------------------------
 
-class OpenClawAPI:
+class SessionQueryAPI:
     """把请求分发到各个数据源适配器（不缓存任何数据，每次重新读）"""
 
     def list_sessions(self) -> List[Dict]:
@@ -1187,7 +1187,7 @@ SOURCES = build_sources(MODE)
 ADAPTERS = SOURCES
 PATHS = SOURCES[0]
 class RequestHandler(BaseHTTPRequestHandler):
-    api = OpenClawAPI()
+    api = SessionQueryAPI()
 
     # 从配置文件读取 token
     _auth_token = None
@@ -1294,7 +1294,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         # 根路径 - 不要求认证
         if path == '/' or path == '':
             self._send_json({
-                'name': 'OpenClaw/Hermes Session API',
+                'name': 'Agent Session API',
                 'mode': MODE,
                 'sources': [s.mode for s in SOURCES],
                 'endpoints': [

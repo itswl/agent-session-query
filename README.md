@@ -44,34 +44,34 @@
 
 ```bash
 # 自动检测模式（推荐）- 存在的数据源都用，同时查询
-python3 openclaw_session_query_api.py [--port 8080]
+python3 session_query_api.py [--port 8080]
 
 # 强制指定模式（可选）
-python3 openclaw_session_query_api.py --mode all      # 六个数据源都启用（缺的会警告）
-python3 openclaw_session_query_api.py --mode claude   # 只看 Claude Code
-python3 openclaw_session_query_api.py --mode pi       # 只看 Pi
-python3 openclaw_session_query_api.py --mode codex    # 只看 Codex
-python3 openclaw_session_query_api.py --mode gemini   # 只看 Gemini CLI
-python3 openclaw_session_query_api.py --mode hermes   # 只看 Hermes
-python3 openclaw_session_query_api.py --mode openclaw # 只看 OpenClaw
+python3 session_query_api.py --mode all      # 六个数据源都启用（缺的会警告）
+python3 session_query_api.py --mode claude   # 只看 Claude Code
+python3 session_query_api.py --mode pi       # 只看 Pi
+python3 session_query_api.py --mode codex    # 只看 Codex
+python3 session_query_api.py --mode gemini   # 只看 Gemini CLI
+python3 session_query_api.py --mode hermes   # 只看 Hermes
+python3 session_query_api.py --mode openclaw # 只看 OpenClaw
 
 # 带认证运行
-python3 openclaw_session_query_api.py --port 8080 --hook_token mysecrethooktoken
+python3 session_query_api.py --port 8080 --hook_token mysecrethooktoken
 ```
 
 ### Docker 运行
 
 ```bash
 # 构建镜像
-docker build -t openclaw-session-query-api .
+docker build -t agent-session-query .
 
 # 运行容器
 docker run -d \
-  --name openclaw-session-query-api \
+  --name agent-session-query \
   -p 8080:8080 \
   -v ~/.openclaw/agents/default/sessions:/root/.openclaw/agents/default/sessions \
   -e HOOK_TOKEN=your_hook_token_here \
-  openclaw-session-query-api
+  agent-session-query
 ```
 
 ### Docker Compose 运行
@@ -81,7 +81,7 @@ docker run -d \
 docker-compose up -d
 
 # 或者设置环境变量后运行
-OPENCLAW_HOOK_TOKEN=your_hook_token_here docker-compose up -d
+HOOK_TOKEN=your_hook_token_here docker-compose up -d
 ```
 
 ## 使用示例
@@ -339,7 +339,7 @@ curl http://localhost:8080/health
 
 ```bash
 # Docker 容器日志
-docker logs openclaw-session-query-api
+docker logs agent-session-query
 
 # Docker Compose 日志
 docker-compose logs -f
@@ -351,7 +351,7 @@ docker-compose logs -f
 
 ```
 .
-├── openclaw_session_query_api.py    # 主应用程序（仅标准库）
+├── session_query_api.py    # 主应用程序（仅标准库）
 ├── Dockerfile               # Docker 镜像构建文件
 ├── docker-compose.yml       # Docker Compose 配置
 ├── LICENSE                  # MIT
@@ -377,16 +377,16 @@ docker-compose logs -f
 ```bash
 # 克隆项目
 git clone <repository-url>
-cd openclaw-session-query-api
+cd agent-session-query
 
 # 无需安装依赖：只用 Python 标准库（3.8+），没有 requirements.txt
 
 # 自动检测模式运行（推荐）
-python3 openclaw_session_query_api.py --port 8080
+python3 session_query_api.py --port 8080
 
 # 或强制指定模式
-python3 openclaw_session_query_api.py --port 8080 --mode hermes
-python3 openclaw_session_query_api.py --port 8080 --mode openclaw
+python3 session_query_api.py --port 8080 --mode hermes
+python3 session_query_api.py --port 8080 --mode openclaw
 ```
 
 ## 许可证

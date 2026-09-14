@@ -1,9 +1,9 @@
 services:
-  openclaw-session-query-api:
+  agent-session-query:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: openclaw-session-query-api
+    container_name: agent-session-query
     ports:
       - "8080:8080"
     volumes:

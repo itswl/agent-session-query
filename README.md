@@ -241,6 +241,7 @@ HOOK_TOKEN=mysecrettoken SESSION_MODE=auto docker-compose up -d   # 带认证
 | `--hook_token` | 无 | Bearer 令牌；不设置则免认证 |
 | `--max-connections` | `50` | 最大并发连接数，超出返回 503 |
 | `--timeout` | `30` | 单连接超时（秒） |
+| `--cache-ttl` | `2` | 会话列表缓存秒数；`0` = 不缓存（每次都重新扫描） |
 
 ### Docker 环境变量 / 构建参数
 
@@ -258,6 +259,30 @@ HOOK_TOKEN=mysecrettoken SESSION_MODE=auto docker-compose up -d   # 带认证
 - **Claude Code**：消息行是 `type=user`/`assistant`，内容在 `message.content`（`text`/`thinking`/`tool_use`/`tool_result` 块）；跳过 `isSidechain`（子代理）以及 `queue-operation`、`attachment`、`mode` 等非对话行
 - **Codex**：消息行是 `type=response_item` 且 `payload.type=message`；`payload.role` 为 `developer` 的行（系统拼装的指令）不计入；用量取自 `token_usage_record`
 - **Gemini CLI**：文件是追加日志——首行元数据（`sessionId`/`startTime`）、`{"$set": {...}}` 补丁行、以及消息行；消息取 `type=user`/`type=gemini` 的行，`content` 可能是数组（user）或字符串（gemini），`thoughts` 作为 thinking
+
+## 性能
+
+在 800 个会话（四个数据源各 200 个，其中 1/4 是 3000 行的大会话，共约 208 MB）的合成数据上实测（服务和客户端都在同一台 arm64 机器上）：
+
+| 端点 | 优化前 | 优化后 |
+|------|--------|--------|
+| `GET /sessions`（列 800 条） | 1236 ms | 18 ms |
+| `GET /sessions/<pattern>`（精确查一条） | 1207 ms | 5 ms |
+| `GET /sessions/<pattern>/messages?limit=10`（大会话） | 1248 ms | 3 ms |
+| `GET /sessions/<pattern>/final`（大会话） | 1266 ms | 30 ms |
+| `GET /health` | 3 ms | 3 ms |
+
+优化点：
+
+1. **列表不再扫全文**——Gemini 的 `updatedAt` 原先要读完整个会话文件才能算出来，现在只读首行元数据（缺了才退回文件时间）。单这一项就让列表快了约 12 倍
+2. **消息与最终结果改成流式读取**——`messages` 取够 `limit` 条就停（原先先把整个文件解析进内存），`final` 只保留最后一条助手消息
+3. **会话列表短 TTL 缓存**（`--cache-ttl`，默认 2 秒）——查找会话与列表都走它，一次请求不必把 800 个会话文件重新 stat/读一遍。**消息与最终结果始终直接读文件**，缓存只影响「有哪些会话」这层元数据；`--cache-ttl 0` 可完全关掉缓存
+
+边界与代价：
+
+- 新建的会话最长 2 秒后才会出现在列表/查询里（可调小或设为 0，实测超过 TTL 立即可见）
+- `final` 仍需顺序读完整个会话文件（要取最后一条助手消息），大会话约 30 ms——这是单文件顺序读的固有成本
+- HTTP 层已改为 HTTP/1.1：客户端可以复用连接（响应都带 `Content-Length`）
 
 ## 安全
 

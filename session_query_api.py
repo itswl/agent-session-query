@@ -41,6 +41,7 @@ import sys
 import socket
 import sqlite3
 import threading
+import time
 import traceback
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -85,6 +86,24 @@ KNOWN_MODES = ['hermes', 'openclaw', 'pi', 'claude', 'codex', 'gemini']
 # ---------------------------------------------------------------------------
 # 通用工具
 # ---------------------------------------------------------------------------
+
+def _iter_jsonl(path):
+    """逐行产出 jsonl 里的对象（生成器，不把整个文件读进内存）"""
+    try:
+        with open(path, 'r', errors='replace') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict):
+                    yield obj
+    except OSError:
+        return
+
 
 def _read_jsonl(path, limit: Optional[int] = None) -> List[Dict]:
     """逐行读 jsonl，坏行跳过；limit 不为空时最多读这么多条有效记录"""
@@ -617,7 +636,7 @@ class PiSource(SessionSource):
         path = record.get('file')
         if not path:
             return out
-        for obj in _read_jsonl(path):
+        for obj in _iter_jsonl(path):
             if len(out) >= limit:
                 break
             if obj.get('type') != 'message':
@@ -648,7 +667,7 @@ class PiSource(SessionSource):
             return None
         last_assistant = None
         count = 0
-        for obj in _read_jsonl(path):
+        for obj in _iter_jsonl(path):
             if obj.get('type') != 'message':
                 continue
             count += 1
@@ -758,7 +777,7 @@ class ClaudeCodeSource(SessionSource):
         path = record.get('file')
         if not path:
             return out
-        for obj in _read_jsonl(path):
+        for obj in _iter_jsonl(path):
             if len(out) >= limit:
                 break
             if obj.get('type') not in ('user', 'assistant'):
@@ -780,7 +799,7 @@ class ClaudeCodeSource(SessionSource):
             return None
         last_assistant = None
         count = 0
-        for obj in _read_jsonl(path):
+        for obj in _iter_jsonl(path):
             if obj.get('type') not in ('user', 'assistant') or obj.get('isSidechain'):
                 continue
             count += 1
@@ -858,7 +877,7 @@ class CodexSource(SessionSource):
         path = record.get('file')
         if not path:
             return out
-        for obj in _read_jsonl(path):
+        for obj in _iter_jsonl(path):
             if len(out) >= limit:
                 break
             if obj.get('type') != 'response_item':
@@ -888,7 +907,7 @@ class CodexSource(SessionSource):
         last_assistant = None
         count = 0
         usage = {}
-        for obj in _read_jsonl(path):
+        for obj in _iter_jsonl(path):
             if obj.get('type') == 'token_usage_record':
                 usage = (obj.get('payload') or {}).get('usage', usage) or usage
                 continue
@@ -943,35 +962,31 @@ class GeminiSource(SessionSource):
         return sorted(self.root.glob('*/chats/session-*.jsonl'))
 
     @staticmethod
-    def _entries(path):
-        """Gemini 的 jsonl 是「首行元数据 + $set 补丁 + 消息行」的追加日志"""
-        meta, messages = {}, []
-        for obj in _read_jsonl(path):
+    def _meta_of(path):
+        """只读首行拿元数据（列表用，不扫全文件）"""
+        for obj in _iter_jsonl(path):
+            if obj.get('sessionId'):
+                return obj
+        return {}
+
+    @staticmethod
+    def _iter_entries(path):
+        """逐行产出消息（生成器）；Gemini 的 jsonl 是「首行元数据 + $set 补丁 + 消息行」的追加日志"""
+        for obj in _iter_jsonl(path):
             if '$set' in obj and isinstance(obj['$set'], dict):
-                patch = obj['$set']
-                if isinstance(patch.get('messages'), list):
-                    for m in patch['messages']:
-                        if isinstance(m, dict) and 'type' in m:
-                            messages.append(m)
-                if patch.get('lastUpdated'):
-                    meta['lastUpdated'] = patch['lastUpdated']
+                for m in obj['$set'].get('messages') or []:
+                    if isinstance(m, dict) and 'type' in m:
+                        yield m
                 continue
-            if 'type' in obj:
-                if obj.get('sessionId'):
-                    meta.update(obj)
-                else:
-                    messages.append(obj)
-        return meta, messages
+            if 'type' in obj and not obj.get('sessionId'):
+                yield obj
 
     def list(self) -> List[Dict]:
         out = []
         for path in self._files():
-            meta, messages = self._entries(path)
-            last_ts = meta.get('lastUpdated') or meta.get('startTime') or ''
-            for m in messages:
-                ts = m.get('timestamp')
-                if ts:
-                    last_ts = ts
+            meta = self._meta_of(path)
+            # 用元数据里的时间；没有就退回文件修改时间（都不需要扫全文件）
+            last_ts = meta.get('lastUpdated') or meta.get('startTime') or _mtime_iso(path)
             out.append({
                 'source': self.mode,
                 'key': str(path),
@@ -990,9 +1005,8 @@ class GeminiSource(SessionSource):
         path = record.get('file')
         if not path:
             return []
-        _, entries = self._entries(path)
         out = []
-        for m in entries:
+        for m in self._iter_entries(path):
             if len(out) >= limit:
                 break
             if m.get('type') not in ('user', 'gemini'):
@@ -1021,9 +1035,8 @@ class GeminiSource(SessionSource):
         path = record.get('file')
         if not path:
             return None
-        _, entries = self._entries(path)
         last_gemini, count = None, 0
-        for m in entries:
+        for m in self._iter_entries(path):
             if m.get('type') not in ('user', 'gemini'):
                 continue
             count += 1
@@ -1104,22 +1117,42 @@ def init_paths(mode='auto'):
 # ---------------------------------------------------------------------------
 
 class SessionQueryAPI:
-    """把请求分发到各个数据源适配器（不缓存任何数据，每次重新读）"""
+    """把请求分发到各个数据源适配器。
+
+    会话列表按数据源做短 TTL 缓存（默认 2 秒，`--cache-ttl` 可调，0 = 不缓存）：
+    查找会话、列表都用它，所以一次请求不必把所有会话文件重新扫一遍。
+    消息与最终结果始终直接读文件，缓存只影响「有哪些会话」这层元数据。
+    """
+
+    def __init__(self, cache_ttl: float = 2.0):
+        self._cache_ttl = max(0.0, float(cache_ttl))
+        self._cache: Dict[str, Tuple[float, List[Dict]]] = {}
+        self._cache_lock = threading.Lock()
+
+    def _records_of(self, source: SessionSource) -> List[Dict]:
+        """某个数据源的会话列表（带 TTL 缓存）"""
+        if self._cache_ttl <= 0:
+            return source.list()
+        now = time.monotonic()
+        with self._cache_lock:
+            hit = self._cache.get(source.mode)
+            if hit and now - hit[0] < self._cache_ttl:
+                return hit[1]
+        records = source.list()
+        with self._cache_lock:
+            self._cache[source.mode] = (now, records)
+        return records
 
     def list_sessions(self) -> List[Dict]:
         out = []
         for source in ADAPTERS:
             try:
-                out.extend(source.list())
+                out.extend(self._records_of(source))
             except Exception as e:
                 print(f"[WARN] {source.mode} 列出会话失败: {e}", file=sys.stderr)
         out.sort(key=lambda item: item.get('_sortKey', ''), reverse=True)
-        for item in out:
-            item.pop('_sortKey', None)
-        return out
-
-    def _find(self):
-        raise NotImplementedError  # placeholder (never used)
+        # 缓存里带着内部排序键，对外去掉（不改动缓存对象本身）
+        return [{k: v for k, v in item.items() if not k.startswith('_')} for item in out]
 
     def find_session(self, pattern: str) -> Tuple[Optional[SessionSource], Optional[Dict]]:
         """在所有启用的数据源里找最佳匹配（精确优先，跨源不互相遮蔽）"""
@@ -1135,16 +1168,17 @@ class SessionQueryAPI:
         best_source, best_record, best_score = None, None, None
         for index, source in enumerate(ADAPTERS):
             try:
-                record = source.find(pattern)
+                records = self._records_of(source)
             except Exception as e:
-                print(f"[WARN] {source.mode} 查找会话失败: {e}", file=sys.stderr)
+                print(f"[WARN] {source.mode} 列出会话失败: {e}", file=sys.stderr)
                 continue
-            if record is None:
-                continue
-            rank = _match_rank(pattern_lower, record)
-            score = (rank, index)
-            if best_score is None or score < best_score:
-                best_source, best_record, best_score = source, record, score
+            for record in records:
+                rank = _match_rank(pattern_lower, record)
+                if rank == -1:
+                    continue
+                score = (rank, index)
+                if best_score is None or score < best_score:
+                    best_source, best_record, best_score = source, record, score
         return best_source, best_record
 
     def get_session(self, pattern: str) -> Optional[Dict]:
@@ -1185,6 +1219,8 @@ SOURCES = build_sources(MODE)
 ADAPTERS = SOURCES
 PATHS = SOURCES[0]
 class RequestHandler(BaseHTTPRequestHandler):
+    # HTTP/1.1：客户端可以复用连接（响应都带 Content-Length）
+    protocol_version = 'HTTP/1.1'
     api = SessionQueryAPI()
 
     # 从配置文件读取 token
@@ -1372,6 +1408,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Content-Length', '0')
         self.end_headers()
 
     def log_message(self, format, *args):
@@ -1476,6 +1513,8 @@ def main():
                         help='模式 (默认: auto 自动检测；all 全部启用；也可指定 ' + '/'.join(KNOWN_MODES) + ')')
     parser.add_argument('--hook_token', default=None, help='Bearer hook_token for authentication')
     parser.add_argument('--max-connections', type=int, default=50, help='最大并发连接数 (默认: 50)')
+    parser.add_argument('--cache-ttl', type=float, default=2.0,
+                        help='会话列表缓存秒数 (默认: 2；0 = 每次重新扫描，完全不做缓存)')
     parser.add_argument('--timeout', type=int, default=30, help='连接超时秒数 (默认: 30)')
     args = parser.parse_args()
 
@@ -1495,10 +1534,11 @@ def main():
     else:
         print("警告: 未设置认证hook_token，API 公开访问")
 
-    # 初始化连接限制
+    # 初始化连接限制与会话列表缓存
     RequestHandler._socket_timeout = args.timeout
     RequestHandler.init_semaphore(args.max_connections)
-    print(f"最大并发连接数: {args.max_connections}, 连接超时: {args.timeout}s")
+    RequestHandler.api = SessionQueryAPI(args.cache_ttl)
+    print(f"最大并发连接数: {args.max_connections}, 连接超时: {args.timeout}s, 列表缓存: {args.cache_ttl}s")
 
     server = RobustThreadingHTTPServer((args.host, args.port), RequestHandler)
     print(f"\nSession API 启动成功")

@@ -4,9 +4,12 @@
 
 **✨ 自动检测模式**: 无需手动指定，自动识别数据源并适配格式！
 
+**🔀 两个数据源可以同时用**: OpenClaw 和 Hermes 都在跑时，同一个接口同时查两边，每条结果带 `source` 字段标明来源。
+
 ## 功能特性
 
-- 🔍 **自动检测**: 自动识别 OpenClaw 或 Hermes 数据源，无需手动配置
+- 🔍 **自动检测**: 自动识别 OpenClaw / Hermes 数据源，无需手动配置
+- 🔀 **多数据源合并**: 两个服务同时开着时一并查询，结果按更新时间倒序、每条带 `source` 标记（`--mode all` 可强制两个都开）
 - 📋 根据 Run ID、Session ID 或 Session pattern 查询单个会话
 - 💬 获取会话的详细消息内容
 - ✅ 获取会话的最终结果（第一个 `finish_reason/stopReason="stop"` 的助手消息）
@@ -31,11 +34,12 @@
 ### 本地运行
 
 ```bash
-# 自动检测模式（推荐）- 自动识别数据源
+# 自动检测模式（推荐）- 存在的数据源都用（两个都开着就都查）
 python3 openclaw_session_query_api.py [--port 8080]
 
 # 强制指定模式（可选）
-python3 openclaw_session_query_api.py --mode hermes  # 强制 Hermes
+python3 openclaw_session_query_api.py --mode all       # 两个数据源都用（缺的会警告）
+python3 openclaw_session_query_api.py --mode hermes    # 强制 Hermes
 python3 openclaw_session_query_api.py --mode openclaw  # 强制 OpenClaw
 
 # 带认证运行
@@ -146,6 +150,7 @@ curl http://localhost:8080/health
       "key": "agent:default:hook:alert:prometheus:b5123b01-616a-4da0-ac48-d9c81e3be63c",
       "shortKey": "hook:alert:prometheus:b5123b01-616a-4da0-ac48-d9c81e3be63c",
       "sessionId": "b5123b01-616a-4da0-ac48-d9c81e3be63c",
+      "source": "openclaw",
       "status": "done",
       "updatedAt": "2024-01-15 10:30:45",
       "hasFile": true,
@@ -167,6 +172,7 @@ curl http://localhost:8080/health
       "key": "agent:main:webhook:webhook:webhook:agent:1776580775689:webhook:agent",
       "shortKey": "agent:main:webhook:webhook:webhook:agent:1776580775689:webhook:agent",
       "sessionId": "20260419_143935_73e269b4",
+      "source": "hermes",
       "status": "done",
       "updatedAt": "2026-04-19T14:40:16.669448",
       "hasFile": true,
@@ -250,7 +256,7 @@ curl http://localhost:8080/health
 |------|--------|------|
 | `--host` | `0.0.0.0` | 绑定主机地址 |
 | `--port` | `8080` | 监听端口 |
-| `--mode` | `auto` | 运行模式：`auto`（自动检测）/`openclaw`/`hermes` |
+| `--mode` | `auto` | 运行模式：`auto`（自动检测，存在的数据源都用）/`all`（两个都用）/`openclaw`/`hermes` |
 | `--hook_token` | `None` | Bearer 认证令牌 |
 | `--max-connections` | `50` | 最大并发连接数，超出返回 503 |
 | `--timeout` | `30` | 单连接超时秒数 |
@@ -266,13 +272,19 @@ curl http://localhost:8080/health
 
 ### 自动检测逻辑
 
-服务启动时会自动检测数据源（按优先级）：
+服务启动时会检测两个数据源，**存在的数据源都启用**（两个服务同时开着就同时查询）：
 
 1. **Hermes**: `~/.hermes/sessions/sessions.json`
 2. **OpenClaw**: `~/.openclaw/agents/default/sessions/sessions.json`
-3. 如果都不存在，默认使用 OpenClaw 路径
+3. 如果都不存在，默认使用 OpenClaw 路径（`--mode all` 时会明确警告缺了哪个）
 
-**无需手动配置**，服务会自动识别并适配对应的数据格式！
+**无需手动配置**，服务会自动识别并适配对应的数据格式。
+
+### 多数据源的查询语义
+
+- `/sessions` 返回两个数据源合并后的列表，按更新时间倒序，每条带 `source` 字段
+- `/sessions/<pattern>` 等接口先在所有数据源里按「精确 ID → 精确 key → key 后缀 → 子串 → 模糊 ID」的顺序匹配——一个数据源里的模糊命中不会盖掉另一个数据源里的精确命中
+- `/health` 的 `sources` 字段列出本次实际启用的数据源
 
 ## 安全注意事项
 

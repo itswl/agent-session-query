@@ -46,74 +46,79 @@ import select
 # 默认模式（自动检测）
 MODE = 'auto'
 
-def init_paths(mode='auto'):
-    """根据模式初始化路径"""
-    if mode == 'hermes':
-        return {
-            'mode': 'hermes',
-            'sessions_json': Path.home() / ".hermes/sessions/sessions.json",
-            'sessions_dir': Path.home() / ".hermes/sessions",
-            'session_id_field': 'session_id',
-            'stop_reason_field': 'finish_reason',
-        }
-    elif mode == 'openclaw':
-        return {
-            'mode': 'openclaw',
-            'sessions_json': Path.home() / ".openclaw/agents/default/sessions/sessions.json",
-            'sessions_dir': Path.home() / ".openclaw/agents/default/sessions",
-            'session_id_field': 'sessionId',
-            'stop_reason_field': 'stopReason',
-        }
-    else:  # auto - 自动检测
-        hermes_json = Path.home() / ".hermes/sessions/sessions.json"
-        openclaw_json = Path.home() / ".openclaw/agents/default/sessions/sessions.json"
-        
-        if hermes_json.exists():
-            print(f"自动检测到 Hermes 数据源: {hermes_json}")
-            return {
-                'mode': 'hermes',
-                'sessions_json': hermes_json,
-                'sessions_dir': Path.home() / ".hermes/sessions",
-                'session_id_field': 'session_id',
-                'stop_reason_field': 'finish_reason',
-            }
-        elif openclaw_json.exists():
-            print(f"自动检测到 OpenClaw 数据源: {openclaw_json}")
-            return {
-                'mode': 'openclaw',
-                'sessions_json': openclaw_json,
-                'sessions_dir': Path.home() / ".openclaw/agents/default/sessions",
-                'session_id_field': 'sessionId',
-                'stop_reason_field': 'stopReason',
-            }
-        else:
-            # 默认使用 OpenClaw
-            print("警告: 未检测到数据源，默认使用 OpenClaw")
-            return {
-                'mode': 'openclaw',
-                'sessions_json': openclaw_json,
-                'sessions_dir': Path.home() / ".openclaw/agents/default/sessions",
-                'session_id_field': 'sessionId',
-                'stop_reason_field': 'stopReason',
-            }
+# 两个数据源的路径与字段约定
+_SOURCE_DEFS = {
+    'hermes': {
+        'mode': 'hermes',
+        'sessions_json': Path.home() / ".hermes/sessions/sessions.json",
+        'sessions_dir': Path.home() / ".hermes/sessions",
+        'session_id_field': 'session_id',
+        'stop_reason_field': 'finish_reason',
+    },
+    'openclaw': {
+        'mode': 'openclaw',
+        'sessions_json': Path.home() / ".openclaw/agents/default/sessions/sessions.json",
+        'sessions_dir': Path.home() / ".openclaw/agents/default/sessions",
+        'session_id_field': 'sessionId',
+        'stop_reason_field': 'stopReason',
+    },
+}
 
-PATHS = init_paths(MODE)
+
+def source_definitions(mode='auto'):
+    """返回本次运行要启用的数据源列表——两个服务同时开着时就是两个都在。
+
+    - hermes / openclaw: 只用指定的那一个
+    - auto: 存在的数据源都用（两个都存在就都用）
+    - all: 明确要求两个都用，缺的会警告
+    """
+    hermes = dict(_SOURCE_DEFS['hermes'])
+    openclaw = dict(_SOURCE_DEFS['openclaw'])
+
+    if mode == 'hermes':
+        return [hermes]
+    if mode == 'openclaw':
+        return [openclaw]
+
+    enabled = []
+    for name, source in (('hermes', hermes), ('openclaw', openclaw)):
+        if source['sessions_json'].exists():
+            enabled.append(source)
+            if mode == 'auto':
+                print(f"自动检测到 {name} 数据源: {source['sessions_json']}")
+        elif mode == 'all':
+            print(f"警告: {name} 数据源不存在，已跳过: {source['sessions_json']}")
+
+    if enabled:
+        return enabled
+
+    # auto 且一个都没有：沿用旧行为，默认 OpenClaw
+    print("警告: 未检测到数据源，默认使用 OpenClaw")
+    return [openclaw]
+
+
+def init_paths(mode='auto'):
+    """兼容旧用法：返回第一个启用的数据源（多数据源请用 source_definitions）"""
+    return source_definitions(mode)[0]
+
+
+SOURCES = source_definitions(MODE)
+PATHS = SOURCES[0]  # 兼容旧引用：始终指向第一个启用的数据源
 
 
 class OpenClawAPI:
     def __init__(self):
         pass  # 不缓存任何数据
 
-    def _load_sessions(self) -> Dict[str, Any]:
-        if not PATHS['sessions_json'].exists():
+    def _load_sessions(self, source: Dict[str, Any]) -> Dict[str, Any]:
+        """读取某个数据源的 sessions.json（每次都重新加载，不缓存）"""
+        if not source['sessions_json'].exists():
             return {}
-        with open(PATHS['sessions_json'], 'r') as f:
+        with open(source['sessions_json'], 'r') as f:
             return json.load(f)
 
-    def _find_session(self, pattern: str) -> Optional[Tuple[str, Dict]]:
-        """根据模式查找 session - 每次都重新加载"""
-        sessions = self._load_sessions()
-
+    def _find_session(self, pattern: str) -> Tuple[Optional[Dict], Optional[str], Optional[Dict]]:
+        """在所有启用的数据源里查找 session，返回 (source, key, info)"""
         pattern = pattern.strip()
 
         # 处理 Run: 或 Session: 前缀
@@ -122,33 +127,39 @@ class OpenClawAPI:
         if pattern.startswith("Session: "):
             pattern = pattern[9:]
 
-        session_id_field = PATHS['session_id_field']
-        
-        # 精确匹配 sessionId/session_id
-        for key, info in sessions.items():
-            if info.get(session_id_field, '').lower() == pattern.lower():
-                return key, info
+        if not pattern:
+            return None, None, None
 
-        # 匹配完整 key 或 key 的后半部分
         pattern_lower = pattern.lower()
-        for key, info in sessions.items():
-            key_lower = key.lower()
+
+        # 先把每个数据源各读一次，再按规则逐个试
+        loaded = [(source, self._load_sessions(source)) for source in SOURCES]
+
+        # 注意顺序：每条规则都先扫完所有数据源，避免一个源的模糊命中
+        # 盖掉另一个源里的精确命中
+        rules = (
+            # 精确匹配 sessionId/session_id
+            lambda info, key, field: info.get(field, '').lower() == pattern_lower,
             # 精确匹配完整 key
-            if key_lower == pattern_lower:
-                return key, info
+            lambda info, key, field: key.lower() == pattern_lower,
             # key 以 pattern 结尾（去掉 agent:default: 或 agent:main: 前缀后）
-            if key_lower.endswith(':' + pattern_lower):
-                return key, info
-            # pattern 是 key 的最后一部分
-            if pattern_lower in key_lower:
-                return key, info
+            lambda info, key, field: key.lower().endswith(':' + pattern_lower),
+            # pattern 是 key 的一部分
+            lambda info, key, field: pattern_lower in key.lower(),
+            # 模糊匹配 ID 部分
+            lambda info, key, field: pattern_lower in info.get(field, '').lower(),
+        )
 
-        # 模糊匹配 ID 部分
-        for key, info in sessions.items():
-            if pattern_lower in info.get(session_id_field, '').lower():
-                return key, info
+        for rule in rules:
+            for source, sessions in loaded:
+                session_id_field = source['session_id_field']
+                for key, info in sessions.items():
+                    if not isinstance(info, dict):
+                        continue
+                    if rule(info, key, session_id_field):
+                        return source, key, info
 
-        return None, None
+        return None, None, None
 
     def _extract_messages(self, session_file: str, limit: int = 50) -> List[Dict]:
         """从 jsonl 文件提取消息"""
@@ -240,9 +251,10 @@ class OpenClawAPI:
             'content': parts
         }
 
-    def _load_sqlite_final_message(self, session_id: str, status: str = 'done') -> Optional[Dict]:
+    def _load_sqlite_final_message(self, session_id: str, status: str = 'done',
+                                   source: Optional[Dict[str, Any]] = None) -> Optional[Dict]:
         """Hermes webhook sessions may persist final messages in state.db only."""
-        if PATHS.get('mode') != 'hermes' or not session_id:
+        if not source or source.get('mode') != 'hermes' or not session_id:
             return None
 
         db_path = Path.home() / ".hermes/state.db"
@@ -319,13 +331,26 @@ class OpenClawAPI:
             return None
 
     def list_sessions(self) -> List[Dict]:
-        """列出所有 session - 每次都重新加载（按当前模式取字段）"""
-        sessions = self._load_sessions()
-        session_id_field = PATHS['session_id_field']
-        is_openclaw = PATHS['mode'] == 'openclaw'
+        """列出所有启用的数据源里的 session（合并，每条带 source 标记）"""
+        result = []
+        for source in SOURCES:
+            result.extend(self._list_sessions_of(source))
+        # 按更新时间倒序；两个源的 updatedAt 都是 ISO 风格字符串，可直接比较
+        result.sort(key=lambda item: item.get('_sortKey', ''), reverse=True)
+        for item in result:
+            item.pop('_sortKey', None)
+        return result
+
+    def _list_sessions_of(self, source: Dict[str, Any]) -> List[Dict]:
+        """单个数据源的列表"""
+        sessions = self._load_sessions(source)
+        session_id_field = source['session_id_field']
+        is_openclaw = source['mode'] == 'openclaw'
 
         result = []
         for key, info in sessions.items():
+            if not isinstance(info, dict):
+                continue
             session_id = info.get(session_id_field, '')
             # 兼容两种命名的兜底，避免数据里字段名不一致时列表为空
             if not session_id:
@@ -338,15 +363,18 @@ class OpenClawAPI:
                 'shortKey': key.replace('agent:default:', '') if is_openclaw else key,
                 'sessionId': session_id,
                 'hasFile': file_exists,
+                'source': source['mode'],
             }
 
             if is_openclaw:
                 updated = info.get('updatedAt', 0)
                 updated_str = ''
+                sort_key = ''
                 if updated:
                     from datetime import datetime
                     dt = datetime.fromtimestamp(updated/1000)
                     updated_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+                    sort_key = dt.strftime('%Y-%m-%dT%H:%M:%S')
                 item.update({
                     'status': info.get('status', 'unknown'),
                     'updatedAt': updated_str,
@@ -355,6 +383,7 @@ class OpenClawAPI:
                     'totalTokens': info.get('totalTokens', 0),
                 })
             else:  # hermes
+                sort_key = str(info.get('updated_at', '') or '')
                 item.update({
                     'status': 'done',
                     'updatedAt': info.get('updated_at', ''),
@@ -365,23 +394,24 @@ class OpenClawAPI:
                     'estimatedCostUsd': info.get('estimated_cost_usd', 0),
                 })
 
+            item['_sortKey'] = sort_key
             result.append(item)
         return result
 
     def get_session(self, pattern: str) -> Optional[Dict]:
         """获取单个 session 信息"""
-        key, info = self._find_session(pattern)
+        source, key, info = self._find_session(pattern)
         if info is None:
             return None
 
-        session_id_field = PATHS['session_id_field']
+        session_id_field = source['session_id_field']
         session_id = info.get(session_id_field, '')
         session_file = info.get('sessionFile', '')
         file_exists = Path(session_file).exists() if session_file else False
 
         # 如果 sessionFile 不存在但 sessionId 存在，尝试在 SESSIONS_DIR 中查找
         if not file_exists and session_id:
-            alt_path = PATHS['sessions_dir'] / f"{session_id}.jsonl"
+            alt_path = source['sessions_dir'] / f"{session_id}.jsonl"
             if alt_path.exists():
                 session_file = str(alt_path)
                 file_exists = True
@@ -391,10 +421,11 @@ class OpenClawAPI:
             'sessionId': session_id,
             'sessionFile': session_file if file_exists else None,
             'hasFile': file_exists,
+            'source': source['mode'],
         }
-        
-        # 根据模式添加不同字段（用 PATHS['mode']，--mode auto 时它与 MODE 不一定相同）
-        if PATHS['mode'] == 'openclaw':
+
+        # 根据数据源类型添加不同字段
+        if source['mode'] == 'openclaw':
             result.update({
                 'status': info.get('status', 'unknown'),
                 'updatedAt': info.get('updatedAt', 0),
@@ -422,11 +453,11 @@ class OpenClawAPI:
 
     def get_messages(self, pattern: str, limit: int = 50) -> Optional[List[Dict]]:
         """获取 session 的消息"""
-        key, info = self._find_session(pattern)
+        source, key, info = self._find_session(pattern)
         if info is None:
             return None
 
-        session_id_field = PATHS['session_id_field']
+        session_id_field = source['session_id_field']
         session_id = info.get(session_id_field, '')
         session_file = info.get('sessionFile', '')
 
@@ -435,7 +466,7 @@ class OpenClawAPI:
         if session_file and Path(session_file).exists():
             path = Path(session_file)
         elif session_id:
-            alt_path = PATHS['sessions_dir'] / f"{session_id}.jsonl"
+            alt_path = source['sessions_dir'] / f"{session_id}.jsonl"
             if alt_path.exists():
                 path = alt_path
 
@@ -448,12 +479,12 @@ class OpenClawAPI:
 
     def get_final_message(self, pattern: str) -> Optional[Dict]:
         """获取 session 的最终结果（第一个 finish_reason/stopReason="stop" 的 assistant 消息）"""
-        key, info = self._find_session(pattern)
+        source, key, info = self._find_session(pattern)
         if info is None:
             return None
 
-        session_id_field = PATHS['session_id_field']
-        stop_reason_field = PATHS['stop_reason_field']
+        session_id_field = source['session_id_field']
+        stop_reason_field = source['stop_reason_field']
         session_id = info.get(session_id_field, '')
         session_file = info.get('sessionFile', '')
         status = info.get('status', 'done')  # hermes 默认 done
@@ -463,12 +494,12 @@ class OpenClawAPI:
         if session_file and Path(session_file).exists():
             path = Path(session_file)
         elif session_id:
-            alt_path = PATHS['sessions_dir'] / f"{session_id}.jsonl"
+            alt_path = source['sessions_dir'] / f"{session_id}.jsonl"
             if alt_path.exists():
                 path = alt_path
 
         if path is None:
-            sqlite_result = self._load_sqlite_final_message(session_id, status)
+            sqlite_result = self._load_sqlite_final_message(session_id, status, source)
             if sqlite_result is not None:
                 return sqlite_result
             return {
@@ -476,6 +507,7 @@ class OpenClawAPI:
                 'isFinal': False,
                 'isProcessing': status == 'running',
                 'messageCount': 0,
+                'source': source['mode'],
                 'error': 'Session file not available yet (session may be still initializing)'
             }
 
@@ -522,7 +554,7 @@ class OpenClawAPI:
             is_processing = True
 
         if first_stop_message is None:
-            sqlite_result = self._load_sqlite_final_message(session_id, status)
+            sqlite_result = self._load_sqlite_final_message(session_id, status, source)
             if sqlite_result is not None:
                 return sqlite_result
             return {
@@ -557,6 +589,7 @@ class OpenClawAPI:
             'isFinal': bool(is_done and not is_processing),
             'isProcessing': bool(is_processing or (status == 'running' and not is_stopped)),
             'messageCount': len(all_messages),
+            'source': source['mode'],
             'id': last.get('id', ''),
             'timestamp': last.get('timestamp', ''),
             'stopReason': stop_reason,
@@ -687,7 +720,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             stats = self.stats()
             self._send_json({
                 'status': 'ok',
-                'mode': PATHS['mode'],
+                'mode': MODE,
+                'sources': [s['mode'] for s in SOURCES],
                 'stats': stats,
             })
             return
@@ -695,7 +729,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         # 根路径 - 不要求认证
         if path == '/' or path == '':
             self._send_json({
-                'name': 'OpenClaw Session API',
+                'name': 'OpenClaw/Hermes Session API',
+                'mode': MODE,
+                'sources': [s['mode'] for s in SOURCES],
                 'endpoints': [
                     'GET /sessions - 列出所有 session',
                     'GET /sessions/<pattern> - 查询单个 session',
@@ -873,19 +909,21 @@ def main():
     parser = argparse.ArgumentParser(description='OpenClaw/Hermes Session HTTP API (自动检测模式)')
     parser.add_argument('--host', default='0.0.0.0', help='绑定主机 (默认: 0.0.0.0)')
     parser.add_argument('--port', type=int, default=8080, help='端口 (默认: 8080)')
-    parser.add_argument('--mode', choices=['auto', 'openclaw', 'hermes'], default='auto', help='模式 (默认: auto 自动检测)')
+    parser.add_argument('--mode', choices=['auto', 'all', 'openclaw', 'hermes'], default='auto',
+                        help='模式 (默认: auto 自动检测；all 同时使用两个数据源)')
     parser.add_argument('--hook_token', default=None, help='Bearer hook_token for authentication')
     parser.add_argument('--max-connections', type=int, default=50, help='最大并发连接数 (默认: 50)')
     parser.add_argument('--timeout', type=int, default=30, help='连接超时秒数 (默认: 30)')
     args = parser.parse_args()
 
     # 设置模式
-    global MODE, PATHS
+    global MODE, SOURCES, PATHS
     MODE = args.mode
-    PATHS = init_paths(MODE)
-    print(f"运行模式: {PATHS['mode']}")
-    print(f"Sessions JSON: {PATHS['sessions_json']}")
-    print(f"Sessions Dir: {PATHS['sessions_dir']}")
+    SOURCES = source_definitions(MODE)
+    PATHS = SOURCES[0]
+    print(f"运行模式: {MODE}")
+    for source in SOURCES:
+        print(f"数据源 [{source['mode']}]: {source['sessions_json']}")
 
     # 设置认证 hook_token
     if args.hook_token:
@@ -909,11 +947,11 @@ def main():
     print(f"  GET /sessions/<pattern>/final         - 获取最终结果")
     print(f"  GET /health                          - 健康检查 (含服务统计)")
     print(f"\n示例:")
-    print(f"  curl http://localhost:{args.port}/sessions")
-    if MODE == 'hermes':
-        print(f"  curl http://localhost:{args.port}/sessions/1776580775689")
-        print(f"  curl http://localhost:{args.port}/sessions/20260419_143935_73e269b4/final")
-    else:
+    print(f"  curl -H 'Authorization: Bearer xxx' http://localhost:{args.port}/sessions")
+    enabled_modes = {s['mode'] for s in SOURCES}
+    if 'hermes' in enabled_modes:
+        print(f"  curl -H 'Authorization: Bearer xxx' http://localhost:{args.port}/sessions/20260419_143935_73e269b4/final")
+    if 'openclaw' in enabled_modes:
         print(f"  curl -H 'Authorization: Bearer xxx' http://localhost:{args.port}/sessions/hook:alert:prometheus:b5123b01")
     print(f"\n按 Ctrl+C 停止服务")
 

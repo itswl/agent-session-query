@@ -13,7 +13,7 @@ RUN mkdir -p /root/.openclaw/agents/default/sessions \
 EXPOSE 8080
 
 # 启动命令 - 支持自动检测模式和环境变量
-# MODE: auto(默认) / openclaw / hermes
+# MODE: auto(默认) / all / openclaw / hermes
 # HOOK_TOKEN: 认证令牌
 CMD ["/bin/sh", "-c", "\
   CMD_ARGS=\"--host 0.0.0.0 --port 8080\"; \

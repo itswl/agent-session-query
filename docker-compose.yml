@@ -12,7 +12,7 @@ services:
       # 挂载 Hermes 数据目录（可选）
       - ~/.hermes/sessions:/root/.hermes/sessions:ro
     environment:
-      # 运行模式：auto（自动检测）/ openclaw / hermes
+      # 运行模式：auto（自动检测，存在的数据源都用）/ all / openclaw / hermes
       - MODE=${SESSION_MODE:-auto}
       # 认证令牌
       - HOOK_TOKEN=${HOOK_TOKEN:-}

@@ -76,6 +76,38 @@ docker compose up -d                                              # 六个源目
 HOOK_TOKEN=mysecrettoken SESSION_MODE=auto docker compose up -d   # 带认证
 ```
 
+### 常驻部署（systemd user service）
+
+单二进制，不需要 Docker。装到 `~/.local/bin`，配一个用户级 service：
+
+```ini
+# ~/.config/systemd/user/agent-session-query.service
+[Unit]
+Description=本地 Agent 会话查询 HTTP API（只读）
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/agent-session-query --host 127.0.0.1 --port 8787 --mode auto
+EnvironmentFile=%h/.config/agent-session-query/env    # 里面一行 HOOK_TOKEN=...
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload && systemctl --user enable --now agent-session-query
+sudo loginctl enable-linger "$USER"     # 不开的话，退出登录服务就停
+journalctl --user -u agent-session-query -f
+```
+
+默认只监听 `127.0.0.1`：要给别人用，改成 `0.0.0.0` 并挂在反向代理后面，别裸奔到公网。
+
 ## API
 
 所有端点都是 `GET`。`/sessions` 系列额外支持 `/api/sessions` 前缀写法（`/api/sessions` 与 `/sessions` 等价）；`/`、`/health`、`/stats` 没有别名。
@@ -227,6 +259,8 @@ HOOK_TOKEN=mysecrettoken SESSION_MODE=auto docker compose up -d   # 带认证
 | `--cache-ttl` | `2` | 会话列表缓存秒数；`0` = 不缓存（每次都重新扫描） |
 
 Docker 环境变量：`HOOK_TOKEN`（传给 `--hook_token`）、`SESSION_MODE`（传给 `--mode`，默认 `auto`）、`GO_IMAGE`（构建参数，基础镜像）。
+
+不给 `--hook_token` 时会读环境变量 `HOOK_TOKEN`——**命令行参数会出现在 `ps` 里，环境变量不会**，常驻部署建议用后者。
 
 ## 各数据源的解析细节
 

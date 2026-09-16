@@ -55,6 +55,10 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "无效的 --mode: %q（可选: auto, all, %s）\n", *mode, joinModes())
 		return 2
 	}
+	// 没给 --hook_token 就看环境变量：命令行参数会出现在 ps 里，环境变量不会
+	if *hookToken == "" {
+		*hookToken = os.Getenv("HOOK_TOKEN")
+	}
 
 	sources, err := buildSources(*mode)
 	if err != nil {

@@ -35,7 +35,7 @@ go build -o agent-session-query .
 ./agent-session-query --port 8080 --hook_token mysecrettoken
 ```
 
-启动后会打印本次启用的数据源：
+启动后会打印本次启用的数据源（浏览器里看的话，直接打开 `http://127.0.0.1:8787/ui`）：
 
 ```
 运行模式: auto
@@ -107,6 +107,21 @@ journalctl --user -u agent-session-query -f
 ```
 
 默认只监听 `127.0.0.1`：要给别人用，改成 `0.0.0.0` 并挂在反向代理后面，别裸奔到公网。
+
+## 页面（`/ui`）
+
+浏览器里直接看：`http://127.0.0.1:8787/ui`。第一次打开会要 `hook_token`，之后存在这个浏览器的 localStorage 里。
+
+- **左侧**：会话列表，带数据源过滤与搜索框（搜索匹配 sessionId / 文件名 / 路径 / cwd），按更新时间倒序，默认选中最新一条
+- **右侧**：会话信息、**最终结果**卡片（isFinal / stopReason / 用量）、消息时间线（text / thinking / toolCall / toolResult 分块；超过 600 字符的块折起来）
+- 10 秒自动刷新（页面在后台时不打接口）；URL 片段是会话 ID，可以直接当深链贴给别人（`/ui#<sessionId>`）
+- token 失效时自动退回令牌页
+
+几个实现决定：
+
+- **页面用 `go:embed` 打进二进制**，改动页面要重新编译——换来的是仍然单文件分发，不需要 npm/构建步骤
+- **渲染一律走 `textContent`**：消息里全是第三方文本（工具输出、网页正文、别人写的内容），拼 HTML 就是存储型 XSS，而这个页面的 token 就在 localStorage 里。这条规则有测试钉着（`ui_test.go` 会扫描静态文件里的危险 API）
+- 页面本身**免认证**（它不含任何数据），数据仍然要带 `Authorization` 头才能取到；对外暴露时请在反向代理上加一层认证（Basic Auth / Cloudflare Access），别把端口直接开到公网
 
 ## API
 
@@ -351,6 +366,7 @@ Docker 环境变量：`HOOK_TOKEN`（传给 `--hook_token`）、`SESSION_MODE`�
 ├── session_query_test.go # 单元测试（解析、匹配、HTTP 路由）
 ├── hermes_sqlite_test.go # 单元测试（state.db 回退）
 ├── go.mod / go.sum       # 唯一依赖：纯 Go 的 SQLite 驱动
+├── ui/                   # 内嵌的单页（HTML/CSS/原生 JS，go:embed）
 ├── cmd/healthcheck/      # 容器探活用的小程序
 ├── Dockerfile            # 两段构建 → scratch（约 16 MB）
 └── docker-compose.yml    # 六个源目录的挂载示例

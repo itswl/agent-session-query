@@ -19,6 +19,7 @@ RUN go mod download
 
 COPY *.go ./
 COPY cmd ./cmd
+COPY ui ./ui
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/agent-session-query . \
  && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/healthcheck ./cmd/healthcheck
 

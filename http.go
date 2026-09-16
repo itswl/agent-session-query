@@ -172,6 +172,12 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 		return http.StatusOK
 	}
 
+	// 内嵌的只读页面 - 不要求认证（页面里没有数据，数据仍要带 token 走 /sessions）
+	if isUIPath(path) {
+		serveUIAssets(w, r, path)
+		return http.StatusOK
+	}
+
 	// /api 前缀兼容：统一在这里去掉（只去 "/api" 四个字符，保留后面的 "/"）
 	if strings.HasPrefix(path, "/api/") {
 		path = path[len("/api"):]

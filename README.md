@@ -1,6 +1,8 @@
 # 本地 Agent 会话查询 HTTP API
 
-一个只读的 HTTP API，用来查询本机上各种 Agent / CLI 的会话记录：列表、消息、最终结果。不改动任何会话数据，只用 Python 标准库（无需 pip 安装）。
+一个只读的 HTTP API，用来查询本机上各种 Agent / CLI 的会话记录：列表、消息、最终结果。不改动任何会话数据。
+
+**Go 标准库实现，零外部依赖**——编译出来是一个静态二进制，不需要运行时、不需要 venv，`scp` 到任何同架构的机器上就能跑。
 
 **一个接口，六种数据源**——存在哪几种就查哪几种，可以同时合并查询：
 
@@ -18,17 +20,19 @@
 ### 本地运行
 
 ```bash
+go build -o agent-session-query .
+
 # 自动检测：存在的数据源都启用
-python3 session_query_api.py --port 8080
+./agent-session-query --port 8080
 
 # 只看某一种
-python3 session_query_api.py --mode claude
+./agent-session-query --mode claude
 
 # 强制全部启用（缺哪个会打印警告）
-python3 session_query_api.py --mode all
+./agent-session-query --mode all
 
 # 带认证
-python3 session_query_api.py --port 8080 --hook_token mysecrettoken
+./agent-session-query --port 8080 --hook_token mysecrettoken
 ```
 
 启动后会打印本次启用的数据源：
@@ -41,10 +45,17 @@ python3 session_query_api.py --port 8080 --hook_token mysecrettoken
 已启用认证（Bearer hook_token 已设置，不回显）
 ```
 
+交叉编译（在别的机器上跑同一个二进制）：
+
+```bash
+CGO_ENABLED=0 GOOS=linux   GOARCH=arm64 go build -o agent-session-query-arm64 .
+CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -o agent-session-query-mac .
+```
+
 ### Docker
 
 ```bash
-docker build -t agent-session-query .          # 国内加 --build-arg PYTHON_IMAGE=<镜像源>
+docker build -t agent-session-query .          # 国内加 --build-arg GO_IMAGE=<镜像源>
 
 docker run -d --name agent-session-query -p 8080:8080 \
   -v ~/.claude/projects:/root/.claude/projects:ro \
@@ -56,13 +67,13 @@ docker run -d --name agent-session-query -p 8080:8080 \
   agent-session-query --hook_token mysecrettoken
 ```
 
-镜像的 ENTRYPOINT 就是脚本本身，`docker run` 之后的参数直接透传（`--mode`、`--hook_token`、`--port`…）。挂几个目录就查几个源。
+镜像是两段构建：运行层用 `scratch`，里面只有两个静态二进制（服务本体 5.4 MB + 探活小程序 2 MB），镜像 **约 11 MB**，没有 shell、没有包管理器。数据源的路径由 `$HOME` 推导，镜像里 `HOME=/root`，所以挂载点都在 `/root/...` 下。挂几个目录就查几个源。
 
 ### Docker Compose
 
 ```bash
-docker-compose up -d                                              # 六个源目录都已挂载
-HOOK_TOKEN=mysecrettoken SESSION_MODE=auto docker-compose up -d   # 带认证
+docker compose up -d                                              # 六个源目录都已挂载
+HOOK_TOKEN=mysecrettoken SESSION_MODE=auto docker compose up -d   # 带认证
 ```
 
 ## API
@@ -139,27 +150,11 @@ HOOK_TOKEN=mysecrettoken SESSION_MODE=auto docker-compose up -d   # 带认证
 | Codex | `cwd`、`cliVersion` |
 | Gemini CLI | `project` |
 
-字段来源：OpenClaw/Hermes 取自 `sessions.json` 里的记录（OpenClaw 的 `updatedAt` 由毫秒时间戳格式化）；其余四种用会话文件自身的元数据/修改时间。列表按 `updatedAt` 倒序，`source` 表示这条记录来自哪个数据源。
+字段来源：OpenClaw/Hermes 取自 `sessions.json` 里的记录（OpenClaw 的 `updatedAt` 由毫秒时间戳格式化成 UTC）；其余四种用会话文件自身的元数据/修改时间。列表按 `updatedAt` 倒序，`source` 表示这条记录来自哪个数据源。
 
 ### `GET /sessions/<pattern>`
 
-字段与列表中的同一条记录完全一致（包含 `file`）：
-
-```json
-{
-  "source": "claude",
-  "key": "/root/.claude/projects/-home-me--proj/e4b2b405-88ea-4782-a84c-92574380ed16.jsonl",
-  "shortKey": "e4b2b405-88ea-4782-a84c-92574380ed16",
-  "sessionId": "e4b2b405-88ea-4782-a84c-92574380ed16",
-  "file": "/root/.claude/projects/-home-me--proj/e4b2b405-88ea-4782-a84c-92574380ed16.jsonl",
-  "hasFile": true,
-  "status": "done",
-  "cwd": "/home/me/proj",
-  "updatedAt": "2026-09-14T07:41:48"
-}
-```
-
-找不到返回 `404` + `{"error": "Session not found"}`。
+字段与列表中的同一条记录完全一致（包含 `file`）。找不到返回 `404` + `{"error": "Session not found"}`。
 
 ### `GET /sessions/<pattern>/messages?limit=50`
 
@@ -173,18 +168,9 @@ HOOK_TOKEN=mysecrettoken SESSION_MODE=auto docker-compose up -d   # 带认证
       "content": [
         { "type": "text", "content": "写一句 10 个字以内的问候语" }
       ]
-    },
-    {
-      "id": "abc123",
-      "role": "assistant",
-      "timestamp": "2026-09-14T07:14:08.100Z",
-      "content": [
-        { "type": "thinking", "content": "……（超过 1000 字会截断并加 ...[truncated]）" },
-        { "type": "text", "content": "您好，很高兴协助您！" }
-      ]
     }
   ],
-  "total": 2
+  "total": 1
 }
 ```
 
@@ -216,7 +202,6 @@ HOOK_TOKEN=mysecrettoken SESSION_MODE=auto docker-compose up -d   # 带认证
 
 - **OpenClaw / Hermes**：取第一个 `stopReason`/`finish_reason` 为 `stop` 的助手消息；此时 `isFinal=true`。若该消息之后还有指向它的 `toolResult` 且会话仍在 `running`，则 `isProcessing=true`、`isFinal=false`
 - **Pi / Claude Code / Codex / Gemini**：取最后一条助手消息；`isFinal` 按各自的状态判定（Pi 看 `stopReason=stop`，Claude Code 看 `stop_reason` 属于 `end_turn`/`stop`/`stop_sequence`，Codex 与 Gemini 视为已完成）
-- Hermes 的 webhook 会话如果只把最终消息写进了 `~/.hermes/state.db`，服务会自动回退去查 SQLite
 - 会话文件还不存在时，返回 `isFinal=false` + `error` 字段说明原因（HTTP 仍是 200）
 
 ### 错误响应
@@ -227,11 +212,9 @@ HOOK_TOKEN=mysecrettoken SESSION_MODE=auto docker-compose up -d   # 带认证
 | 找不到会话 | 404 | `{"error": "Session not found"}` |
 | 未知路径 | 404 | `{"error": "Not found"}` |
 | 服务内部异常 | 500 | `{"error": "Internal server error"}` |
-| 并发超限 | 503 | HTTP 状态行 `Service temporarily overloaded` |
+| 并发超限 | 503 | 纯文本 `Service temporarily overloaded` |
 
 ## 配置
-
-### 命令行参数
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
@@ -240,16 +223,10 @@ HOOK_TOKEN=mysecrettoken SESSION_MODE=auto docker-compose up -d   # 带认证
 | `--mode` | `auto` | `auto`（存在即启用）/ `all`（六个都启用）/ `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` |
 | `--hook_token` | 无 | Bearer 令牌；不设置则免认证 |
 | `--max-connections` | `50` | 最大并发连接数，超出返回 503 |
-| `--timeout` | `30` | 单连接超时（秒） |
+| `--timeout` | `30` | 连接超时（秒） |
 | `--cache-ttl` | `2` | 会话列表缓存秒数；`0` = 不缓存（每次都重新扫描） |
 
-### Docker 环境变量 / 构建参数
-
-| 变量 | 用途 |
-|------|------|
-| `HOOK_TOKEN` | compose 传给 `--hook_token`（留空则不认证） |
-| `SESSION_MODE` | compose 传给 `--mode`，默认 `auto` |
-| `PYTHON_IMAGE` | 构建参数，基础镜像，默认 `python:3.10-slim`（国内可换镜像源） |
+Docker 环境变量：`HOOK_TOKEN`（传给 `--hook_token`）、`SESSION_MODE`（传给 `--mode`，默认 `auto`）、`GO_IMAGE`（构建参数，基础镜像）。
 
 ## 各数据源的解析细节
 
@@ -260,29 +237,44 @@ HOOK_TOKEN=mysecrettoken SESSION_MODE=auto docker-compose up -d   # 带认证
 - **Codex**：消息行是 `type=response_item` 且 `payload.type=message`；`payload.role` 为 `developer` 的行（系统拼装的指令）不计入；用量取自 `token_usage_record`
 - **Gemini CLI**：文件是追加日志——首行元数据（`sessionId`/`startTime`）、`{"$set": {...}}` 补丁行、以及消息行；消息取 `type=user`/`type=gemini` 的行，`content` 可能是数组（user）或字符串（gemini），`thoughts` 作为 thinking
 
+## 与 Python 版的差异
+
+这一版是从 Go 重写的（原 Python 单文件实现在 git 历史里，最后的 Python 版本是 `c7da626`）。两者做了逐请求对拍验证：**55 条**固定用例（六个源的构造数据，覆盖匹配优先级、编码、limit 边界、错误分支）+ **33 项**真实数据（本机 11 个 Pi 会话、8 个 Claude Code 会话、6 个 Codex、3 个 Gemini 的列表/详情/消息/结果/按文件名查找），响应**逐字段一致**。
+
+已知的行为差异只有这些：
+
+1. **Hermes 的 `state.db` 回退没有实现**。Python 版在 Hermes 会话只有 SQLite 记录、没有 jsonl 时会去读 `~/.hermes/state.db`；Go 标准库不带 SQLite，这一版不做（真的命中这种情况时会在 stderr 打一行 WARN）。需要的话可以加一个带 build tag 的版本引入纯 Go 的 SQLite 驱动。
+2. **`HEAD` 请求**：Python 版返回 501；这一版按 `GET` 处理（响应无 body）。对探活工具更友好。
+3. **503 的响应体**：都是 503，但 Go 的 HTTP 状态原因短语是标准的 `Service Unavailable`。
+4. **`/stats` 的 `bad_requests`**：HTTP 协议层的畸形请求由 Go 的 `net/http` 自行处理并直接断开，不会逐条进这个计数；这一版统计的是服务端记录的协议层错误。其余三个计数字段（max/active/total connections）语义不变。
+5. 启动横幅与请求日志的格式略有不同（内容等价）。
+
 ## 性能
 
-在 800 个会话（四个数据源各 200 个，其中 1/4 是 3000 行的大会话，共约 208 MB）的合成数据上实测（服务和客户端都在同一台 arm64 机器上）：
+800 个会话（四个数据源各 200 个，其中 1/4 是 3000 行的大会话，共约 208 MB）的合成数据，服务与压测客户端在同一台 arm64 机器上，各跑三轮取中位数：
 
-| 端点 | 优化前 | 优化后 |
-|------|--------|--------|
-| `GET /sessions`（列 800 条） | 1236 ms | 18 ms |
-| `GET /sessions/<pattern>`（精确查一条） | 1207 ms | 5 ms |
-| `GET /sessions/<pattern>/messages?limit=10`（大会话） | 1248 ms | 3 ms |
-| `GET /sessions/<pattern>/final`（大会话） | 1266 ms | 30 ms |
-| `GET /health` | 3 ms | 3 ms |
+| 端点 | Python 版 | Go 版 |
+|------|-----------|-------|
+| `GET /sessions`（列 800 条） | 19.4 ms | **14.2 ms** |
+| `GET /sessions/<pattern>`（精确查一条） | 5.9 ms | **3.8 ms** |
+| `GET /sessions/<pattern>/messages?limit=10`（大会话） | 6.2 ms | **3.2 ms** |
+| `GET /sessions/<pattern>/final`（大会话） | 30.9 ms | 35.5 ms |
+| `GET /health` | 3.5 ms | **1.5 ms** |
+| 常驻内存（压测后 RSS） | 20.8 MiB | **11.0 MB** |
 
-优化点：
+几个实现上的点：
 
-1. **列表不再扫全文**——Gemini 的 `updatedAt` 原先要读完整个会话文件才能算出来，现在只读首行元数据（缺了才退回文件时间）。单这一项就让列表快了约 12 倍
-2. **消息与最终结果改成流式读取**——`messages` 取够 `limit` 条就停（原先先把整个文件解析进内存），`final` 只保留最后一条助手消息
-3. **会话列表短 TTL 缓存**（`--cache-ttl`，默认 2 秒）——查找会话与列表都走它，一次请求不必把 800 个会话文件重新 stat/读一遍。**消息与最终结果始终直接读文件**，缓存只影响「有哪些会话」这层元数据；`--cache-ttl 0` 可完全关掉缓存
+1. **列表不扫全文**——每个会话只读首行元数据（Gemini 的 `updatedAt` 优先用元数据里的时间，缺了才退回文件时间），所以 `GET /sessions` 是「stat + 读首行」而不是「读 208 MB」
+2. **流式读取**——`messages` 取够 `limit` 条就停；`final` 只保留最后一条助手消息
+3. **`final` 用结构体「探测」再物化**——整文件扫描时只解析 `type`/`role` 这类标量字段（Go 的 JSON 解码器会跳过不关心的字段，不建 map），只在最后一条助手消息上做完整解析。不做这一步时这个端点是 50 ms（Go 的 `encoding/json` 比 Python 的 C 实现慢），做了之后追平
+4. **行读取复用缓冲**——`bufio.Scanner` 的 `Bytes()` 是内部缓冲的视图，每行不额外分配（实测比逐行 `ReadBytes` 快约 40%）
+5. **会话列表短 TTL 缓存**（`--cache-ttl`，默认 2 秒）——查找会话与列表都走它；**消息与最终结果始终直接读文件**，缓存只影响「有哪些会话」这层元数据；`--cache-ttl 0` 可完全关掉
 
 边界与代价：
 
-- 新建的会话最长 2 秒后才会出现在列表/查询里（可调小或设为 0，实测超过 TTL 立即可见）
-- `final` 仍需顺序读完整个会话文件（要取最后一条助手消息），大会话约 30 ms——这是单文件顺序读的固有成本
-- HTTP 层已改为 HTTP/1.1：客户端可以复用连接（响应都带 `Content-Length`）
+- 新建的会话最长 2 秒后才会出现在列表/查询里（可调小或设为 0）
+- `final` 仍需顺序读完整个会话文件（要取最后一条助手消息），3000 行的大会话约 35 ms——这是单文件顺序读 + 解析的固有成本
+- 单行超过 256 MB 的文件会被跳过（防御性上限，正常会话不可能到这个量级）
 
 ## 安全
 
@@ -297,6 +289,7 @@ HOOK_TOKEN=mysecrettoken SESSION_MODE=auto docker-compose up -d   # 带认证
    - 先对照上表确认本机会话目录存在；`--mode all` 会明确打印缺了哪个
    - 容器里跑时确认对应目录挂进去了（compose 默认六个都挂；手动 `docker run` 要自己加 `-v`）
    - 镜像不预建会话目录，空的挂载目录不会被视为"有数据源"
+   - 数据源路径是 `$HOME` 推导的：容器里是 `/root/...`，`sudo` 跑时可能是 `/root`、普通用户是 `/home/<你>`
 2. **列表为空**
    - `/health` 看启用了哪些源；确认服务进程对该目录有读权限
 3. **401 Unauthorized**
@@ -308,14 +301,29 @@ HOOK_TOKEN=mysecrettoken SESSION_MODE=auto docker-compose up -d   # 带认证
 
 ```
 .
-├── session_query_api.py    # 主程序（仅标准库；数据源适配器都在这个文件里）
-├── Dockerfile              # 镜像构建
-├── docker-compose.yml      # 六个源目录的挂载示例
-├── LICENSE                 # MIT
-└── README.md
+├── main.go               # 参数解析、启动、优雅退出
+├── http.go               # 路由、认证、连接限制、统计
+├── api.go                # 查询层（多源合并、匹配、TTL 缓存）
+├── record.go             # 统一的会话记录结构与工具函数
+├── source.go             # 数据源接口与装配
+├── source_jsonmap.go     # Hermes / OpenClaw
+├── source_pi.go          # Pi
+├── source_claude.go      # Claude Code
+├── source_codex.go       # Codex
+├── source_gemini.go      # Gemini CLI
+├── session_query_test.go # 单元测试（解析、匹配、HTTP 路由）
+├── cmd/healthcheck/      # 容器探活用的小程序
+├── Dockerfile            # 两段构建 → scratch（约 11 MB）
+└── docker-compose.yml    # 六个源目录的挂载示例
 ```
 
-新增一种数据源的做法：继承 `SessionSource`，实现 `list()` / `messages(record, limit)` / `final(record)`（以及可选的 `exists()`），再在 `build_sources()` 的 `factories` 里注册即可——多源合并、匹配排序、`source` 标记都是框架层统一处理的。
+```bash
+go test ./...            # 全部单测（不碰网络、不依赖本机装了什么）
+gofmt -l .               # 格式检查
+go vet ./...
+```
+
+新增一种数据源的做法：实现 `SessionSource` 接口（`Mode` / `Location` / `Exists` / `List` / `Messages` / `Final`），在 `buildSources()` 的 `factories` 里注册，再把模式名加进 `knownModes`——多源合并、匹配排序、`source` 标记都是框架层统一处理的。
 
 ## 许可
 
@@ -323,4 +331,4 @@ MIT，见 [LICENSE](LICENSE)。
 
 ---
 
-**注意**：本服务是只读的，不会改动任何 OpenClaw / Hermes / Pi / Claude Code / Codex / Gemini 的会话数据。
+**注意**：本服务是只读的，不会改动任何 Hermes / OpenClaw / Pi / Claude Code / Codex / Gemini 的会话数据。

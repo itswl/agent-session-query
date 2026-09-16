@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -262,7 +261,7 @@ func (s *JsonMapSource) Final(r record) map[string]any {
 	path := s.fileOf(r)
 
 	if path == "" {
-		if result := hermesSQLiteFallback(s.def.mode, sessionID); result != nil {
+		if result := hermesSQLiteFallback(s.def.mode, sessionID, status); result != nil {
 			return result
 		}
 		return map[string]any{
@@ -312,7 +311,7 @@ func (s *JsonMapSource) Final(r record) map[string]any {
 	}
 
 	if firstStop == nil {
-		if result := hermesSQLiteFallback(s.def.mode, sessionID); result != nil {
+		if result := hermesSQLiteFallback(s.def.mode, sessionID, status); result != nil {
 			return result
 		}
 		return map[string]any{
@@ -387,16 +386,8 @@ func (s *JsonMapSource) Final(r record) map[string]any {
 	return result
 }
 
-// hermesSQLiteFallback：Hermes 的 webhook 会话有时只把最终消息落在 ~/.hermes/state.db。
-// Go 版不含 SQLite 依赖（保持零依赖单二进制），这里只提示一次行为差异。
-func hermesSQLiteFallback(mode, sessionID string) map[string]any {
-	if mode != "hermes" || sessionID == "" {
-		return nil
-	}
-	dbPath := filepath.Join(defaultHome(), ".hermes", "state.db")
-	if _, err := os.Stat(dbPath); err != nil {
-		return nil
-	}
-	fmt.Fprintf(os.Stderr, "[WARN] hermes 会话 %s 没有 jsonl 文件；Go 版未实现 state.db 回退（Python 版有），详见 README\n", sessionID)
-	return nil
+// hermesSQLiteFallback：Hermes 的 webhook 会话有时只把最终消息落在 ~/.hermes/state.db，
+// jsonl 里什么都没有，这时只能去 SQLite 里捞（见 hermes_sqlite.go）。
+func hermesSQLiteFallback(mode, sessionID, status string) map[string]any {
+	return hermesSQLiteFinal(mode, sessionID, status)
 }

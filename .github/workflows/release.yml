@@ -31,7 +31,7 @@ jobs:
       - name: Test
         env:
           CGO_ENABLED: '0'
-        run: go test .
+        run: go test ./...
 
       - name: Build
         env:
@@ -39,7 +39,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          go build -trimpath -ldflags '-s -w' -o agent-session-query .
+          go build -trimpath -ldflags '-s -w' -o agent-session-query ./cmd/agent-session-query
           tar czf "agent-session-query-${GOOS}-${GOARCH}.tar.gz" agent-session-query
 
       - uses: softprops/action-gh-release@v2

@@ -10,10 +10,10 @@
 //	Codex       ~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl
 //	Gemini CLI  ~/.gemini/tmp/<项目>/chats/session-*.jsonl
 //
-// 只用标准库，无外部依赖；启动方式：
+// 唯一的外部依赖是纯 Go 的 SQLite 驱动（读 Hermes 的 state.db）；启动方式：
 //
 //	agent-session-query [--port 8080] [--mode auto|all|hermes|openclaw|pi|claude|codex|gemini]
-package main
+package app
 
 import (
 	"context"
@@ -30,11 +30,8 @@ import (
 	"time"
 )
 
-func main() {
-	os.Exit(run(os.Args[1:]))
-}
-
-func run(args []string) int {
+// Run 解析参数并启动服务，返回进程退出码（入口在 cmd/agent-session-query）。
+func Run(args []string) int {
 	fs := flag.NewFlagSet("agent-session-query", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	host := fs.String("host", "0.0.0.0", "绑定主机 (默认: 0.0.0.0)")

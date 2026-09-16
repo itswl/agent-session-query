@@ -273,7 +273,9 @@ Docker 环境变量：`HOOK_TOKEN`（传给 `--hook_token`）、`SESSION_MODE`�
 
 ## 与 Python 版的差异
 
-这一版是从 Go 重写的（原 Python 单文件实现在 git 历史里，最后的 Python 版本是 `c7da626`）。两者做了逐请求对拍验证：**60 条**固定用例（六个源的构造数据，覆盖匹配优先级、编码、limit 边界、错误分支，以及 Hermes `state.db` 回退）+ **33 项**真实数据（本机 11 个 Pi 会话、8 个 Claude Code 会话、6 个 Codex、3 个 Gemini 的列表/详情/消息/结果/按文件名查找），响应**逐字段一致**。
+这一版是从 Go 重写的。**升级方式**：拉下来 `go build` 即可，命令行参数、端点、响应结构都没有变化——原来用 `python3 session_query_api.py ...` 启的，换成 `./agent-session-query ...` 就行。原 Python 单文件实现保留在 git 历史里（最后的 Python 版本是 `c7da626`，`git show c7da626:session_query_api.py` 可取回）。
+
+两者做了逐请求对拍验证：**60 条**固定用例（六个源的构造数据，覆盖匹配优先级、编码、limit 边界、错误分支，以及 Hermes `state.db` 回退）+ **33 项**真实数据（本机 11 个 Pi 会话、8 个 Claude Code 会话、6 个 Codex、3 个 Gemini 的列表/详情/消息/结果/按文件名查找），响应**逐字段一致**。
 
 已知的行为差异只有这些：
 
@@ -341,11 +343,14 @@ Docker 环境变量：`HOOK_TOKEN`（传给 `--hook_token`）、`SESSION_MODE`�
 ├── record.go             # 统一的会话记录结构与工具函数
 ├── source.go             # 数据源接口与装配
 ├── source_jsonmap.go     # Hermes / OpenClaw
+├── hermes_sqlite.go      # Hermes state.db 回退（modernc.org/sqlite）
 ├── source_pi.go          # Pi
 ├── source_claude.go      # Claude Code
 ├── source_codex.go       # Codex
 ├── source_gemini.go      # Gemini CLI
 ├── session_query_test.go # 单元测试（解析、匹配、HTTP 路由）
+├── hermes_sqlite_test.go # 单元测试（state.db 回退）
+├── go.mod / go.sum       # 唯一依赖：纯 Go 的 SQLite 驱动
 ├── cmd/healthcheck/      # 容器探活用的小程序
 ├── Dockerfile            # 两段构建 → scratch（约 16 MB）
 └── docker-compose.yml    # 六个源目录的挂载示例

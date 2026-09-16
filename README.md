@@ -2,7 +2,7 @@
 
 一个只读的 HTTP API，用来查询本机上各种 Agent / CLI 的会话记录：列表、消息、最终结果。不改动任何会话数据。
 
-**Go 标准库实现，零外部依赖**——编译出来是一个静态二进制，不需要运行时、不需要 venv，`scp` 到任何同架构的机器上就能跑。
+**Go 实现，无 cgo、无常驻运行时**——编译出来是一个静态二进制，不需要 venv，`scp` 到任何同架构的机器上就能跑。唯一的外部依赖是纯 Go 的 SQLite 驱动（`modernc.org/sqlite`，为了读 Hermes 的 `state.db`），它同样不引入 cgo，交叉编译照旧。
 
 **一个接口，六种数据源**——存在哪几种就查哪几种，可以同时合并查询：
 
@@ -67,7 +67,7 @@ docker run -d --name agent-session-query -p 8080:8080 \
   agent-session-query --hook_token mysecrettoken
 ```
 
-镜像是两段构建：运行层用 `scratch`，里面只有两个静态二进制（服务本体 5.4 MB + 探活小程序 2 MB），镜像 **约 11 MB**，没有 shell、没有包管理器。数据源的路径由 `$HOME` 推导，镜像里 `HOME=/root`，所以挂载点都在 `/root/...` 下。挂几个目录就查几个源。
+镜像是两段构建：运行层用 `scratch`，里面只有两个静态二进制（服务本体 13.4 MB + 探活小程序 2 MB），镜像 **约 16 MB**，没有 shell、没有包管理器。数据源的路径由 `$HOME` 推导，镜像里 `HOME=/root`，所以挂载点都在 `/root/...` 下。挂几个目录就查几个源。
 
 ### Docker Compose
 
@@ -230,7 +230,7 @@ Docker 环境变量：`HOOK_TOKEN`（传给 `--hook_token`）、`SESSION_MODE`�
 
 ## 各数据源的解析细节
 
-- **Hermes**：`sessions.json` 是 `key → 记录` 的映射，会话内容在同目录的 `<session_id>.jsonl`；消息取 `role` 为 `user`/`assistant` 的行，`content` 是字符串，推理在 `reasoning`
+- **Hermes**：`sessions.json` 是 `key → 记录` 的映射，会话内容在同目录的 `<session_id>.jsonl`；消息取 `role` 为 `user`/`assistant` 的行，`content` 是字符串，推理在 `reasoning`。**webhook 会话可能只有 SQLite 记录**：没有 jsonl 时，`final` 回退到 `~/.hermes/state.db`（只读打开，取最后一条 `active=1` 且 `finish_reason=stop` 的助手消息，`message_count` 缺失时回退成实际条数）
 - **OpenClaw**：同上结构，字段名是 `sessionId`/`stopReason`；消息取 `type=message` 的行，`message.content` 是块数组（`text`/`thinking`/`toolCall`/`toolResult`），`stopReason` 可能在 `message` 里也可能在行顶层
 - **Pi**：行类型有 `session`（首行元数据）、`model_change`、`message`；消息取 `message` 行（`message.role` + `message.content` 块数组）
 - **Claude Code**：消息行是 `type=user`/`assistant`，内容在 `message.content`（`text`/`thinking`/`tool_use`/`tool_result` 块）；跳过 `isSidechain`（子代理）以及 `queue-operation`、`attachment`、`mode` 等非对话行
@@ -239,15 +239,15 @@ Docker 环境变量：`HOOK_TOKEN`（传给 `--hook_token`）、`SESSION_MODE`�
 
 ## 与 Python 版的差异
 
-这一版是从 Go 重写的（原 Python 单文件实现在 git 历史里，最后的 Python 版本是 `c7da626`）。两者做了逐请求对拍验证：**55 条**固定用例（六个源的构造数据，覆盖匹配优先级、编码、limit 边界、错误分支）+ **33 项**真实数据（本机 11 个 Pi 会话、8 个 Claude Code 会话、6 个 Codex、3 个 Gemini 的列表/详情/消息/结果/按文件名查找），响应**逐字段一致**。
+这一版是从 Go 重写的（原 Python 单文件实现在 git 历史里，最后的 Python 版本是 `c7da626`）。两者做了逐请求对拍验证：**60 条**固定用例（六个源的构造数据，覆盖匹配优先级、编码、limit 边界、错误分支，以及 Hermes `state.db` 回退）+ **33 项**真实数据（本机 11 个 Pi 会话、8 个 Claude Code 会话、6 个 Codex、3 个 Gemini 的列表/详情/消息/结果/按文件名查找），响应**逐字段一致**。
 
 已知的行为差异只有这些：
 
-1. **Hermes 的 `state.db` 回退没有实现**。Python 版在 Hermes 会话只有 SQLite 记录、没有 jsonl 时会去读 `~/.hermes/state.db`；Go 标准库不带 SQLite，这一版不做（真的命中这种情况时会在 stderr 打一行 WARN）。需要的话可以加一个带 build tag 的版本引入纯 Go 的 SQLite 驱动。
-2. **`HEAD` 请求**：Python 版返回 501；这一版按 `GET` 处理（响应无 body）。对探活工具更友好。
-3. **503 的响应体**：都是 503，但 Go 的 HTTP 状态原因短语是标准的 `Service Unavailable`。
-4. **`/stats` 的 `bad_requests`**：HTTP 协议层的畸形请求由 Go 的 `net/http` 自行处理并直接断开，不会逐条进这个计数；这一版统计的是服务端记录的协议层错误。其余三个计数字段（max/active/total connections）语义不变。
-5. 启动横幅与请求日志的格式略有不同（内容等价）。
+1. **`HEAD` 请求**：Python 版返回 501；这一版按 `GET` 处理（响应无 body）。对探活工具更友好。
+2. **503 的响应体**：都是 503，但 Go 的 HTTP 状态原因短语是标准的 `Service Unavailable`。
+3. **`/stats` 的 `bad_requests`**：HTTP 协议层的畸形请求由 Go 的 `net/http` 自行处理并直接断开，不会逐条进这个计数；这一版统计的是服务端记录的协议层错误。其余三个计数字段（max/active/total connections）语义不变。
+4. 启动横幅与请求日志的格式略有不同（内容等价）。
+5. **Hermes `state.db` 的查询少查了一列**（这一版更宽）。Python 版的 SQL 里 `SELECT` 了 `token_count` 却从未使用它——要是哪个版本的 Hermes 库没有这一列，它会直接抛 `no such column`，整个回退静默失效（只留一行 WARN，接口返回「会话文件不存在」）。这一版只查真正用得到的列，遇到这种库仍然能给出结果。
 
 ## 性能
 
@@ -313,7 +313,7 @@ Docker 环境变量：`HOOK_TOKEN`（传给 `--hook_token`）、`SESSION_MODE`�
 ├── source_gemini.go      # Gemini CLI
 ├── session_query_test.go # 单元测试（解析、匹配、HTTP 路由）
 ├── cmd/healthcheck/      # 容器探活用的小程序
-├── Dockerfile            # 两段构建 → scratch（约 11 MB）
+├── Dockerfile            # 两段构建 → scratch（约 16 MB）
 └── docker-compose.yml    # 六个源目录的挂载示例
 ```
 

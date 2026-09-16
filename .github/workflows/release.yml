@@ -27,13 +27,18 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # 测试只能跑在原生平台（交叉目标的测试二进制没法执行），所以单独一步、不带 GOOS/GOARCH
+      - name: Test
+        env:
+          CGO_ENABLED: '0'
+        run: go test .
+
       - name: Build
         env:
           CGO_ENABLED: '0'
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          go test .
           go build -trimpath -ldflags '-s -w' -o agent-session-query .
           tar czf "agent-session-query-${GOOS}-${GOARCH}.tar.gz" agent-session-query
 

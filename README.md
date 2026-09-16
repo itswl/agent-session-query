@@ -82,7 +82,7 @@ HOOK_TOKEN=mysecrettoken docker compose up -d   # 六个源目录的挂载配置
 
 ## Web 页面（`/ui`）
 
-第一次打开会要 `hook_token`，之后存在这个浏览器的 localStorage 里。
+第一次打开会要 `hook_token`，之后存在这个浏览器的 localStorage 里；服务端没设 `--hook_token` 时随便填一个字符串即可进入。
 
 - **左侧**：会话列表，数据源过滤 + 搜索框（匹配 sessionId / 文件名 / 路径 / cwd），按更新时间倒序；数据源彩色标签，相对时间（悬浮看完整时间）
 - **右侧**：会话信息、**最终结果**卡片（isFinal / stopReason / 用量）、消息时间线（text / thinking / toolCall / toolResult 分块；超过 600 字符的块折起来）

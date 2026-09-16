@@ -14,12 +14,31 @@ type JsonMapSource struct {
 
 func newJsonMapSource(def jsonMapDef) *JsonMapSource { return &JsonMapSource{def: def} }
 
-func (s *JsonMapSource) Mode() string     { return s.def.mode }
-func (s *JsonMapSource) Location() string { return s.def.sessionsJSON }
+func (s *JsonMapSource) Mode() string { return s.def.mode }
+
+// Location 返回实际存在的那份索引（sessions.json 优先；新版 Hermes 只有 state.db）
+func (s *JsonMapSource) Location() string {
+	if _, err := os.Stat(s.def.sessionsJSON); err == nil {
+		return s.def.sessionsJSON
+	}
+	if s.def.stateDB != "" {
+		if _, err := os.Stat(s.def.stateDB); err == nil {
+			return s.def.stateDB
+		}
+	}
+	return s.def.sessionsJSON
+}
 
 func (s *JsonMapSource) Exists() bool {
-	_, err := os.Stat(s.def.sessionsJSON)
-	return err == nil
+	if _, err := os.Stat(s.def.sessionsJSON); err == nil {
+		return true
+	}
+	if s.def.stateDB != "" {
+		if _, err := os.Stat(s.def.stateDB); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // kv 保留 sessions.json 里的原始顺序（Go map 不保序，而顺序会影响同分记录的先后）
@@ -157,6 +176,18 @@ func (s *JsonMapSource) List() []record {
 
 		out = append(out, record{fields: fields, sortKey: sortKey})
 	}
+
+	// 新版 Hermes：会话全部在 state.db 里，sessions.json 可能根本不存在；
+	// 已列出的 sessionId 跳过，避免双重列出
+	if s.def.stateDB != "" {
+		seen := map[string]bool{}
+		for _, r := range out {
+			if sid := r.str("sessionId"); sid != "" {
+				seen[sid] = true
+			}
+		}
+		out = append(out, hermesSQLiteList(s.def.stateDB, s.def.mode, seen)...)
+	}
 	return out
 }
 
@@ -165,6 +196,10 @@ func (s *JsonMapSource) Messages(r record, limit int) []map[string]any {
 	out := []map[string]any{}
 	path := s.fileOf(r)
 	if path == "" {
+		// 没有会话文件（新版 Hermes 全 SQLite）：消息也直接查 state.db
+		if s.def.stateDB != "" {
+			return hermesSQLiteMessages(s.def.stateDB, r.str("sessionId"), limit)
+		}
 		return out
 	}
 	eachJSONL(path, func(obj map[string]any) bool {

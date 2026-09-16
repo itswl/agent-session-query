@@ -82,13 +82,15 @@ func joinModes() string {
 	return out
 }
 
-// jsonMapDef 描述「一个 sessions.json 索引 + 每会话一个 jsonl」形态的数据源
+// jsonMapDef 描述「一个 sessions.json 索引 + 每会话一个 jsonl」形态的数据源。
+// stateDB 非 empty 时（仅 hermes）：sessions.json 不存在也能从 SQLite 列会话。
 type jsonMapDef struct {
 	mode            string
 	sessionsJSON    string
 	sessionsDir     string
 	sessionIDField  string
 	stopReasonField string
+	stateDB         string
 }
 
 func hermesDef(home string) jsonMapDef {
@@ -98,6 +100,7 @@ func hermesDef(home string) jsonMapDef {
 		sessionsDir:     filepath.Join(home, ".hermes", "sessions"),
 		sessionIDField:  "session_id",
 		stopReasonField: "finish_reason",
+		stateDB:         filepath.Join(home, ".hermes", "state.db"),
 	}
 }
 

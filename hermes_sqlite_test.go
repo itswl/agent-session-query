@@ -31,11 +31,13 @@ CREATE TABLE sessions (
 	id TEXT PRIMARY KEY, message_count INTEGER,
 	input_tokens INTEGER, output_tokens INTEGER,
 	cache_read_tokens INTEGER, cache_write_tokens INTEGER,
-	reasoning_tokens INTEGER, estimated_cost_usd REAL
+	reasoning_tokens INTEGER, estimated_cost_usd REAL,
+	session_key TEXT, display_name TEXT, source TEXT, model TEXT,
+	started_at REAL, ended_at REAL
 );
 CREATE TABLE messages (
 	id TEXT, session_id TEXT, role TEXT, content TEXT,
-	finish_reason TEXT, reasoning TEXT, timestamp TEXT,
+	finish_reason TEXT, reasoning TEXT, timestamp REAL,
 	active INTEGER DEFAULT 1
 );`
 
@@ -136,5 +138,70 @@ func TestJsonMapUsesSQLiteWhenFileMissing(t *testing.T) {
 	}
 	if final["error"] != nil {
 		t.Fatalf("不该走兜底错误: %v", final)
+	}
+}
+
+// 新版 Hermes 的形态：sessions.json / jsonl 都不存在，会话全部在 state.db 里
+func TestHermesSQLiteOnlySource(t *testing.T) {
+	dbPath := newHermesFixture(t)
+	makeHermesDB(t, dbPath, hermesSchema, []string{
+		`INSERT INTO sessions (id, session_key, display_name, source, model,
+			input_tokens, output_tokens, estimated_cost_usd, started_at, ended_at)
+		 VALUES ('20260814_002606_1a7908', NULL, '桌面会话', 'desktop', 'deepseek-v4-pro',
+			1500, 220, 0.0123, 1786638366.44, NULL)`,
+		`INSERT INTO messages (id, session_id, role, content, reasoning, timestamp, active)
+		 VALUES (1, '20260814_002606_1a7908', 'user', '你是什么模型？', NULL, 1786638379.3163, 1)`,
+		`INSERT INTO messages (id, session_id, role, content, finish_reason, reasoning, timestamp, active)
+		 VALUES (2, '20260814_002606_1a7908', 'assistant', '我是 Hermes', 'stop', '想一下', 1786638385.27674, 1)`,
+		`INSERT INTO messages (id, session_id, role, content, reasoning, timestamp, active)
+		 VALUES (3, '20260814_002606_1a7908', 'user', '被软删的', NULL, 1786713684.97493, 0)`,
+	})
+
+	source := newJsonMapSource(hermesDef(defaultHome()))
+	if !source.Exists() {
+		t.Fatal("state.db 存在时 hermes 源应启用")
+	}
+	if source.Location() != dbPath {
+		t.Fatalf("location 应指向 state.db: %v", source.Location())
+	}
+
+	list := source.List()
+	if len(list) != 1 {
+		t.Fatalf("list = %v", list)
+	}
+	r := list[0]
+	if r.str("sessionId") != "20260814_002606_1a7908" || r.str("key") != "20260814_002606_1a7908" {
+		t.Fatalf("record = %v", r.fields)
+	}
+	if r.str("platform") != "desktop" || r.str("model") != "deepseek-v4-pro" || r.str("displayName") != "桌面会话" {
+		t.Fatalf("record = %v", r.fields)
+	}
+	if r.get("totalTokens") != float64(1720) || r.get("estimatedCostUsd") != 0.0123 {
+		t.Fatalf("record = %v", r.fields)
+	}
+	if r.get("hasFile") != false || r.get("file") != nil {
+		t.Fatalf("record = %v", r.fields)
+	}
+	// updatedAt 取最后一条 active 消息的时间（epoch 秒 → UTC ISO）
+	if r.str("createdAt") != "2026-08-13T16:26:06" || r.str("updatedAt") != "2026-08-13T16:26:25" {
+		t.Fatalf("createdAt/updatedAt = %v / %v", r.str("createdAt"), r.str("updatedAt"))
+	}
+
+	msgs := source.Messages(r, 50)
+	if len(msgs) != 2 { // active=0 的不算
+		t.Fatalf("messages = %v", msgs)
+	}
+	if msgs[0]["role"] != "user" || msgs[0]["timestamp"] != "2026-08-13T16:26:19" {
+		t.Fatalf("msgs[0] = %v", msgs[0])
+	}
+	blocks := msgs[1]["content"].([]map[string]any)
+	if len(blocks) != 2 || blocks[0]["type"] != "thinking" || blocks[0]["content"] != "想一下" ||
+		blocks[1]["type"] != "text" || blocks[1]["content"] != "我是 Hermes" {
+		t.Fatalf("blocks = %v", blocks)
+	}
+
+	final := source.Final(r)
+	if final["isFinal"] != true || final["text"] != "我是 Hermes" || final["thinking"] != "想一下" {
+		t.Fatalf("final = %v", final)
 	}
 }

@@ -13,7 +13,9 @@ services:
     volumes:
       # 六个数据源目录都可以挂；没数据的源服务会自动跳过。
       # 注意：宿主机上不存在的目录会被 Docker 自动建成空目录（root 属主）。
-      - ~/.hermes/sessions:/root/.hermes/sessions:ro
+      # Hermes 挂整个 ~/.hermes：新版会话全在 state.db（配套 -wal/-shm 也要在，只挂 sessions/ 读不到），
+      # 目录里还有 Hermes 的配置/凭据文件——保持只读挂载、别把服务暴露到公网。
+      - ~/.hermes:/root/.hermes:ro
       - ~/.openclaw/agents/default/sessions:/root/.openclaw/agents/default/sessions:ro
       - ~/.pi/agent/sessions:/root/.pi/agent/sessions:ro
       - ~/.claude/projects:/root/.claude/projects:ro

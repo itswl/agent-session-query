@@ -5,8 +5,8 @@ services:
       dockerfile: Dockerfile
       args:
         # 国内构建可换成镜像源，例如：
-        #   PYTHON_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.10-slim
-        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.10-slim}
+        #   GO_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/golang:1.24-alpine
+        GO_IMAGE: ${GO_IMAGE:-golang:1.24-alpine}
     container_name: agent-session-query
     ports:
       - "8080:8080"
@@ -19,7 +19,7 @@ services:
       - ~/.claude/projects:/root/.claude/projects:ro
       - ~/.codex/sessions:/root/.codex/sessions:ro
       - ~/.gemini/tmp:/root/.gemini/tmp:ro
-    # 参数直接透传给脚本：SESSION_MODE 默认 auto；HOOK_TOKEN 留空则不启用认证
+    # 参数直接透传给二进制：SESSION_MODE 默认 auto；HOOK_TOKEN 留空则不启用认证
     command:
       - "--host"
       - "0.0.0.0"

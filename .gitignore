@@ -1,2 +1,7 @@
+# 构建产物
+/agent-session-query
+/healthcheck
+
+# 旧 Python 版本的残留（仓库里已经只有 Go 实现）
 __pycache__/
 *.pyc

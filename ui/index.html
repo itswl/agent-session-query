@@ -10,17 +10,18 @@
 
 <div id="gate" class="gate hidden">
   <form id="gate-form" autocomplete="off">
+    <div class="logo">A</div>
     <h1>Agent 会话</h1>
     <p>服务启用了 Bearer 认证。粘贴 <code>hook_token</code>，只存在这台浏览器里，不会发往别处。</p>
     <input id="gate-token" type="password" placeholder="hook_token" autocomplete="current-password">
-    <button type="submit">进入</button>
+    <button type="submit" class="primary">进入</button>
     <p id="gate-error" class="error"></p>
   </form>
 </div>
 
 <div id="app" class="hidden">
   <header>
-    <h1>Agent 会话</h1>
+    <div class="brand"><span class="dot"></span><h1>Agent 会话</h1></div>
     <input id="search" type="search" placeholder="搜索 sessionId / 文件名片段 / key">
     <select id="source-filter"><option value="">全部数据源</option></select>
     <label class="auto"><input type="checkbox" id="auto" checked> 自动刷新</label>

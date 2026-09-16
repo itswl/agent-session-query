@@ -73,6 +73,38 @@ function status(text) {
   $('status').textContent = text;
 }
 
+// 相对时间： updatedAt 各源格式不一（有无 T / Z / 毫秒），统一先按 UTC 补齐再解析。
+// 拿不准就原样返回，列表显示退化成原始字符串而已。
+function relTime(iso) {
+  if (!iso) return '';
+  let normalized = String(iso).trim().replace(' ', 'T');
+  if (!/[Zz]|[+-]\d{2}:?\d{2}$/.test(normalized)) normalized += 'Z';
+  const t = Date.parse(normalized);
+  if (Number.isNaN(t)) return String(iso);
+  const diff = Date.now() - t;
+  if (diff < 0) return String(iso); // 时钟偏差，显示原文最诚实
+  if (diff < 60e3) return '刚刚';
+  if (diff < 3600e3) return Math.floor(diff / 60e3) + ' 分钟前';
+  if (diff < 86400e3) return Math.floor(diff / 3600e3) + ' 小时前';
+  if (diff < 7 * 86400e3) return Math.floor(diff / 86400e3) + ' 天前';
+  const d = new Date(t);
+  const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return (d.getUTCFullYear() !== new Date().getUTCFullYear() ? d.getUTCFullYear() + '-' : '') + month + '-' + day;
+}
+
+// 数据源 / 状态标签：className 只用白名单里的值，source 是服务端枚举也不直接拼
+const SOURCE_CLASSES = ['claude', 'codex', 'gemini', 'hermes', 'openclaw', 'pi'];
+function sourceTag(source) {
+  const cls = SOURCE_CLASSES.includes(source) ? ' ' + source : '';
+  return el('span', 'tag' + cls, source);
+}
+
+function statusTag(status) {
+  const cls = status === 'done' ? ' done' : status === 'running' ? ' running' : '';
+  return el('span', 'tag' + cls, status);
+}
+
 // ---------------------------------------------------------------------------
 // 令牌闸门
 // ---------------------------------------------------------------------------
@@ -143,7 +175,7 @@ function renderList() {
   list.replaceChildren();
 
   if (sessions.length === 0) {
-    list.appendChild(el('p', 'item', '没有匹配的会话'));
+    list.appendChild(el('p', 'empty-list', '没有匹配的会话'));
     return;
   }
   for (const session of sessions) {
@@ -151,12 +183,19 @@ function renderList() {
     item.addEventListener('click', () => selectSession(session.sessionId));
 
     const row1 = el('div', 'row1');
-    row1.appendChild(el('span', 'tag', session.source));
-    row1.appendChild(el('span', 'key', session.shortKey || session.sessionId));
+    row1.appendChild(sourceTag(session.source));
+    if (session.updatedAt) {
+      const time = el('span', 'time', relTime(session.updatedAt));
+      time.title = session.updatedAt; // 悬浮看完整时间
+      row1.appendChild(time);
+    }
     item.appendChild(row1);
 
-    const meta = [session.updatedAt, session.cwd].filter(Boolean).join('  ·  ');
-    item.appendChild(el('div', 'meta', meta));
+    const key = el('div', 'key', session.shortKey || session.sessionId);
+    if (session.cwd) key.title = session.cwd;
+    item.appendChild(key);
+
+    if (session.cwd) item.appendChild(el('div', 'meta', session.cwd));
     list.appendChild(item);
   }
 }
@@ -167,12 +206,16 @@ function renderList() {
 
 function renderDetailHeader(record) {
   const box = el('div');
+
+  const tagrow = el('div', 'tagrow');
+  tagrow.appendChild(sourceTag(record.source));
+  if (record.status) tagrow.appendChild(statusTag(record.status));
+  box.appendChild(tagrow);
+
   box.appendChild(el('h2', '', record.shortKey || record.sessionId));
   box.appendChild(el('p', 'sub', record.key || ''));
 
   box.appendChild(kv([
-    ['数据源', record.source],
-    ['状态', record.status],
     ['sessionId', record.sessionId],
     ['更新时间', record.updatedAt],
     ['cwd', record.cwd],
@@ -189,11 +232,16 @@ function blockNode(block) {
       return el('div', 'block text', block.content);
     case 'thinking':
       return el('div', 'block thinking', block.content);
-    case 'toolCall':
-      return el('div', 'block toolCall', '⚙ ' + (block.name || '') + ' ' + JSON.stringify(block.arguments || {}));
+    case 'toolCall': {
+      // 工具名做头、参数缩进展开，扫一眼就知道调了什么
+      const wrap = el('div', 'block toolCall');
+      wrap.appendChild(el('div', 'tool-name', '⚙ ' + (block.name || '(未命名工具)')));
+      wrap.appendChild(el('pre', '', JSON.stringify(block.arguments || {}, null, 2)));
+      return wrap;
+    }
     case 'toolResult': {
       const wrap = el('div', 'block toolResult');
-      wrap.appendChild(el('div', '', '↳ ' + (block.toolName || '结果')));
+      wrap.appendChild(el('div', 'tool-label', '↳ ' + (block.toolName || '结果')));
       wrap.appendChild(el('pre', '', block.content));
       return wrap;
     }
@@ -205,14 +253,17 @@ function blockNode(block) {
 function messageNode(message) {
   const node = el('div', 'msg ' + (message.role || ''));
   const head = el('div', 'head');
-  head.appendChild(el('span', '', message.role || '?'));
-  if (message.timestamp) head.appendChild(el('span', '', String(message.timestamp)));
-  if (message.id) head.appendChild(el('span', '', message.id));
+  head.appendChild(el('span', 'role', message.role || '?'));
+  if (message.id) head.title = 'id: ' + message.id;
+  if (message.timestamp) {
+    const time = el('span', 'time', String(message.timestamp));
+    head.appendChild(time);
+  }
   node.appendChild(head);
 
   const blocks = Array.isArray(message.content) ? message.content : [];
   if (blocks.length === 0) {
-    node.appendChild(el('div', 'block', '（空消息）'));
+    node.appendChild(el('div', 'block empty-hint', '（空消息）'));
   }
   for (const block of blocks) {
     // 超长的块折起来，避免一个工具输出淹没整页
@@ -230,9 +281,25 @@ function messageNode(message) {
   return node;
 }
 
+// usage 各源字段名不同，收敛成可读的键名；费用保留 4 位
+const USAGE_LABELS = {
+  inputTokens: '输入', outputTokens: '输出',
+  input_tokens: '输入', output_tokens: '输出',
+  cacheReadTokens: '缓存读', cacheWriteTokens: '缓存写',
+  reasoningTokens: '推理', estimatedCostUsd: '费用$',
+};
+const USAGE_DECIMALS = { estimatedCostUsd: 4 };
+
 function finalCard(final) {
-  const card = el('div', 'card');
+  const done = final.isFinal === true;
+  const card = el('div', 'card ' + (done ? 'final-done' : 'final-pending'));
   card.appendChild(el('h3', '', '最终结果'));
+
+  const badges = el('div', 'badges');
+  badges.appendChild(el('span', 'badge ' + (done ? 'ok' : 'warn'), done ? '已完成' : '未完成'));
+  if (final.isProcessing) badges.appendChild(el('span', 'badge warn', '处理中'));
+  card.appendChild(badges);
+
   if (final.error) {
     card.appendChild(el('div', 'text', final.error));
   }
@@ -245,15 +312,20 @@ function finalCard(final) {
     card.appendChild(details);
   }
   card.appendChild(kv([
-    ['isFinal', final.isFinal === undefined ? '' : String(final.isFinal)],
-    ['isProcessing', final.isProcessing === undefined ? '' : String(final.isProcessing)],
     ['stopReason', final.stopReason],
     ['messageCount', final.messageCount],
     ['模型', final.model],
     ['时间', final.timestamp],
   ]));
   if (final.usage && Object.keys(final.usage).length > 0) {
-    card.appendChild(el('div', 'kv', '用量 ' + JSON.stringify(final.usage)));
+    const pairs = Object.entries(final.usage)
+      .filter(([, v]) => v !== null && v !== undefined && v !== '')
+      .map(([k, v]) => {
+        const digits = USAGE_DECIMALS[k];
+        const text = digits !== undefined ? Number(v).toFixed(digits) : String(v);
+        return [USAGE_LABELS[k] || k, text];
+      });
+    card.appendChild(kv(pairs));
   }
   return card;
 }

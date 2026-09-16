@@ -361,8 +361,9 @@ Docker 环境变量：`HOOK_TOKEN`（传给 `--hook_token`）、`SESSION_MODE`�
 ├── source_claude.go      # Claude Code
 ├── source_codex.go       # Codex
 ├── source_gemini.go      # Gemini CLI
-├── session_query_test.go # 单元测试（解析、匹配、HTTP 路由）
-├── hermes_sqlite_test.go # 单元测试（state.db 回退）
+├── session_query_test.go # 框架层测试（匹配、缓存、HTTP 路由）+ 测试公用工具
+├── source_*_test.go      # 各数据源测试（与 source_*.go 一一对应）
+├── hermes_sqlite_test.go # state.db 相关测试（回退 + 全 SQLite 数据源）
 ├── go.mod / go.sum       # 唯一依赖：纯 Go 的 SQLite 驱动
 ├── ui/                   # 内嵌的单页（HTML/CSS/原生 JS，go:embed）
 ├── cmd/healthcheck/      # 容器探活用的小程序

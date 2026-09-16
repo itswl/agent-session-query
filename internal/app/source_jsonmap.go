@@ -47,7 +47,7 @@ type kv struct {
 	Val any
 }
 
-// load 读取 sessions.json；不是 JSON 对象时返回空（与 Python 的失败形态一致）。
+// load 读取 sessions.json；不是 JSON 对象时返回空。
 func (s *JsonMapSource) load() []kv {
 	raw, err := os.ReadFile(s.def.sessionsJSON)
 	if err != nil || !json.Valid(raw) {

@@ -203,7 +203,7 @@ func TestHTTPRoutes(t *testing.T) {
 		t.Fatalf("/ = %d", code)
 	}
 	// /api 前缀只对 /sessions 系列生效：/api/health 会落到「认证之后」的 404
-	// （配了 token 时先撞 401，这与 Python 版的判定顺序一致）
+	// （配了 token 时先撞 401）
 	if code, _ := get(t, srv.URL+"/api/health", ""); code != 401 {
 		t.Fatalf("/api/health (带 token 配置) = %d", code)
 	}
@@ -304,7 +304,7 @@ func TestHTTPOptionsAndMethods(t *testing.T) {
 }
 
 func TestBuildSourcesModes(t *testing.T) {
-	// 未检测到任何数据源时回退 OpenClaw（all 与 auto 都一样，与 Python 版一致）
+	// 未检测到任何数据源时回退 OpenClaw（all 与 auto 都一样）
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	if sources, err := buildSources("auto"); err != nil || len(sources) != 1 || sources[0].Mode() != "openclaw" {

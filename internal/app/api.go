@@ -58,7 +58,7 @@ func (a *SessionQueryAPI) recordsOf(source SessionSource) []record {
 	return records
 }
 
-// safeList 单个数据源出错时不拖垮整个列表（与 Python 版的 try/except 一致）
+// safeList 单个数据源出错时不拖垮整个列表
 func safeList(source SessionSource) (out []record) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -74,7 +74,7 @@ func (a *SessionQueryAPI) listSessions() []map[string]any {
 	for _, source := range a.sources {
 		all = append(all, a.recordsOf(source)...)
 	}
-	// 按更新时间倒序；相等时保持数据源顺序（与 Python stable sort 一致）
+	// 按更新时间倒序；相等时保持数据源顺序（稳定排序）
 	sort.SliceStable(all, func(i, j int) bool { return all[i].sortKey > all[j].sortKey })
 
 	out := make([]map[string]any, 0, len(all))

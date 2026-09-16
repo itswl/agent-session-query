@@ -11,7 +11,7 @@ import (
 	_ "modernc.org/sqlite" // 纯 Go 的 SQLite 驱动（不用 cgo，交叉编译照旧）
 )
 
-// hermesSQLiteFinal 读取 ~/.hermes/state.db，对应原 Python 版的 _sqlite_final_message。
+// hermesSQLiteFinal 读取 ~/.hermes/state.db，取会话的最终消息。
 //
 // Hermes 的 webhook 会话有时只把最终消息落在 state.db 里，jsonl 里什么都没有——
 // 这时候会话记录没有 file，final 只能从 SQLite 取。
@@ -26,7 +26,7 @@ func hermesSQLiteFinal(mode, sessionID, status string) map[string]any {
 		return nil
 	}
 
-	// 只读打开：不建 -wal/-shm、不改动别人的库；超时保护与 Python 版的 timeout=3 对齐
+	// 只读打开：不建 -wal/-shm、不改动别人的库；超时保护 3 秒
 	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
 	if err != nil {
 		warnHermesSQLite(sessionID, err)
@@ -39,8 +39,7 @@ func hermesSQLiteFinal(mode, sessionID, status string) map[string]any {
 	var inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens sql.NullInt64
 	var estimatedCost sql.NullFloat64
 
-	// 注意：这里不查 token_count——Python 版的 SELECT 里带了它但从未使用，
-	// 少查一列反而更抗 schema 差异
+	// 注意：只查真正用到的列——少查一列更抗 schema 差异
 	row := db.QueryRow(
 		`SELECT message_count, input_tokens, output_tokens, cache_read_tokens,
 		        cache_write_tokens, reasoning_tokens, estimated_cost_usd
@@ -78,7 +77,7 @@ func hermesSQLiteFinal(mode, sessionID, status string) map[string]any {
 		return nil
 	}
 
-	// message_count 缺失或为 0 时回退成实际条数（与 Python 版一致）
+	// message_count 缺失或为 0 时回退成实际条数
 	count := int64(0)
 	if messageCount.Valid {
 		count = messageCount.Int64
@@ -319,7 +318,7 @@ func sqliteTimeString(v any) string {
 	return sqliteValueString(v)
 }
 
-// nullStringOrNil 对应 Python 里「字段原样返回」：NULL 就是 JSON null
+// nullStringOrNil 字段原样返回：NULL 就是 JSON null
 func nullStringOrNil(v sql.NullString) any {
 	if v.Valid {
 		return v.String

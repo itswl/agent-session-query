@@ -111,7 +111,7 @@ func contentText(value any) string {
 	return ""
 }
 
-// mtimeISO 文件修改时间（UTC，秒级），与 Python 版的 %Y-%m-%dT%H:%M:%S 一致。
+// mtimeISO 文件修改时间（UTC，秒级，形如 2026-09-14T07:41:48）。
 func mtimeISO(path string) string {
 	st, err := os.Stat(path)
 	if err != nil {
@@ -142,8 +142,7 @@ func matchRank(patternLower string, f map[string]any) int {
 	return -1
 }
 
-// truncate 按「字符」（Unicode 码点）截断，与 Python 的 len()/切片语义一致；
-// 超长时在末尾加标记。
+// truncate 按「字符」（Unicode 码点）截断，超长时在末尾加标记。
 func truncate(text string, limit int, mark string) string {
 	if utf8.RuneCountInString(text) <= limit {
 		return text
@@ -158,7 +157,7 @@ func truncate(text string, limit int, mark string) string {
 	return text + mark
 }
 
-// truthy 对应 Python 的真值判断：None/False/0/""/空容器 为假。
+// truthy 真值判断：nil/false/0/空串/空容器 为假。
 func truthy(v any) bool {
 	switch t := v.(type) {
 	case nil:
@@ -181,7 +180,7 @@ func truthy(v any) bool {
 	return true
 }
 
-// toStr 近似 Python 的 str()：字符串原样，数字不带指数，其余用字面量。
+// toStr 转字符串：字符串原样，布尔输出 True/False，数字不带指数。
 func toStr(v any) string {
 	switch t := v.(type) {
 	case nil:
@@ -215,7 +214,7 @@ func toFloat(v any) (float64, bool) {
 	return 0, false
 }
 
-// strOr 对应 Python 的 `x or default`。
+// strOr 取字符串值，空值时用默认值。
 func strOr(v any, def string) string {
 	if truthy(v) {
 		return toStr(v)
@@ -223,7 +222,7 @@ func strOr(v any, def string) string {
 	return def
 }
 
-// getOr 对应 Python 的 `m.get(key, default)`：键存在就用原值（哪怕是 null），否则用默认值。
+// getOr 键存在就用原值（哪怕是 null），否则用默认值。
 func getOr(m map[string]any, key string, def any) any {
 	if v, ok := m[key]; ok {
 		return v
@@ -231,7 +230,7 @@ func getOr(m map[string]any, key string, def any) any {
 	return def
 }
 
-// getMap 取一个 map 字段（缺失或类型不符时返回空 map，与 Python 的 `or {}` 一致）。
+// getMap 取一个 map 字段（缺失或类型不符时返回空 map）。
 func getMap(m map[string]any, key string) map[string]any {
 	if inner, ok := m[key].(map[string]any); ok && inner != nil {
 		return inner
@@ -256,7 +255,7 @@ func strField(m map[string]any, key string) string {
 }
 
 // utcFromSeconds 把秒级时间戳格式化成 UTC 的两种形态；
-// 越界（对应 Python fromtimestamp 抛异常）返回 ok=false。
+// 越界返回 ok=false。
 func utcFromSeconds(sec float64) (dashed string, iso string, ok bool) {
 	whole := int64(sec)
 	if sec < 0 && float64(whole) != sec {

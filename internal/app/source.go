@@ -21,7 +21,7 @@ type SessionSource interface {
 // 支持的数据源（--mode 可选值）；auto 模式下按存在与否启用
 var knownModes = []string{"hermes", "openclaw", "pi", "claude", "codex", "gemini"}
 
-// defaultHome 解析 ~（与 Python 的 Path.home() 相同，读 $HOME）
+// defaultHome 读 $HOME 解析 ~
 func defaultHome() string {
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		return home

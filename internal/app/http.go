@@ -74,7 +74,7 @@ func (s *apiServer) checkAuth(r *http.Request) bool {
 // 响应
 // ---------------------------------------------------------------------------
 
-// writeJSON 输出 JSON（不转义 HTML，与 Python 的 json.dumps(ensure_ascii=False) 对齐）
+// writeJSON 输出 JSON（不转义 HTML、不转义非 ASCII）
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -134,7 +134,7 @@ func (s *apiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
-	// 用 EscapedPath 分段（%2F 不当作分隔符），与 Python 版先匹配再 unquote 一致
+	// 用 EscapedPath 分段（%2F 不当作分隔符）
 	path := r.URL.EscapedPath()
 
 	// 健康检查 - 不要求认证，便于监控探活
@@ -242,7 +242,7 @@ func unescapePattern(segment string) string {
 	return segment
 }
 
-// parseLimit 取 ?limit=，非法或缺省都是 50（与 Python 的 int() 失败回退一致）
+// parseLimit 取 ?limit=，非法或缺省都是 50
 func parseLimit(r *http.Request) int {
 	values, ok := r.URL.Query()["limit"]
 	if !ok || len(values) != 1 {
@@ -266,7 +266,7 @@ func logRequest(r *http.Request, status int) {
 }
 
 // ---------------------------------------------------------------------------
-// 连接限制：超过上限的连接直接返回 503（与 Python 版每连接一个许可一致）
+// 连接限制：超过上限的连接直接返回 503
 // ---------------------------------------------------------------------------
 
 type limitListener struct {

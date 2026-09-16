@@ -8,7 +8,7 @@
 
 | 数据源 | 会话位置 | 会话 ID |
 |--------|----------|---------|
-| Hermes | `~/.hermes/sessions/` | `sessions.json` 里的 `session_id` |
+| Hermes | `~/.hermes/sessions/`（`sessions.json`）或 `~/.hermes/state.db`（新版全 SQLite） | `sessions.json` 里的 `session_id` / `sessions` 表的 `id` |
 | OpenClaw | `~/.openclaw/agents/default/sessions/` | `sessions.json` 里的 `sessionId` |
 | Pi | `~/.pi/agent/sessions/<项目>/*.jsonl` | 会话文件首行 `id` |
 | Claude Code | `~/.claude/projects/<项目>/*.jsonl` | 文件名（uuid）/ `sessionId` 字段 |
@@ -17,7 +17,18 @@
 
 ## 快速开始
 
-### 本地运行
+### 下载编译产物
+
+不用装 Go：push 形如 `v1.0.0` 的 tag 会触发 [GitHub Actions](.github/workflows/release.yml) 自动交叉编译四个平台（`linux` / `darwin` × `amd64` / `arm64`），产物挂在 Releases 页，解包即用：
+
+```bash
+tar xzf agent-session-query-darwin-arm64.tar.gz
+./agent-session-query --port 8080
+```
+
+（macOS 上如果被 Gatekeeper 拦：`xattr -d com.apple.quarantine agent-session-query`）
+
+### 本地构建
 
 ```bash
 go build -o agent-session-query .
@@ -45,35 +56,11 @@ go build -o agent-session-query .
 已启用认证（Bearer hook_token 已设置，不回显）
 ```
 
-交叉编译（在别的机器上跑同一个二进制）：
+交叉编译（在别的机器上跑同一个二进制；push `v*` tag 会自动出四平台产物，见上文「下载编译产物」）：
 
 ```bash
 CGO_ENABLED=0 GOOS=linux   GOARCH=arm64 go build -o agent-session-query-arm64 .
 CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -o agent-session-query-mac .
-```
-
-### Docker
-
-```bash
-docker build -t agent-session-query .          # 国内加 --build-arg GO_IMAGE=<镜像源>
-
-docker run -d --name agent-session-query -p 8080:8080 \
-  -v ~/.claude/projects:/root/.claude/projects:ro \
-  -v ~/.codex/sessions:/root/.codex/sessions:ro \
-  -v ~/.pi/agent/sessions:/root/.pi/agent/sessions:ro \
-  -v ~/.gemini/tmp:/root/.gemini/tmp:ro \
-  -v ~/.hermes/sessions:/root/.hermes/sessions:ro \
-  -v ~/.openclaw/agents/default/sessions:/root/.openclaw/agents/default/sessions:ro \
-  agent-session-query --hook_token mysecrettoken
-```
-
-镜像是两段构建：运行层用 `scratch`，里面只有两个静态二进制（服务本体 13.4 MB + 探活小程序 2 MB），镜像 **约 16 MB**，没有 shell、没有包管理器。数据源的路径由 `$HOME` 推导，镜像里 `HOME=/root`，所以挂载点都在 `/root/...` 下。挂几个目录就查几个源。
-
-### Docker Compose
-
-```bash
-docker compose up -d                                              # 六个源目录都已挂载
-HOOK_TOKEN=mysecrettoken SESSION_MODE=auto docker compose up -d   # 带认证
 ```
 
 ### 常驻部署（systemd user service）
@@ -108,12 +95,22 @@ journalctl --user -u agent-session-query -f
 
 默认只监听 `127.0.0.1`：要给别人用，改成 `0.0.0.0` 并挂在反向代理后面，别裸奔到公网。
 
+### Docker（可选）
+
+单二进制已经够省事（产物约 15 MB、无运行时依赖），Docker 不再是推荐方式，仓库保留 `Dockerfile` / `docker-compose.yml` 备用：
+
+```bash
+HOOK_TOKEN=mysecrettoken docker compose up -d   # 六个源目录的挂载配置见 docker-compose.yml
+```
+
+容器里数据源路径由 `$HOME` 推导（挂载点都在 `/root/...` 下），挂几个目录就查几个源；Hermes 记得挂整个 `~/.hermes`（`state.db` 及其 `-wal`/`-shm` 都要跟着）。
+
 ## 页面（`/ui`）
 
 浏览器里直接看：`http://127.0.0.1:8787/ui`。第一次打开会要 `hook_token`，之后存在这个浏览器的 localStorage 里。
 
-- **左侧**：会话列表，带数据源过滤与搜索框（搜索匹配 sessionId / 文件名 / 路径 / cwd），按更新时间倒序，默认选中最新一条
-- **右侧**：会话信息、**最终结果**卡片（isFinal / stopReason / 用量）、消息时间线（text / thinking / toolCall / toolResult 分块；超过 600 字符的块折起来）
+- **左侧**：会话列表，带数据源过滤与搜索框（搜索匹配 sessionId / 文件名 / 路径 / cwd），按更新时间倒序，默认选中最新一条；数据源彩色标签，时间显示为相对时间（悬浮看完整时间）
+- **右侧**：会话信息、**最终结果**卡片（isFinal / stopReason / 用量）、消息时间线（text / thinking / toolCall / toolResult 分块；超过 600 字符的块折起来）；界面亮/暗随系统切换
 - 10 秒自动刷新（页面在后台时不打接口）；URL 片段是会话 ID，可以直接当深链贴给别人（`/ui#<sessionId>`）
 - token 失效时自动退回令牌页
 
@@ -192,7 +189,7 @@ journalctl --user -u agent-session-query -f
 | 数据源 | 额外字段 |
 |--------|----------|
 | OpenClaw | `model`、`runtimeMs`、`totalTokens` |
-| Hermes | `createdAt`、`displayName`、`platform`、`totalTokens`、`estimatedCostUsd` |
+| Hermes | `createdAt`、`displayName`、`platform`、`totalTokens`、`estimatedCostUsd`（SQLite 记录另带 `model`） |
 | Pi / Claude Code | `cwd` |
 | Codex | `cwd`、`cliVersion` |
 | Gemini CLI | `project` |
@@ -279,12 +276,12 @@ Docker 环境变量：`HOOK_TOKEN`（传给 `--hook_token`）、`SESSION_MODE`�
 
 ## 各数据源的解析细节
 
-- **Hermes**：`sessions.json` 是 `key → 记录` 的映射，会话内容在同目录的 `<session_id>.jsonl`；消息取 `role` 为 `user`/`assistant` 的行，`content` 是字符串，推理在 `reasoning`。**webhook 会话可能只有 SQLite 记录**：没有 jsonl 时，`final` 回退到 `~/.hermes/state.db`（只读打开，取最后一条 `active=1` 且 `finish_reason=stop` 的助手消息，`message_count` 缺失时回退成实际条数）
+- **Hermes**：`sessions.json` 是 `key → 记录` 的映射，会话内容在同目录的 `<session_id>.jsonl`；消息取 `role` 为 `user`/`assistant` 的行，`content` 是字符串，推理在 `reasoning`。**新版 Hermes 不写 `sessions.json` / jsonl，会话全部落在 `~/.hermes/state.db`**：库存在即启用该源，列表与消息直接查 `sessions` / `messages` 表（时间戳是 epoch 秒，格式化成 UTC；assistant 的 `reasoning` 作为 thinking；`platform` 取 `sessions.source`）；两处都有时按 sessionId 去重，jsonl 优先。没有 jsonl 的会话 `final` 也回退到 `state.db`（只读打开，取最后一条 `active=1` 且 `finish_reason=stop` 的助手消息，`message_count` 缺失时回退成实际条数）
 - **OpenClaw**：同上结构，字段名是 `sessionId`/`stopReason`；消息取 `type=message` 的行，`message.content` 是块数组（`text`/`thinking`/`toolCall`/`toolResult`），`stopReason` 可能在 `message` 里也可能在行顶层
 - **Pi**：行类型有 `session`（首行元数据）、`model_change`、`message`；消息取 `message` 行（`message.role` + `message.content` 块数组）
 - **Claude Code**：消息行是 `type=user`/`assistant`，内容在 `message.content`（`text`/`thinking`/`tool_use`/`tool_result` 块）；跳过 `isSidechain`（子代理）以及 `queue-operation`、`attachment`、`mode` 等非对话行
 - **Codex**：消息行是 `type=response_item` 且 `payload.type=message`；`payload.role` 为 `developer` 的行（系统拼装的指令）不计入；用量取自 `token_usage_record`
-- **Gemini CLI**：文件是追加日志——首行元数据（`sessionId`/`startTime`）、`{"$set": {...}}` 补丁行、以及消息行；消息取 `type=user`/`type=gemini` 的行，`content` 可能是数组（user）或字符串（gemini），`thoughts` 作为 thinking
+- **Gemini CLI**：文件是追加日志——首行元数据（`sessionId`/`startTime`）、`{"$set": {...}}` 补丁行、以及消息行；消息取 `type=user`/`type=gemini` 的行，`content` 可能是数组（user）或字符串（gemini）。工具调用型会话里正文很稀：发起调用时 `content` 是空串、内容在 `toolCalls` 字段（→ `toolCall` 块，只带 name/args），执行结果由后续 user 行 `content` 数组里的 `functionResponse` 项回传（→ `toolResult` 块）；`thoughts` 字符串或 `[{subject, description}]` 数组都作为 thinking（数组取各条 description）
 
 ## 与 Python 版的差异
 
@@ -338,7 +335,8 @@ Docker 环境变量：`HOOK_TOKEN`（传给 `--hook_token`）、`SESSION_MODE`�
 
 1. **某个数据源没被启用**（`/health` 的 `sources` 里没有它）
    - 先对照上表确认本机会话目录存在；`--mode all` 会明确打印缺了哪个
-   - 容器里跑时确认对应目录挂进去了（compose 默认六个都挂；手动 `docker run` 要自己加 `-v`）
+   - Hermes 看 `sessions.json` **或** `state.db`，任一存在即启用——新版 Hermes 只有 `state.db`
+   - 容器里跑时确认对应目录挂进去了（挂载配置见 `docker-compose.yml`）
    - 镜像不预建会话目录，空的挂载目录不会被视为"有数据源"
    - 数据源路径是 `$HOME` 推导的：容器里是 `/root/...`，`sudo` 跑时可能是 `/root`、普通用户是 `/home/<你>`
 2. **列表为空**
@@ -368,8 +366,9 @@ Docker 环境变量：`HOOK_TOKEN`（传给 `--hook_token`）、`SESSION_MODE`�
 ├── go.mod / go.sum       # 唯一依赖：纯 Go 的 SQLite 驱动
 ├── ui/                   # 内嵌的单页（HTML/CSS/原生 JS，go:embed）
 ├── cmd/healthcheck/      # 容器探活用的小程序
-├── Dockerfile            # 两段构建 → scratch（约 16 MB）
-└── docker-compose.yml    # 六个源目录的挂载示例
+├── Dockerfile            # 可选的容器构建（scratch，约 16 MB）
+├── docker-compose.yml    # 六个源目录的挂载示例
+└── .github/workflows/release.yml # 打 tag 自动交叉编译 + 发 Release
 ```
 
 ```bash

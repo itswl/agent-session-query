@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -198,12 +199,12 @@ func (s *JsonMapSource) Messages(r record, q messageQuery) []map[string]any {
 // Search scans the jsonl when there is one; without it (newer Hermes is all SQLite) it
 // queries the database. This is the only searchableSource implementation — every other
 // source has nothing but files, so the generic path suffices.
-func (s *JsonMapSource) Search(r record, q searchQuery) []map[string]any {
+func (s *JsonMapSource) Search(ctx context.Context, r record, q searchQuery) []map[string]any {
 	if path := s.fileOf(r); path != "" {
-		return searchFile(path, q)
+		return searchFile(ctx, path, q)
 	}
 	if s.def.stateDB != "" && fileExists(s.def.stateDB) {
-		return hermesSQLiteSearch(s.def.stateDB, r.str("sessionId"), q)
+		return hermesSQLiteSearch(ctx, s.def.stateDB, r.str("sessionId"), q)
 	}
 	return nil
 }

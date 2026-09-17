@@ -220,6 +220,10 @@ func (s *apiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logRequest(r, status)
 }
 
+// statusClientClosed mirrors nginx's 499: the client hung up before the response. It is
+// never sent on the wire (there is nobody left to send it to) and only reaches the log.
+const statusClientClosed = 499
+
 func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 	// Split on EscapedPath so %2F is not treated as a separator
 	path := r.URL.EscapedPath()
@@ -334,7 +338,12 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			return http.StatusBadRequest
 		}
 		started := time.Now()
-		found := s.api.search(query)
+		found := s.api.search(r.Context(), query)
+		if found.stopped {
+			// The client hung up mid-scan (the page cancels in-flight searches on every
+			// keystroke). 499 is nginx's "client closed request" and only reaches the log.
+			return statusClientClosed
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"query":     query.needle,
 			"results":   found.results,

@@ -201,11 +201,11 @@ reading**:
 when it goes stale, and that costs the "single binary, read-only, scp it anywhere" property —
 and measurement says it is not needed:
 
-| 174 real local sessions / 470 MB | Time |
+| 210 real local sessions / 516 MB | Time |
 |---|---|
-| Cold (page cache missed) | 1095 ms |
-| Warm | **60 ms** |
-| `since=2d` (narrowed to 43 sessions) | 45 ms |
+| Cold (page cache missed) | 2100 ms |
+| Warm, common term (stops at the first hit per file) | **17–67 ms** |
+| Warm, no match anywhere (every file read to the end) | 117 ms |
 
 The speed comes from ordering, not from the algorithm:
 
@@ -219,6 +219,13 @@ The speed comes from ordering, not from the algorithm:
    back by index, so the order never shifts
 4. **Newest first** — candidates are ordered by update time, so truncating at `limit` keeps the
    most recent
+5. **Cancellable** — the page searches on every keystroke and only ever displays the last
+   result, so an abandoned scan has to stop rather than run to completion. `search` takes the
+   request context; workers stop picking up sessions once it is done, and inside a file the
+   check is sampled every `cancelCheckLines` lines (a channel receive per line would cost more
+   than the `Contains` that is the actual work). A cancelled request logs 499 and writes no
+   body. Without this, typing five characters would leave four full scans competing for every
+   core — measured at 20 ms → 384 ms per search with five in flight
 
 There is a trap in extracting snippets: JSON is full of strings, and a match can land in a field
 name. So `findMatchingText` only accepts body fields (`text` / `content` / `thinking` /

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -310,7 +311,7 @@ func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string
 // hermesSQLiteSearch searches one session's body inside state.db.
 // SQLite's LIKE is already case-insensitive for ASCII, so let it do the work rather than
 // reading every message out to compare here.
-func hermesSQLiteSearch(dbPath, sessionID string, q searchQuery) []map[string]any {
+func hermesSQLiteSearch(ctx context.Context, dbPath, sessionID string, q searchQuery) []map[string]any {
 	if sessionID == "" || len(q.lowered) == 0 || q.perSession <= 0 {
 		return nil
 	}
@@ -322,7 +323,7 @@ func hermesSQLiteSearch(dbPath, sessionID string, q searchQuery) []map[string]an
 	defer db.Close()
 
 	like := "%" + escapeLike(string(q.lowered)) + "%"
-	rows, err := db.Query(`
+	rows, err := db.QueryContext(ctx, `
 		SELECT role, content, reasoning, timestamp
 		FROM messages
 		WHERE session_id = ?

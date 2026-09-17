@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -67,7 +68,8 @@ func runMCP(s *mcpServer, in io.Reader, out io.Writer) int {
 			return 1
 		}
 
-		result, rpcErr := s.dispatch(req.Method, req.Params)
+		// stdio has no per-request lifetime to cancel against
+		result, rpcErr := s.dispatch(context.Background(), req.Method, req.Params)
 		if len(req.ID) == 0 {
 			continue // a notification (no id) needs no reply
 		}
@@ -84,7 +86,7 @@ func runMCP(s *mcpServer, in io.Reader, out io.Writer) int {
 	}
 }
 
-func (s *mcpServer) dispatch(method string, params json.RawMessage) (any, *rpcError) {
+func (s *mcpServer) dispatch(ctx context.Context, method string, params json.RawMessage) (any, *rpcError) {
 	switch method {
 	case "initialize":
 		return map[string]any{
@@ -97,7 +99,7 @@ func (s *mcpServer) dispatch(method string, params json.RawMessage) (any, *rpcEr
 	case "tools/list":
 		return map[string]any{"tools": mcpTools()}, nil
 	case "tools/call":
-		return s.callTool(params)
+		return s.callTool(ctx, params)
 	case "notifications/initialized", "notifications/cancelled":
 		return nil, nil
 	default:
@@ -105,7 +107,7 @@ func (s *mcpServer) dispatch(method string, params json.RawMessage) (any, *rpcEr
 	}
 }
 
-func (s *mcpServer) callTool(params json.RawMessage) (any, *rpcError) {
+func (s *mcpServer) callTool(ctx context.Context, params json.RawMessage) (any, *rpcError) {
 	var call struct {
 		Name      string         `json:"name"`
 		Arguments map[string]any `json:"arguments"`
@@ -114,7 +116,7 @@ func (s *mcpServer) callTool(params json.RawMessage) (any, *rpcError) {
 		return nil, &rpcError{Code: -32602, Message: "bad params: " + err.Error()}
 	}
 
-	payload, err := s.runTool(call.Name, call.Arguments)
+	payload, err := s.runTool(ctx, call.Name, call.Arguments)
 	if err != nil {
 		// Per the MCP convention, tool-level failures travel as isError rather than a protocol
 		// error, so the model can read what went wrong and retry with different arguments
@@ -132,7 +134,7 @@ func (s *mcpServer) callTool(params json.RawMessage) (any, *rpcError) {
 	}, nil
 }
 
-func (s *mcpServer) runTool(name string, args map[string]any) (any, error) {
+func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]any) (any, error) {
 	switch name {
 	case "search_sessions":
 		query := strings.TrimSpace(argString(args, "query"))
@@ -152,7 +154,7 @@ func (s *mcpServer) runTool(name string, args map[string]any) (any, error) {
 			}
 			q.since = since
 		}
-		found := s.api.search(q)
+		found := s.api.search(ctx, q)
 		return map[string]any{
 			"results": found.results, "matched": found.matched,
 			"scanned": found.scanned, "truncated": found.matched > len(found.results),
@@ -353,7 +355,7 @@ func (s *apiServer) handleMCPPost(w http.ResponseWriter, r *http.Request) int {
 		return http.StatusBadRequest
 	}
 
-	result, rpcErr := s.mcp.dispatch(req.Method, req.Params)
+	result, rpcErr := s.mcp.dispatch(r.Context(), req.Method, req.Params)
 	if len(req.ID) == 0 {
 		// A notification has no id; per the spec there is no reply, only an acknowledgement
 		w.WriteHeader(http.StatusAccepted)

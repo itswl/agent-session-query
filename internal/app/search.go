@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"runtime"
 	"sort"
@@ -21,11 +22,24 @@ import (
 // raw bytes first and only JSON-decode a line once it matches. That skips decoding for
 // 99% of lines, and decoding is the expensive part of the scan.
 const (
-	defaultSearchLimit      = 30 // how many sessions to return at most
-	defaultSearchPerSession = 3  // how many hits per session at most
-	searchSnippetRadius     = 70 // characters kept on each side of a hit in a snippet
-	maxSearchDepth          = 8  // recursion depth cap when hunting for body text in JSON
+	defaultSearchLimit      = 30  // how many sessions to return at most
+	defaultSearchPerSession = 3   // how many hits per session at most
+	searchSnippetRadius     = 70  // characters kept on each side of a hit in a snippet
+	maxSearchDepth          = 8   // recursion depth cap when hunting for body text in JSON
+	cancelCheckLines        = 512 // scan this many lines between cancellation checks
 )
+
+// cancelled reports whether the caller has walked away. A search holds every core it
+// can get, so an abandoned one has to stop rather than run to completion: the page
+// fires a fresh search on every keystroke and only the last one is ever displayed.
+func cancelled(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	default:
+		return false
+	}
+}
 
 // searchQuery is one content search.
 type searchQuery struct {
@@ -40,7 +54,7 @@ type searchQuery struct {
 // Anything that does not falls back to the generic path: scan the session file (nearly
 // every source is one jsonl per session).
 type searchableSource interface {
-	Search(r record, q searchQuery) []map[string]any
+	Search(ctx context.Context, r record, q searchQuery) []map[string]any
 }
 
 // searchOutcome is one search's results and its scale.
@@ -48,12 +62,13 @@ type searchableSource interface {
 // caller still needs to know how much was left out.
 type searchOutcome struct {
 	results []map[string]any
-	scanned int // sessions actually scanned
-	matched int // sessions with a hit, possibly more than len(results)
+	scanned int  // sessions actually scanned
+	matched int  // sessions with a hit, possibly more than len(results)
+	stopped bool // the search was cancelled part-way; results are incomplete
 }
 
 // search looks through every enabled source, newest session first.
-func (a *SessionQueryAPI) search(q searchQuery) searchOutcome {
+func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutcome {
 	type candidate struct {
 		source SessionSource
 		rec    record
@@ -84,21 +99,27 @@ func (a *SessionQueryAPI) search(q searchQuery) searchOutcome {
 			go func() {
 				defer wg.Done()
 				for i := range jobs {
+					if cancelled(ctx) {
+						continue // drain the channel without starting more work
+					}
 					c := all[i]
 					hits[i] = safeParse(c.source.Mode(), "search results", func() []map[string]any {
-						return searchOne(c.source, c.rec, q)
+						return searchOne(ctx, c.source, c.rec, q)
 					})
 				}
 			}()
 		}
 		for i := range all {
+			if cancelled(ctx) {
+				break
+			}
 			jobs <- i
 		}
 		close(jobs)
 		wg.Wait()
 	}
 
-	out := searchOutcome{results: []map[string]any{}, scanned: len(all)}
+	out := searchOutcome{results: []map[string]any{}, scanned: len(all), stopped: cancelled(ctx)}
 	for i, matches := range hits {
 		if len(matches) == 0 {
 			continue
@@ -117,21 +138,28 @@ func (a *SessionQueryAPI) search(q searchQuery) searchOutcome {
 
 // searchOne searches inside one session, using the source's own implementation when it
 // has one and scanning the session file otherwise.
-func searchOne(source SessionSource, rec record, q searchQuery) []map[string]any {
+func searchOne(ctx context.Context, source SessionSource, rec record, q searchQuery) []map[string]any {
 	if s, ok := source.(searchableSource); ok {
-		return s.Search(rec, q)
+		return s.Search(ctx, rec, q)
 	}
-	return searchFile(rec.str("file"), q)
+	return searchFile(ctx, rec.str("file"), q)
 }
 
 // searchFile scans one jsonl session file.
-func searchFile(path string, q searchQuery) []map[string]any {
+func searchFile(ctx context.Context, path string, q searchQuery) []map[string]any {
 	if path == "" || len(q.lowered) == 0 {
 		return nil
 	}
 	var hits []map[string]any
 	var lower []byte // reused so each line costs no allocation
+	lines := 0
 	eachJSONLLine(path, func(line []byte) bool {
+		// Sampled rather than checked every line: a channel receive per line would cost
+		// more than the Contains that is the actual work here
+		lines++
+		if lines%cancelCheckLines == 0 && cancelled(ctx) {
+			return false
+		}
 		lower = appendLowerASCII(lower[:0], line)
 		if !bytes.Contains(lower, q.lowered) {
 			return true

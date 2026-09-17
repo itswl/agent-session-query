@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -180,5 +181,54 @@ func TestEscapeLike(t *testing.T) {
 	}
 	if got := escapeLike("a_b"); got != `a\_b` {
 		t.Fatalf("escapeLike = %q", got)
+	}
+}
+
+func TestSearchStopsWhenCancelled(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_a.jsonl"),
+		`{"type":"session","id":"s-hit","cwd":"/w/a"}`,
+		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"nginx"}]}}`,
+	)
+	sources := []SessionSource{newPiSource(root)}
+	api := newSessionQueryAPI(sources, 2)
+	q := searchQuery{needle: "nginx", lowered: []byte("nginx"), limit: 10, perSession: 3}
+
+	if live := api.search(context.Background(), q); live.matched != 1 || live.stopped {
+		t.Fatalf("a live search should match and not report stopped: %+v", live)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got := api.search(ctx, q)
+	if !got.stopped {
+		t.Fatal("a cancelled search should report stopped")
+	}
+	if len(got.results) != 0 {
+		t.Fatalf("a cancelled search should produce no results, got %d", len(got.results))
+	}
+}
+
+func TestSearchFileStopsMidFile(t *testing.T) {
+	// Every line matches, so an uncancelled scan necessarily runs to the end. Cancellation
+	// is sampled every cancelCheckLines rather than tested per line, so the scan stops
+	// within one sample window instead of at an exact line.
+	path := filepath.Join(t.TempDir(), "big.jsonl")
+	total := 4 * cancelCheckLines
+	lines := make([]string, 0, total)
+	for i := 0; i < total; i++ {
+		lines = append(lines, `{"type":"message","message":{"role":"user","content":[{"type":"text","text":"nginx"}]}}`)
+	}
+	write(t, path, lines...)
+
+	q := searchQuery{needle: "nginx", lowered: []byte("nginx"), perSession: total + 1}
+	if full := searchFile(context.Background(), path, q); len(full) != total {
+		t.Fatalf("an uncancelled scan should read the whole file: %d hits, want %d", len(full), total)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if stopped := searchFile(ctx, path, q); len(stopped) > cancelCheckLines {
+		t.Fatalf("a cancelled scan should stop within one sample window, got %d hits", len(stopped))
 	}
 }

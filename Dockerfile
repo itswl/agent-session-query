@@ -1,6 +1,6 @@
 # 本地 Agent 会话查询 API（只读；无 cgo，唯一外部依赖是纯 Go 的 SQLite 驱动）
 #
-# 两段构建：编译出静态二进制，运行镜像里只有它和探活小程序（约 16 MB，没有 shell）。
+# 两段构建：编译出静态二进制，运行镜像里只有它和探活小程序——没有 shell、没有包管理器。
 # 国内构建可覆盖镜像源与模块代理，例如：
 #   docker build \
 #     --build-arg GO_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/golang:1.24-alpine \

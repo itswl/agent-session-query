@@ -1,5 +1,6 @@
-# 打 tag（v*）自动交叉编译六个平台，产物挂到 GitHub Release。
-# 本仓库唯一的依赖是纯 Go 的 SQLite 驱动，CGO 关掉后交叉编译无需任何 C 工具链。
+# Pushing a v* tag cross-compiles six platforms and attaches the artifacts to a GitHub
+# Release. The only dependency is a pure-Go SQLite driver, so with CGO off cross-compilation
+# needs no C toolchain at all.
 name: release
 
 on:
@@ -10,8 +11,9 @@ permissions:
   contents: write
 
 jobs:
-  # 测试必须跑在真机上：交叉编译出来的测试二进制没法在别的平台执行。
-  # 发 Windows 产物就得有 Windows runner 把它验一遍，否则等于盲发。
+  # Tests have to run on real machines: a cross-compiled test binary cannot execute on
+  # another platform. Shipping a Windows artifact means a Windows runner has to verify it,
+  # or the release is going out blind.
   test:
     strategy:
       fail-fast: false
@@ -62,17 +64,17 @@ jobs:
           go build -trimpath \
             -ldflags "-s -w -X github.com/itswl/agent-session-query/internal/app.buildVersion=${GITHUB_REF_NAME}" \
             -o "$binary" ./cmd/agent-session-query
-          # Windows 上解 tar.gz 不顺手，产物打成 zip
+          # Unpacking tar.gz on Windows is awkward, so ship a zip there
           if [ "$GOOS" = windows ]; then
             zip -q "agent-session-query-$GOOS-$GOARCH.zip" "$binary"
           else
             tar czf "agent-session-query-$GOOS-$GOARCH.tar.gz" "$binary"
           fi
 
-      # action-gh-release 不会自动拿 tag 的注释当发布说明（不给 body 就是空正文），
-      # 显式取出来。打 tag 时记得带 --cleanup=verbatim，否则 Markdown 的 ## 标题
-      # 会被 git 当成注释行剥掉。
-      - name: 取 tag 注释当发布说明
+      # action-gh-release does not pick up the tag annotation as release notes on its own
+      # (no body means an empty body), so read it out explicitly. Remember --cleanup=verbatim
+      # when tagging, or git strips Markdown ## headings as comment lines.
+      - name: Use the tag annotation as release notes
         run: |
           git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > release-notes.md
           if [ ! -s release-notes.md ]; then

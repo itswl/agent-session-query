@@ -1,5 +1,6 @@
-# 每次 push / PR 都跑一遍：三个平台的测试 + 格式/vet/交叉编译自检。
-# release.yml 只在打 tag 时触发，光靠它的话问题要到发版当天才暴露。
+# Runs on every push and PR: tests on three platforms plus format / vet / cross-compile
+# checks. release.yml only fires on a tag, so relying on it alone would surface problems on
+# release day.
 name: test
 
 on:
@@ -22,8 +23,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # 竞态检测要 cgo 和一个 C 编译器。Linux / macOS runner 上现成，
-      # Windows runner 的工具链不总在 PATH 上，那边跑普通测试就够了。
+      # The race detector needs cgo and a C compiler. Both are ready on the Linux and macOS
+      # runners; the Windows runner's toolchain is not always on PATH, so a plain test run
+      # is enough there.
       - name: Test
         shell: bash
         run: |
@@ -47,7 +49,7 @@ jobs:
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
-            echo "以下文件没过 gofmt:"
+            echo "These files are not gofmt-clean:"
             echo "$unformatted"
             exit 1
           fi
@@ -57,8 +59,9 @@ jobs:
           CGO_ENABLED: '0'
         run: go vet ./...
 
-      # 交叉编译自检：发版的六个平台都要能编出来（含各平台专有文件，如 console_windows.go）
-      - name: 交叉编译自检
+      # Cross-compile check: all six released platforms must build, including their
+      # platform-specific files such as console_windows.go
+      - name: Cross-compile check
         env:
           CGO_ENABLED: '0'
         run: |

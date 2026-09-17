@@ -4,29 +4,35 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # 国内构建可换成镜像源，例如：
+        # The base image can be swapped, for example:
         #   GO_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/golang:1.24-alpine
         GO_IMAGE: ${GO_IMAGE:-golang:1.24-alpine}
     container_name: agent-session-query
     ports:
-      # 只映射到宿主机回环：服务能读到完整会话内容，别默认摊给整个局域网。
-      # 要给别人用就改成 "8080:8080"，并且一定要配上 HOOK_TOKEN。
+      # Published to host loopback only: this service can read complete session content, so
+      # do not expose it to the whole local network by default.
+      # To share it, change this to "8080:8080" — and set HOOK_TOKEN.
       - "127.0.0.1:8080:8080"
     volumes:
-      # 六个数据源目录都可以挂；没数据的源服务会自动跳过。
-      # 注意：宿主机上不存在的目录会被 Docker 自动建成空目录（root 属主）。
-      # Hermes 挂整个 ~/.hermes：新版会话全在 state.db（配套 -wal/-shm 也要在，只挂 sessions/ 读不到），
-      # 目录里还有 Hermes 的配置/凭据文件——保持只读挂载、别把服务暴露到公网。
+      # All six source directories can be mounted; sources with no data are skipped.
+      # Note: a directory that does not exist on the host is created by Docker as an empty
+      # one owned by root.
+      # Mount the whole of ~/.hermes: newer sessions live entirely in state.db (its -wal/-shm
+      # companions have to come along, and mounting just sessions/ reads nothing). That
+      # directory also holds Hermes config and credentials — keep the mount read-only and
+      # keep the service off the public internet.
       - ~/.hermes:/root/.hermes:ro
       - ~/.openclaw/agents/default/sessions:/root/.openclaw/agents/default/sessions:ro
       - ~/.pi/agent/sessions:/root/.pi/agent/sessions:ro
       - ~/.claude/projects:/root/.claude/projects:ro
       - ~/.codex/sessions:/root/.codex/sessions:ro
       - ~/.gemini/tmp:/root/.gemini/tmp:ro
-    # 令牌走环境变量，不走命令行参数——参数会出现在 ps / docker inspect 里
+    # The token travels in the environment, not on the command line — arguments show up in
+    # ps and docker inspect
     environment:
       HOOK_TOKEN: "${HOOK_TOKEN:-}"
-    # 其余参数直接透传给二进制；容器里必须绑 0.0.0.0，否则端口映射不出来
+    # The remaining arguments pass straight through; inside a container it has to bind
+    # 0.0.0.0 or the port mapping cannot reach it
     command:
       - "--host"
       - "0.0.0.0"

@@ -1,7 +1,7 @@
-# 构建产物
+# Build artifacts
 /agent-session-query
 /healthcheck
 
-# 旧 Python 版本的残留（仓库里已经只有 Go 实现）
+# Leftovers from the old Python version (the repo is Go-only now)
 __pycache__/
 *.pyc

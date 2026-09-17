@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -155,5 +157,122 @@ func TestMCPErrors(t *testing.T) {
 	// 未知方法才是协议错误
 	if responses[2].Error == nil || responses[2].Error.Code != -32601 {
 		t.Fatalf("未知方法应当返回 -32601，得到 %v", responses[2].Error)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Streamable HTTP 传输
+// ---------------------------------------------------------------------------
+
+func newMCPHTTPServer(t *testing.T, token, corsOrigin string) *httptest.Server {
+	t.Helper()
+	root := t.TempDir()
+	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_a.jsonl"),
+		`{"type":"session","id":"http-1","cwd":"/w/x"}`,
+		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"关于 Nginx"}]}}`,
+	)
+	sources := []SessionSource{newPiSource(root)}
+	srv := httptest.NewServer(newAPIServer(serverOptions{
+		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 2),
+		token: token, corsOrigin: corsOrigin, maxConnections: 50,
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// postMCP 往 /mcp 发一条 JSON-RPC，返回状态码与（可能为空的）响应体
+func postMCP(t *testing.T, srv *httptest.Server, body, token, origin string) (int, map[string]any) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/mcp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var decoded map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&decoded)
+	return resp.StatusCode, decoded
+}
+
+func TestMCPHTTPTransport(t *testing.T) {
+	srv := newMCPHTTPServer(t, "", "")
+
+	code, body := postMCP(t, srv, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`, "", "")
+	if code != 200 {
+		t.Fatalf("initialize = %d", code)
+	}
+	result := body["result"].(map[string]any)
+	if result["protocolVersion"] != mcpProtocolVersion {
+		t.Fatalf("protocolVersion = %v", result["protocolVersion"])
+	}
+
+	// 工具能调通
+	_, body = postMCP(t, srv,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_sessions","arguments":{"query":"nginx"}}}`, "", "")
+	text := body["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.Contains(text, `"matched": 1`) {
+		t.Fatalf("搜索结果 = %s", text)
+	}
+
+	// 通知没有 id：按规范回 202、不带正文
+	code, body = postMCP(t, srv, `{"jsonrpc":"2.0","method":"notifications/initialized"}`, "", "")
+	if code != http.StatusAccepted || len(body) != 0 {
+		t.Fatalf("通知应当是 202 空响应，得到 %d %v", code, body)
+	}
+
+	// 坏 JSON → -32700
+	code, body = postMCP(t, srv, `{ not json`, "", "")
+	if code != 400 || body["error"].(map[string]any)["code"] != float64(-32700) {
+		t.Fatalf("坏 JSON = %d %v", code, body)
+	}
+
+	// 服务端不提供 SSE 流，GET 必须回 405（规范明写），且带 Allow
+	resp, err := http.Get(srv.URL + "/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed || resp.Header.Get("Allow") != "POST" {
+		t.Fatalf("GET /mcp = %d Allow=%q", resp.StatusCode, resp.Header.Get("Allow"))
+	}
+}
+
+// TestMCPHTTPSecurity：规范要求校验 Origin 防 DNS rebinding——
+// 否则用户访问的任意网页都能 POST 到本机的 MCP 端点，把会话内容读走。
+func TestMCPHTTPSecurity(t *testing.T) {
+	init := `{"jsonrpc":"2.0","id":1,"method":"initialize"}`
+
+	// 配了 token 就必须带
+	guarded := newMCPHTTPServer(t, "secret", "")
+	if code, _ := postMCP(t, guarded, init, "", ""); code != 401 {
+		t.Fatalf("无 token 应当 401，得到 %d", code)
+	}
+	if code, _ := postMCP(t, guarded, init, "secret", ""); code != 200 {
+		t.Fatalf("带 token 应当 200，得到 %d", code)
+	}
+
+	// 默认没配 --cors-origin：带任何 Origin 的请求都拒掉（原生 MCP 客户端不带这个头）
+	open := newMCPHTTPServer(t, "", "")
+	if code, _ := postMCP(t, open, init, "", "https://evil.example"); code != 403 {
+		t.Fatalf("跨源 Origin 应当 403，得到 %d", code)
+	}
+	if code, _ := postMCP(t, open, init, "", ""); code != 200 {
+		t.Fatalf("不带 Origin（原生客户端）应当放行，得到 %d", code)
+	}
+
+	// 显式放行的 origin 才通得过
+	allowed := newMCPHTTPServer(t, "", "https://ops.example")
+	if code, _ := postMCP(t, allowed, init, "", "https://ops.example"); code != 200 {
+		t.Fatalf("已放行的 origin 应当 200，得到 %d", code)
+	}
+	if code, _ := postMCP(t, allowed, init, "", "https://evil.example"); code != 403 {
+		t.Fatalf("未放行的 origin 应当 403，得到 %d", code)
 	}
 }

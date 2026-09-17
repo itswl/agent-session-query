@@ -15,7 +15,7 @@
 | Codex | `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` | 首行 `payload.session_id` |
 | Gemini CLI | `~/.gemini/tmp/<项目>/chats/session-*.jsonl` | 首行 `sessionId` |
 
-表里的 `~` 按运行用户的 home 解析：Linux/macOS 是 `$HOME`，Windows 是 `%USERPROFILE%`（即 `C:\Users\<你>\.claude\projects` 这种）。各数据源的解析细节与性能说明见 [docs/internals.md](docs/internals.md)。
+表里的 `~` 按运行用户的 home 解析：Linux/macOS 是 `$HOME`，Windows 是 `%USERPROFILE%`（即 `C:\Users\<你>\.claude\projects` 这种）。各数据源的解析细节见 [docs/internals.md](docs/internals.md)。
 
 ## 快速开始
 
@@ -60,143 +60,50 @@ go build -o agent-session-query ./cmd/agent-session-query
 
 `-d` 是临时后台跑，进程挂了不会自己起来；要真正常驻用下面的 systemd / 计划任务。
 
-### 常驻部署
-
-**Linux（systemd user service）**——单二进制，不需要 Docker：
-
-```ini
-# ~/.config/systemd/user/agent-session-query.service
-[Unit]
-Description=本地 Agent 会话查询（只读）
-After=network.target
-
-[Service]
-ExecStart=%h/.local/bin/agent-session-query --host 127.0.0.1 --port 8787
-EnvironmentFile=%h/.config/agent-session-query/env    # 里面一行 HOOK_TOKEN=...
-Restart=on-failure
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=read-only
-PrivateTmp=true
-
-[Install]
-WantedBy=default.target
-```
-
-```bash
-systemctl --user daemon-reload && systemctl --user enable --now agent-session-query
-sudo loginctl enable-linger "$USER"     # 不开的话，退出登录服务就停
-```
-
-**Windows**——没有 systemd，用计划任务在登录时拉起。令牌走环境变量，别写进命令行参数
-（参数会出现在任务管理器里）：
-
-```powershell
-[Environment]::SetEnvironmentVariable('HOOK_TOKEN', '你的令牌', 'User')
-schtasks /create /tn agent-session-query /sc onlogon `
-  /tr "$HOME\bin\agent-session-query.exe --host 127.0.0.1 --port 8787"
-```
-
-这样会留一个控制台窗口；要完全后台跑或开机（而非登录）即启，用 [nssm](https://nssm.cc/) 注册成服务。
-
-**Docker**——单二进制已经够省事，Docker 不是推荐方式，仓库保留 `Dockerfile` / `docker-compose.yml` 备用：
-
-```bash
-HOOK_TOKEN=mysecrettoken docker compose up -d   # 六个源目录的挂载见 docker-compose.yml
-```
-
-容器里数据源路径由 `$HOME` 推导（挂载点在 `/root/...`）；Hermes 要挂整个 `~/.hermes`（`state.db`
-及其 `-wal`/`-shm` 都得跟着）。镜像的 `CMD` 显式传了 `--host 0.0.0.0`（否则端口映射不出来），
-所以容器部署**一定要**配 `HOOK_TOKEN`。
+要常驻运行（systemd / Windows 计划任务 / Docker）见 **[docs/deploy.md](docs/deploy.md)**。
 
 ## Web 页面（`/ui`）
 
-三栏：**会话列表 / 消息流 / 最终结果**。服务端设了 `--hook_token` 才会要令牌（页面先问 `/health` 的 `authRequired`），令牌存在这个浏览器的 localStorage 里。
+三栏：**会话列表 / 消息流 / 最终结果**。服务端设了 `--hook_token` 才会要令牌，令牌存在浏览器的
+localStorage 里。
 
-- **左栏**：会话列表。搜索框打字是**即时过滤元数据**（sessionId / 路径 / cwd），按 <kbd>Enter</kbd>
-  是**全文搜正文**，结果直接列在左栏并带命中片段。可切「按时间 / 按项目」分组；正在被写入的会话
-  带一个呼吸绿点
-- **中栏**：消息时间线（text / thinking / toolCall / toolResult 分块，超过 600 字符折起来）。顶部可切**取最早还是最新的 200 条**（对应 `?order=`）和**只看 user / assistant**；没有可显示内容的消息压成一行，不占地方
-- **右栏**：最终结果常驻——isFinal / stopReason / 正文 / 思考过程、用量与费用、会话元信息
-  （sessionId 一键复制、一键导出 Markdown）。不必滚回顶部去找
-- 10 秒自动刷新（页面后台时不打接口）；`/ui#<sessionId>` 可直接当深链贴给别人；亮 / 暗随系统切换；窄屏自动退成两栏 / 单栏
+- **左栏**：搜索框打字是即时过滤元数据，按 <kbd>Enter</kbd> 是**全文搜正文**、结果带命中片段；
+  可切「按时间 / 按项目」分组；正在被写入的会话带一个呼吸绿点
+- **中栏**：消息时间线（text / thinking / toolCall / toolResult 分块）。可切「最早 / 最新 200 条」
+  和「只看 user / assistant」
+- **右栏**：最终结果常驻——stopReason、正文、思考过程、用量与费用、会话元信息
+  （sessionId 一键复制、一键导出 Markdown）
 
-快捷键：<kbd>j</kbd> <kbd>k</kbd> 上下切换会话 · <kbd>/</kbd> 聚焦搜索 · <kbd>Enter</kbd> 全文搜内容 ·
-<kbd>g</kbd> <kbd>G</kbd> 跳到消息流首 / 末 · <kbd>r</kbd> 刷新 · <kbd>Esc</kbd> 清空搜索 / 退出搜索结果。
+10 秒自动刷新且不会掀掉正在读的内容（展开的折叠块、滚动位置都保住）；`/ui#<sessionId>` 可当深链；
+亮 / 暗随系统；窄屏自动退成两栏 / 单栏。
 
-页面用 `go:embed` 打进二进制（无 npm、无构建步骤）；渲染一律走 `textContent`，另有 CSP 兜底；
-自动刷新不会掀掉正在读的内容。缘由与实现见 [docs/internals.md](docs/internals.md#页面)。
+快捷键：<kbd>j</kbd> <kbd>k</kbd> 切换会话 · <kbd>/</kbd> 聚焦搜索 · <kbd>Enter</kbd> 全文搜内容 ·
+<kbd>g</kbd> <kbd>G</kbd> 跳消息流首 / 末 · <kbd>r</kbd> 刷新 · <kbd>Esc</kbd> 清空 / 退出搜索。
 
-## HTTP API
+## 端点速查
 
-所有端点都是 `GET`。`/sessions` 系列额外支持 `/api/sessions` 前缀写法；`/`、`/health`、`/stats` 没有别名。
+所有查询都是 `GET`（MCP 的 `/mcp` 是 `POST`）。配置了 `--hook_token` 后，标「需要」的端点要带
+`Authorization: Bearer <token>`。
 
 | 端点 | 认证 | 说明 |
 |------|------|------|
-| `/` `/health` `/stats` | 免 | 服务信息 / 健康检查（含连接统计与 `authRequired`） |
+| `/` `/health` `/stats` | 免 | 服务信息 / 健康检查 |
+| `/ui` `/favicon.ico` | 免 | 内嵌页面（不含数据） |
 | `/sessions` | 需要 | 列出所有会话（多源合并，按更新时间倒序） |
-| `/sessions/<pattern>` | 需要 | 单个会话的信息 |
-| `/sessions/<pattern>/messages?limit=50&order=asc` | 需要 | 会话消息；`order=asc`（默认）取最早的 N 条，`order=desc` 取最新的 N 条 |
-| `/sessions/<pattern>/final` | 需要 | 会话的最终结果 |
-| `/sessions/<pattern>/export?limit=200&order=desc` | 需要 | 导出成 Markdown（`text/markdown` + `Content-Disposition`） |
-| `/search?q=&limit=30&per_session=3&since=30d` | 需要 | **全文搜内容**，跨所有数据源 |
-| `/projects` | 需要 | 按项目（cwd）归拢的会话统计 |
+| `/sessions/<pattern>` | 需要 | 单个会话；加 `/messages` `/final` `/export` |
+| `/search?q=` | 需要 | **全文搜正文**，跨所有数据源 |
+| `/projects` | 需要 | 按项目（cwd）归拢的统计 |
+| `/mcp` | 需要 | MCP 的 Streamable HTTP 传输（`POST`） |
 
-**认证**：配置了 `--hook_token` 后，标「需要」的端点要带 `Authorization: Bearer <token>`；未配置时
-全部免认证（启动时打印警告），令牌比较用常量时间比较。跨域默认关闭，见 `--cors-origin`。
+完整参数、`<pattern>` 匹配规则、响应字段见 **[docs/api.md](docs/api.md)**。
 
-**条件请求**：`/sessions` 返回 `ETag`，带 `If-None-Match` 重复请求且列表没变时返回 `304`。
+## MCP
 
-**过载与上限**：并发超限先排队、排不上返回 503；`?limit=` 夹在 `--max-limit` 以内。参数见[配置](#配置)。
+`--mcp` 跑在 stdio 上，HTTP 模式下另有 `POST /mcp`。于是 **Agent 可以查自己的历史**——
+让 Claude Code 去搜你上周用 Codex 解决过的同一个问题。五个工具：`search_sessions` /
+`list_sessions` / `list_projects` / `get_session` / `get_messages`。
 
-**全文搜索**：`/search?q=nginx` 在所有启用的数据源里搜**消息正文**（`/sessions` 的搜索只匹配元数据）。
-大小写无关，不建索引——实测本机 470 MB / 174 个会话冷扫 1.1 秒、热 60 ms。返回里
-`matched` 是命中的会话总数、`total` 是实际返回的条数、`scanned` 是扫过的会话数；历史很大时用
-`since=30d`（也接受 `12h` / `2026-09-01`）把范围收窄。每个会话最多给 `per_session` 条片段。
-
-**`<pattern>` 匹配规则**（按序先命中先返回，所有数据源一起参与每一轮，模糊命中不会盖掉其它源的精确命中）：① 精确 `sessionId` → ② 精确 `key` → ③ `key` 以 `:<pattern>` 或 `/<pattern>` 结尾 → ④ `key` 子串 → ⑤ `sessionId` 子串。`Session: ` / `Run: ` 前缀自动剥掉；含冒号的 pattern 记得 URL 编码（`%3A`）。
-
-```bash
-/sessions/e4b2b405-88ea-4782-a84c-92574380ed16   # Claude Code：完整 uuid，片段也行
-/sessions/rollout-2026-09-13T23-07-05           # Codex：rollout 文件名片段
-/sessions/hook:alert:prometheus:b5123b01-...    # OpenClaw：完整 key 或后半段
-```
-
-**响应**：
-
-- 列表 / 单条：`source`、`key`、`shortKey`、`sessionId`、`file`、`hasFile`、`status`、`updatedAt`、
-  `project`（cwd 或 gemini 的项目名）、`isActive`（更新时间在 2 分钟内 = 正被写入），按源附加
-  `cwd` / `model` / `totalTokens` / `estimatedCostUsd` / `cliVersion` 等
-- 搜索：在列表字段基础上附加 `matches`（`snippet` + `role` + `timestamp`）与 `matchCount`
-- 消息：`content` 是块数组，块类型 `text` / `thinking` / `toolCall`（`name`+`arguments`）/ `toolResult`（`toolName`+`content`）；响应里的 `order` 回显这批是从哪一头取的，两个方向拿到的都按时间先后排
-- final：`isFinal` / `stopReason` / `text` / `thinking` / `toolCalls` / `usage` / `messageCount`；文件不存在时 `isFinal=false` + `error` 字段（HTTP 仍 200）
-- 错误：401 / 404 / 500 返回 `{"error": "..."}`，503 并发超限为纯文本
-
-## MCP server
-
-`--mcp` 让它跑在 stdio 上当 MCP server，于是 **Agent 可以查自己的历史**——让 Claude Code
-去搜你上周用 Codex 解决过的同一个问题。不监听端口，也不需要令牌（stdio 本来就只有本机进程能连）。
-
-```json
-{
-  "mcpServers": {
-    "agent-sessions": {
-      "command": "/path/to/agent-session-query",
-      "args": ["--mcp", "--mode", "auto"]
-    }
-  }
-}
-```
-
-五个工具：
-
-| 工具 | 说明 |
-|------|------|
-| `search_sessions` | 全文搜正文，参数 `query` / `limit` / `per_session` / `since` |
-| `list_sessions` | 按更新时间倒序列会话，可按 `source` / `project` 过滤 |
-| `list_projects` | 按项目归拢，看同一个仓库上用过哪几个 Agent |
-| `get_session` | 取一个会话的元信息与最终结果 |
-| `get_messages` | 取消息，`order=desc` 拿最新的 N 条 |
+客户端配置与安全说明见 **[docs/mcp.md](docs/mcp.md)**。
 
 ## 配置
 
@@ -237,45 +144,15 @@ Docker 环境变量：`HOOK_TOKEN`、`SESSION_MODE`（默认 `auto`）、`GO_IMA
 3. **401**：`Authorization: Bearer <token>` 与启动时的 `--hook_token` 是否一致。
 4. **端口占用**：换 `--port`。
 
-## 开发
+## 文档
 
-```
-.
-├── cmd/agent-session-query/   # 入口（实现在 internal/app）
-├── cmd/healthcheck/           # 容器探活小程序
-├── internal/app/              # 全部实现：run.go（参数与启动）、http.go（路由/认证/限流）、
-│                              #   api.go（多源合并/匹配/缓存）、record.go、source*.go（各数据源）、
-│                              #   search.go（全文搜索）、export.go（Markdown 导出）、
-│                              #   mcp.go（stdio 上的 MCP server）、
-│                              #   filecache.go（按 mtime 记忆化的文件头缓存）、
-│                              #   hermes_sqlite.go、ui.go + ui/（go:embed 三栏页面）、
-│                              #   console_{windows,other}.go（Windows 控制台代码页）
-│                              #   测试与源文件一一对应（source_*_test.go 等）
-├── docs/internals.md          # 解析细节 / 性能
-├── .github/workflows/test.yml     # push / PR：三平台跑测试 + gofmt/vet/六平台交叉编译自检
-├── .github/workflows/release.yml  # 打 tag：三平台跑测试，过了再交叉编译六平台发 Release
-├── Dockerfile / docker-compose.yml
-└── go.mod / go.sum            # 唯一依赖：纯 Go 的 SQLite 驱动
-```
-
-```bash
-go test -race ./...   # 全部单测（不碰网络、不依赖本机装了什么）
-gofmt -l .            # 格式检查
-go vet ./...
-```
-
-发版：tag 的注释会被 [release.yml](.github/workflows/release.yml) 拿去当 Release 正文，
-所以要带 `--cleanup=verbatim`——否则 Markdown 的 `##` 标题会被 git 当成注释行剥掉：
-
-```bash
-git tag -a v0.3.0 --cleanup=verbatim -F notes.md
-git push origin v0.3.0
-```
-
-新增一种数据源：实现 `SessionSource` 接口（`Mode` / `Location` / `Exists` / `List` / `Messages` / `Final`），
-在 `buildSources()` 的 `factories` 里注册，再把模式名加进 `knownModes`——多源合并、匹配排序、
-全文搜索、项目聚合、`source` 标记都是框架层统一处理的。会话不落在文件里的源（比如全 SQLite 的
-Hermes）可以另外实现 `searchableSource` 自己接管搜索。
+| | |
+|---|---|
+| [docs/api.md](docs/api.md) | 完整 HTTP API：参数、匹配规则、响应字段 |
+| [docs/mcp.md](docs/mcp.md) | MCP：两种传输、客户端配置、工具表 |
+| [docs/deploy.md](docs/deploy.md) | 常驻部署：systemd / Windows 计划任务 / Docker |
+| [docs/development.md](docs/development.md) | 目录结构、测试、发版、新增数据源 |
+| [docs/internals.md](docs/internals.md) | 实现细节：各源解析、性能、全文搜索、跨平台 |
 
 ## 许可
 

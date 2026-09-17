@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 const (
 	mcpProtocolVersion = "2025-06-18"
 	mcpDefaultLimit    = 20
+	maxMCPBodyBytes    = 1 << 20 // 请求体上限 1 MB：查询参数而已，用不了这么多
 )
 
 type rpcRequest struct {
@@ -311,4 +313,64 @@ func mcpStartupBanner(mode string, sources []SessionSource) {
 		fmt.Fprintf(os.Stderr, " %s", source.Mode())
 	}
 	fmt.Fprintf(os.Stderr, "\n启动于 %s\n", time.Now().Format(time.RFC3339))
+}
+
+// ---------------------------------------------------------------------------
+// Streamable HTTP 传输（POST /mcp）
+// ---------------------------------------------------------------------------
+
+// MCP 的 Streamable HTTP：单端点收 JSON-RPC。
+//
+// 这个实现是无状态的——每个请求自带全部上下文，服务端不留会话，所以不签发
+// Mcp-Session-Id（规范允许）。也没有服务端主动推送的消息，所以 GET 按规范回 405
+// 而不是挂一条空 SSE。2025-06-18 版规范已经去掉了 JSON-RPC 批量，只收单条。
+//
+// 安全上有一条是规范明写的：必须校验 Origin，否则任意网页都能 POST 到本机的
+// MCP 端点（DNS rebinding）。和 /sessions 一样，这个端点也要认证。
+func (s *apiServer) handleMCPPost(w http.ResponseWriter, r *http.Request) int {
+	if !s.allowedMCPOrigin(r) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "Origin not allowed"})
+		return http.StatusForbidden
+	}
+	if !s.checkAuth(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "Unauthorized"})
+		return http.StatusUnauthorized
+	}
+
+	var req rpcRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxMCPBodyBytes))
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, rpcResponse{
+			JSONRPC: "2.0",
+			Error:   &rpcError{Code: -32700, Message: "parse error: " + err.Error()},
+		})
+		return http.StatusBadRequest
+	}
+
+	result, rpcErr := s.mcp.dispatch(req.Method, req.Params)
+	if len(req.ID) == 0 {
+		// 通知没有 id，按规范不回包，只确认收到
+		w.WriteHeader(http.StatusAccepted)
+		return http.StatusAccepted
+	}
+	resp := rpcResponse{JSONRPC: "2.0", ID: req.ID}
+	if rpcErr != nil {
+		resp.Error = rpcErr
+	} else {
+		resp.Result = result
+	}
+	// JSON-RPC 层面的错误仍然是一次成功的 HTTP 交互，状态码保持 200
+	writeJSON(w, http.StatusOK, resp)
+	return http.StatusOK
+}
+
+// allowedMCPOrigin 防 DNS rebinding：带 Origin 的请求来自浏览器，
+// 原生 MCP 客户端不会带这个头。所以「没有 Origin」放行，「有 Origin」
+// 必须和 --cors-origin 对得上，否则拒掉。
+func (s *apiServer) allowedMCPOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	return s.corsOrigin == "*" || (s.corsOrigin != "" && s.corsOrigin == origin)
 }

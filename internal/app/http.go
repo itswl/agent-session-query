@@ -19,6 +19,7 @@ import (
 const (
 	defaultLimit    = 50
 	defaultMaxLimit = 1000
+	mcpPath         = "/mcp"
 )
 
 // apiServer：路由 + 认证 + 连接限制 + 统计
@@ -29,6 +30,7 @@ type apiServer struct {
 	token      string
 	corsOrigin string
 	maxLimit   int
+	mcp        *mcpServer
 
 	maxConnections int
 
@@ -60,6 +62,7 @@ func newAPIServer(opts serverOptions) *apiServer {
 		corsOrigin:     opts.corsOrigin,
 		maxLimit:       opts.maxLimit,
 		maxConnections: opts.maxConnections,
+		mcp:            &mcpServer{api: opts.api, sources: opts.sources, maxLimit: opts.maxLimit},
 	}
 }
 
@@ -194,6 +197,14 @@ func (s *apiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	case http.MethodGet, http.MethodHead:
 		// 继续
+	case http.MethodPost:
+		// MCP 的 Streamable HTTP 走 POST；除此之外这个服务全是只读的 GET
+		if r.URL.EscapedPath() == mcpPath {
+			logRequest(r, s.handleMCPPost(w, r))
+			return
+		}
+		writePlain(w, http.StatusNotImplemented, fmt.Sprintf("Unsupported method ('%s')", r.Method))
+		return
 	default:
 		writePlain(w, http.StatusNotImplemented, fmt.Sprintf("Unsupported method ('%s')", r.Method))
 		return
@@ -243,6 +254,16 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 	if path == "/stats" {
 		writeJSON(w, http.StatusOK, s.stats())
 		return http.StatusOK
+	}
+
+	// MCP 的 Streamable HTTP 只收 POST。规范要求：服务端不提供 SSE 流时，
+	// GET 必须回 405，而不是挂一条空流让客户端干等。
+	if path == mcpPath {
+		w.Header().Set("Allow", "POST")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
+			"error": "MCP endpoint accepts POST only (no server-initiated stream)",
+		})
+		return http.StatusMethodNotAllowed
 	}
 
 	// 站点图标 - 不要求认证（浏览器会自己去根路径要，见 serveFavicon）

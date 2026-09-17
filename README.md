@@ -1,5 +1,7 @@
 # agent-session-query
 
+**English** · [简体中文](README.zh-CN.md)
+
 Query the session records left behind by the agent CLIs on your machine: **a read-only web
 page, an HTTP API, and an MCP server for agents to call**. It never modifies session data.
 

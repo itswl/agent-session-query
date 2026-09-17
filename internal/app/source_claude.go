@@ -29,21 +29,34 @@ func (s *ClaudeCodeSource) files() []string {
 	return files
 }
 
-// List 只读每个会话文件的头几行拿元数据；文件没变过就直接用缓存（见 fileRecordCache）
+// claudeHeadLines 找元数据时最多往下读几行。
+//
+// cwd 不在首行——文件开头常有 queue-operation 之类的非对话行。原先固定只读前 5 行，
+// 实测本机的会话 cwd 落在第 2–5 行，其中不少正好卡在第 5 行：这是侥幸不是保证，
+// Claude Code 再多一种前导行就会滑出窗口，然后 cwd / project 静默变空、项目聚合失效，
+// 而且不报错。所以改成「读到拿齐为止」，这个上限只是防御性的兜底。
+//
+// 常见情况下反而更快：拿齐就停，多数文件第 3 行就停了，比原来固定读 5 行还少。
+const claudeHeadLines = 50
+
+// List 只读每个会话文件的头部拿元数据；文件没变过就直接用缓存（见 fileRecordCache）
 func (s *ClaudeCodeSource) List() []record {
 	return s.cache.records(s.files(), func(path, modISO string) record {
-		head := readJSONL(path, 5)
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		sid := stem
 		var cwd any = ""
-		for _, obj := range head {
-			if truthy(obj["sessionId"]) {
-				sid = toStr(obj["sessionId"])
+		var haveSID, haveCWD bool
+		seen := 0
+		eachJSONL(path, func(obj map[string]any) bool {
+			if !haveSID && truthy(obj["sessionId"]) {
+				sid, haveSID = toStr(obj["sessionId"]), true
 			}
-			if truthy(obj["cwd"]) {
-				cwd = obj["cwd"]
+			if !haveCWD && truthy(obj["cwd"]) {
+				cwd, haveCWD = obj["cwd"], true
 			}
-		}
+			seen++
+			return !(haveSID && haveCWD) && seen < claudeHeadLines
+		})
 		return newRecord(map[string]any{
 			"source":    "claude",
 			"key":       path,

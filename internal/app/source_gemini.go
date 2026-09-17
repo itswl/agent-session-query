@@ -140,8 +140,13 @@ func eachGeminiEntry(path string, fn func(entry map[string]any) bool) {
 func (s *GeminiSource) List() []record {
 	return s.cache.records(s.files(), func(path, modISO string) record {
 		meta := s.metaOf(path)
-		// 用元数据里的时间；没有就退回文件修改时间（都不需要扫全文件）
-		lastTs := meta["lastUpdated"]
+		// 首行的 lastUpdated 是「会话开始」那一刻的值，之后由 $set 补丁行更新——
+		// 实测本机 33 个会话里 29 个的首行时间是陈的，最多差 45 分钟。
+		// 所以先看尾部最后一条记录，再退回首行元数据，最后才是文件 mtime。
+		var lastTs any = updatedAtOf(path, "")
+		if !truthy(lastTs) {
+			lastTs = meta["lastUpdated"]
+		}
 		if !truthy(lastTs) {
 			lastTs = meta["startTime"]
 		}

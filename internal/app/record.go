@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -189,6 +190,106 @@ func contentText(value any) string {
 		return strings.Join(parts, "\n")
 	}
 	return ""
+}
+
+// tailWindows 从文件尾部往回找最后一条记录时依次尝试的窗口。
+// 实测本机 174 个真实 Claude 会话，172 个在最后 64 KB 里就能找到完整记录。
+var tailWindows = []int64{64 << 10, 512 << 10, 4 << 20}
+
+// lastRecordTime 读会话文件的尾部，取最后一条记录自带的时间。
+//
+// 为什么不直接用文件 mtime：mtime 是「文件被写过」的时间，不是「对话发生」的时间。
+// 实测本机 174 个真实 Claude 会话，43 个（25%）两者相差超过 1 小时，最大差 235 小时
+// ——有些操作会重写会话文件却不追加新内容，于是六天前聊完的会话被顶到列表最前面，
+// 还会被 isActive 误判成「正在写入」。
+//
+// 不读整个文件：从尾部 seek 一小段就够（最大的那个会话有 103 MB）。窗口里找不到
+// 就逐级放大，仍然找不到返回空串，由调用方退回 mtime。
+func lastRecordTime(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	size := info.Size()
+	if size == 0 {
+		return ""
+	}
+
+	for _, window := range tailWindows {
+		if window > size {
+			window = size
+		}
+		start := size - window
+		buf := make([]byte, window)
+		if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
+			return ""
+		}
+		// 窗口不是从文件头开始时，第一行多半被切在中间，丢掉
+		if start > 0 {
+			if i := bytes.IndexByte(buf, '\n'); i >= 0 {
+				buf = buf[i+1:]
+			} else {
+				buf = nil
+			}
+		}
+		if ts := lastTimestampIn(buf); ts != "" {
+			return ts
+		}
+		if window >= size {
+			break // 整个文件都读过了，不必再放大
+		}
+	}
+	return ""
+}
+
+// lastTimestampIn 在一段字节里从后往前找第一条带时间的记录。
+// 三种放法都认：顶层 timestamp（Claude / Codex / Pi）、message.timestamp（Pi 的部分行）、
+// $set.lastUpdated（Gemini 的补丁行）。
+func lastTimestampIn(buf []byte) string {
+	lines := bytes.Split(buf, []byte{'\n'})
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := bytes.TrimSpace(lines[i])
+		if len(line) == 0 {
+			continue
+		}
+		var probe struct {
+			Timestamp string `json:"timestamp"`
+			Message   struct {
+				Timestamp string `json:"timestamp"`
+			} `json:"message"`
+			Set struct {
+				LastUpdated string `json:"lastUpdated"`
+			} `json:"$set"`
+		}
+		if json.Unmarshal(line, &probe) != nil {
+			continue
+		}
+		for _, ts := range []string{probe.Timestamp, probe.Message.Timestamp, probe.Set.LastUpdated} {
+			if ts != "" {
+				return ts
+			}
+		}
+	}
+	return ""
+}
+
+// updatedAtOf 会话的「最后活动时间」：优先用内容里最后一条记录的时间，
+// 取不到、或者取到的时间解析不了（解析不了会被排到列表最末尾，比用 mtime 还糟）
+// 才退回文件 mtime。
+func updatedAtOf(path, modISO string) string {
+	ts := lastRecordTime(path)
+	if ts == "" {
+		return modISO
+	}
+	if _, ok := parseTimestamp(ts); !ok {
+		return modISO
+	}
+	return ts
 }
 
 // mtimeISO 文件修改时间（UTC，秒级，形如 2026-09-14T07:41:48）。

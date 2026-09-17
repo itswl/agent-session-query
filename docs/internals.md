@@ -17,6 +17,25 @@
   **补的时候绝不碰裸 `id`**：消息行（`response_item`）的 payload 带 `id = "msg_…"`，顺手捡就会把消息 ID 当成会话 ID
 - **Gemini CLI**：文件是追加日志——首行元数据（`sessionId`/`startTime`）、`{"$set": {...}}` 补丁行、以及消息行；消息取 `type=user`/`type=gemini` 的行，`content` 可能是数组（user）或字符串（gemini）。工具调用型会话里正文很稀：发起调用时 `content` 是空串、内容在 `toolCalls` 字段（→ `toolCall` 块，只带 name/args），执行结果由后续 user 行 `content` 数组里的 `functionResponse` 项回传（→ `toolResult` 块）；`thoughts` 字符串或 `[{subject, description}]` 数组都作为 thinking（数组取各条 description）
 
+### 会话的「更新时间」：读尾部，别信 mtime
+
+列表按 `updatedAt` 倒序，而文件型数据源早期直接拿文件 mtime 当这个值。mtime 是「文件被写过」
+的时间，不是「对话发生」的时间，两者会大幅脱节：
+
+- 实测本机 174 个真实 Claude 会话，**43 个（25%）相差超过 1 小时**，最大差 **235 小时**——
+  某些操作会重写会话文件却不追加新内容，于是六天前聊完的会话被顶到列表最前面，
+  还会被 `isActive` 误判成「正在写入」
+- Gemini 更隐蔽：它用首行元数据的 `lastUpdated`，但那是**会话开始**那一刻的值，之后由
+  `$set` 补丁行更新。实测 33 个会话里 **29 个首行时间是陈的**
+
+现在统一改成读文件**尾部**最后一条记录自带的时间（`lastRecordTime`）。不读整个文件——
+从尾部 seek 一小段就够，实测 172/174 个文件在最后 64 KB 里就能找到完整记录，凑不出就逐级
+放大到 512 KB / 4 MB。三种时间放法都认：顶层 `timestamp`、`message.timestamp`、
+`$set.lastUpdated`。取不到、或者取到的时间解析不了（解析不了会被排到列表最末尾，比用 mtime
+还糟）才退回 mtime。
+
+开销由文件头缓存吸收：缓存按 `(mtime, size)` 判新鲜度，只有变动过的文件才会重新读尾部。
+
 ### 元数据的定位：读到拿齐为止，且认准行类型
 
 三个文件型数据源（Claude / Pi / Codex）的列表元数据都不在固定位置，早期实现用的是固定窗口

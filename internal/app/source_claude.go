@@ -43,6 +43,8 @@ const claudeHeadLines = 50
 func (s *ClaudeCodeSource) List() []record {
 	return s.cache.records(s.files(), func(path, modISO string) record {
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		// 用内容里最后一条记录的时间，而不是文件 mtime（见 updatedAtOf）
+		updated := updatedAtOf(path, modISO)
 		sid := stem
 		var cwd any = ""
 		var haveSID, haveCWD bool
@@ -66,8 +68,8 @@ func (s *ClaudeCodeSource) List() []record {
 			"hasFile":   true,
 			"status":    "done",
 			"cwd":       cwd,
-			"updatedAt": modISO,
-		}, modISO)
+			"updatedAt": updated,
+		}, updated)
 	})
 }
 

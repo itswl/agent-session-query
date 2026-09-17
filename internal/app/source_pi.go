@@ -58,6 +58,8 @@ func (s *PiSource) List() []record {
 			return seen < piHeadLines
 		})
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		// 用内容里最后一条记录的时间，而不是文件 mtime（见 updatedAtOf）
+		updated := updatedAtOf(path, modISO)
 		return newRecord(map[string]any{
 			"source":    "pi",
 			"key":       path,
@@ -67,8 +69,8 @@ func (s *PiSource) List() []record {
 			"hasFile":   true,
 			"status":    "done",
 			"cwd":       getOr(meta, "cwd", ""),
-			"updatedAt": modISO,
-		}, modISO)
+			"updatedAt": updated,
+		}, updated)
 	})
 }
 

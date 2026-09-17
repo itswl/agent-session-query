@@ -64,6 +64,8 @@ func (s *CodexSource) List() []record {
 			return seen < codexHeadLines
 		})
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		// 用内容里最后一条记录的时间，而不是文件 mtime（见 updatedAtOf）
+		updated := updatedAtOf(path, modISO)
 		return newRecord(map[string]any{
 			"source":     "codex",
 			"key":        path,
@@ -74,8 +76,8 @@ func (s *CodexSource) List() []record {
 			"status":     "done",
 			"cwd":        getOr(payload, "cwd", ""),
 			"cliVersion": getOr(payload, "cli_version", ""),
-			"updatedAt":  modISO,
-		}, modISO)
+			"updatedAt":  updated,
+		}, updated)
 	})
 }
 

@@ -831,3 +831,89 @@ func TestHTTPProjects(t *testing.T) {
 		t.Fatal("/projects 应当要认证")
 	}
 }
+
+// TestLastRecordTime：从文件尾部取最后一条记录的时间，三种放法都要认
+func TestLastRecordTime(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct{ name, content, want string }{
+		{"顶层 timestamp", `{"type":"a","timestamp":"2026-09-01T01:00:00Z"}
+{"type":"b","timestamp":"2026-09-02T02:00:00Z"}`, "2026-09-02T02:00:00Z"},
+		{"message 里的", `{"type":"message","message":{"timestamp":"2026-09-03T03:00:00Z"}}`, "2026-09-03T03:00:00Z"},
+		{"$set 补丁行", `{"sessionId":"g","lastUpdated":"2026-09-01T00:00:00Z"}
+{"$set":{"lastUpdated":"2026-09-04T04:00:00Z"}}`, "2026-09-04T04:00:00Z"},
+		{"末尾若干行没有时间", `{"type":"a","timestamp":"2026-09-05T05:00:00Z"}
+{"type":"mode"}
+{"type":"atis-latch"}`, "2026-09-05T05:00:00Z"},
+		{"一条时间都没有", `{"type":"mode"}
+{"type":"atis-latch"}`, ""},
+		{"空文件", "", ""},
+	}
+	for _, c := range cases {
+		path := filepath.Join(dir, sanitizeFilename(c.name)+".jsonl")
+		if err := os.WriteFile(path, []byte(c.content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := lastRecordTime(path); got != c.want {
+			t.Errorf("lastRecordTime(%s) = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestLastRecordTimeGrowsWindow：尾部第一个窗口里凑不出完整记录时要逐级放大
+func TestLastRecordTimeGrowsWindow(t *testing.T) {
+	saved := tailWindows
+	tailWindows = []int64{64, 512, 4 << 20} // 缩小窗口，方便构造
+	defer func() { tailWindows = saved }()
+
+	path := filepath.Join(t.TempDir(), "big.jsonl")
+	// 最后一行很长：64 字节的窗口切在行中间，必须放大才读得到
+	long := `{"type":"a","timestamp":"2026-09-06T06:00:00Z","pad":"` + strings.Repeat("x", 300) + `"}`
+	if err := os.WriteFile(path, []byte("{\"type\":\"head\"}\n"+long+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastRecordTime(path); got != "2026-09-06T06:00:00Z" {
+		t.Fatalf("窗口没有逐级放大: %q", got)
+	}
+}
+
+// TestUpdatedAtPrefersContentTime：列表时间要用「对话真正发生的时间」，
+// 而不是文件 mtime——有些操作会重写会话文件却不追加内容，实测本机 174 个真实
+// Claude 会话里 43 个两者相差超过 1 小时，最大差 235 小时。
+func TestUpdatedAtPrefersContentTime(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "proj", "aaaa-bbbb.jsonl")
+	write(t, path,
+		`{"type":"user","uuid":"u1","sessionId":"sid","cwd":"/w","timestamp":"2026-09-11T11:25:29.029Z","message":{"role":"user","content":"hi"}}`,
+	)
+	// 把 mtime 改成「现在」：文件被碰过，但内容还是六天前的
+	now := time.Now()
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	r := newClaudeSource(root).List()[0]
+	if got := r.str("updatedAt"); got != "2026-09-11T11:25:29.029Z" {
+		t.Fatalf("updatedAt = %q，应当用内容里的时间而不是 mtime", got)
+	}
+	// 顺带：不能因为文件刚被碰过就误判成「正在写入」
+	if truthy(r.public()["isActive"]) {
+		t.Fatal("六天前的会话不该因为 mtime 是刚才就算活跃")
+	}
+}
+
+// TestUpdatedAtFallsBackToMtime：内容里没有可用时间时退回 mtime，
+// 而不是留空（留空会被排到列表最末尾，比用 mtime 还糟）
+func TestUpdatedAtFallsBackToMtime(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "proj", "cccc-dddd.jsonl")
+	write(t, path, `{"type":"queue-operation","sessionId":"sid"}`, `{"type":"mode"}`)
+
+	r := newClaudeSource(root).List()[0]
+	updated := r.str("updatedAt")
+	if updated == "" {
+		t.Fatal("没有内容时间时应当退回 mtime，不能留空")
+	}
+	if _, ok := parseTimestamp(updated); !ok {
+		t.Fatalf("退回的 mtime 解析不了: %q", updated)
+	}
+}

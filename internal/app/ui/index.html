@@ -12,7 +12,7 @@
   <form id="gate-form" autocomplete="off">
     <div class="logo">A</div>
     <h1>Agent 会话</h1>
-    <p>粘贴 <code>hook_token</code> 进入（只存在这台浏览器里，不会发往别处）。服务端没设 token 时，随便填一个字符串即可。</p>
+    <p>粘贴 <code>hook_token</code> 进入（只存在这台浏览器里，不会发往别处）。</p>
     <input id="gate-token" type="password" placeholder="hook_token" autocomplete="current-password">
     <button type="submit" class="primary">进入</button>
     <p id="gate-error" class="error"></p>
@@ -22,19 +22,34 @@
 <div id="app" class="hidden">
   <header>
     <div class="brand"><span class="dot"></span><h1>Agent 会话</h1></div>
-    <input id="search" type="search" placeholder="搜索 sessionId / 文件名片段 / key">
-    <select id="source-filter"><option value="">全部数据源</option></select>
+    <input id="search" type="search" placeholder="搜索 sessionId / 文件名片段 / key / cwd（按 / 聚焦）">
+    <select id="source-filter" aria-label="数据源过滤"><option value="">全部数据源</option></select>
     <label class="auto"><input type="checkbox" id="auto" checked> 自动刷新</label>
-    <button id="refresh" class="ghost">刷新</button>
+    <button id="refresh" class="ghost" title="刷新（r）">刷新</button>
     <button id="logout" class="ghost">换 token</button>
     <span id="status" class="status"></span>
   </header>
+
   <main>
-    <aside id="list" class="list"></aside>
-    <section id="detail" class="detail">
-      <p class="empty">← 从左边选一个会话</p>
+    <aside id="list" class="list" role="listbox" aria-label="会话列表" tabindex="0"></aside>
+
+    <section class="stream">
+      <div id="stream-head" class="stream-head"></div>
+      <div id="messages" class="messages" tabindex="0">
+        <p class="empty">← 从左边选一个会话</p>
+      </div>
     </section>
+
+    <aside id="side" class="side" aria-label="会话概览"></aside>
   </main>
+
+  <footer id="keyhint" class="keyhint">
+    <span><kbd>j</kbd><kbd>k</kbd> 切换会话</span>
+    <span><kbd>/</kbd> 搜索</span>
+    <span><kbd>g</kbd><kbd>G</kbd> 跳到首/末</span>
+    <span><kbd>r</kbd> 刷新</span>
+    <span><kbd>Esc</kbd> 清空搜索</span>
+  </footer>
 </div>
 
 <script src="/ui/app.js"></script>

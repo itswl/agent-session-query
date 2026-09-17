@@ -243,6 +243,11 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 		return http.StatusOK
 	}
 
+	// 站点图标 - 不要求认证（浏览器会自己去根路径要，见 serveFavicon）
+	if path == "/favicon.ico" {
+		return serveFavicon(w)
+	}
+
 	// 内嵌的只读页面 - 不要求认证（页面里没有数据，数据仍要带 token 走 /sessions）
 	if isUIPath(path) {
 		rec := &statusRecorder{ResponseWriter: w}

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"io"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -100,4 +101,35 @@ func readBody(t *testing.T, resp *http.Response) string {
 		}
 	}
 	return string(buf)
+}
+
+// TestFaviconRoute：浏览器打开任何页面都会去根路径要一次 /favicon.ico，
+// 不接住的话每次访问都在日志里留一条 404（配了 token 时是 401）。
+func TestFaviconRoute(t *testing.T) {
+	srv, _ := newTestServer(t, "secret")
+
+	resp, err := http.Get(srv.URL + "/favicon.ico")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	// 配了 token 也要免认证：图标里没有数据
+	if resp.StatusCode != 200 {
+		t.Fatalf("/favicon.ico = %d，应当免认证返回 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "image/x-icon" {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+
+	icon, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ICO 头：保留位 0、类型 1、图像数量 > 0
+	if len(icon) < 6 || icon[0] != 0 || icon[1] != 0 || icon[2] != 1 || icon[3] != 0 {
+		t.Fatalf("不是合法的 ICO，前 6 字节 = %v", icon[:min(6, len(icon))])
+	}
+	if count := int(icon[4]) | int(icon[5])<<8; count == 0 {
+		t.Fatal("ICO 里一个图像都没有")
+	}
 }

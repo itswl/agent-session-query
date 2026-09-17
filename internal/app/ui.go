@@ -4,6 +4,7 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -60,4 +61,26 @@ func serveUIAssets(w http.ResponseWriter, r *http.Request, path string) {
 
 func isUIPath(path string) bool {
 	return path == "/ui" || strings.HasPrefix(path, "/ui/")
+}
+
+// serveFavicon 提供 /favicon.ico，返回实际写出的状态码。
+//
+// 浏览器打开任何页面都会顺手去根路径要一次这个文件——不只是 /ui，访问 / 那个
+// JSON 也会。不接住的话每开一次页面就在访问日志里留一条 404，配了 token 时
+// 还是一条 401，看着像有人在瞎探。图标本身不含数据，和 /ui 一样免认证。
+func serveFavicon(w http.ResponseWriter) int {
+	sub, err := uiSub()
+	if err == nil {
+		var icon []byte
+		if icon, err = fs.ReadFile(sub, "favicon.ico"); err == nil {
+			w.Header().Set("Content-Type", "image/x-icon")
+			w.Header().Set("Content-Length", strconv.Itoa(len(icon)))
+			// 图标是内嵌的，同一个二进制里不会变
+			w.Header().Set("Cache-Control", "public, max-age=86400")
+			_, _ = w.Write(icon)
+			return http.StatusOK
+		}
+	}
+	writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "Internal server error"})
+	return http.StatusInternalServerError
 }

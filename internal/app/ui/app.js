@@ -26,6 +26,8 @@ const state = {
   source: '',
   role: '',            // '' / 'user' / 'assistant'
   order: 'desc',       // desc = 最新 N 条（会话最有价值的是结尾）
+  grouping: 'time',    // time = 按更新时间；project = 按项目（cwd）归拢
+  search: null,        // 内容搜索的结果；null = 普通列表
   detail: null,        // { sessionId, signature, messages, final }
   openBlocks: new Set(),
   timer: null,
@@ -190,6 +192,49 @@ function visibleSessions() {
   });
 }
 
+// listRows 把要显示的行排好：按时间就是一串会话，按项目则在每组前插一个组头。
+// 组头也带 id，好让下面的增量 patch 一视同仁地复用节点。
+function listRows() {
+  const sessions = visibleSessions();
+  if (state.grouping !== 'project') {
+    return sessions.map((s) => ({ kind: 'session', id: s.sessionId, session: s }));
+  }
+  // sessions 已经是新的在前，所以 Map 的插入顺序就是「最近动过的项目在前」
+  const groups = new Map();
+  for (const s of sessions) {
+    const name = s.project || '（无项目）';
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(s);
+  }
+  const rows = [];
+  for (const [name, items] of groups) {
+    rows.push({
+      kind: 'group', id: 'group:' + name, name,
+      count: items.length, active: items.some((s) => s.isActive),
+    });
+    for (const s of items) rows.push({ kind: 'session', id: s.sessionId, session: s });
+  }
+  return rows;
+}
+
+function buildGroup(id) {
+  const node = el('div', 'group');
+  node.dataset.id = id;
+  node.appendChild(el('span', 'group-name'));
+  node.appendChild(el('span', 'group-count'));
+  return node;
+}
+
+function fillGroup(node, row) {
+  const [name, count] = node.children;
+  // 项目路径只显示末段，完整路径放 title
+  const short = String(row.name).split(/[\\/]/).filter(Boolean).pop() || row.name;
+  setText(name, short);
+  node.title = row.name;
+  setText(count, row.count);
+  node.classList.toggle('live', !!row.active);
+}
+
 function buildItem(sessionId) {
   const item = el('div', 'item');
   item.dataset.id = sessionId;
@@ -199,6 +244,7 @@ function buildItem(sessionId) {
 
   const row = el('div', 'row1');
   row.appendChild(el('span', 'tag'));   // 数据源
+  row.appendChild(el('span', 'live'));  // 活跃灯（只在会话正被写入时显示）
   row.appendChild(el('span', 'time'));  // 相对时间
   item.appendChild(row);
   item.appendChild(el('div', 'key'));
@@ -207,10 +253,13 @@ function buildItem(sessionId) {
 }
 
 function fillItem(item, session) {
-  const [tag, time] = item.children[0].children;
+  const [tag, live, time] = item.children[0].children;
   const cls = sourceClass(session.source);
   if (tag.className !== cls) tag.className = cls;
   setText(tag, session.source);
+  // 文件型数据源的 status 永远是 done，「正在跑」只能靠更新时间推断（服务端算好的）
+  live.classList.toggle('on', !!session.isActive);
+  live.title = session.isActive ? '正在写入' : '';
   setText(time, relTime(session.updatedAt));
   time.title = session.updatedAt || '';
 
@@ -224,10 +273,14 @@ function fillItem(item, session) {
 }
 
 function renderList() {
+  if (state.search) {
+    renderSearchResults();
+    return;
+  }
   const list = $('list');
-  const sessions = visibleSessions();
+  const rows = listRows();
 
-  if (sessions.length === 0) {
+  if (rows.length === 0) {
     list.replaceChildren(el('p', 'empty-list', state.sessions.length ? '没有匹配的会话' : '还没有会话'));
     return;
   }
@@ -239,21 +292,100 @@ function renderList() {
     else node.remove(); // 之前的空状态提示
   }
 
-  sessions.forEach((session, index) => {
-    let node = existing.get(session.sessionId);
-    if (node) existing.delete(session.sessionId);
-    else node = buildItem(session.sessionId);
+  rows.forEach((row, index) => {
+    let node = existing.get(row.id);
+    if (node) existing.delete(row.id);
+    else node = row.kind === 'group' ? buildGroup(row.id) : buildItem(row.id);
 
-    fillItem(node, session);
-    const active = session.sessionId === state.selectedId;
-    node.classList.toggle('active', active);
-    node.setAttribute('aria-selected', active ? 'true' : 'false');
+    if (row.kind === 'group') {
+      fillGroup(node, row);
+    } else {
+      fillItem(node, row.session);
+      const active = row.id === state.selectedId;
+      node.classList.toggle('active', active);
+      node.setAttribute('aria-selected', active ? 'true' : 'false');
+    }
 
     // insertBefore 会移动已有节点，不重建 —— 顺序变了也不丢状态
     if (list.children[index] !== node) list.insertBefore(node, list.children[index] || null);
   });
 
   for (const stale of existing.values()) stale.remove();
+}
+
+// ---------------------------------------------------------------------------
+// 内容搜索（在搜索框里按 Enter 触发；不按 Enter 就是即时过滤元数据）
+// ---------------------------------------------------------------------------
+
+async function runContentSearch(query) {
+  const text = String(query || '').trim();
+  if (!text) {
+    exitSearch();
+    return;
+  }
+  setStatus('搜索「' + text + '」…');
+  try {
+    const data = await api('/search?q=' + encodeURIComponent(text) + '&limit=50');
+    state.search = data;
+    renderSearchResults();
+    setStatus('“' + text + '” · 命中 ' + data.matched + ' 个会话 · 扫了 ' +
+      data.scanned + ' 个 · ' + data.tookMs + ' ms');
+  } catch (err) {
+    handleError(err);
+    setStatus('搜索失败：' + err.message);
+  }
+}
+
+function exitSearch() {
+  if (!state.search) return;
+  state.search = null;
+  renderList();
+  setStatus('共 ' + state.sessions.length + ' 个会话 · 更新于 ' + state.loadedAt);
+}
+
+function renderSearchResults() {
+  const list = $('list');
+  const data = state.search;
+  const box = document.createDocumentFragment();
+
+  const head = el('div', 'search-head');
+  head.appendChild(el('span', '', '命中 ' + data.matched + ' 个会话'));
+  if (data.truncated) head.appendChild(el('span', 'dim', '（只列前 ' + data.total + ' 个）'));
+  head.appendChild(button('ghost tiny', '退出搜索', exitSearch));
+  box.appendChild(head);
+
+  if ((data.results || []).length === 0) {
+    box.appendChild(el('p', 'empty-list', '没搜到'));
+  }
+  for (const found of data.results || []) {
+    const item = el('div', 'item hit' + (found.sessionId === state.selectedId ? ' active' : ''));
+    item.dataset.id = found.sessionId;
+    item.setAttribute('role', 'option');
+    item.tabIndex = -1;
+    item.addEventListener('click', () => selectSession(found.sessionId));
+
+    const row = el('div', 'row1');
+    row.appendChild(sourceTag(found.source));
+    if (found.isActive) row.appendChild(el('span', 'live on'));
+    row.appendChild(el('span', 'hit-count', found.matchCount + ' 处'));
+    const time = el('span', 'time', relTime(found.updatedAt));
+    time.title = found.updatedAt || '';
+    row.appendChild(time);
+    item.appendChild(row);
+
+    const key = el('div', 'key', found.shortKey || found.sessionId);
+    key.title = found.key || '';
+    item.appendChild(key);
+    // 只列第一条命中：左栏放不下更多，点进去看全的
+    const first = (found.matches || [])[0];
+    if (first) {
+      const snippet = el('div', 'snippet', first.snippet);
+      snippet.title = (first.role || '') + ' · ' + (first.timestamp || '');
+      item.appendChild(snippet);
+    }
+    box.appendChild(item);
+  }
+  list.replaceChildren(box);
 }
 
 function renderSources() {
@@ -500,6 +632,37 @@ function usageCard(usage) {
   return card;
 }
 
+// downloadExport 导出成 Markdown。
+// 端点要认证，所以不能用裸 <a href> —— 得自己带上 Authorization 头再造下载。
+async function downloadExport(record, node) {
+  const original = node.textContent;
+  setText(node, '导出中…');
+  try {
+    const path = '/sessions/' + encodeURIComponent(record.sessionId) +
+      '/export?limit=' + MESSAGE_LIMIT + '&order=' + state.order;
+    const headers = {};
+    if (state.token) headers.Authorization = 'Bearer ' + state.token;
+    const res = await fetch(path, { headers });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = (record.shortKey || record.sessionId) + '.md';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setText(node, '已导出');
+  } catch (err) {
+    handleError(err);
+    setStatus('导出失败：' + err.message);
+    setText(node, '导出失败');
+  }
+  setTimeout(() => setText(node, original), 1500);
+}
+
 function sessionCard(record, final) {
   const card = el('section', 'card');
   card.appendChild(el('h3', '', '会话'));
@@ -507,6 +670,8 @@ function sessionCard(record, final) {
   const idRow = el('div', 'idrow');
   idRow.appendChild(el('code', '', record.sessionId));
   idRow.appendChild(copyButton(record.sessionId));
+  idRow.appendChild(button('ghost tiny', '导出 md',
+    (event) => downloadExport(record, event.currentTarget)));
   card.appendChild(idRow);
 
   card.appendChild(kv([
@@ -515,7 +680,6 @@ function sessionCard(record, final) {
     ['更新', record.updatedAt],
     ['创建', record.createdAt],
     ['模型', record.model],
-    ['cwd', record.cwd],
     ['项目', record.project],
     ['CLI', record.cliVersion],
     ['Token', record.totalTokens],
@@ -657,7 +821,7 @@ function isTyping(node) {
 }
 
 function moveSelection(delta) {
-  const sessions = visibleSessions();
+  const sessions = state.search ? (state.search.results || []) : visibleSessions();
   if (sessions.length === 0) return;
   const index = sessions.findIndex((s) => s.sessionId === state.selectedId);
   const next = index < 0
@@ -674,6 +838,10 @@ function scrollMessages(toBottom) {
 }
 
 function clearSearch() {
+  if (state.search) {
+    exitSearch();
+    return;
+  }
   if (!state.keyword) return;
   state.keyword = '';
   $('search').value = '';
@@ -748,8 +916,27 @@ $('search').addEventListener('input', (event) => {
   if (state.searchTimer) clearTimeout(state.searchTimer);
   state.searchTimer = setTimeout(() => {
     state.keyword = value;
+    if (state.search) return; // 正在看搜索结果：等用户按 Enter 重搜或退出
     renderList();
   }, SEARCH_DEBOUNCE_MS);
+});
+
+// Enter = 全文搜内容；只打字不回车就还是即时过滤元数据
+$('search').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    runContentSearch(event.target.value);
+  } else if (event.key === 'Escape' && state.search) {
+    event.preventDefault();
+    exitSearch();
+  }
+});
+
+// 列表分组：按时间 / 按项目
+$('grouping').addEventListener('change', (event) => {
+  state.grouping = event.target.value;
+  exitSearch();
+  renderList();
 });
 
 $('source-filter').addEventListener('change', (event) => {

@@ -76,6 +76,42 @@
 - 消息流重建前记下展开的折叠块（按 `消息 id:块序号` 做稳定 key）与 `scrollTop`，重建后还原；原先贴着底部的话继续贴着底部
 - 首次打开按取值方向决定落点：看最新就滚到底，看最早就从头开始
 
+### 全文搜索
+
+`/search` 不建索引。索引要落盘、要维护、要考虑失效，「单二进制、只读、scp 过去就能跑」这条
+就没了——而实测根本不需要：
+
+| 本机 174 个真实会话 / 470 MB | 耗时 |
+|---|---|
+| 冷（页面缓存未命中） | 1095 ms |
+| 热 | **60 ms** |
+| `since=2d`（收窄到 43 个会话） | 45 ms |
+
+快在顺序上，不在算法上：
+
+1. **先按原始字节过滤**——`bytes.Contains` 在 `eachJSONLLine` 拿到的裸字节上做，命中了才
+   `json.Unmarshal` 那一行。99% 的行连解析都省掉，而 JSON 解析才是扫描里最贵的部分
+2. **大小写折叠不分配**——`appendLowerASCII` 复用同一个缓冲逐行覆写；按字节折 `A-Z`，
+   UTF-8 多字节序列（首字节 ≥ 0x80）原样穿过，中文本来也没有大小写
+3. **会话级并行**——`GOMAXPROCS` 个 worker 各扫一个会话，结果按下标回填，顺序不乱
+4. **新的先扫**——候选按更新时间倒序，截断到 `limit` 时留下的是最近的
+
+取片段时有个坑：JSON 里到处是字符串，命中可能落在字段名上。所以 `findMatchingText` 只认
+正文字段（`text` / `content` / `thinking` / `reasoning` / …），并且为了结果稳定——Go 的 map
+遍历是乱序的——先按固定顺序找这几个键，其余键按键名排序后再找。
+
+Hermes 新版会话全在 SQLite 里、没有 jsonl，所以 `JsonMapSource` 实现了可选的
+`searchableSource` 接口走 `LIKE`（SQLite 的 LIKE 对 ASCII 本来就大小写无关）；
+其余五个源都只有文件，走通用路径就够。
+
+### MCP
+
+`--mcp` 走 stdio 上的 JSON-RPC 2.0（`json.Decoder` 逐个值读，天然处理换行分隔）。两条要点：
+
+- **stdout 归 JSON-RPC 独占**。启动横幅、警告一律写 stderr，否则会把协议流冲烂
+- **工具级错误走 `isError` 而不是 JSON-RPC error**。参数错了要让模型看得到错误内容，
+  它才能自己改参数重试；协议错误（未知方法）才返回 `-32601`
+
 ### 跨平台
 
 支持 `linux` / `darwin` / `windows` × `amd64` / `arm64`（`windows/386` 也编得过，只是没发）。唯一的依赖是纯 Go 的 SQLite 驱动，六个平台都有移植（Windows 走 `sqlite_windows.go`），`CGO_ENABLED=0` 交叉编译不需要任何 C 工具链。

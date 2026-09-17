@@ -23,8 +23,12 @@
 <div id="app" class="hidden">
   <header>
     <div class="brand"><span class="dot"></span><h1>Agent 会话</h1></div>
-    <input id="search" type="search" placeholder="搜索 sessionId / 文件名片段 / key / cwd（按 / 聚焦）">
+    <input id="search" type="search" placeholder="过滤 sessionId / 路径 / cwd；按 Enter 全文搜内容">
     <select id="source-filter" aria-label="数据源过滤"><option value="">全部数据源</option></select>
+    <select id="grouping" aria-label="列表分组">
+      <option value="time">按时间</option>
+      <option value="project">按项目</option>
+    </select>
     <label class="auto"><input type="checkbox" id="auto" checked> 自动刷新</label>
     <button id="refresh" class="ghost" title="刷新（r）">刷新</button>
     <button id="logout" class="ghost">换 token</button>
@@ -49,7 +53,8 @@
     <span><kbd>/</kbd> 搜索</span>
     <span><kbd>g</kbd><kbd>G</kbd> 跳到首/末</span>
     <span><kbd>r</kbd> 刷新</span>
-    <span><kbd>Esc</kbd> 清空搜索</span>
+    <span><kbd>Enter</kbd> 全文搜内容</span>
+    <span><kbd>Esc</kbd> 清空 / 退出搜索</span>
   </footer>
 </div>
 

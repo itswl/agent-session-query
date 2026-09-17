@@ -183,6 +183,53 @@ main {
 }
 .empty-list { color: var(--dim); padding: 28px 16px; text-align: center; }
 
+/* 项目分组的组头 */
+.group {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 14px; background: var(--panel-2);
+  border-bottom: 1px solid var(--line); border-top: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 1;
+  font-size: 12px; font-weight: 650; color: var(--fg-mid);
+}
+.group:first-child { border-top: none; }
+.group .group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group .group-count { margin-left: auto; color: var(--dim); font-weight: 400; }
+.group.live .group-name::after {
+  content: ""; display: inline-block; vertical-align: middle;
+  width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--ok);
+}
+
+/* 活跃灯：文件还在被写入 */
+.live { width: 6px; height: 6px; border-radius: 50%; background: transparent; flex: 0 0 auto; }
+.live.on { background: var(--ok); box-shadow: 0 0 0 0 var(--ok); animation: pulse 2s ease-out infinite; }
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(158, 206, 106, 0.55); }
+  70%  { box-shadow: 0 0 0 5px rgba(158, 206, 106, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(158, 206, 106, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live.on { animation: none; }
+}
+
+/* 内容搜索结果 */
+.search-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 14px; background: var(--panel-2); border-bottom: 1px solid var(--line);
+  font-size: 12px; color: var(--fg-mid);
+  position: sticky; top: 0; z-index: 1;
+}
+.search-head .dim { color: var(--dim); }
+.search-head button { margin-left: auto; }
+.item.hit .hit-count {
+  font-size: 11px; color: var(--accent); background: var(--accent-soft);
+  border-radius: 999px; padding: 0 7px; white-space: nowrap;
+}
+.item .snippet {
+  margin-top: 4px; font-size: 12px; color: var(--fg-mid); line-height: 1.5;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden; word-break: break-word;
+}
+
 /* 时间统一淡化右置 */
 .time { color: var(--dim); font-size: 11.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 

@@ -55,15 +55,35 @@ func TestCodexMetaNotFirstLine(t *testing.T) {
 	}
 }
 
-// TestCodexMetaWithoutTypeName：上游若改了类型名，靠字段形状也要认得出来
-func TestCodexMetaWithoutTypeName(t *testing.T) {
+// TestCodexMetaSalvage：没有 session_meta 时，从别的行把字段凑回来。
+// 行的形状取自真实 rollout：turn_context 只带 cwd，token_usage_record 只带 session_id，
+// 而 response_item（消息）带的是 id="msg_…"——那个绝不能被当成会话 ID。
+func TestCodexMetaSalvage(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, "2026", "09", "13", "rollout-y.jsonl"),
-		`{"type":"turn_context","payload":{"session_id":"codex-shape","cwd":"/w/shape"}}`,
-		`{"type":"response_item","payload":{"type":"message","role":"user","id":"m1","content":[{"text":"hi"}]}}`,
+		`{"type":"response_item","payload":{"type":"message","role":"user","id":"msg_should_not_win","content":[{"text":"hi"}]}}`,
+		`{"type":"turn_context","payload":{"cwd":"/w/shape"}}`,
+		`{"type":"token_usage_record","payload":{"session_id":"codex-salvaged","usage":{"input_tokens":1}}}`,
 	)
-	list := newCodexSource(root).List()
-	if got := list[0].str("sessionId"); got != "codex-shape" {
-		t.Fatalf("sessionId = %q", got)
+	r := newCodexSource(root).List()[0]
+	if got := r.str("sessionId"); got != "codex-salvaged" {
+		t.Fatalf("sessionId = %q —— 不能拿消息行的 msg_ id", got)
+	}
+	if got := r.str("cwd"); got != "/w/shape" {
+		t.Fatalf("cwd = %q", got)
+	}
+}
+
+// TestCodexMessageIDNeverBecomesSessionID：整个文件只有消息行时，
+// 宁可退回文件名，也不能把 msg_… 当成会话 ID
+func TestCodexMessageIDNeverBecomesSessionID(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "2026", "09", "13", "rollout-only-msgs.jsonl"),
+		`{"type":"response_item","payload":{"type":"message","role":"user","id":"msg_aaa","content":[{"text":"hi"}]}}`,
+		`{"type":"response_item","payload":{"type":"message","role":"assistant","id":"msg_bbb","content":[{"text":"yo"}]}}`,
+	)
+	r := newCodexSource(root).List()[0]
+	if got := r.str("sessionId"); got != "rollout-only-msgs" {
+		t.Fatalf("sessionId = %q，应当退回文件名", got)
 	}
 }

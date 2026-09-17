@@ -32,34 +32,33 @@ func (s *CodexSource) files() []string {
 // codexHeadLines 找元数据行时最多往下读几行（防御性上限，正常第一行就是）
 const codexHeadLines = 50
 
-// codexMeta 判断一行是不是会话元数据，是就返回它的 payload。
+// codexSalvageKeys 没有 session_meta 时，可以从别的行零散捡回来的字段。
 //
-// 认两种：显式的 type=session_meta，或者 payload 里带着只有元数据才有的字段。
-// 放宽一点是有意的——本机没有 Codex 数据可实测，只认类型名的话，哪天上游改了名字
-// 就会静默退化。反过来不会误判：消息行的 payload 是 type=message + role + content，
-// 既没有 session_id 也没有 cwd。
-func codexMeta(obj map[string]any) (map[string]any, bool) {
-	payload := getMap(obj, "payload")
-	if obj["type"] == "session_meta" {
-		return payload, true
-	}
-	if truthy(payload["session_id"]) || truthy(payload["cwd"]) {
-		return payload, true
-	}
-	return nil, false
-}
+// 实测一个真实 rollout 的行类型分布：session_meta 带全套，turn_context 只带 cwd，
+// token_usage_record 只带 session_id——它们是互补的，能凑一点是一点。
+//
+// 注意这里**没有裸 `id`**：response_item（消息行）的 payload 带 id = "msg_…"，
+// 顺手捡的话就会把消息 ID 当成会话 ID 报出去，和 Pi 踩过的是同一个坑。
+var codexSalvageKeys = []string{"session_id", "cwd", "cli_version"}
 
 // List 找元数据行；文件没变过就直接用缓存（见 fileRecordCache）
 func (s *CodexSource) List() []record {
 	return s.cache.records(s.files(), func(path, modISO string) record {
-		// 原先只读第一行。首行不是元数据（被截断、或上游加了前导行）就全丢，
-		// 而且有可能从别的行里捡到同名字段——和 Pi 踩到的是同一类问题。
+		// 原先只读第一行，首行不是元数据（被截断、或上游加了前导行）就全丢。
+		// 现在：session_meta 是权威且完整的那一行，拿到就停；找不到才退而求其次，
+		// 从后面的行里把认得出来的字段逐个补上。
 		payload := map[string]any{}
 		seen := 0
 		eachJSONL(path, func(obj map[string]any) bool {
-			if meta, ok := codexMeta(obj); ok {
-				payload = meta
+			row := getMap(obj, "payload")
+			if obj["type"] == "session_meta" {
+				payload = row
 				return false
+			}
+			for _, key := range codexSalvageKeys {
+				if !truthy(payload[key]) && truthy(row[key]) {
+					payload[key] = row[key]
+				}
 			}
 			seen++
 			return seen < codexHeadLines

@@ -12,8 +12,9 @@
 - **Claude Code**：消息行是 `type=user`/`assistant`，内容在 `message.content`（`text`/`thinking`/`tool_use`/`tool_result` 块）；跳过 `isSidechain`（子代理）以及 `queue-operation`、`attachment`、`mode` 等非对话行。
   `cwd` 不在首行，前面有一串非对话行——本机 174 个真实会话的分布是第 2 行 1 个 / 第 3 行 123 / 第 4 行 30 / 第 5 行 19 / 第 6 行 1
 - **Codex**：消息行是 `type=response_item` 且 `payload.type=message`；`payload.role` 为 `developer` 的行（系统拼装的指令）不计入；用量取自 `token_usage_record`。
-  元数据行认 `type=session_meta`，或者 `payload` 里带 `session_id` / `cwd`——放宽是有意的，只认类型名的话上游改名就会静默退化；
-  反过来不会误判，消息行的 payload 只有 `type`/`role`/`content`
+  元数据行认 `type=session_meta`（权威且字段最全，拿到就停）；找不到才退而求其次，从后面的行里补
+  ——实测一个真实 rollout 的行类型是互补的：`turn_context` 只带 `cwd`，`token_usage_record` 只带 `session_id`。
+  **补的时候绝不碰裸 `id`**：消息行（`response_item`）的 payload 带 `id = "msg_…"`，顺手捡就会把消息 ID 当成会话 ID
 - **Gemini CLI**：文件是追加日志——首行元数据（`sessionId`/`startTime`）、`{"$set": {...}}` 补丁行、以及消息行；消息取 `type=user`/`type=gemini` 的行，`content` 可能是数组（user）或字符串（gemini）。工具调用型会话里正文很稀：发起调用时 `content` 是空串、内容在 `toolCalls` 字段（→ `toolCall` 块，只带 name/args），执行结果由后续 user 行 `content` 数组里的 `functionResponse` 项回传（→ `toolResult` 块）；`thoughts` 字符串或 `[{subject, description}]` 数组都作为 thinking（数组取各条 description）
 
 ### 元数据的定位：读到拿齐为止，且认准行类型

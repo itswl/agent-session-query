@@ -1,12 +1,15 @@
-// Agent 会话查询的只读页面。
+// Read-only page for browsing agent sessions.
 //
-// 两条铁律：
-//   1. 会话内容是别人写的文本（工具输出、网页正文……），一律用 textContent 渲染，
-//      禁止任何 HTML 拼接赋值 —— 页面的 token 存在 localStorage，被打中等于泄露。
-//   2. 令牌只存在本机 localStorage，请求一律带 Authorization 头，不放进 URL。
+// Two hard rules:
+//   1. Session content is text other programs wrote (tool output, web page bodies, ...).
+//      Render it exclusively through textContent; never assign built-up HTML — the token
+//      lives in localStorage, so landing an XSS here means leaking it.
+//   2. The token stays in this browser's localStorage and travels in the Authorization
+//      header, never in a URL.
 //
-// 渲染策略：自动刷新不能把正在读的东西掀掉。所以列表按 sessionId 做增量 patch，
-// 详情只在「选中会话真的变了」时才重拉，重建时保住展开的折叠块与滚动位置。
+// Rendering strategy: auto-refresh must not rip away what you are reading. So the list is
+// patched incrementally by sessionId, the detail pane is only refetched when the selected
+// session really changed, and rebuilds preserve expanded blocks and scroll position.
 'use strict';
 
 const TOKEN_KEY = 'agent-session-query-token';
@@ -25,9 +28,9 @@ const state = {
   keyword: '',
   source: '',
   role: '',            // '' / 'user' / 'assistant'
-  order: 'desc',       // desc = 最新 N 条（会话最有价值的是结尾）
-  grouping: 'time',    // time = 按更新时间；project = 按项目（cwd）归拢
-  search: null,        // 内容搜索的结果；null = 普通列表
+  order: 'desc',       // desc = the latest N (the end of a session is the interesting part)
+  grouping: 'time',    // time = by update time; project = grouped by project (cwd)
+  search: null,        // content search results; null means the normal list
   detail: null,        // { sessionId, signature, messages, final }
   openBlocks: new Set(),
   timer: null,
@@ -39,7 +42,7 @@ const state = {
 const $ = (id) => document.getElementById(id);
 
 // ---------------------------------------------------------------------------
-// 接口
+// API
 // ---------------------------------------------------------------------------
 
 async function api(path) {
@@ -56,7 +59,7 @@ async function api(path) {
     try {
       const body = await res.json();
       if (body && body.error) detail = body.error;
-    } catch (e) { /* 非 JSON 响应就用状态码 */ }
+    } catch (e) { /* a non-JSON response leaves just the status code */ }
     const err = new Error(detail);
     err.status = res.status;
     throw err;
@@ -65,7 +68,7 @@ async function api(path) {
 }
 
 // ---------------------------------------------------------------------------
-// 渲染工具（只用 textContent / createElement）
+// Rendering helpers (textContent / createElement only)
 // ---------------------------------------------------------------------------
 
 function el(tag, className, text) {
@@ -75,7 +78,8 @@ function el(tag, className, text) {
   return node;
 }
 
-// setText 只在内容真的变了时才写 DOM：避免每次刷新都把用户选中的文本清掉
+// setText only touches the DOM when the content actually changed, so a refresh does not
+// wipe out whatever the user had selected
 function setText(node, text) {
   const value = text === undefined || text === null ? '' : String(text);
   if (node.textContent !== value) node.textContent = value;
@@ -104,7 +108,7 @@ function button(className, label, onClick) {
   return node;
 }
 
-// segmented 一组互斥的小按钮（取哪一段 / 只看谁）
+// segmented renders a group of mutually exclusive buttons (which slice / whose messages)
 function segmented(options, current, onPick) {
   const wrap = el('div', 'seg');
   for (const [value, label] of options) {
@@ -114,20 +118,21 @@ function segmented(options, current, onPick) {
 }
 
 function copyButton(text) {
-  return button('ghost tiny', '复制', async (event) => {
+  return button('ghost tiny', 'Copy', async (event) => {
     const node = event.currentTarget;
     try {
       await navigator.clipboard.writeText(text);
-      setText(node, '已复制');
-      setTimeout(() => setText(node, '复制'), 1200);
+      setText(node, 'Copied');
+      setTimeout(() => setText(node, 'Copy'), 1200);
     } catch (e) {
-      setStatus('复制失败，请手动选中');
+      setStatus('Copy failed — select the text manually');
     }
   });
 }
 
-// 相对时间：updatedAt 各源格式不一（有无 T / Z / 毫秒），统一先按 UTC 补齐再解析。
-// 拿不准就原样返回，列表显示退化成原始字符串而已。
+// Relative time. updatedAt is spelled differently by each source (with or without T / Z /
+// milliseconds), so normalise to UTC before parsing. Anything uncertain is returned as-is,
+// which merely degrades the list to showing the raw string.
 function relTime(iso) {
   if (!iso) return '';
   let normalized = String(iso).trim().replace(' ', 'T');
@@ -135,18 +140,19 @@ function relTime(iso) {
   const t = Date.parse(normalized);
   if (Number.isNaN(t)) return String(iso);
   const diff = Date.now() - t;
-  if (diff < 0) return String(iso); // 时钟偏差，显示原文最诚实
-  if (diff < 60e3) return '刚刚';
-  if (diff < 3600e3) return Math.floor(diff / 60e3) + ' 分钟前';
-  if (diff < 86400e3) return Math.floor(diff / 3600e3) + ' 小时前';
-  if (diff < 7 * 86400e3) return Math.floor(diff / 86400e3) + ' 天前';
+  if (diff < 0) return String(iso); // clock skew; showing the raw value is the honest answer
+  if (diff < 60e3) return 'just now';
+  if (diff < 3600e3) return Math.floor(diff / 60e3) + ' min ago';
+  if (diff < 86400e3) return Math.floor(diff / 3600e3) + ' h ago';
+  if (diff < 7 * 86400e3) return Math.floor(diff / 86400e3) + ' d ago';
   const d = new Date(t);
   const month = String(d.getUTCMonth() + 1).padStart(2, '0');
   const day = String(d.getUTCDate()).padStart(2, '0');
   return (d.getUTCFullYear() !== new Date().getUTCFullYear() ? d.getUTCFullYear() + '-' : '') + month + '-' + day;
 }
 
-// 数据源 / 状态标签：className 只用白名单里的值，source 是服务端枚举也不直接拼
+// Source / status tags. className only ever uses whitelisted values; source is a
+// server-side enum but is still never concatenated in directly
 const SOURCE_CLASSES = ['claude', 'codex', 'gemini', 'hermes', 'openclaw', 'pi'];
 function sourceClass(source) {
   return 'tag' + (SOURCE_CLASSES.includes(source) ? ' ' + source : '');
@@ -160,7 +166,7 @@ function statusTag(status) {
 }
 
 // ---------------------------------------------------------------------------
-// 令牌闸门
+// Token gate
 // ---------------------------------------------------------------------------
 
 function showGate(message) {
@@ -173,12 +179,12 @@ function showGate(message) {
 function showApp() {
   $('gate').classList.add('hidden');
   $('app').classList.remove('hidden');
-  // 服务端没设 token 时没有「换 token」这回事
+  // With no token configured there is nothing to change
   $('logout').classList.toggle('hidden', !state.authRequired);
 }
 
 // ---------------------------------------------------------------------------
-// 左栏：会话列表（按 sessionId 增量 patch，不整栏重建）
+// Left pane: the session list (patched incrementally by sessionId, never rebuilt whole)
 // ---------------------------------------------------------------------------
 
 function visibleSessions() {
@@ -192,17 +198,19 @@ function visibleSessions() {
   });
 }
 
-// listRows 把要显示的行排好：按时间就是一串会话，按项目则在每组前插一个组头。
-// 组头也带 id，好让下面的增量 patch 一视同仁地复用节点。
+// listRows lays out the rows to display: by time that is just a run of sessions, by
+// project each group gets a header in front of it. Headers carry an id too, so the
+// incremental patch below can reuse their nodes exactly like any other row.
 function listRows() {
   const sessions = visibleSessions();
   if (state.grouping !== 'project') {
     return sessions.map((s) => ({ kind: 'session', id: s.sessionId, session: s }));
   }
-  // sessions 已经是新的在前，所以 Map 的插入顺序就是「最近动过的项目在前」
+  // sessions is already newest-first, so Map insertion order puts the most recently
+  // touched project first
   const groups = new Map();
   for (const s of sessions) {
-    const name = s.project || '（无项目）';
+    const name = s.project || '(no project)';
     if (!groups.has(name)) groups.set(name, []);
     groups.get(name).push(s);
   }
@@ -227,7 +235,7 @@ function buildGroup(id) {
 
 function fillGroup(node, row) {
   const [name, count] = node.children;
-  // 项目路径只显示末段，完整路径放 title
+  // Show only the last segment of the project path; the full path goes in the title
   const short = String(row.name).split(/[\\/]/).filter(Boolean).pop() || row.name;
   setText(name, short);
   node.title = row.name;
@@ -243,9 +251,9 @@ function buildItem(sessionId) {
   item.addEventListener('click', () => selectSession(item.dataset.id));
 
   const row = el('div', 'row1');
-  row.appendChild(el('span', 'tag'));   // 数据源
-  row.appendChild(el('span', 'live'));  // 活跃灯（只在会话正被写入时显示）
-  row.appendChild(el('span', 'time'));  // 相对时间
+  row.appendChild(el('span', 'tag'));   // source
+  row.appendChild(el('span', 'live'));  // live dot (only shown while a session is being written)
+  row.appendChild(el('span', 'time'));  // relative time
   item.appendChild(row);
   item.appendChild(el('div', 'key'));
   item.appendChild(el('div', 'meta'));
@@ -257,9 +265,10 @@ function fillItem(item, session) {
   const cls = sourceClass(session.source);
   if (tag.className !== cls) tag.className = cls;
   setText(tag, session.source);
-  // 文件型数据源的 status 永远是 done，「正在跑」只能靠更新时间推断（服务端算好的）
+  // File-backed sources always report status done, so "running" can only be inferred
+  // from the update time (the server works this out)
   live.classList.toggle('on', !!session.isActive);
-  live.title = session.isActive ? '正在写入' : '';
+  live.title = session.isActive ? 'being written' : '';
   setText(time, relTime(session.updatedAt));
   time.title = session.updatedAt || '';
 
@@ -281,15 +290,16 @@ function renderList() {
   const rows = listRows();
 
   if (rows.length === 0) {
-    list.replaceChildren(el('p', 'empty-list', state.sessions.length ? '没有匹配的会话' : '还没有会话'));
+    list.replaceChildren(el('p', 'empty-list', state.sessions.length ? 'No matching sessions' : 'No sessions yet'));
     return;
   }
 
-  // 已有节点按 id 收好，复用得上的就地改文本，改不上的才新建
+  // Index the existing nodes by id: reusable ones just get their text updated, and only
+  // the rest are created
   const existing = new Map();
   for (const node of Array.from(list.children)) {
     if (node.dataset && node.dataset.id) existing.set(node.dataset.id, node);
-    else node.remove(); // 之前的空状态提示
+    else node.remove(); // a leftover empty-state message
   }
 
   rows.forEach((row, index) => {
@@ -306,7 +316,8 @@ function renderList() {
       node.setAttribute('aria-selected', active ? 'true' : 'false');
     }
 
-    // insertBefore 会移动已有节点，不重建 —— 顺序变了也不丢状态
+    // insertBefore moves an existing node rather than rebuilding it, so reordering
+    // loses no state
     if (list.children[index] !== node) list.insertBefore(node, list.children[index] || null);
   });
 
@@ -314,7 +325,7 @@ function renderList() {
 }
 
 // ---------------------------------------------------------------------------
-// 内容搜索（在搜索框里按 Enter 触发；不按 Enter 就是即时过滤元数据）
+// Content search (press Enter in the search box; typing alone filters metadata live)
 // ---------------------------------------------------------------------------
 
 async function runContentSearch(query) {
@@ -323,16 +334,16 @@ async function runContentSearch(query) {
     exitSearch();
     return;
   }
-  setStatus('搜索「' + text + '」…');
+  setStatus('Searching for \u201c' + text + '\u201d\u2026');
   try {
     const data = await api('/search?q=' + encodeURIComponent(text) + '&limit=50');
     state.search = data;
     renderSearchResults();
-    setStatus('“' + text + '” · 命中 ' + data.matched + ' 个会话 · 扫了 ' +
-      data.scanned + ' 个 · ' + data.tookMs + ' ms');
+    setStatus('\u201c' + text + '\u201d · ' + data.matched + ' sessions matched · ' +
+      data.scanned + ' scanned · ' + data.tookMs + ' ms');
   } catch (err) {
     handleError(err);
-    setStatus('搜索失败：' + err.message);
+    setStatus('Search failed: ' + err.message);
   }
 }
 
@@ -340,7 +351,7 @@ function exitSearch() {
   if (!state.search) return;
   state.search = null;
   renderList();
-  setStatus('共 ' + state.sessions.length + ' 个会话 · 更新于 ' + state.loadedAt);
+  setStatus(state.sessions.length + ' sessions · updated ' + state.loadedAt);
 }
 
 function renderSearchResults() {
@@ -349,13 +360,13 @@ function renderSearchResults() {
   const box = document.createDocumentFragment();
 
   const head = el('div', 'search-head');
-  head.appendChild(el('span', '', '命中 ' + data.matched + ' 个会话'));
-  if (data.truncated) head.appendChild(el('span', 'dim', '（只列前 ' + data.total + ' 个）'));
-  head.appendChild(button('ghost tiny', '退出搜索', exitSearch));
+  head.appendChild(el('span', '', data.matched + ' sessions matched'));
+  if (data.truncated) head.appendChild(el('span', 'dim', '(showing the first ' + data.total + ')'));
+  head.appendChild(button('ghost tiny', 'Leave search', exitSearch));
   box.appendChild(head);
 
   if ((data.results || []).length === 0) {
-    box.appendChild(el('p', 'empty-list', '没搜到'));
+    box.appendChild(el('p', 'empty-list', 'Nothing found'));
   }
   for (const found of data.results || []) {
     const item = el('div', 'item hit' + (found.sessionId === state.selectedId ? ' active' : ''));
@@ -367,7 +378,7 @@ function renderSearchResults() {
     const row = el('div', 'row1');
     row.appendChild(sourceTag(found.source));
     if (found.isActive) row.appendChild(el('span', 'live on'));
-    row.appendChild(el('span', 'hit-count', found.matchCount + ' 处'));
+    row.appendChild(el('span', 'hit-count', found.matchCount + ' hits'));
     const time = el('span', 'time', relTime(found.updatedAt));
     time.title = found.updatedAt || '';
     row.appendChild(time);
@@ -376,7 +387,7 @@ function renderSearchResults() {
     const key = el('div', 'key', found.shortKey || found.sessionId);
     key.title = found.key || '';
     item.appendChild(key);
-    // 只列第一条命中：左栏放不下更多，点进去看全的
+    // Only the first hit: the left pane has no room for more, and clicking opens the rest
     const first = (found.matches || [])[0];
     if (first) {
       const snippet = el('div', 'snippet', first.snippet);
@@ -394,13 +405,14 @@ function renderSources() {
   for (const s of state.sessions) counts.set(s.source, (counts.get(s.source) || 0) + 1);
   const sources = [...counts.keys()].sort();
 
-  // 选项没变就别重建：重建会把用户正在操作的下拉框打断
+  // Do not rebuild when the options have not changed: that would interrupt a dropdown
+  // the user is currently operating
   const signature = sources.map((s) => s + ':' + counts.get(s)).join(',');
   if (select.dataset.sig === signature) return;
   select.dataset.sig = signature;
 
   const current = select.value;
-  const all = el('option', '', '全部数据源');
+  const all = el('option', '', 'All sources');
   all.value = '';
   const options = [all];
   for (const source of sources) {
@@ -414,7 +426,7 @@ function renderSources() {
 }
 
 // ---------------------------------------------------------------------------
-// 中栏：会话标识 + 工具条 + 消息流
+// Middle pane: session identity + toolbar + message stream
 // ---------------------------------------------------------------------------
 
 function renderStreamHead(record) {
@@ -442,7 +454,7 @@ function renderStreamHead(record) {
 
   const bar = el('div', 'toolbar');
   bar.appendChild(segmented(
-    [['asc', '↑ 最早'], ['desc', '↓ 最新']],
+    [['asc', '\u2191 earliest'], ['desc', '\u2193 latest']],
     state.order,
     (value) => {
       if (value === state.order) return;
@@ -451,13 +463,13 @@ function renderStreamHead(record) {
     },
   ));
   bar.appendChild(segmented(
-    [['', '全部'], ['user', 'user'], ['assistant', 'assistant']],
+    [['', 'all'], ['user', 'user'], ['assistant', 'assistant']],
     state.role,
     (value) => {
       if (value === state.role) return;
       state.role = value;
       renderMessages();
-      renderStreamHead(record); // 只为把按钮的高亮换过去
+      renderStreamHead(record); // only to move the highlight onto the other button
     },
   ));
 
@@ -467,8 +479,8 @@ function renderStreamHead(record) {
     const total = detail.final && typeof detail.final.messageCount === 'number'
       ? detail.final.messageCount : shown;
     const label = total > shown
-      ? '共 ' + total + ' 条 · 这里是' + (state.order === 'desc' ? '最新' : '最早') + ' ' + shown + ' 条'
-      : '共 ' + shown + ' 条';
+      ? total + ' messages · showing the ' + (state.order === 'desc' ? 'latest ' : 'earliest ') + shown
+      : shown + ' messages';
     bar.appendChild(el('span', 'count', label));
   }
   box.appendChild(bar);
@@ -483,15 +495,15 @@ function blockNode(block) {
     case 'thinking':
       return el('div', 'block thinking', block.content);
     case 'toolCall': {
-      // 工具名做头、参数缩进展开，扫一眼就知道调了什么
+      // Tool name as the heading, arguments indented below, so one glance says what ran
       const wrap = el('div', 'block toolCall');
-      wrap.appendChild(el('div', 'tool-name', '⚙ ' + (block.name || '(未命名工具)')));
+      wrap.appendChild(el('div', 'tool-name', '⚙ ' + (block.name || '(unnamed tool)')));
       wrap.appendChild(el('pre', '', JSON.stringify(block.arguments || {}, null, 2)));
       return wrap;
     }
     case 'toolResult': {
       const wrap = el('div', 'block toolResult');
-      wrap.appendChild(el('div', 'tool-label', '↳ ' + (block.toolName || '结果')));
+      wrap.appendChild(el('div', 'tool-label', '↳ ' + (block.toolName || 'result')));
       wrap.appendChild(el('pre', '', block.content));
       return wrap;
     }
@@ -501,8 +513,9 @@ function blockNode(block) {
 }
 
 function messageNode(message, index) {
-  // 内容为空的块会渲染成一个空框（虚线的思考框尤其显眼），直接不要。
-  // 这种块是真实存在的：Claude 的 thinking 块可能只带 signature、正文是空串。
+  // A block with no content renders as an empty box (the dashed thinking box especially
+  // stands out), so drop it. These blocks genuinely occur: a Claude thinking block may
+  // carry only a signature with an empty body.
   const blocks = (Array.isArray(message.content) ? message.content : [])
     .map((block, position) => ({ block, position, node: blockNode(block) }))
     .filter((item) => (item.node.textContent || '').trim() !== '');
@@ -510,8 +523,8 @@ function messageNode(message, index) {
   const node = el('div', 'msg ' + (message.role || '') + (blocks.length === 0 ? ' is-empty' : ''));
   const head = el('div', 'head');
   head.appendChild(el('span', 'role', message.role || '?'));
-  // 一条可显示内容都没有的消息，压成一行提示就够了，不值得占一整块
-  if (blocks.length === 0) head.appendChild(el('span', 'empty-hint', '无可显示内容'));
+  // A message with nothing displayable is worth one line of explanation, not a whole block
+  if (blocks.length === 0) head.appendChild(el('span', 'empty-hint', 'nothing to display'));
   if (message.id) head.title = 'id: ' + message.id;
   if (message.timestamp) head.appendChild(el('span', 'time', String(message.timestamp)));
   node.appendChild(head);
@@ -522,8 +535,9 @@ function messageNode(message, index) {
       node.appendChild(rendered);
       return;
     }
-    // 超长的块折起来，避免一个工具输出淹没整页。
-    // key 要稳定：刷新重建之后还得认得出哪些是用户展开过的
+    // Fold very long blocks away so one tool output does not drown the page.
+    // The key has to be stable: after a refresh rebuild we still need to recognise which
+    // ones the user had expanded
     const key = (message.id || 'i' + index) + ':' + position;
     const details = el('details');
     details.open = state.openBlocks.has(key);
@@ -531,7 +545,7 @@ function messageNode(message, index) {
       if (details.open) state.openBlocks.add(key);
       else state.openBlocks.delete(key);
     });
-    details.appendChild(el('summary', '', '展开 ' + plain.length + ' 字符'));
+    details.appendChild(el('summary', '', 'Expand ' + plain.length + ' characters'));
     details.appendChild(rendered);
     node.appendChild(details);
   });
@@ -543,7 +557,8 @@ function renderMessages() {
   const detail = state.detail;
   if (!detail) return;
 
-  // 同一个会话、同一段消息算「同一个视图」：重建后要回到原来的位置
+  // The same session showing the same slice counts as the same view, and a rebuild has to
+  // land back where it was
   const view = detail.sessionId + '|' + state.order;
   const sameView = pane.dataset.view === view;
   const prevScroll = pane.scrollTop;
@@ -555,14 +570,14 @@ function renderMessages() {
 
   const box = document.createDocumentFragment();
   if (messages.length === 0) {
-    box.appendChild(el('p', 'empty', state.role ? '没有 ' + state.role + ' 的消息' : '这个会话没有消息'));
+    box.appendChild(el('p', 'empty', state.role ? 'No ' + state.role + ' messages' : 'This session has no messages'));
   }
   messages.forEach((message, index) => box.appendChild(messageNode(message, index)));
   pane.replaceChildren(box);
   pane.dataset.view = view;
 
   if (!sameView) {
-    // 刚打开：看最新时贴着底部，看最早时从头开始
+    // Just opened: stick to the bottom when viewing the latest, start at the top for the earliest
     pane.scrollTop = state.order === 'desc' ? pane.scrollHeight : 0;
   } else if (wasAtBottom) {
     pane.scrollTop = pane.scrollHeight;
@@ -572,42 +587,43 @@ function renderMessages() {
 }
 
 // ---------------------------------------------------------------------------
-// 右栏：最终结果常驻（不必滚到顶部去找）
+// Right pane: the final result stays visible (no scrolling back to the top to find it)
 // ---------------------------------------------------------------------------
 
-// usage 各源字段名不同，收敛成可读的键名；费用保留 4 位
+// Sources name their usage fields differently; fold them into readable labels, with cost
+// to four decimal places
 const USAGE_LABELS = {
-  inputTokens: '输入', outputTokens: '输出',
-  input_tokens: '输入', output_tokens: '输出',
-  cacheReadTokens: '缓存读', cacheWriteTokens: '缓存写',
-  reasoningTokens: '推理', estimatedCostUsd: '费用 $',
+  inputTokens: 'in', outputTokens: 'out',
+  input_tokens: 'in', output_tokens: 'out',
+  cacheReadTokens: 'cache read', cacheWriteTokens: 'cache write',
+  reasoningTokens: 'reasoning', estimatedCostUsd: 'cost $',
 };
 const USAGE_DECIMALS = { estimatedCostUsd: 4 };
 
 function finalCard(final) {
   const done = final.isFinal === true;
   const card = el('section', 'card ' + (done ? 'final-done' : 'final-pending'));
-  card.appendChild(el('h3', '', '最终结果'));
+  card.appendChild(el('h3', '', 'Final result'));
 
   const badges = el('div', 'badges');
-  badges.appendChild(el('span', 'badge ' + (done ? 'ok' : 'warn'), done ? '已完成' : '未完成'));
-  if (final.isProcessing) badges.appendChild(el('span', 'badge warn', '处理中'));
+  badges.appendChild(el('span', 'badge ' + (done ? 'ok' : 'warn'), done ? 'Complete' : 'Incomplete'));
+  if (final.isProcessing) badges.appendChild(el('span', 'badge warn', 'Working'));
   if (final.stopReason) badges.appendChild(el('span', 'badge', final.stopReason));
   card.appendChild(badges);
 
   if (final.error) card.appendChild(el('div', 'text', final.error));
   if (final.text) card.appendChild(el('div', 'text', final.text));
-  if (!final.text && !final.error) card.appendChild(el('div', 'text dim', '（没有文本结果）'));
+  if (!final.text && !final.error) card.appendChild(el('div', 'text dim', '(no text result)'));
 
   if (final.thinking) {
     const details = el('details');
-    details.appendChild(el('summary', '', '思考过程'));
+    details.appendChild(el('summary', '', 'Thinking'));
     details.appendChild(el('div', 'block thinking', final.thinking));
     card.appendChild(details);
   }
   card.appendChild(kv([
-    ['模型', final.model],
-    ['时间', final.timestamp],
+    ['Model', final.model],
+    ['Time', final.timestamp],
   ]));
   return card;
 }
@@ -615,10 +631,10 @@ function finalCard(final) {
 function usageCard(usage) {
   const pairs = Object.entries(usage)
     .filter(([, v]) => v !== null && v !== undefined && v !== '')
-    // 各源的 usage 里混着嵌套对象（cache_creation、output_tokens_details……），
-    // 直接 String() 出来是一串 [object Object]，没有任何信息量，不如不显示
+    // Usage objects mix in nested objects (cache_creation, output_tokens_details, ...),
+    // and String() on those yields a row of [object Object] with no information at all
     .filter(([, v]) => typeof v !== 'object')
-    // 认识的字段（输入/输出/缓存/费用）排前面，其余按原样跟在后面
+    // Recognised fields (in / out / cache / cost) come first, the rest follow as-is
     .sort((a, b) => (USAGE_LABELS[a[0]] ? 0 : 1) - (USAGE_LABELS[b[0]] ? 0 : 1))
     .map(([k, v]) => {
       const digits = USAGE_DECIMALS[k];
@@ -627,16 +643,17 @@ function usageCard(usage) {
     });
   if (pairs.length === 0) return null;
   const card = el('section', 'card');
-  card.appendChild(el('h3', '', '用量'));
+  card.appendChild(el('h3', '', 'Usage'));
   card.appendChild(kv(pairs));
   return card;
 }
 
-// downloadExport 导出成 Markdown。
-// 端点要认证，所以不能用裸 <a href> —— 得自己带上 Authorization 头再造下载。
+// downloadExport exports the session as Markdown.
+// The endpoint requires authentication, so a plain <a href> will not do — the request has
+// to carry the Authorization header and the download is built from the response.
 async function downloadExport(record, node) {
   const original = node.textContent;
-  setText(node, '导出中…');
+  setText(node, 'Exporting\u2026');
   try {
     const path = '/sessions/' + encodeURIComponent(record.sessionId) +
       '/export?limit=' + MESSAGE_LIMIT + '&order=' + state.order;
@@ -654,37 +671,37 @@ async function downloadExport(record, node) {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    setText(node, '已导出');
+    setText(node, 'Exported');
   } catch (err) {
     handleError(err);
-    setStatus('导出失败：' + err.message);
-    setText(node, '导出失败');
+    setStatus('Export failed: ' + err.message);
+    setText(node, 'Export failed');
   }
   setTimeout(() => setText(node, original), 1500);
 }
 
 function sessionCard(record, final) {
   const card = el('section', 'card');
-  card.appendChild(el('h3', '', '会话'));
+  card.appendChild(el('h3', '', 'Session'));
 
   const idRow = el('div', 'idrow');
   idRow.appendChild(el('code', '', record.sessionId));
   idRow.appendChild(copyButton(record.sessionId));
-  idRow.appendChild(button('ghost tiny', '导出 md',
+  idRow.appendChild(button('ghost tiny', 'Export md',
     (event) => downloadExport(record, event.currentTarget)));
   card.appendChild(idRow);
 
   card.appendChild(kv([
-    ['数据源', record.source],
-    ['消息数', final && final.messageCount],
-    ['更新', record.updatedAt],
-    ['创建', record.createdAt],
-    ['模型', record.model],
-    ['项目', record.project],
+    ['Source', record.source],
+    ['Messages', final && final.messageCount],
+    ['Updated', record.updatedAt],
+    ['Created', record.createdAt],
+    ['Model', record.model],
+    ['Project', record.project],
     ['CLI', record.cliVersion],
     ['Token', record.totalTokens],
-    ['费用 $', record.estimatedCostUsd],
-    ['文件', record.hasFile ? '在' : '缺失（可能只在 state.db 里）'],
+    ['Cost $', record.estimatedCostUsd],
+    ['File', record.hasFile ? 'present' : 'missing (may exist only in state.db)'],
   ]));
   if (record.file) {
     const path = el('p', 'sub', record.file);
@@ -710,7 +727,7 @@ function renderSide(record) {
 }
 
 // ---------------------------------------------------------------------------
-// 选中与详情同步
+// Selection and detail synchronisation
 // ---------------------------------------------------------------------------
 
 function selectSession(sessionId) {
@@ -730,13 +747,14 @@ function clearDetail(message) {
   $('side').replaceChildren();
 }
 
-// syncDetail 只在「选中会话真的变了」时才重拉。
-// 每次刷新都无脑重建的话，展开的折叠块会被收起、滚动位置会跳回顶部、选中的文本会没。
+// syncDetail only refetches when the selected session has genuinely changed.
+// Rebuilding blindly on every refresh would collapse expanded blocks, throw the scroll
+// position back to the top, and clear whatever text was selected.
 async function syncDetail(options) {
   const force = options && options.force;
   const record = state.byId.get(state.selectedId);
   if (!record) {
-    clearDetail('← 从左边选一个会话');
+    clearDetail('\u2190 Pick a session on the left');
     return;
   }
 
@@ -746,9 +764,10 @@ async function syncDetail(options) {
 
   const switched = !state.detail || state.detail.sessionId !== record.sessionId;
   if (switched) {
-    // 换了会话才清空；同一个会话只是刷新的话留着旧内容，不闪
+    // Only clear when switching sessions; a plain refresh of the same session keeps the
+    // old content on screen and avoids a flash
     state.openBlocks.clear();
-    $('messages').replaceChildren(el('p', 'empty', '加载中…'));
+    $('messages').replaceChildren(el('p', 'empty', 'Loading\u2026'));
     $('messages').dataset.view = '';
     $('side').replaceChildren();
   }
@@ -767,20 +786,20 @@ async function syncDetail(options) {
     renderSide(record);
   } catch (err) {
     handleError(err);
-    clearDetail('加载失败：' + err.message);
+    clearDetail('Failed to load: ' + err.message);
   } finally {
     state.busy = false;
   }
 }
 
 // ---------------------------------------------------------------------------
-// 刷新与错误
+// Refreshing and errors
 // ---------------------------------------------------------------------------
 
 function handleError(err) {
   if (err && err.status === 401) {
     state.authRequired = true;
-    showGate('token 无效或已失效，请重新粘贴');
+    showGate('That token was rejected — paste it again');
     if (state.timer) clearInterval(state.timer);
     state.timer = null;
   }
@@ -795,23 +814,23 @@ async function refresh() {
     renderSources();
     renderList();
     await syncDetail({});
-    setStatus('共 ' + state.sessions.length + ' 个会话 · 更新于 ' + state.loadedAt);
+    setStatus(state.sessions.length + ' sessions · updated ' + state.loadedAt);
   } catch (err) {
     handleError(err);
-    setStatus('刷新失败：' + err.message);
+    setStatus('Refresh failed: ' + err.message);
   }
 }
 
 function startAutoRefresh() {
   if (state.timer) clearInterval(state.timer);
   state.timer = setInterval(() => {
-    if (document.hidden) return; // 页面不在前台就不打接口
+    if (document.hidden) return; // do not call the API while the page is in the background
     refresh();
   }, REFRESH_MS);
 }
 
 // ---------------------------------------------------------------------------
-// 键盘
+// Keyboard
 // ---------------------------------------------------------------------------
 
 function isTyping(node) {
@@ -885,7 +904,7 @@ document.addEventListener('keydown', (event) => {
 });
 
 // ---------------------------------------------------------------------------
-// 事件与启动
+// Events and startup
 // ---------------------------------------------------------------------------
 
 $('gate-form').addEventListener('submit', (event) => {
@@ -907,21 +926,21 @@ $('logout').addEventListener('click', () => {
   state.detail = null;
   if (state.timer) clearInterval(state.timer);
   state.timer = null;
-  showGate('已清除本机保存的 token');
+  showGate('The stored token has been cleared');
 });
 
-// 搜索防抖：每敲一个字就整栏重排是没必要的
+// Debounce the search: re-laying out the whole list on every keystroke is unnecessary
 $('search').addEventListener('input', (event) => {
   const value = event.target.value.trim();
   if (state.searchTimer) clearTimeout(state.searchTimer);
   state.searchTimer = setTimeout(() => {
     state.keyword = value;
-    if (state.search) return; // 正在看搜索结果：等用户按 Enter 重搜或退出
+    if (state.search) return; // viewing search results: wait for Enter to research, or an exit
     renderList();
   }, SEARCH_DEBOUNCE_MS);
 });
 
-// Enter = 全文搜内容；只打字不回车就还是即时过滤元数据
+// Enter runs a full-text search; typing without Enter still filters metadata live
 $('search').addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
@@ -932,7 +951,7 @@ $('search').addEventListener('keydown', (event) => {
   }
 });
 
-// 列表分组：按时间 / 按项目
+// List grouping: by time / by project
 $('grouping').addEventListener('change', (event) => {
   state.grouping = event.target.value;
   exitSearch();
@@ -965,20 +984,21 @@ async function start() {
   if (hashId) state.selectedId = hashId;
   await refresh();
   if (!state.selectedId && state.sessions.length > 0) {
-    // 默认选中最新的一个，打开就有东西看
+    // Select the newest by default, so opening the page shows something
     selectSession(state.sessions[0].sessionId);
   }
   if ($('auto').checked) startAutoRefresh();
 }
 
 (async function boot() {
-  // 服务端没设 token 时不该还逼人随便填一个字符串，/health 会直说要不要认证
+  // With no token configured there is no reason to make anyone invent one; /health says
+  // outright whether authentication is required
   try {
     const res = await fetch('/health');
     const health = await res.json();
     state.authRequired = health.authRequired !== false;
   } catch (e) {
-    state.authRequired = true; // 问不到就按需要认证处理
+    state.authRequired = true; // if we cannot ask, assume authentication is required
   }
 
   const saved = localStorage.getItem(TOKEN_KEY) || '';

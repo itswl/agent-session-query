@@ -93,7 +93,7 @@ func startDaemon(opts daemonOptions) int {
 	}
 
 	fmt.Printf("Started in the background\n")
-	fmt.Printf("  PID:   %d\n", pid)
+	fmt.Printf("  PID:     %d\n", pid)
 	fmt.Printf("  Address: http://%s\n", addr)
 	fmt.Printf("  Log:     %s\n", logPath)
 	fmt.Printf("  Stop:    %s\n", stopHint(pid))

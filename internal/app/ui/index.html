@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agent 会话</title>
+<title>Agent sessions</title>
 <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
 <link rel="stylesheet" href="/ui/style.css">
 </head>
@@ -12,49 +12,49 @@
 <div id="gate" class="gate hidden">
   <form id="gate-form" autocomplete="off">
     <div class="logo">A</div>
-    <h1>Agent 会话</h1>
-    <p>粘贴 <code>hook_token</code> 进入（只存在这台浏览器里，不会发往别处）。</p>
+    <h1>Agent sessions</h1>
+    <p>Paste your <code>hook_token</code> to continue. It stays in this browser and is never sent anywhere else.</p>
     <input id="gate-token" type="password" placeholder="hook_token" autocomplete="current-password">
-    <button type="submit" class="primary">进入</button>
+    <button type="submit" class="primary">Enter</button>
     <p id="gate-error" class="error"></p>
   </form>
 </div>
 
 <div id="app" class="hidden">
   <header>
-    <div class="brand"><span class="dot"></span><h1>Agent 会话</h1></div>
-    <input id="search" type="search" placeholder="过滤 sessionId / 路径 / cwd；按 Enter 全文搜内容">
-    <select id="source-filter" aria-label="数据源过滤"><option value="">全部数据源</option></select>
-    <select id="grouping" aria-label="列表分组">
-      <option value="time">按时间</option>
-      <option value="project">按项目</option>
+    <div class="brand"><span class="dot"></span><h1>Agent sessions</h1></div>
+    <input id="search" type="search" placeholder="Filter by sessionId / path / cwd — press Enter to search message bodies">
+    <select id="source-filter" aria-label="Filter by source"><option value="">All sources</option></select>
+    <select id="grouping" aria-label="Group the list">
+      <option value="time">By time</option>
+      <option value="project">By project</option>
     </select>
-    <label class="auto"><input type="checkbox" id="auto" checked> 自动刷新</label>
-    <button id="refresh" class="ghost" title="刷新（r）">刷新</button>
-    <button id="logout" class="ghost">换 token</button>
+    <label class="auto"><input type="checkbox" id="auto" checked> Auto-refresh</label>
+    <button id="refresh" class="ghost" title="Refresh (r)">Refresh</button>
+    <button id="logout" class="ghost">Change token</button>
     <span id="status" class="status"></span>
   </header>
 
   <main>
-    <aside id="list" class="list" role="listbox" aria-label="会话列表" tabindex="0"></aside>
+    <aside id="list" class="list" role="listbox" aria-label="Session list" tabindex="0"></aside>
 
     <section class="stream">
       <div id="stream-head" class="stream-head"></div>
       <div id="messages" class="messages" tabindex="0">
-        <p class="empty">← 从左边选一个会话</p>
+        <p class="empty">← Pick a session on the left</p>
       </div>
     </section>
 
-    <aside id="side" class="side" aria-label="会话概览"></aside>
+    <aside id="side" class="side" aria-label="Session overview"></aside>
   </main>
 
   <footer id="keyhint" class="keyhint">
-    <span><kbd>j</kbd><kbd>k</kbd> 切换会话</span>
-    <span><kbd>/</kbd> 搜索</span>
-    <span><kbd>g</kbd><kbd>G</kbd> 跳到首/末</span>
-    <span><kbd>r</kbd> 刷新</span>
-    <span><kbd>Enter</kbd> 全文搜内容</span>
-    <span><kbd>Esc</kbd> 清空 / 退出搜索</span>
+    <span><kbd>j</kbd><kbd>k</kbd> move between sessions</span>
+    <span><kbd>/</kbd> focus search</span>
+    <span><kbd>g</kbd><kbd>G</kbd> jump to start/end</span>
+    <span><kbd>r</kbd> refresh</span>
+    <span><kbd>Enter</kbd> search message bodies</span>
+    <span><kbd>Esc</kbd> clear / leave search</span>
   </footer>
 </div>
 

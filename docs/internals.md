@@ -59,7 +59,17 @@
 
 ### 页面
 
-页面（`internal/app/ui/`，`go:embed` 进二进制）的难点不在样式，在「自动刷新不能把正在读的东西掀掉」：
+页面在 `internal/app/ui/`，用 `go:embed` 打进二进制——不引 npm、不加构建步骤，仍然是单文件分发。
+几条硬约束：
+
+- **渲染一律走 `textContent`**。消息里全是第三方文本（工具输出、网页正文），拼 HTML 就是存储型
+  XSS，而页面的 token 存在 localStorage，被打中等于泄露。`ui_test.go` 里钉了一条测试，禁止
+  `innerHTML` / `outerHTML` / `insertAdjacentHTML` / `document.write` / `eval(` 出现在这三个文件里。
+  另外发一条 `Content-Security-Policy`（脚本样式只许同源、不许内联、不许被 iframe 套）兜底
+- **页面本身免认证**（它不含数据），但数据仍然只有带 `Authorization` 头才取得到。服务端没设
+  token 时页面直接进——`/health` 的 `authRequired` 就是为此返回的
+
+另一个难点不在样式，在「自动刷新不能把正在读的东西掀掉」：
 
 - 列表按 sessionId 做**增量 patch**——命中的节点就地改文本（`setText` 只在内容真变了时写 DOM，否则会把用户选中的文本清掉），顺序变化用 `insertBefore` 移动节点而不是重建
 - 详情只在选中会话的 `updatedAt` / `status` / 取值方向真的变了时才重拉；同一个会话刷新时不清空旧内容，不闪

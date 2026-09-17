@@ -713,3 +713,121 @@ func TestSQLiteURIWindowsPath(t *testing.T) {
 		t.Fatalf("非 Windows 不应改写路径: %q", got)
 	}
 }
+
+// TestProjectsAndActive：项目聚合 + 活跃标记。
+// 文件型数据源的 status 永远是 done，不按更新时间推断的话，
+// 一个正在写的会话和三个月前的会话在列表里长得一模一样。
+func TestProjectsAndActive(t *testing.T) {
+	root := t.TempDir()
+	fresh := filepath.Join(root, "p1", "fresh.jsonl")
+	stale := filepath.Join(root, "p2", "stale.jsonl")
+	write(t, fresh, `{"type":"session","id":"fresh","cwd":"/w/alpha"}`)
+	write(t, stale, `{"type":"session","id":"stale","cwd":"/w/alpha"}`)
+	other := filepath.Join(root, "p3", "other.jsonl")
+	write(t, other, `{"type":"session","id":"other","cwd":"/w/beta"}`)
+
+	old := time.Now().Add(-3 * time.Hour)
+	for _, p := range []string{stale, other} {
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	api := newSessionQueryAPI([]SessionSource{newPiSource(root)}, 0)
+
+	sessions, _ := api.listSessions()
+	active := map[string]bool{}
+	for _, s := range sessions {
+		active[toStr(s["sessionId"])] = truthy(s["isActive"])
+		if toStr(s["project"]) == "" {
+			t.Fatalf("有 cwd 的会话应当带 project: %v", s)
+		}
+	}
+	if !active["fresh"] {
+		t.Fatal("刚写的会话应当是活跃的")
+	}
+	if active["stale"] || active["other"] {
+		t.Fatalf("三小时前的会话不该算活跃: %v", active)
+	}
+
+	projects, ungrouped := api.listProjects()
+	if len(projects) != 2 || ungrouped != 0 {
+		t.Fatalf("应当归成 2 个项目: %v (ungrouped=%d)", projects, ungrouped)
+	}
+	// 最近动过的项目排前面
+	if projects[0]["project"] != "/w/alpha" || projects[0]["sessions"] != 2 {
+		t.Fatalf("第一个项目 = %v", projects[0])
+	}
+	if projects[0]["shortName"] != "alpha" || !truthy(projects[0]["isActive"]) {
+		t.Fatalf("项目字段不对: %v", projects[0])
+	}
+	if projects[1]["project"] != "/w/beta" || truthy(projects[1]["isActive"]) {
+		t.Fatalf("第二个项目 = %v", projects[1])
+	}
+}
+
+// TestExportMarkdown：导出的 Markdown 要能直接贴进 issue
+func TestExportMarkdown(t *testing.T) {
+	srv, _ := newTestServer(t, "secret")
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/sessions/sess-1/export?limit=10", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("export = %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/markdown") {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, "attachment") {
+		t.Fatalf("Content-Disposition = %q", cd)
+	}
+
+	body := readBody(t, resp)
+	for _, want := range []string{"# 2026-01-01T00-00-00_abc", "**数据源**：pi", "## 最终结果", "## 消息", "### user", "问题", "答案"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("导出里缺 %q:\n%s", want, body)
+		}
+	}
+	// 找不到的会话
+	if code, _ := get(t, srv.URL+"/sessions/nope/export", "secret"); code != 404 {
+		t.Fatalf("不存在的会话导出应当 404，得到 %d", code)
+	}
+}
+
+func TestSanitizeFilename(t *testing.T) {
+	cases := map[string]string{
+		`a/b\c:d*e?f"g<h>i|j`: "a-b-c-d-e-f-g-h-i-j",
+		"":                    "session",
+		"...":                 "session",
+		"normal-name":         "normal-name",
+	}
+	for in, want := range cases {
+		if got := sanitizeFilename(in); got != want {
+			t.Errorf("sanitizeFilename(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestHTTPProjects：/projects 端点
+func TestHTTPProjects(t *testing.T) {
+	srv, _ := newTestServer(t, "secret")
+	code, body := get(t, srv.URL+"/projects", "secret")
+	if code != 200 {
+		t.Fatalf("/projects = %d", code)
+	}
+	projects := body["projects"].([]any)
+	if len(projects) != 1 {
+		t.Fatalf("projects = %v", body)
+	}
+	if projects[0].(map[string]any)["project"] != "/tmp" {
+		t.Fatalf("project = %v", projects[0])
+	}
+	if code, _ := get(t, srv.URL+"/projects", ""); code != 401 {
+		t.Fatal("/projects 应当要认证")
+	}
+}

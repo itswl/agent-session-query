@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	_ "modernc.org/sqlite" // 纯 Go 的 SQLite 驱动（不用 cgo，交叉编译照旧）
 )
@@ -296,6 +297,61 @@ func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string
 		}
 	}
 	return out
+}
+
+// hermesSQLiteSearch 在 state.db 里搜一个会话的正文。
+// SQLite 的 LIKE 对 ASCII 本来就大小写无关，直接交给它做，不用把消息读出来再比。
+func hermesSQLiteSearch(dbPath, sessionID string, q searchQuery) []map[string]any {
+	if sessionID == "" || len(q.lowered) == 0 || q.perSession <= 0 {
+		return nil
+	}
+	db, err := openHermesDB(dbPath)
+	if err != nil {
+		warnHermesSQLite(sessionID, err)
+		return nil
+	}
+	defer db.Close()
+
+	like := "%" + escapeLike(string(q.lowered)) + "%"
+	rows, err := db.Query(`
+		SELECT role, content, reasoning, timestamp
+		FROM messages
+		WHERE session_id = ?
+		  AND COALESCE(active, 1) = 1
+		  AND (content LIKE ? ESCAPE '\' OR reasoning LIKE ? ESCAPE '\')
+		ORDER BY timestamp ASC, id ASC
+		LIMIT ?`, sessionID, like, like, q.perSession)
+	if err != nil {
+		warnHermesSQLite(sessionID, err)
+		return nil
+	}
+	defer rows.Close()
+
+	out := []map[string]any{}
+	for rows.Next() {
+		var role, content, reasoning sql.NullString
+		var timestamp any
+		if err := rows.Scan(&role, &content, &reasoning, &timestamp); err != nil {
+			warnHermesSQLite(sessionID, err)
+			return out
+		}
+		text := content.String
+		if indexFold(text, string(q.lowered)) < 0 {
+			text = reasoning.String // 命中在推理里
+		}
+		out = append(out, map[string]any{
+			"snippet":   snippetAround(text, string(q.lowered), searchSnippetRadius),
+			"role":      role.String,
+			"timestamp": sqliteTimeString(timestamp),
+		})
+	}
+	return out
+}
+
+// escapeLike 转义 LIKE 的通配符，免得用户搜 "100%" 变成匹配任意串
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`)
+	return r.Replace(s)
 }
 
 // sqliteValueString 把 SQLite 动态类型的值收敛成字符串（id/role 实际是 TEXT 或 INTEGER）

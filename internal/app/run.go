@@ -30,6 +30,9 @@ import (
 	"time"
 )
 
+// buildVersion 发版时由 release.yml 用 -ldflags -X 注入；本地构建就是 dev。
+var buildVersion = "dev"
+
 // Run 解析参数并启动服务，返回进程退出码（入口在 cmd/agent-session-query）。
 func Run(args []string) int {
 	enableUTF8Console() // Windows 的传统控制台默认不是 UTF-8，中文会乱码
@@ -49,12 +52,18 @@ func Run(args []string) int {
 	maxLimit := fs.Int("max-limit", defaultMaxLimit, "?limit= 的上限 (默认: 1000)")
 	acceptQueue := fs.Int("accept-queue", 0, "满载时的排队位数 (默认: 0 = 按 max-connections 自动取)")
 	corsOrigin := fs.String("cors-origin", "", "允许的跨域来源（默认关闭；填 * 或具体 origin）")
+	mcp := fs.Bool("mcp", false, "以 MCP server 跑在 stdio 上（供 Agent 调用），不监听端口")
+	showVersion := fs.Bool("version", false, "打印版本后退出")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
+	}
+	if *showVersion {
+		fmt.Println(buildVersion)
+		return 0
 	}
 	if !validMode(*mode) {
 		fmt.Fprintf(os.Stderr, "无效的 --mode: %q（可选: auto, all, %s）\n", *mode, joinModes())
@@ -69,6 +78,14 @@ func Run(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[FATAL] %v\n", err)
 		return 1
+	}
+
+	api := newSessionQueryAPI(sources, *cacheTTL)
+
+	// MCP 模式：stdout 归 JSON-RPC 独占，启动信息只能写 stderr
+	if *mcp {
+		mcpStartupBanner(*mode, sources)
+		return runMCP(&mcpServer{api: api, sources: sources, maxLimit: *maxLimit}, os.Stdin, os.Stdout)
 	}
 
 	fmt.Printf("运行模式: %s\n", *mode)
@@ -90,7 +107,6 @@ func Run(args []string) int {
 		}
 	}
 
-	api := newSessionQueryAPI(sources, *cacheTTL)
 	server := newAPIServer(serverOptions{
 		mode:           *mode,
 		sources:        sources,

@@ -191,6 +191,18 @@ func (s *JsonMapSource) Messages(r record, q messageQuery) []map[string]any {
 	return sink.result()
 }
 
+// Search：有 jsonl 就扫文件；没有（新版 Hermes 全 SQLite）就查库。
+// 这是 searchableSource 的唯一实现，别的源都只有文件，走通用路径就够。
+func (s *JsonMapSource) Search(r record, q searchQuery) []map[string]any {
+	if path := s.fileOf(r); path != "" {
+		return searchFile(path, q)
+	}
+	if s.def.stateDB != "" && fileExists(s.def.stateDB) {
+		return hermesSQLiteSearch(s.def.stateDB, r.str("sessionId"), q)
+	}
+	return nil
+}
+
 // formatMessage 格式化单条消息（OpenClaw content 数组 / Hermes 字符串）。
 func (s *JsonMapSource) formatMessage(msg map[string]any) map[string]any {
 	var content any

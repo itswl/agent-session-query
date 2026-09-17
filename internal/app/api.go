@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -206,6 +207,68 @@ func (a *SessionQueryAPI) getFinalMessage(pattern string) (map[string]any, bool)
 		}
 	}
 	return result, true
+}
+
+// listProjects 把会话按项目归拢。
+//
+// 这是这个工具唯一能做、别的工具做不了的事：同一个仓库上，你用 Claude Code、
+// Codex、Gemini 分别干过什么，在这里是一个视图。
+// 注意 hermes / openclaw 没有 cwd 也没有 project，会落到 ungrouped 里。
+func (a *SessionQueryAPI) listProjects() ([]map[string]any, int) {
+	type bucket struct {
+		sessions int
+		sources  map[string]int
+		latest   record
+	}
+	order := []string{}
+	buckets := map[string]*bucket{}
+	ungrouped := 0
+
+	for _, source := range a.sources {
+		for _, rec := range a.recordsOf(source) {
+			name := rec.project()
+			if name == "" {
+				ungrouped++
+				continue
+			}
+			b, ok := buckets[name]
+			if !ok {
+				b = &bucket{sources: map[string]int{}}
+				buckets[name] = b
+				order = append(order, name)
+			}
+			b.sessions++
+			b.sources[rec.str("source")]++
+			if b.latest.fields == nil || rec.newerThan(b.latest) {
+				b.latest = rec
+			}
+		}
+	}
+
+	out := make([]map[string]any, 0, len(order))
+	for _, name := range order {
+		b := buckets[name]
+		sources := make([]string, 0, len(b.sources))
+		for mode := range b.sources {
+			sources = append(sources, mode)
+		}
+		sort.Strings(sources)
+		out = append(out, map[string]any{
+			"project":       name,
+			"shortName":     filepath.Base(name),
+			"sessions":      b.sessions,
+			"sources":       sources,
+			"sourceCounts":  b.sources,
+			"updatedAt":     b.latest.str("updatedAt"),
+			"latestSession": b.latest.str("sessionId"),
+			"isActive":      !b.latest.sortAt.IsZero() && time.Since(b.latest.sortAt) < activeWindow,
+		})
+	}
+	// 最近动过的项目排前面
+	sort.SliceStable(out, func(i, j int) bool {
+		return toStr(out[i]["updatedAt"]) > toStr(out[j]["updatedAt"])
+	})
+	return out, ungrouped
 }
 
 func sourceModes(sources []SessionSource) []string {

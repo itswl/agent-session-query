@@ -59,7 +59,9 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           binary="agent-session-query${{ matrix.ext }}"
-          go build -trimpath -ldflags '-s -w' -o "$binary" ./cmd/agent-session-query
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/itswl/agent-session-query/internal/app.buildVersion=${GITHUB_REF_NAME}" \
+            -o "$binary" ./cmd/agent-session-query
           # Windows 上解 tar.gz 不顺手，产物打成 zip
           if [ "$GOOS" = windows ]; then
             zip -q "agent-session-query-$GOOS-$GOARCH.zip" "$binary"

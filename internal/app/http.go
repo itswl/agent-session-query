@@ -3,6 +3,7 @@ package app
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -210,6 +211,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 	if path == "/health" {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "ok",
+			"version": buildVersion,
 			"mode":    s.mode,
 			"sources": sourceModes(s.sources),
 			// 页面据此决定要不要弹令牌框：服务端没设 token 时不该还逼人随便填一个
@@ -282,6 +284,37 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 		return http.StatusOK
 	}
 
+	if path == "/projects" {
+		projects, ungrouped := s.api.listProjects()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"projects": projects,
+			"total":    len(projects),
+			// hermes / openclaw 没有 cwd 也没有 project，归不了组
+			"ungrouped": ungrouped,
+		})
+		return http.StatusOK
+	}
+
+	if path == "/search" {
+		query, err := s.parseSearchQuery(r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return http.StatusBadRequest
+		}
+		started := time.Now()
+		found := s.api.search(query)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"query":     query.needle,
+			"results":   found.results,
+			"total":     len(found.results),
+			"matched":   found.matched, // 命中的会话总数，可能多于 total
+			"scanned":   found.scanned, // 实际扫过的会话数
+			"truncated": found.matched > len(found.results),
+			"tookMs":    time.Since(started).Milliseconds(),
+		})
+		return http.StatusOK
+	}
+
 	if strings.HasPrefix(path, "/sessions/") {
 		rest := path[len("/sessions/"):]
 		parts := strings.Split(rest, "/")
@@ -309,6 +342,20 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 				"total":    len(messages),
 				"order":    orderName(query.fromEnd),
 			})
+			return http.StatusOK
+
+		case len(parts) == 2 && parts[0] != "" && parts[1] == "export":
+			pattern := unescapePattern(parts[0])
+			body, filename, ok := s.api.exportMarkdown(pattern, s.parseMessageQuery(r))
+			if !ok {
+				writeJSON(w, http.StatusNotFound, map[string]any{"error": "Session not found"})
+				return http.StatusNotFound
+			}
+			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(filename))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(body))
 			return http.StatusOK
 
 		case len(parts) == 2 && parts[0] != "" && parts[1] == "final":
@@ -378,6 +425,66 @@ func (s *apiServer) parseMessageQuery(r *http.Request) messageQuery {
 		limit:   s.parseLimit(r),
 		fromEnd: strings.EqualFold(order, "desc"),
 	}
+}
+
+// parseSearchQuery 解析 /search 的参数：
+// q 必填；limit 是「返回多少个会话」，per_session 是「每个会话最多几条命中」；
+// since 用来把扫描范围收窄（历史很大的机器上有用）。
+func (s *apiServer) parseSearchQuery(r *http.Request) (searchQuery, error) {
+	values := r.URL.Query()
+	needle := strings.TrimSpace(values.Get("q"))
+	if needle == "" {
+		return searchQuery{}, errors.New("missing query parameter: q")
+	}
+
+	q := searchQuery{
+		needle:     needle,
+		lowered:    appendLowerASCII(nil, []byte(needle)),
+		limit:      defaultSearchLimit,
+		perSession: defaultSearchPerSession,
+	}
+	// limit=0 是合法的：只想知道有多少命中、不要正文时用得上
+	if n, err := strconv.Atoi(strings.TrimSpace(values.Get("limit"))); err == nil && n >= 0 {
+		q.limit = n
+	}
+	if q.limit > s.maxLimit {
+		q.limit = s.maxLimit
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(values.Get("per_session"))); err == nil && n > 0 {
+		q.perSession = n
+	}
+	if q.perSession > s.maxLimit {
+		q.perSession = s.maxLimit
+	}
+	if raw := strings.TrimSpace(values.Get("since")); raw != "" {
+		since, err := parseSince(raw)
+		if err != nil {
+			return searchQuery{}, err
+		}
+		q.since = since
+	}
+	return q, nil
+}
+
+// parseSince 解析 ?since=：30d / 12h / 90m 这类相对写法，或 2026-09-01 这样的日期。
+func parseSince(raw string) (time.Time, error) {
+	if len(raw) > 1 {
+		if unit := raw[len(raw)-1]; unit == 'd' || unit == 'D' {
+			days, err := strconv.Atoi(raw[:len(raw)-1])
+			if err == nil && days >= 0 {
+				return time.Now().Add(-time.Duration(days) * 24 * time.Hour), nil
+			}
+		}
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d >= 0 {
+		return time.Now().Add(-d), nil
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02"} {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("bad since value: %q (want 30d / 12h / 2006-01-02)", raw)
 }
 
 func orderName(fromEnd bool) string {

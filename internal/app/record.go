@@ -56,14 +56,31 @@ func (r record) get(k string) any     { return r.fields[k] }
 func (r record) str(k string) string  { return toStr(r.fields[k]) }
 func (r record) truthy(k string) bool { return truthy(r.fields[k]) }
 
+// activeWindow 更新时间在这个窗口之内就算「正在跑」
+const activeWindow = 2 * time.Minute
+
 // public 返回对外字段的副本。记录会被列表缓存长期持有、并发共享，
 // 直接把内部 map 交出去的话，调用方一次无心的赋值就会污染后续所有读者。
+//
+// isActive 在这里算而不是建记录时算：它跟「现在几点」有关，
+// 建好就定死的话，一条十分钟前扫出来的记录会一直说自己是活的。
 func (r record) public() map[string]any {
-	out := make(map[string]any, len(r.fields))
+	out := make(map[string]any, len(r.fields)+2)
 	for k, v := range r.fields {
 		out[k] = v
 	}
+	out["isActive"] = !r.sortAt.IsZero() && time.Since(r.sortAt) < activeWindow
+	out["project"] = r.project()
 	return out
+}
+
+// project 会话所属的「项目」：优先 cwd（claude / codex / pi），
+// 其次 gemini 自带的 project 字段。hermes / openclaw 没有这个维度，返回空串。
+func (r record) project() string {
+	if cwd := r.str("cwd"); cwd != "" {
+		return cwd
+	}
+	return r.str("project")
 }
 
 // newerThan 列表排序用：更新时间晚的排前面。

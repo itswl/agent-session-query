@@ -19,9 +19,9 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -45,9 +45,9 @@ jobs:
           - { goos: windows, goarch: amd64, ext: .exe }
           - { goos: windows, goarch: arm64, ext: .exe }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -67,7 +67,7 @@ jobs:
             tar czf "agent-session-query-$GOOS-$GOARCH.tar.gz" "$binary"
           fi
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             agent-session-query-*.tar.gz

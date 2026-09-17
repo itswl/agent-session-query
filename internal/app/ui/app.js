@@ -281,6 +281,21 @@ function fillItem(item, session) {
   meta.classList.toggle('hidden', !session.cwd);
 }
 
+// The metadata filter came up empty. If something was typed, the user was most likely
+// expecting it to search message bodies, so offer that here instead of dead-ending: the
+// placeholder does say "press Enter", but it is hidden the moment there is text to read it.
+function emptyListState() {
+  if (!state.sessions.length) return el('p', 'empty-list', 'No sessions yet');
+  const keyword = state.keyword.trim();
+  if (!keyword) return el('p', 'empty-list', 'No matching sessions');
+
+  const box = el('div', 'empty-list');
+  box.appendChild(el('p', '', 'No sessionId, path or cwd matches \u201c' + keyword + '\u201d'));
+  box.appendChild(button('ghost', 'Search message bodies', () => runContentSearch(keyword)));
+  box.appendChild(el('p', 'dim tiny-note', 'or press Enter'));
+  return box;
+}
+
 function renderList() {
   if (state.search) {
     renderSearchResults();
@@ -290,7 +305,7 @@ function renderList() {
   const rows = listRows();
 
   if (rows.length === 0) {
-    list.replaceChildren(el('p', 'empty-list', state.sessions.length ? 'No matching sessions' : 'No sessions yet'));
+    list.replaceChildren(emptyListState());
     return;
   }
 
@@ -416,7 +431,7 @@ function renderSources() {
   all.value = '';
   const options = [all];
   for (const source of sources) {
-    const option = el('option', '', source + '（' + counts.get(source) + '）');
+    const option = el('option', '', source + ' (' + counts.get(source) + ')');
     option.value = source;
     options.push(option);
   }

@@ -183,6 +183,9 @@ main {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .empty-list { color: var(--dim); padding: 28px 16px; text-align: center; }
+.empty-list p { margin: 0 0 10px; line-height: 1.5; }
+.empty-list button { margin: 0 auto; }
+.empty-list .tiny-note { margin: 8px 0 0; font-size: 11.5px; }
 
 /* Project group headers */
 .group {

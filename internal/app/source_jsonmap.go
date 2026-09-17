@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// JsonMapSource：OpenClaw / Hermes —— 一个 sessions.json 索引 + 每会话一个 jsonl。
+// JsonMapSource: OpenClaw / Hermes — one sessions.json index plus one jsonl per session.
 type JsonMapSource struct {
 	def jsonMapDef
 }
@@ -16,7 +16,8 @@ func newJsonMapSource(def jsonMapDef) *JsonMapSource { return &JsonMapSource{def
 
 func (s *JsonMapSource) Mode() string { return s.def.mode }
 
-// Location 返回实际存在的那份索引（sessions.json 优先；新版 Hermes 只有 state.db）
+// Location returns whichever index actually exists (sessions.json wins; newer Hermes
+// has only state.db)
 func (s *JsonMapSource) Location() string {
 	if !fileExists(s.def.sessionsJSON) && s.def.stateDB != "" && fileExists(s.def.stateDB) {
 		return s.def.stateDB
@@ -28,13 +29,14 @@ func (s *JsonMapSource) Exists() bool {
 	return fileExists(s.def.sessionsJSON) || (s.def.stateDB != "" && fileExists(s.def.stateDB))
 }
 
-// kv 保留 sessions.json 里的原始顺序（Go map 不保序，而顺序会影响同分记录的先后）
+// kv preserves sessions.json's original order (Go maps do not, and order decides which
+// of two equally ranked records wins)
 type kv struct {
 	Key string
 	Val any
 }
 
-// load 读取 sessions.json；不是 JSON 对象时返回空。
+// load reads sessions.json; anything that is not a JSON object yields nothing.
 func (s *JsonMapSource) load() []kv {
 	raw, err := os.ReadFile(s.def.sessionsJSON)
 	if err != nil || !json.Valid(raw) {
@@ -67,7 +69,7 @@ func (s *JsonMapSource) load() []kv {
 	return out
 }
 
-// fileOf 取会话记录对应的 jsonl 文件路径。
+// fileOf resolves the jsonl path belonging to a session record.
 func (s *JsonMapSource) fileOf(r record) string {
 	if path := r.str("file"); path != "" && fileExists(path) {
 		return path
@@ -120,10 +122,10 @@ func (s *JsonMapSource) List() []record {
 			"file":      filePublic,
 			"hasFile":   hasFile,
 		}
-		var updatedRaw any // 交给 newRecord 解析成排序用的时间
+		var updatedRaw any // handed to newRecord, which parses it into the sort time
 
 		if isOpenClaw {
-			updated := info["updatedAt"] // epoch 毫秒
+			updated := info["updatedAt"] // epoch milliseconds
 			updatedStr := ""
 			if truthy(updated) {
 				updatedStr = toStr(updated)
@@ -153,9 +155,10 @@ func (s *JsonMapSource) List() []record {
 		out = append(out, newRecord(fields, updatedRaw))
 	}
 
-	// 新版 Hermes：会话全部在 state.db 里，sessions.json 可能根本不存在；
-	// 已列出的 sessionId 跳过，避免双重列出。
-	// 先 stat 一下：库不存在时没必要每次列表都去开一个连接、再报一行错。
+	// Newer Hermes keeps every session in state.db and may have no sessions.json at all.
+	// Session IDs already listed are skipped so nothing shows up twice.
+	// stat first: with no database there is no point opening a connection and logging an
+	// error on every single list call.
 	if s.def.stateDB != "" && fileExists(s.def.stateDB) {
 		seen := map[string]bool{}
 		for _, r := range out {
@@ -168,12 +171,13 @@ func (s *JsonMapSource) List() []record {
 	return out
 }
 
-// Messages：OpenClaw / Hermes 的消息格式由行内容自辨（type=message 或 role=user/assistant）。
+// Messages: OpenClaw / Hermes message rows identify themselves by content
+// (type=message, or role=user/assistant).
 func (s *JsonMapSource) Messages(r record, q messageQuery) []map[string]any {
 	sink := newMessageSink(q)
 	path := s.fileOf(r)
 	if path == "" {
-		// 没有会话文件（新版 Hermes 全 SQLite）：消息也直接查 state.db
+		// No session file (newer Hermes is all SQLite): read the messages from state.db too
 		if s.def.stateDB != "" && fileExists(s.def.stateDB) {
 			return hermesSQLiteMessages(s.def.stateDB, r.str("sessionId"), q)
 		}
@@ -191,8 +195,9 @@ func (s *JsonMapSource) Messages(r record, q messageQuery) []map[string]any {
 	return sink.result()
 }
 
-// Search：有 jsonl 就扫文件；没有（新版 Hermes 全 SQLite）就查库。
-// 这是 searchableSource 的唯一实现，别的源都只有文件，走通用路径就够。
+// Search scans the jsonl when there is one; without it (newer Hermes is all SQLite) it
+// queries the database. This is the only searchableSource implementation — every other
+// source has nothing but files, so the generic path suffices.
 func (s *JsonMapSource) Search(r record, q searchQuery) []map[string]any {
 	if path := s.fileOf(r); path != "" {
 		return searchFile(path, q)
@@ -203,7 +208,7 @@ func (s *JsonMapSource) Search(r record, q searchQuery) []map[string]any {
 	return nil
 }
 
-// formatMessage 格式化单条消息（OpenClaw content 数组 / Hermes 字符串）。
+// formatMessage renders one message (OpenClaw's content array / Hermes's string).
 func (s *JsonMapSource) formatMessage(msg map[string]any) map[string]any {
 	var content any
 	var role string
@@ -268,7 +273,8 @@ func (s *JsonMapSource) formatMessage(msg map[string]any) map[string]any {
 	}
 }
 
-// stopMessage 记录「第一条 stopReason=stop 的助手消息」及其解析出的 stopReason
+// stopMessage holds the first assistant message with stopReason=stop, plus the
+// stopReason parsed out of it
 type stopMessage struct {
 	line   map[string]any
 	reason string
@@ -326,7 +332,7 @@ func (s *JsonMapSource) Final(r record) map[string]any {
 		return true
 	})
 
-	// 第一个 stop 消息之后还有指向它的 toolResult，说明可能仍在处理中
+	// A toolResult pointing back at the first stop message means work may still be running
 	isProcessing := false
 	if firstStop != nil && status == "running" && toolResultParents[strField(firstStop.line, "id")] {
 		isProcessing = true
@@ -408,11 +414,13 @@ func (s *JsonMapSource) Final(r record) map[string]any {
 	return result
 }
 
-// hermesSQLiteFallback：Hermes 的 webhook 会话有时只把最终消息落在 state.db，
-// jsonl 里什么都没有，这时只能去 SQLite 里捞（见 hermes_sqlite.go）。
+// hermesSQLiteFallback: Hermes webhook sessions sometimes land their final message only
+// in state.db with nothing in the jsonl, leaving SQLite as the only place to find it
+// (see hermes_sqlite.go).
 //
-// 用数据源自己配置的 stateDB 路径——List / Messages 一直是这么做的，
-// 这里也一样，不再自己从 $HOME 重推一遍（两条路径算出来不一样时会静默查错库）。
+// It uses the stateDB path the source was configured with — the same one List and
+// Messages have always used — rather than re-deriving it from $HOME, which would
+// silently query the wrong database whenever the two disagree.
 func hermesSQLiteFallback(def jsonMapDef, sessionID, status string) map[string]any {
 	if def.stateDB == "" {
 		return nil

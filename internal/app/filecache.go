@@ -6,14 +6,18 @@ import (
 	"time"
 )
 
-// fileRecordCache 按 (mtime, size) 记忆化「从会话文件头解析出的列表记录」。
+// fileRecordCache memoizes "the list record parsed out of a session file's head",
+// keyed by (mtime, size).
 //
-// 四个基于文件的数据源（Claude / Codex / Pi / Gemini）列会话时，都要打开每个会话文件
-// 读头几行拿 sessionId / cwd 这类元数据。这些内容只随文件本身变化，所以 stat 一下就
-// 知道上次的结果还能不能用：稳态下 List() 退化成一轮 stat，不再重复解析没变过的文件。
+// The four file-backed sources (Claude / Codex / Pi / Gemini) all have to open every
+// session file and read its first few lines to get metadata like sessionId and cwd.
+// That content only changes when the file itself does, so a stat is enough to tell
+// whether last time's result still holds: in steady state List() degrades to a single
+// round of stat calls and never re-parses an unchanged file.
 //
-// 实测 173 个 Claude 会话：全量解析 52 ms，只 glob + stat 2.4 ms——九成开销花在
-// 重复解析上，而页面是 10 秒轮询一次 /sessions，每一次都会踩到。
+// Measured over 173 real Claude sessions: 52 ms to parse them all, 2.4 ms for
+// glob + stat alone. Nine tenths of the cost was re-parsing unchanged heads — and the
+// web page polls /sessions every 10 seconds, hitting it every single time.
 type fileRecordCache struct {
 	mu      sync.Mutex
 	entries map[string]fileRecordEntry
@@ -29,11 +33,11 @@ func newFileRecordCache() *fileRecordCache {
 	return &fileRecordCache{entries: map[string]fileRecordEntry{}}
 }
 
-// records 逐个取 paths 的记录：文件的 mtime/size 都没变就用缓存，
-// 变了或没见过才调 build 重新解析。build 收到的 modISO 是该文件 mtime 的 ISO 形式
-// （stat 已经做过，数据源不必再 stat 一次）。
+// records resolves one record per path: unchanged mtime/size reuses the cached
+// value, anything changed or unseen goes through build. build receives modISO, the
+// file's mtime in ISO form — the stat already happened, so sources need not repeat it.
 //
-// 这一轮没出现的路径会被丢掉：会话文件删了，缓存不会一直占着内存。
+// Paths absent from this round are dropped, so deleted sessions do not pin memory.
 func (c *fileRecordCache) records(paths []string, build func(path, modISO string) record) []record {
 	out := make([]record, 0, len(paths))
 	fresh := make(map[string]fileRecordEntry, len(paths))
@@ -45,7 +49,7 @@ func (c *fileRecordCache) records(paths []string, build func(path, modISO string
 	for _, path := range paths {
 		st, err := os.Stat(path)
 		if err != nil {
-			continue // 刚被删掉，这一轮就不列了
+			continue // just deleted; leave it out of this round
 		}
 		mod, size := st.ModTime(), st.Size()
 

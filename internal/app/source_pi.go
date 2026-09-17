@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Pi：~/.pi/agent/sessions/<项目>/<时间>_<uuid>.jsonl
+// Pi: ~/.pi/agent/sessions/<project>/<time>_<uuid>.jsonl
 type PiSource struct {
 	root  string
 	cache *fileRecordCache
@@ -29,11 +29,13 @@ func (s *PiSource) files() []string {
 	return files
 }
 
-// piHeadLines 找 session 行时最多往下读几行（防御性上限，正常第一行就是）
+// piHeadLines caps how far the scan for the session row goes (a defensive backstop;
+// normally the very first line is the one)
 const piHeadLines = 50
 
-// piSessionID 没有 session 行时的退路：文件名形如 <时间>_<uuid>，取最后一段。
-// 正常会话用不到——只有被截断或续写的文件才会缺 session 行。
+// piSessionID is the fallback when there is no session row: the filename is shaped
+// <time>_<uuid>, so take the last segment. Normal sessions never need this — only
+// truncated or resumed files lack the session row.
 func piSessionID(stem string) string {
 	if i := strings.LastIndexByte(stem, '_'); i >= 0 && i+1 < len(stem) {
 		return stem[i+1:]
@@ -41,12 +43,15 @@ func piSessionID(stem string) string {
 	return stem
 }
 
-// List 找 session 行拿元数据；文件没变过就直接用缓存（见 fileRecordCache）
+// List finds the session row for metadata; unchanged files come straight from the
+// cache (see fileRecordCache)
 func (s *PiSource) List() []record {
 	return s.cache.records(s.files(), func(path, modISO string) record {
-		// 必须认准 type=session 那一行。原先无条件拿第一行的 id——而 model_change
-		// 记录自己也有 id 字段，首行不是 session 时就会把事件 id 当成会话 id 报出去
-		// （本机实测真的踩到了：报了 "e74f2cff" 而不是文件名里的 uuid）。
+		// It has to be the type=session row specifically. The original code took the first
+		// line's id unconditionally — but a model_change record carries its own id field, so
+		// whenever the first line was not the session row it reported an event id as the
+		// session id. (Measured locally, this really happened: it reported "e74f2cff"
+		// instead of the uuid in the filename.)
 		meta := map[string]any{}
 		seen := 0
 		eachJSONL(path, func(obj map[string]any) bool {
@@ -58,7 +63,7 @@ func (s *PiSource) List() []record {
 			return seen < piHeadLines
 		})
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		// 用内容里最后一条记录的时间，而不是文件 mtime（见 updatedAtOf）
+		// Use the time on the last record in the file, not the file's mtime (see updatedAtOf)
 		updated := updatedAtOf(path, modISO)
 		return newRecord(map[string]any{
 			"source":    "pi",
@@ -120,8 +125,9 @@ func (s *PiSource) Final(r record) map[string]any {
 	if path == "" {
 		return nil
 	}
-	// 整文件扫描这条路径只关心 type / message.role：先按结构体「探测」，
-	// 大字段（content、toolResult）不物化成 map，实测比全量解析快 3 倍以上
+	// This whole-file scan only cares about type / message.role, so probe with a struct
+	// first and never materialise the big fields (content, toolResult) into a map —
+	// measured over 3x faster than decoding everything
 	var rawLast []byte
 	count := 0
 	eachJSONLLine(path, func(line []byte) bool {
@@ -139,7 +145,7 @@ func (s *PiSource) Final(r record) map[string]any {
 		}
 		count++
 		if probe.Message.Role == "assistant" {
-			// 缓冲会被复用，留用必须拷贝
+			// the buffer is reused; copy anything kept
 			rawLast = append(rawLast[:0], line...)
 		}
 		return true

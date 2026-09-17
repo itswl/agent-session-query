@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Claude Code：~/.claude/projects/<项目>/<session-uuid>.jsonl
+// Claude Code: ~/.claude/projects/<project>/<session-uuid>.jsonl
 type ClaudeCodeSource struct {
 	root  string
 	cache *fileRecordCache
@@ -29,21 +29,26 @@ func (s *ClaudeCodeSource) files() []string {
 	return files
 }
 
-// claudeHeadLines 找元数据时最多往下读几行。
+// claudeHeadLines caps how far down the file the metadata scan will go.
 //
-// cwd 不在首行——文件开头常有 queue-operation 之类的非对话行。原先固定只读前 5 行，
-// 实测本机的会话 cwd 落在第 2–5 行，其中不少正好卡在第 5 行：这是侥幸不是保证，
-// Claude Code 再多一种前导行就会滑出窗口，然后 cwd / project 静默变空、项目聚合失效，
-// 而且不报错。所以改成「读到拿齐为止」，这个上限只是防御性的兜底。
+// cwd is not on the first line — sessions open with non-conversation rows such as
+// queue-operation. The original code read a fixed first 5 lines; measured locally, cwd
+// lands on lines 2-5 with a good number sitting exactly on line 5. That is luck, not a
+// guarantee: one more preamble row from Claude Code and cwd slides out of the window,
+// after which cwd / project silently go empty and project grouping breaks, without any
+// error. So the scan now runs until it has what it needs, and this cap is only a
+// defensive backstop.
 //
-// 常见情况下反而更快：拿齐就停，多数文件第 3 行就停了，比原来固定读 5 行还少。
+// It is usually faster too: stopping as soon as both fields are in place ends most files
+// at line 3, fewer than the fixed 5 it used to read.
 const claudeHeadLines = 50
 
-// List 只读每个会话文件的头部拿元数据；文件没变过就直接用缓存（见 fileRecordCache）
+// List reads only the head of each session file for metadata; unchanged files come
+// straight from the cache (see fileRecordCache)
 func (s *ClaudeCodeSource) List() []record {
 	return s.cache.records(s.files(), func(path, modISO string) record {
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		// 用内容里最后一条记录的时间，而不是文件 mtime（见 updatedAtOf）
+		// Use the time on the last record in the file, not the file's mtime (see updatedAtOf)
 		updated := updatedAtOf(path, modISO)
 		sid := stem
 		var cwd any = ""
@@ -73,7 +78,7 @@ func (s *ClaudeCodeSource) List() []record {
 	})
 }
 
-// parts 把 Claude Code 的 content 收敛成统一的块数组
+// parts folds Claude Code's content into the shared block array shape
 func (s *ClaudeCodeSource) parts(content any) []map[string]any {
 	parts := []map[string]any{}
 	switch c := content.(type) {
@@ -113,7 +118,7 @@ func (s *ClaudeCodeSource) Messages(r record, q messageQuery) []map[string]any {
 		if obj["type"] != "user" && obj["type"] != "assistant" {
 			return true
 		}
-		if truthy(obj["isSidechain"]) { // 子代理的消息不计入主线
+		if truthy(obj["isSidechain"]) { // subagent messages are not part of the main thread
 			return true
 		}
 		msg := getMap(obj, "message")
@@ -132,7 +137,8 @@ func (s *ClaudeCodeSource) Final(r record) map[string]any {
 	if path == "" {
 		return nil
 	}
-	// 只关心 type / isSidechain；content 这类大字段留到最后一条助手消息再完整解析
+	// Only type / isSidechain matter here; big fields like content wait until the last
+	// assistant message, which is the only one fully decoded
 	var rawLast []byte
 	count := 0
 	eachJSONLLine(path, func(line []byte) bool {

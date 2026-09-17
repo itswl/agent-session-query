@@ -9,15 +9,17 @@ import (
 	"strconv"
 	"strings"
 
-	_ "modernc.org/sqlite" // 纯 Go 的 SQLite 驱动（不用 cgo，交叉编译照旧）
+	_ "modernc.org/sqlite" // pure-Go SQLite driver (no cgo, cross-compilation unaffected)
 )
 
-// hermesSQLiteFinal 读取 Hermes 的 state.db，取会话的最终消息。
+// hermesSQLiteFinal reads Hermes's state.db for a session's final message.
 //
-// Hermes 的 webhook 会话有时只把最终消息落在 state.db 里，jsonl 里什么都没有——
-// 这时候会话记录没有 file，final 只能从 SQLite 取。
+// Hermes webhook sessions sometimes land their final message only in state.db with
+// nothing in the jsonl, so the record has no file and SQLite is the only source for
+// final.
 //
-// 返回 nil 表示「这里也没有最终消息」（库不存在、查不到、或读取失败），由上层走兜底响应。
+// nil means "no final message here either" (no database, no row, or a read failure), and
+// the layer above turns that into its fallback response.
 func hermesSQLiteFinal(dbPath, mode, sessionID, status string) map[string]any {
 	if mode != "hermes" || sessionID == "" || dbPath == "" {
 		return nil
@@ -37,7 +39,8 @@ func hermesSQLiteFinal(dbPath, mode, sessionID, status string) map[string]any {
 	var inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens sql.NullInt64
 	var estimatedCost sql.NullFloat64
 
-	// 注意：只查真正用到的列——少查一列更抗 schema 差异
+	// Select only the columns actually used: one fewer column is one less thing a schema
+	// difference can break
 	row := db.QueryRow(
 		`SELECT message_count, input_tokens, output_tokens, cache_read_tokens,
 		        cache_write_tokens, reasoning_tokens, estimated_cost_usd
@@ -75,7 +78,7 @@ func hermesSQLiteFinal(dbPath, mode, sessionID, status string) map[string]any {
 		return nil
 	}
 
-	// message_count 缺失或为 0 时回退成实际条数
+	// Fall back to the real count when message_count is missing or zero
 	count := int64(0)
 	if messageCount.Valid {
 		count = messageCount.Int64
@@ -137,15 +140,17 @@ func nullFloatOrZero(v sql.NullFloat64) float64 {
 	return 0
 }
 
-// sqliteURI 把文件路径拼成 SQLite 的 URI 形式。
+// sqliteURI turns a file path into SQLite's URI form.
 //
-// Windows 上路径是 C:\Users\...\state.db，反斜杠塞进 URI 会有转义歧义；
-// 统一换成正斜杠，SQLite 在 Windows 上认 file:C:/Users/.../state.db 这种写法。
+// Windows paths look like C:\Users\...\state.db, and backslashes inside a URI are
+// ambiguous with escapes. Normalising to forward slashes avoids that; SQLite on Windows
+// accepts file:C:/Users/.../state.db.
 func sqliteURI(dbPath string) string {
 	return "file:" + filepath.ToSlash(dbPath)
 }
 
-// openHermesDB 只读打开 state.db：不建 -wal/-shm、不改动别人的库
+// openHermesDB opens state.db read-only: no -wal/-shm files, no changes to someone
+// else's database
 func openHermesDB(dbPath string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", sqliteURI(dbPath)+"?mode=ro")
 	if err != nil {
@@ -155,9 +160,10 @@ func openHermesDB(dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
-// hermesSQLiteList 从 state.db 的 sessions 表列出会话。
-// 新版 Hermes 不再写 sessions.json / 每会话一个 jsonl，会话全部落在 SQLite 里；
-// skip 里登记的 sessionId（sessions.json 里已有的）跳过，避免双重列出。
+// hermesSQLiteList lists sessions from state.db's sessions table.
+// Newer Hermes no longer writes sessions.json or a jsonl per session; everything lives
+// in SQLite. Session IDs registered in skip (those already in sessions.json) are passed
+// over so nothing is listed twice.
 func hermesSQLiteList(dbPath, mode string, skip map[string]bool) []record {
 	db, err := openHermesDB(dbPath)
 	if err != nil {
@@ -195,7 +201,7 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) []record {
 			continue
 		}
 
-		// updatedAt：最后一条消息时间 → 会话结束时间 → 开始时间
+		// updatedAt: last message time, then session end time, then start time
 		updated := lastMsg
 		if !updated.Valid {
 			updated = endedAt
@@ -238,9 +244,11 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) []record {
 	return out
 }
 
-// hermesSQLiteMessages 读没有 jsonl 的会话的消息（state.db 里的 user/assistant 行，
-// 与 jsonl 路径同构：assistant 的 reasoning 作为 thinking；时间戳是 epoch 秒 → UTC ISO）。
-// 取最新 N 条时直接让 SQL 倒着取再翻回来，不用把整段消息都读出来。
+// hermesSQLiteMessages reads messages for sessions that have no jsonl (the user/assistant
+// rows in state.db, shaped exactly like the jsonl path: an assistant's reasoning becomes
+// thinking, and epoch-second timestamps become UTC ISO).
+// For the latest N, let SQL walk backwards and reverse the result rather than reading the
+// whole conversation.
 func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string]any {
 	out := []map[string]any{}
 	if q.limit <= 0 {
@@ -291,7 +299,7 @@ func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string
 			"content":   parts,
 		})
 	}
-	if q.fromEnd { // 倒着查出来的，翻回时间先后顺序
+	if q.fromEnd { // queried in reverse; flip back into chronological order
 		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 			out[i], out[j] = out[j], out[i]
 		}
@@ -299,8 +307,9 @@ func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string
 	return out
 }
 
-// hermesSQLiteSearch 在 state.db 里搜一个会话的正文。
-// SQLite 的 LIKE 对 ASCII 本来就大小写无关，直接交给它做，不用把消息读出来再比。
+// hermesSQLiteSearch searches one session's body inside state.db.
+// SQLite's LIKE is already case-insensitive for ASCII, so let it do the work rather than
+// reading every message out to compare here.
 func hermesSQLiteSearch(dbPath, sessionID string, q searchQuery) []map[string]any {
 	if sessionID == "" || len(q.lowered) == 0 || q.perSession <= 0 {
 		return nil
@@ -337,7 +346,7 @@ func hermesSQLiteSearch(dbPath, sessionID string, q searchQuery) []map[string]an
 		}
 		text := content.String
 		if indexFold(text, string(q.lowered)) < 0 {
-			text = reasoning.String // 命中在推理里
+			text = reasoning.String // the hit was in the reasoning
 		}
 		out = append(out, map[string]any{
 			"snippet":   snippetAround(text, string(q.lowered), searchSnippetRadius),
@@ -348,13 +357,15 @@ func hermesSQLiteSearch(dbPath, sessionID string, q searchQuery) []map[string]an
 	return out
 }
 
-// escapeLike 转义 LIKE 的通配符，免得用户搜 "100%" 变成匹配任意串
+// escapeLike escapes LIKE wildcards so that searching for "100%" does not turn into
+// matching anything at all
 func escapeLike(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`)
 	return r.Replace(s)
 }
 
-// sqliteValueString 把 SQLite 动态类型的值收敛成字符串（id/role 实际是 TEXT 或 INTEGER）
+// sqliteValueString folds SQLite's dynamically typed values into strings (id/role are
+// stored as TEXT or INTEGER depending on the row)
 func sqliteValueString(v any) string {
 	switch t := v.(type) {
 	case string:
@@ -367,8 +378,9 @@ func sqliteValueString(v any) string {
 	return ""
 }
 
-// sqliteTimeString 兼容时间戳的几种存储形态：REAL epoch 秒 → UTC ISO；
-// TEXT（ISO 字符串）原样——数字字符串（TEXT 亲和性存进去的）也按 epoch 处理
+// sqliteTimeString handles the several ways a timestamp may be stored: REAL epoch
+// seconds become UTC ISO, TEXT (an ISO string) passes through, and a numeric string
+// (stored that way by TEXT affinity) is treated as an epoch too
 func sqliteTimeString(v any) string {
 	if s, ok := v.(string); ok {
 		if sec, err := strconv.ParseFloat(s, 64); err == nil {
@@ -386,7 +398,7 @@ func sqliteTimeString(v any) string {
 	return sqliteValueString(v)
 }
 
-// nullStringOrNil 字段原样返回：NULL 就是 JSON null
+// nullStringOrNil passes the field through as-is: SQL NULL becomes JSON null
 func nullStringOrNil(v sql.NullString) any {
 	if v.Valid {
 		return v.String
@@ -395,5 +407,5 @@ func nullStringOrNil(v sql.NullString) any {
 }
 
 func warnHermesSQLite(sessionID string, err error) {
-	fmt.Fprintf(os.Stderr, "[WARN] 读取 Hermes SQLite 最终消息失败 %s: %v\n", sessionID, err)
+	fmt.Fprintf(os.Stderr, "[WARN] reading the Hermes SQLite final message failed for %s: %v\n", sessionID, err)
 }

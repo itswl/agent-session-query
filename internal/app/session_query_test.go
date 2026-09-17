@@ -788,7 +788,7 @@ func TestExportMarkdown(t *testing.T) {
 	}
 
 	body := readBody(t, resp)
-	for _, want := range []string{"# 2026-01-01T00-00-00_abc", "**数据源**：pi", "## 最终结果", "## 消息", "### user", "问题", "答案"} {
+	for _, want := range []string{"# 2026-01-01T00-00-00_abc", "**Source**: pi", "## Final result", "## Messages", "### user", "问题", "答案"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("导出里缺 %q:\n%s", want, body)
 		}

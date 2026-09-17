@@ -6,36 +6,39 @@ import (
 	"path/filepath"
 )
 
-// SessionSource 是数据源适配器：统一 list / messages / final 三个动作。
+// SessionSource is the data source adapter: one shape for list / messages / final.
 type SessionSource interface {
 	Mode() string
-	Location() string // 启动时打印、缺失时提示用
+	Location() string // printed at startup and when a source is missing
 	Exists() bool
 	List() []record
-	// Messages 返回会话消息，取哪一段由 messageQuery 决定
+	// Messages returns a session's messages; messageQuery picks which slice
 	Messages(r record, q messageQuery) []map[string]any
-	// Final 返回会话最终结果；nil 表示会话文件还不存在（由上层兜底成错误响应）
+	// Final returns a session's final result; nil means the session file does not
+	// exist yet, and the layer above turns that into an error response
 	Final(r record) map[string]any
 }
 
-// messageQuery 描述一次消息查询：取多少条、从哪一头取。
+// messageQuery describes one message query: how many, and from which end.
 //
-// fromEnd 对应 ?order=desc。会话最有价值的往往是结尾，而只能取「最早 N 条」的话，
-// 一个上万条消息的会话在页面上永远只看得到开头。
+// fromEnd corresponds to ?order=desc. The interesting part of a session is usually its
+// end, and with only "the earliest N" available, a session with tens of thousands of
+// messages would forever show nothing but its opening.
 type messageQuery struct {
 	limit   int
 	fromEnd bool
 }
 
-// messageSink 按 messageQuery 收集消息。
+// messageSink collects messages according to a messageQuery.
 //
-// 取最早 N 条：攒够就叫停（add 返回 false），扫描提前结束。
-// 取最新 N 条：必须一路扫到文件末尾，所以用一个容量 limit 的环形缓冲——
-// 内存只跟 limit 走，不跟会话长度走（16444 条消息的会话也只留住最后 N 条）。
+// Earliest N: stop as soon as there are enough (add returns false) and end the scan early.
+// Latest N: the scan has to run to the end of the file, so a ring buffer of capacity
+// limit holds the tail — memory tracks limit, not session length (a 16444-message
+// session still keeps only the last N).
 type messageSink struct {
 	q     messageQuery
 	items []map[string]any
-	start int // 环形缓冲的写入位置（只有 fromEnd 用得到）
+	start int // ring buffer write position (only used when fromEnd)
 }
 
 func newMessageSink(q messageQuery) *messageSink {
@@ -44,12 +47,12 @@ func newMessageSink(q messageQuery) *messageSink {
 	}
 	capacity := q.limit
 	if capacity > 512 {
-		capacity = 512 // 别为一个 limit=1000 的请求先占住一整块
+		capacity = 512 // do not reserve a whole block up front for a limit=1000 request
 	}
 	return &messageSink{q: q, items: make([]map[string]any, 0, capacity)}
 }
 
-// add 收下一条消息；返回 false 表示够了，调用方可以停止扫描。
+// add takes one more message; false means there are enough and the caller may stop.
 func (s *messageSink) add(m map[string]any) bool {
 	if s.q.limit == 0 {
 		return false
@@ -67,7 +70,7 @@ func (s *messageSink) add(m map[string]any) bool {
 	return true
 }
 
-// result 按时间先后顺序返回收集到的消息
+// result returns the collected messages in chronological order
 func (s *messageSink) result() []map[string]any {
 	if len(s.items) == 0 {
 		return []map[string]any{}
@@ -81,16 +84,16 @@ func (s *messageSink) result() []map[string]any {
 	return out
 }
 
-// 支持的数据源（--mode 可选值）；auto 模式下按存在与否启用
+// Supported sources (the values --mode accepts); auto enables whichever exist
 var knownModes = []string{"hermes", "openclaw", "pi", "claude", "codex", "gemini"}
 
-// fileExists 路径是否存在
+// fileExists reports whether a path exists
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
 
-// defaultHome 读 $HOME 解析 ~
+// defaultHome resolves ~ by reading the user's home directory
 func defaultHome() string {
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		return home
@@ -98,11 +101,12 @@ func defaultHome() string {
 	return "/root"
 }
 
-// buildSources 按运行模式装配数据源。
+// buildSources wires up data sources according to the run mode.
 //
-//   - 指定单个模式：只启用它
-//   - all：六个都启用（缺的会警告）
-//   - auto：存在的数据源都启用（两个 json-map 源看 sessions.json，其它看目录）
+//   - a single named mode: enable only that one
+//   - all: enable all six (missing ones warn)
+//   - auto: enable whichever exist (the two json-map sources look for sessions.json,
+//     the rest for their directory)
 func buildSources(mode string) ([]SessionSource, error) {
 	home := defaultHome()
 
@@ -118,7 +122,7 @@ func buildSources(mode string) ([]SessionSource, error) {
 	if mode != "auto" && mode != "all" {
 		factory, ok := factories[mode]
 		if !ok {
-			return nil, fmt.Errorf("未知模式 %q（可选: auto, all, %s）", mode, joinModes())
+			return nil, fmt.Errorf("unknown mode %q (choose from: auto, all, %s)", mode, joinModes())
 		}
 		return []SessionSource{factory()}, nil
 	}
@@ -129,14 +133,14 @@ func buildSources(mode string) ([]SessionSource, error) {
 		if source.Exists() {
 			enabled = append(enabled, source)
 		} else if mode == "all" {
-			fmt.Fprintf(os.Stderr, "警告: 数据源不存在，已跳过: %s (%s)\n", name, source.Location())
+			fmt.Fprintf(os.Stderr, "[WARN] data source not found, skipped: %s (%s)\n", name, source.Location())
 		}
 	}
 	if len(enabled) > 0 {
 		return enabled, nil
 	}
 
-	fmt.Fprintln(os.Stderr, "警告: 未检测到任何数据源，默认使用 OpenClaw")
+	fmt.Fprintln(os.Stderr, "[WARN] no data source detected; defaulting to OpenClaw")
 	return []SessionSource{factories["openclaw"]()}, nil
 }
 
@@ -151,8 +155,9 @@ func joinModes() string {
 	return out
 }
 
-// jsonMapDef 描述「一个 sessions.json 索引 + 每会话一个 jsonl」形态的数据源。
-// stateDB 非 empty 时（仅 hermes）：sessions.json 不存在也能从 SQLite 列会话。
+// jsonMapDef describes a source shaped as "one sessions.json index plus one jsonl per
+// session". When stateDB is non-empty (hermes only), sessions can still be listed from
+// SQLite even without sessions.json.
 type jsonMapDef struct {
 	mode            string
 	sessionsJSON    string

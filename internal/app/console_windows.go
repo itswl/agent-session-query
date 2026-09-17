@@ -4,14 +4,14 @@ package app
 
 import "syscall"
 
-// enableUTF8Console 把控制台输出代码页切成 UTF-8。
+// enableUTF8Console switches the console output code page to UTF-8.
 //
-// 启动横幅、数据源路径、警告全是中文，而 Windows 传统控制台（cmd.exe）默认用本地
-// 代码页（简中是 GBK/936），直接打 UTF-8 字节就是一屏乱码。Windows Terminal 和
-// PowerShell 7 本来就是 UTF-8，这一步对它们是无操作。
+// The legacy Windows console (cmd.exe) defaults to the local code page, so any
+// non-ASCII byte we print comes out as garbage. Windows Terminal and PowerShell 7
+// are already UTF-8, where this call is a no-op.
 //
-// 拿不到控制台（输出被重定向到文件、或作为服务运行）时调用会失败，忽略即可——
-// 那种场景下本来就没有代码页这回事。
+// It fails when there is no console at all (output redirected to a file, or
+// running as a service). Ignoring that is fine: there is no code page to set.
 func enableUTF8Console() {
 	const cpUTF8 = 65001
 	proc := syscall.NewLazyDLL("kernel32.dll").NewProc("SetConsoleOutputCP")

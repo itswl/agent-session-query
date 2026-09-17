@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// Gemini CLI：~/.gemini/tmp/<项目>/chats/session-*.jsonl
+// Gemini CLI: ~/.gemini/tmp/<project>/chats/session-*.jsonl
 type GeminiSource struct {
 	root  string
 	cache *fileRecordCache
@@ -28,11 +28,12 @@ func (s *GeminiSource) files() []string {
 	return files
 }
 
-// metaHeadLines metaOf 最多往下找几行——元数据就在首行，
-// 但没有硬上限的话，一个缺元数据的文件会让「列个表」变成整文件扫描。
+// metaHeadLines caps how far metaOf looks. The metadata is on the first line, but
+// without a hard cap one file missing it would turn "list the sessions" into a
+// whole-file scan.
 const metaHeadLines = 5
 
-// metaOf 读文件头拿元数据（列表用，不扫全文件）
+// metaOf reads the file head for metadata (for listing; never scans the whole file)
 func (s *GeminiSource) metaOf(path string) map[string]any {
 	meta := map[string]any{}
 	seen := 0
@@ -47,8 +48,9 @@ func (s *GeminiSource) metaOf(path string) map[string]any {
 	return meta
 }
 
-// geminiThoughts 把 thoughts 收敛成文本：Gemini CLI 有两代格式——字符串，或
-// [{subject, description, timestamp}] 数组（做计划/自我汇报时的分条思考）。
+// geminiThoughts flattens thoughts into text. Gemini CLI has two generations of the
+// format: a plain string, or a [{subject, description, timestamp}] array (itemised
+// thinking used when planning or reporting on itself).
 func geminiThoughts(v any) string {
 	switch t := v.(type) {
 	case string:
@@ -67,10 +69,11 @@ func geminiThoughts(v any) string {
 	return ""
 }
 
-// geminiParts 把一条 Gemini 消息收敛成统一的块数组。工具调用型会话里正文很稀：
-// 发起调用时 content 是空串、真正内容在 toolCalls（name + args，结果不带——
-// 后续 user 行的 functionResponse 才是执行结果）；user 行的 content 数组里
-// functionResponse 项回传工具输出。thoughts 插在最前面，与其它源一致。
+// geminiParts folds one Gemini message into the shared block array. Tool-driven
+// sessions carry very little prose: when a call is issued, content is the empty string
+// and the substance sits in toolCalls (name + args, no result — the result arrives as a
+// functionResponse on a later user row). A user row's content array carries those
+// functionResponse entries back. thoughts goes first, matching the other sources.
 func geminiParts(m map[string]any) []map[string]any {
 	parts := []map[string]any{}
 	switch content := m["content"].(type) {
@@ -114,7 +117,8 @@ func geminiParts(m map[string]any) []map[string]any {
 	return parts
 }
 
-// eachEntry 逐行产出消息；Gemini 的 jsonl 是「首行元数据 + $set 补丁 + 消息行」的追加日志
+// eachGeminiEntry yields messages line by line. A Gemini jsonl is an append log shaped
+// as "metadata first line + $set patches + message rows".
 func eachGeminiEntry(path string, fn func(entry map[string]any) bool) {
 	eachJSONL(path, func(obj map[string]any) bool {
 		if set, ok := obj["$set"].(map[string]any); ok && set != nil {
@@ -136,13 +140,15 @@ func eachGeminiEntry(path string, fn func(entry map[string]any) bool) {
 	})
 }
 
-// List 只读文件头拿元数据；文件没变过就直接用缓存（见 fileRecordCache）
+// List reads only the file head for metadata; unchanged files come straight from the
+// cache (see fileRecordCache)
 func (s *GeminiSource) List() []record {
 	return s.cache.records(s.files(), func(path, modISO string) record {
 		meta := s.metaOf(path)
-		// 首行的 lastUpdated 是「会话开始」那一刻的值，之后由 $set 补丁行更新——
-		// 实测本机 33 个会话里 29 个的首行时间是陈的，最多差 45 分钟。
-		// 所以先看尾部最后一条记录，再退回首行元数据，最后才是文件 mtime。
+		// The first line's lastUpdated is its value at session start; later $set patch rows
+		// update it. Measured locally, 29 of 33 sessions had a stale first-line time, off by
+		// as much as 45 minutes. So look at the last record in the tail first, then fall back
+		// to the head metadata, and only then to the file's mtime.
 		var lastTs any = updatedAtOf(path, "")
 		if !truthy(lastTs) {
 			lastTs = meta["lastUpdated"]

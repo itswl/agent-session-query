@@ -13,26 +13,29 @@ import (
 	"unicode/utf8"
 )
 
-// record 是各数据源统一输出的一条会话记录。
+// record is the one session shape every source converges on.
 //
-// fields 是对外字段（source / key / sessionId / file / hasFile / status / updatedAt
-// 以及各源的额外字段）；其余都是派生出来的内部数据，不对外出现：
-// sortAt / sortKey 用于列表排序，lowerSID / lowerKey 是匹配用的小写形式——
-// 都在建记录时算好，查找时不必对每条记录重复做一次 ToLower。
+// fields holds the public fields (source / key / sessionId / file / hasFile / status /
+// updatedAt, plus whatever each source adds). Everything else is derived, internal, and
+// never surfaces: sortAt / sortKey drive list ordering, lowerSID / lowerKey are the
+// lowercased forms used for matching — all computed once when the record is built, so a
+// lookup never has to ToLower every record again.
 type record struct {
 	fields map[string]any
 
-	sortAt   time.Time // 解析出来的更新时间；零值表示这条记录的时间解析不出来
-	sortKey  string    // 解析不出时间时的退路：原始字符串
+	sortAt   time.Time // parsed update time; zero means this record's time would not parse
+	sortKey  string    // fallback when the time will not parse: the raw string
 	lowerSID string
 	lowerKey string
 }
 
-// newRecord 由字段表和「更新时间的原始值」建一条记录。
+// newRecord builds a record from its field map and the raw "update time" value.
 //
-// 各数据源的时间形态不一（mtime 的 2006-01-02T15:04:05、Gemini 的 RFC3339Nano、
-// Hermes 里直接来自 sessions.json 的字符串、epoch 数字……），统一在这里解析成
-// time.Time 再排序：只按字典序比字符串的话，一个带时区偏移的时间戳就能把跨源排序排错。
+// Sources spell time differently (2006-01-02T15:04:05 from mtime, RFC3339Nano from
+// Gemini, whatever sessions.json happens to hold for Hermes, epoch numbers, ...). They
+// are all parsed into a time.Time here before sorting: compare the strings
+// lexicographically instead and a single offset-bearing timestamp misorders the whole
+// cross-source list.
 func newRecord(fields map[string]any, updatedAt any) record {
 	at, _ := parseTimestampValue(updatedAt)
 	return record{
@@ -44,11 +47,12 @@ func newRecord(fields map[string]any, updatedAt any) record {
 	}
 }
 
-// normalizeForMatch 把用来匹配的字符串统一成「小写 + 正斜杠」。
+// normalizeForMatch folds a string to "lowercase + forward slashes" for matching.
 //
-// 文件型数据源的 key 就是完整路径，分隔符跟着操作系统走——Windows 上是 `\`。
-// 不统一的话，同一个 pattern 在 Windows 上会从「后缀精确命中」掉到「子串命中」，
-// 而且用户按习惯敲 `proj/abc.jsonl` 根本匹配不上 `...\proj\abc.jsonl`。
+// A file-backed source's key is a full path, and the separator follows the OS — on
+// Windows that is `\`. Without folding, the same pattern drops from an exact suffix hit
+// to a mere substring hit there, and a user typing the habitual `proj/abc.jsonl` never
+// matches `...\proj\abc.jsonl` at all.
 func normalizeForMatch(s string) string {
 	return strings.ToLower(strings.ReplaceAll(s, "\\", "/"))
 }
@@ -57,14 +61,16 @@ func (r record) get(k string) any     { return r.fields[k] }
 func (r record) str(k string) string  { return toStr(r.fields[k]) }
 func (r record) truthy(k string) bool { return truthy(r.fields[k]) }
 
-// activeWindow 更新时间在这个窗口之内就算「正在跑」
+// activeWindow: an update time inside this window counts as "currently running"
 const activeWindow = 2 * time.Minute
 
-// public 返回对外字段的副本。记录会被列表缓存长期持有、并发共享，
-// 直接把内部 map 交出去的话，调用方一次无心的赋值就会污染后续所有读者。
+// public returns a copy of the public fields. Records are held by the list cache and
+// shared across goroutines; hand the internal map out directly and one careless
+// assignment by a caller poisons every later reader.
 //
-// isActive 在这里算而不是建记录时算：它跟「现在几点」有关，
-// 建好就定死的话，一条十分钟前扫出来的记录会一直说自己是活的。
+// isActive is computed here rather than at build time because it depends on what time
+// it is now. Freeze it at build time and a record scanned ten minutes ago keeps
+// claiming to be live.
 func (r record) public() map[string]any {
 	out := make(map[string]any, len(r.fields)+2)
 	for k, v := range r.fields {
@@ -75,8 +81,8 @@ func (r record) public() map[string]any {
 	return out
 }
 
-// project 会话所属的「项目」：优先 cwd（claude / codex / pi），
-// 其次 gemini 自带的 project 字段。hermes / openclaw 没有这个维度，返回空串。
+// project is the session's owning project: cwd first (claude / codex / pi), then
+// gemini's own project field. hermes / openclaw have no such dimension, so they get "" .
 func (r record) project() string {
 	if cwd := r.str("cwd"); cwd != "" {
 		return cwd
@@ -84,35 +90,39 @@ func (r record) project() string {
 	return r.str("project")
 }
 
-// newerThan 列表排序用：更新时间晚的排前面。
-// 时间解析不出来的记录（sortAt 为零值）一律排在有时间的后面，它们之间按原始字符串倒序。
+// newerThan drives list ordering: later update time comes first.
+// Records whose time would not parse (zero sortAt) always sort after those that have
+// one, and among themselves fall back to reverse string order.
 func (r record) newerThan(other record) bool {
 	if !r.sortAt.IsZero() || !other.sortAt.IsZero() {
 		if r.sortAt.Equal(other.sortAt) {
-			return false // 相等时保持数据源顺序（配合 sort.SliceStable）
+			return false // equal times keep source order (paired with sort.SliceStable)
 		}
 		return r.sortAt.After(other.sortAt)
 	}
 	return r.sortKey > other.sortKey
 }
 
-// matchRank 见同名函数；这里用建记录时算好的小写形式。
+// matchRank: see the free function of the same name. This uses the lowercased forms
+// computed when the record was built.
 func (r record) matchRank(patternLower string) int {
 	return matchRank(patternLower, r.lowerSID, r.lowerKey)
 }
 
 // ---------------------------------------------------------------------------
-// 通用工具
+// Shared helpers
 // ---------------------------------------------------------------------------
 
-// maxLineBytes 单行上限（Claude Code 的工具输出可能很大）。缓冲按需增长，
-// 正常文件只用得到起始的 64 KB；真碰到超过上限的行，Scanner 会中止——
-// 注意是「这一行往后都不读了」，不是「跳过这一行」，所以下面要把错误报出来。
+// maxLineBytes caps a single line (Claude Code tool output can get large). The buffer
+// grows on demand, so a normal file never needs more than the initial 64 KB. If a line
+// really does exceed the cap, Scanner aborts — note that means "nothing after this line
+// is read", not "this line is skipped", which is why the error below must be surfaced.
 const maxLineBytes = 256 * 1024 * 1024
 
-// eachJSONLLine 逐行读原始字节，回调里的切片只在本次调用内有效（缓冲会被复用），
-// 需要留用必须自己拷贝。用 Scanner 而不是 ReadBytes：Scanner.Bytes() 是内部缓冲的
-// 视图，每行不额外分配，实测读完 3000 行的大会话比逐行 ReadBytes 快约 40%。
+// eachJSONLLine walks raw bytes line by line. The slice handed to the callback is only
+// valid for that call (the buffer is reused); copy it to keep it. Scanner rather than
+// ReadBytes: Scanner.Bytes() is a view into the internal buffer, so no allocation per
+// line — measured ~40% faster than line-wise ReadBytes over a 3000-line session.
 func eachJSONLLine(path string, fn func(line []byte) bool) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -131,13 +141,15 @@ func eachJSONLLine(path string, fn func(line []byte) bool) {
 			return
 		}
 	}
-	// 超长行 / 读取失败会让剩下的内容整段读不到，静默截断比报错更难查
+	// An over-long line or a read failure makes the rest of the file unreachable;
+	// truncating silently is far harder to diagnose than saying so
 	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "[WARN] 读取 %s 中断，该文件后续内容未解析: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "[WARN] reading %s stopped; the rest of the file was not parsed: %v\n", path, err)
 	}
 }
 
-// eachJSONL 逐行解析出对象（坏行跳过、非对象跳过）。fn 返回 false 表示提前停止。
+// eachJSONL decodes one object per line (bad lines and non-objects are skipped).
+// Returning false from fn stops early.
 func eachJSONL(path string, fn func(obj map[string]any) bool) {
 	eachJSONLLine(path, func(line []byte) bool {
 		var obj map[string]any
@@ -148,7 +160,7 @@ func eachJSONL(path string, fn func(obj map[string]any) bool) {
 	})
 }
 
-// readJSONL 逐行读 jsonl，最多读 limit 条有效记录（limit <= 0 表示不限）。
+// readJSONL reads a jsonl file, taking at most limit valid records (limit <= 0 = all).
 func readJSONL(path string, limit int) []map[string]any {
 	out := []map[string]any{}
 	eachJSONL(path, func(obj map[string]any) bool {
@@ -161,7 +173,8 @@ func readJSONL(path string, limit int) []map[string]any {
 	return out
 }
 
-// contentText 把各种形态的 content 收敛成纯文本（字符串 / 数组 / 单个字典）。
+// contentText flattens the several shapes of content into plain text
+// (string / array / single object).
 func contentText(value any) string {
 	switch v := value.(type) {
 	case string:
@@ -192,19 +205,23 @@ func contentText(value any) string {
 	return ""
 }
 
-// tailWindows 从文件尾部往回找最后一条记录时依次尝试的窗口。
-// 实测本机 174 个真实 Claude 会话，172 个在最后 64 KB 里就能找到完整记录。
+// tailWindows are the window sizes tried in turn when looking backwards from the end of
+// a file for its last record. Measured over 174 real Claude sessions, 172 of them yield
+// a complete record within the final 64 KB.
 var tailWindows = []int64{64 << 10, 512 << 10, 4 << 20}
 
-// lastRecordTime 读会话文件的尾部，取最后一条记录自带的时间。
+// lastRecordTime reads the tail of a session file and returns the time carried by its
+// last record.
 //
-// 为什么不直接用文件 mtime：mtime 是「文件被写过」的时间，不是「对话发生」的时间。
-// 实测本机 174 个真实 Claude 会话，43 个（25%）两者相差超过 1 小时，最大差 235 小时
-// ——有些操作会重写会话文件却不追加新内容，于是六天前聊完的会话被顶到列表最前面，
-// 还会被 isActive 误判成「正在写入」。
+// Why not just use the file's mtime: mtime is when the file was written, not when the
+// conversation happened. Measured over 174 real Claude sessions, 43 of them (25%) differ
+// by more than an hour, the worst by 235 hours — something rewrites session files
+// without appending anything, which floats a conversation that ended six days ago to the
+// top of the list and has isActive report it as "currently being written".
 //
-// 不读整个文件：从尾部 seek 一小段就够（最大的那个会话有 103 MB）。窗口里找不到
-// 就逐级放大，仍然找不到返回空串，由调用方退回 mtime。
+// It does not read the whole file: seeking a small window from the end is enough (the
+// largest session here is 103 MB). If the window holds no complete record the next size
+// up is tried; if none do, it returns "" and the caller falls back to mtime.
 func lastRecordTime(path string) string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -229,7 +246,8 @@ func lastRecordTime(path string) string {
 		if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
 			return ""
 		}
-		// 窗口不是从文件头开始时，第一行多半被切在中间，丢掉
+		// When the window does not start at the beginning of the file, its first line
+		// is probably cut in half — drop it
 		if start > 0 {
 			if i := bytes.IndexByte(buf, '\n'); i >= 0 {
 				buf = buf[i+1:]
@@ -241,15 +259,15 @@ func lastRecordTime(path string) string {
 			return ts
 		}
 		if window >= size {
-			break // 整个文件都读过了，不必再放大
+			break // already read the whole file; no point growing further
 		}
 	}
 	return ""
 }
 
-// lastTimestampIn 在一段字节里从后往前找第一条带时间的记录。
-// 三种放法都认：顶层 timestamp（Claude / Codex / Pi）、message.timestamp（Pi 的部分行）、
-// $set.lastUpdated（Gemini 的补丁行）。
+// lastTimestampIn scans a byte range backwards for the first record carrying a time.
+// All three placements count: a top-level timestamp (Claude / Codex / Pi),
+// message.timestamp (some Pi lines), and $set.lastUpdated (Gemini's patch lines).
 func lastTimestampIn(buf []byte) string {
 	lines := bytes.Split(buf, []byte{'\n'})
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -278,9 +296,10 @@ func lastTimestampIn(buf []byte) string {
 	return ""
 }
 
-// updatedAtOf 会话的「最后活动时间」：优先用内容里最后一条记录的时间，
-// 取不到、或者取到的时间解析不了（解析不了会被排到列表最末尾，比用 mtime 还糟）
-// 才退回文件 mtime。
+// updatedAtOf is a session's last-activity time: the time on the last record in the
+// file if there is one, otherwise the file's mtime. A value that will not parse also
+// falls back — an unparseable time sorts to the very end of the list, which is worse
+// than using mtime.
 func updatedAtOf(path, modISO string) string {
 	ts := lastRecordTime(path)
 	if ts == "" {
@@ -292,7 +311,7 @@ func updatedAtOf(path, modISO string) string {
 	return ts
 }
 
-// mtimeISO 文件修改时间（UTC，秒级，形如 2026-09-14T07:41:48）。
+// mtimeISO is a file's modification time (UTC, second precision, e.g. 2026-09-14T07:41:48).
 func mtimeISO(path string) string {
 	st, err := os.Stat(path)
 	if err != nil {
@@ -301,8 +320,9 @@ func mtimeISO(path string) string {
 	return st.ModTime().UTC().Format("2006-01-02T15:04:05")
 }
 
-// matchRank 计算 pattern 与会话记录的匹配度：0 最精确，-1 表示不匹配。
-// pattern / sid / key 传进来时都该已经过 normalizeForMatch（小写 + 正斜杠）。
+// matchRank scores how well a pattern matches a session: 0 is the most exact, -1 means
+// no match. pattern / sid / key must already have gone through normalizeForMatch
+// (lowercase + forward slashes).
 func matchRank(patternLower, sid, key string) int {
 	if sid != "" && patternLower == sid {
 		return 0
@@ -322,7 +342,7 @@ func matchRank(patternLower, sid, key string) int {
 	return -1
 }
 
-// truncate 按「字符」（Unicode 码点）截断，超长时在末尾加标记。
+// truncate cuts by character (Unicode code point), appending a marker when it cuts.
 func truncate(text string, limit int, mark string) string {
 	if utf8.RuneCountInString(text) <= limit {
 		return text
@@ -337,7 +357,7 @@ func truncate(text string, limit int, mark string) string {
 	return text + mark
 }
 
-// truthy 真值判断：nil/false/0/空串/空容器 为假。
+// truthy: nil, false, 0, the empty string and empty containers are falsy.
 func truthy(v any) bool {
 	switch t := v.(type) {
 	case nil:
@@ -360,7 +380,8 @@ func truthy(v any) bool {
 	return true
 }
 
-// toStr 转字符串：字符串原样，布尔输出 True/False，数字不带指数。
+// toStr converts to string: strings pass through, bools render as True/False, numbers
+// avoid exponent notation.
 func toStr(v any) string {
 	switch t := v.(type) {
 	case nil:
@@ -394,7 +415,7 @@ func toFloat(v any) (float64, bool) {
 	return 0, false
 }
 
-// strOr 取字符串值，空值时用默认值。
+// strOr takes the string value, falling back to def when empty.
 func strOr(v any, def string) string {
 	if truthy(v) {
 		return toStr(v)
@@ -402,7 +423,7 @@ func strOr(v any, def string) string {
 	return def
 }
 
-// getOr 键存在就用原值（哪怕是 null），否则用默认值。
+// getOr uses the stored value when the key exists (even if null), otherwise def.
 func getOr(m map[string]any, key string, def any) any {
 	if v, ok := m[key]; ok {
 		return v
@@ -410,7 +431,7 @@ func getOr(m map[string]any, key string, def any) any {
 	return def
 }
 
-// getMap 取一个 map 字段（缺失或类型不符时返回空 map）。
+// getMap reads a map field (missing or wrongly typed yields an empty map).
 func getMap(m map[string]any, key string) map[string]any {
 	if inner, ok := m[key].(map[string]any); ok && inner != nil {
 		return inner
@@ -418,7 +439,7 @@ func getMap(m map[string]any, key string) map[string]any {
 	return map[string]any{}
 }
 
-// getSlice 取一个数组字段（缺失或类型不符时返回 nil）。
+// getSlice reads an array field (missing or wrongly typed yields nil).
 func getSlice(m map[string]any, key string) []any {
 	if inner, ok := m[key].([]any); ok {
 		return inner
@@ -426,7 +447,7 @@ func getSlice(m map[string]any, key string) []any {
 	return nil
 }
 
-// strField 取字符串字段（非字符串返回空串）。
+// strField reads a string field (anything else yields "").
 func strField(m map[string]any, key string) string {
 	if s, ok := m[key].(string); ok {
 		return s
@@ -434,17 +455,19 @@ func strField(m map[string]any, key string) string {
 	return ""
 }
 
-// timeLayouts 各数据源见过的时间形态，按出现频率排（解析时逐个试）。
-// 不带时区的按 UTC 解析——各源写文件时用的都是 UTC。
+// timeLayouts are the time shapes seen across sources, ordered by how often they turn
+// up (parsing tries each in turn). Layouts without a zone parse as UTC — every source
+// writes UTC.
 var timeLayouts = []string{
-	time.RFC3339Nano,                // 2026-09-14T03:16:50.601Z、带 +08:00 偏移的也认
-	"2006-01-02T15:04:05",           // mtime 派生的形态
-	"2006-01-02 15:04:05.999999999", // 空格分隔
+	time.RFC3339Nano,                // 2026-09-14T03:16:50.601Z, and +08:00 offsets too
+	"2006-01-02T15:04:05",           // the shape derived from mtime
+	"2006-01-02 15:04:05.999999999", // space separated
 	"2006-01-02 15:04:05",
 }
 
-// parseTimestampValue 把「更新时间」的原始值解析成 UTC 时间。
-// 认字符串（上面几种排版，以及纯数字的 epoch）和数字（epoch 秒 / 毫秒）。
+// parseTimestampValue parses a raw "update time" value into a UTC time.
+// It accepts strings (the layouts above, plus a bare numeric epoch) and numbers
+// (epoch seconds or milliseconds).
 func parseTimestampValue(v any) (time.Time, bool) {
 	switch t := v.(type) {
 	case string:
@@ -466,15 +489,16 @@ func parseTimestamp(s string) (time.Time, bool) {
 			return parsed.UTC(), true
 		}
 	}
-	// 纯数字的 epoch（有的实现把时间戳当字符串写进 JSON）
+	// A bare numeric epoch (some writers put the timestamp into JSON as a string)
 	if sec, err := strconv.ParseFloat(s, 64); err == nil {
 		return epochToTime(sec)
 	}
 	return time.Time{}, false
 }
 
-// epochToTime epoch 秒或毫秒 → UTC 时间。超过 1e11 的按毫秒算
-// （1e11 秒是公元 5138 年，1e11 毫秒是 1973 年，这个分界不会误判）。
+// epochToTime converts epoch seconds or milliseconds to UTC. Anything past 1e11 is
+// treated as milliseconds (1e11 seconds is the year 5138, 1e11 milliseconds is 1973 —
+// the boundary cannot be mistaken).
 func epochToTime(v float64) (time.Time, bool) {
 	if v == 0 {
 		return time.Time{}, false
@@ -490,12 +514,12 @@ func epochToTime(v float64) (time.Time, bool) {
 	return time.Unix(sec, nsec).UTC(), true
 }
 
-// utcFromSeconds 把秒级时间戳格式化成 UTC 的两种形态；
-// 越界返回 ok=false。
+// utcFromSeconds formats an epoch-seconds timestamp into the two UTC shapes;
+// out-of-range input returns ok=false.
 func utcFromSeconds(sec float64) (dashed string, iso string, ok bool) {
 	whole := int64(sec)
 	if sec < 0 && float64(whole) != sec {
-		whole-- // 与 time.Unix 的取整方向对齐
+		whole-- // match time.Unix rounding direction
 	}
 	if whole < -62135596800 || whole > 253402300799 {
 		return "", "", false

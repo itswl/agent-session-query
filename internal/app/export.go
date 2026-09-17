@@ -6,21 +6,23 @@ import (
 	"strings"
 )
 
-// 会话导出成 Markdown。
+// Session export to Markdown.
 //
-// 想把一段调试过程贴进 issue、文档或者发给同事时，现在只能一块块手抄。
-// 输出直接复用 Messages / Final 那套块结构，不另起一套解析。
+// Pasting a debugging session into an issue, a document, or a message to a colleague
+// otherwise means copying it out block by block. The output reuses the Messages / Final
+// block structures rather than introducing a second way to parse a session.
 
-// exportMarkdown 把一个会话渲染成 Markdown，返回正文与建议文件名。
+// exportMarkdown renders one session as Markdown, returning the body and a suggested
+// filename.
 func (a *SessionQueryAPI) exportMarkdown(pattern string, q messageQuery) (body string, filename string, ok bool) {
 	source, item, found := a.findSession(pattern)
 	if !found {
 		return "", "", false
 	}
-	messages := safeParse(source.Mode(), "消息", func() []map[string]any {
+	messages := safeParse(source.Mode(), "messages", func() []map[string]any {
 		return source.Messages(item, q)
 	})
-	final := safeParse(source.Mode(), "最终结果", func() map[string]any {
+	final := safeParse(source.Mode(), "the final result", func() map[string]any {
 		return source.Final(item)
 	})
 
@@ -28,26 +30,26 @@ func (a *SessionQueryAPI) exportMarkdown(pattern string, q messageQuery) (body s
 	name := strOr(item.get("shortKey"), item.str("sessionId"))
 	fmt.Fprintf(&b, "# %s\n\n", name)
 
-	// 元信息：只写有值的
+	// Metadata: only fields that actually have a value
 	for _, kv := range [][2]string{
-		{"数据源", item.str("source")},
+		{"Source", item.str("source")},
 		{"sessionId", item.str("sessionId")},
-		{"更新时间", item.str("updatedAt")},
+		{"Updated", item.str("updatedAt")},
 		{"cwd", item.str("cwd")},
-		{"模型", item.str("model")},
-		{"文件", item.str("file")},
+		{"Model", item.str("model")},
+		{"File", item.str("file")},
 	} {
 		if kv[1] != "" {
-			fmt.Fprintf(&b, "- **%s**：%s\n", kv[0], kv[1])
+			fmt.Fprintf(&b, "- **%s**: %s\n", kv[0], kv[1])
 		}
 	}
 
 	if final != nil {
-		b.WriteString("\n## 最终结果\n\n")
+		b.WriteString("\n## Final result\n\n")
 		if truthy(final["isFinal"]) {
-			b.WriteString("> 已完成")
+			b.WriteString("> Complete")
 		} else {
-			b.WriteString("> 未完成")
+			b.WriteString("> Incomplete")
 		}
 		if reason := strOr(final["stopReason"], ""); reason != "" {
 			fmt.Fprintf(&b, " · `%s`", reason)
@@ -58,11 +60,11 @@ func (a *SessionQueryAPI) exportMarkdown(pattern string, q messageQuery) (body s
 		}
 	}
 
-	which := "最早"
+	which := "earliest"
 	if q.fromEnd {
-		which = "最新"
+		which = "latest"
 	}
-	fmt.Fprintf(&b, "\n## 消息（%s %d 条）\n", which, len(messages))
+	fmt.Fprintf(&b, "\n## Messages (%s %d)\n", which, len(messages))
 	for _, message := range messages {
 		fmt.Fprintf(&b, "\n### %s", strOr(message["role"], "unknown"))
 		if ts := strOr(message["timestamp"], ""); ts != "" {
@@ -75,11 +77,11 @@ func (a *SessionQueryAPI) exportMarkdown(pattern string, q messageQuery) (body s
 	return b.String(), sanitizeFilename(name) + ".md", true
 }
 
-// writeBlocks 把消息的块数组写成 Markdown
+// writeBlocks renders a message's block array as Markdown
 func writeBlocks(b *strings.Builder, content any) {
 	blocks, ok := content.([]map[string]any)
 	if !ok || len(blocks) == 0 {
-		b.WriteString("_（无可显示内容）_\n")
+		b.WriteString("_(nothing to display)_\n")
 		return
 	}
 	for _, block := range blocks {
@@ -90,21 +92,22 @@ func writeBlocks(b *strings.Builder, content any) {
 			}
 		case "thinking":
 			if text := strOr(block["content"], ""); text != "" {
-				// 思考过程折起来，免得淹没正文
-				fmt.Fprintf(b, "<details><summary>思考过程</summary>\n\n%s\n\n</details>\n\n", text)
+				// Fold the thinking away so it does not drown the actual answer
+				fmt.Fprintf(b, "<details><summary>Thinking</summary>\n\n%s\n\n</details>\n\n", text)
 			}
 		case "toolCall":
 			args, _ := json.MarshalIndent(getOr(block, "arguments", map[string]any{}), "", "  ")
-			fmt.Fprintf(b, "**⚙ %s**\n\n```json\n%s\n```\n\n", strOr(block["name"], "(未命名工具)"), args)
+			fmt.Fprintf(b, "**⚙ %s**\n\n```json\n%s\n```\n\n", strOr(block["name"], "(unnamed tool)"), args)
 		case "toolResult":
-			label := strOr(block["toolName"], "结果")
+			label := strOr(block["toolName"], "result")
 			fmt.Fprintf(b, "↳ %s\n\n```\n%s\n```\n\n", label, strOr(block["content"], ""))
 		}
 	}
 }
 
-// sanitizeFilename 把会话标识收敛成安全的文件名：
-// 路径分隔符和 Windows 不收的字符都换成 -，别让 Content-Disposition 带出目录。
+// sanitizeFilename folds a session identifier into a safe filename: path separators and
+// the characters Windows rejects all become -, so Content-Disposition cannot carry a
+// directory out with it.
 func sanitizeFilename(name string) string {
 	if name == "" {
 		return "session"

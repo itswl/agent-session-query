@@ -7,8 +7,9 @@ import (
 	"syscall"
 )
 
-// detachAttr 让子进程自立门户（setsid）：脱离当前终端的会话与进程组，
-// 这样关掉终端、或者终端收到 SIGHUP 时，它不会跟着一起死。
+// detachAttr puts the child in its own session (setsid), detached from the
+// current terminal's session and process group, so closing the terminal — or the
+// terminal receiving SIGHUP — does not take the server down with it.
 func detachAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setsid: true}
 }

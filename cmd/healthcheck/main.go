@@ -1,16 +1,17 @@
-// healthcheck 是一个探活小程序，只给容器 HEALTHCHECK 用。
+// healthcheck is a tiny liveness probe, used only by the container HEALTHCHECK.
 //
-// scratch 运行镜像里没有 curl、没有 shell，所以自带一个静态二进制：
+// The scratch runtime image has no curl and no shell, so it ships its own static binary:
 //
 //	HEALTHCHECK CMD ["/healthcheck"]
 //
-// 它刻意不用 net/http：那个包会把整个 TLS/HTTP 栈链进来，二进制从 1.5 MB 涨到 5 MB，
-// 而这里只需要「连上、发一行 GET、看状态码是不是 200」。
+// It deliberately avoids net/http: that package links the whole TLS/HTTP stack in and
+// grows the binary from 1.5 MB to 5 MB, when all this needs is "connect, send one GET
+// line, check whether the status is 200".
 //
-// 默认探 http://127.0.0.1:8080/health，可用环境变量覆盖：
+// It probes http://127.0.0.1:8080/health by default, overridable by environment:
 //
-//	HEALTHCHECK_URL（默认 http://127.0.0.1:8080/health）
-//	HEALTHCHECK_TOKEN（设置了就带 Authorization: Bearer）
+//	HEALTHCHECK_URL   (default http://127.0.0.1:8080/health)
+//	HEALTHCHECK_TOKEN (when set, sent as Authorization: Bearer)
 package main
 
 import (
@@ -69,7 +70,7 @@ func run() error {
 	return nil
 }
 
-// splitURL 只认 http://host[:port]/path 这一种形态
+// splitURL accepts only the http://host[:port]/path shape
 func splitURL(raw string) (addr string, path string, err error) {
 	rest, ok := strings.CutPrefix(raw, "http://")
 	if !ok {

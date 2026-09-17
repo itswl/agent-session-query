@@ -1,5 +1,6 @@
-// agent-session-query：本地 Agent 会话查询 HTTP API 的入口。
-// 实现在 internal/app（参数解析、启动横幅、数据源装配都在那里）。
+// agent-session-query: entry point for the local agent session query API.
+// The implementation lives in internal/app (flag parsing, startup banner,
+// data source wiring).
 package main
 
 import (

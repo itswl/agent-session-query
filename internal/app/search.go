@@ -10,44 +10,49 @@ import (
 	"unicode/utf8"
 )
 
-// 内容搜索。
+// Content search.
 //
-// 不建索引：索引意味着要落盘、要维护、要考虑失效，「单二进制、只读、scp 过去就能跑」
-// 这条就没了。实测本机 470 MB / 173 个会话裸扫一遍不到 1 秒，够用。
+// No index. An index has to be written somewhere, maintained, and reasoned about when it
+// goes stale, and that costs the "single binary, read-only, scp it anywhere" property.
+// Measured locally, a bare scan over 470 MB / 173 sessions takes under a second, which is
+// enough.
 //
-// 快在于顺序：先拿原始字节做大小写无关的 Contains，命中了才 JSON 解析那一行——
-// 99% 的行连解析都省掉，而 JSON 解析才是扫描里最贵的部分。
+// The speed comes from ordering, not cleverness: run a case-insensitive Contains over the
+// raw bytes first and only JSON-decode a line once it matches. That skips decoding for
+// 99% of lines, and decoding is the expensive part of the scan.
 const (
-	defaultSearchLimit      = 30 // 最多返回多少个会话
-	defaultSearchPerSession = 3  // 每个会话最多返回几条命中
-	searchSnippetRadius     = 70 // 片段里命中处前后各留多少个字符
-	maxSearchDepth          = 8  // JSON 里找正文时的递归深度上限
+	defaultSearchLimit      = 30 // how many sessions to return at most
+	defaultSearchPerSession = 3  // how many hits per session at most
+	searchSnippetRadius     = 70 // characters kept on each side of a hit in a snippet
+	maxSearchDepth          = 8  // recursion depth cap when hunting for body text in JSON
 )
 
-// searchQuery 一次内容搜索。
+// searchQuery is one content search.
 type searchQuery struct {
-	needle     string    // 原样保留，用于回显
-	lowered    []byte    // 小写后的待查字节（ASCII 折叠）
-	limit      int       // 最多返回多少个会话
-	perSession int       // 每个会话最多返回几条命中
-	since      time.Time // 只搜更新时间晚于此的会话；零值 = 不限
+	needle     string    // kept verbatim, echoed back to the caller
+	lowered    []byte    // the needle lowercased (ASCII folding)
+	limit      int       // how many sessions to return at most
+	perSession int       // how many hits per session at most
+	since      time.Time // only search sessions updated after this; zero means no limit
 }
 
-// searchableSource 数据源可以自己实现内容搜索。
-// 没实现的走通用路径：扫会话文件（绝大多数源都是一个会话一个 jsonl）。
+// searchableSource lets a source implement content search itself.
+// Anything that does not falls back to the generic path: scan the session file (nearly
+// every source is one jsonl per session).
 type searchableSource interface {
 	Search(r record, q searchQuery) []map[string]any
 }
 
-// searchOutcome 一次搜索的结果与规模。
-// scanned / matched 分开报：截断到 limit 之后，用户得知道「还有多少没给你」。
+// searchOutcome is one search's results and its scale.
+// scanned and matched are reported separately: once results are truncated to limit, the
+// caller still needs to know how much was left out.
 type searchOutcome struct {
 	results []map[string]any
-	scanned int // 实际扫过的会话数
-	matched int // 有命中的会话数，可能多于 len(results)
+	scanned int // sessions actually scanned
+	matched int // sessions with a hit, possibly more than len(results)
 }
 
-// search 在所有启用的数据源里搜内容，按会话更新时间倒序返回。
+// search looks through every enabled source, newest session first.
 func (a *SessionQueryAPI) search(q searchQuery) searchOutcome {
 	type candidate struct {
 		source SessionSource
@@ -63,7 +68,7 @@ func (a *SessionQueryAPI) search(q searchQuery) searchOutcome {
 			all = append(all, candidate{source: source, rec: rec})
 		}
 	}
-	// 新的排前面：截断到 limit 时留下的是最近的
+	// Newest first, so truncating at limit keeps the most recent
 	sort.SliceStable(all, func(i, j int) bool { return all[i].rec.newerThan(all[j].rec) })
 
 	hits := make([][]map[string]any, len(all))
@@ -80,7 +85,7 @@ func (a *SessionQueryAPI) search(q searchQuery) searchOutcome {
 				defer wg.Done()
 				for i := range jobs {
 					c := all[i]
-					hits[i] = safeParse(c.source.Mode(), "搜索", func() []map[string]any {
+					hits[i] = safeParse(c.source.Mode(), "search results", func() []map[string]any {
 						return searchOne(c.source, c.rec, q)
 					})
 				}
@@ -100,7 +105,7 @@ func (a *SessionQueryAPI) search(q searchQuery) searchOutcome {
 		}
 		out.matched++
 		if len(out.results) >= q.limit {
-			continue // 还要继续数 matched，好告诉用户被截了多少
+			continue // keep counting matched so the caller learns how much was cut
 		}
 		item := all[i].rec.public()
 		item["matches"] = matches
@@ -110,7 +115,8 @@ func (a *SessionQueryAPI) search(q searchQuery) searchOutcome {
 	return out
 }
 
-// searchOne 在一个会话里找。数据源自己实现了就用它的，否则扫会话文件。
+// searchOne searches inside one session, using the source's own implementation when it
+// has one and scanning the session file otherwise.
 func searchOne(source SessionSource, rec record, q searchQuery) []map[string]any {
 	if s, ok := source.(searchableSource); ok {
 		return s.Search(rec, q)
@@ -118,13 +124,13 @@ func searchOne(source SessionSource, rec record, q searchQuery) []map[string]any
 	return searchFile(rec.str("file"), q)
 }
 
-// searchFile 扫一个 jsonl 会话文件。
+// searchFile scans one jsonl session file.
 func searchFile(path string, q searchQuery) []map[string]any {
 	if path == "" || len(q.lowered) == 0 {
 		return nil
 	}
 	var hits []map[string]any
-	var lower []byte // 复用，避免每行都分配
+	var lower []byte // reused so each line costs no allocation
 	eachJSONLLine(path, func(line []byte) bool {
 		lower = appendLowerASCII(lower[:0], line)
 		if !bytes.Contains(lower, q.lowered) {
@@ -138,7 +144,8 @@ func searchFile(path string, q searchQuery) []map[string]any {
 	return hits
 }
 
-// buildHit 把命中的那一行变成一条结果；命中只落在字段名或转义序列里时返回 nil。
+// buildHit turns a matching line into a result; it returns nil when the match landed
+// only in a field name or an escape sequence.
 func buildHit(line []byte, q searchQuery) map[string]any {
 	var obj map[string]any
 	if json.Unmarshal(line, &obj) != nil || obj == nil {
@@ -155,8 +162,9 @@ func buildHit(line []byte, q searchQuery) map[string]any {
 	}
 }
 
-// textFieldOrder 正文最可能待的字段，按这个顺序先找——
-// map 遍历在 Go 里是乱序的，不定个顺序的话同一个查询每次给出的片段都可能不一样。
+// textFieldOrder lists the fields body text most likely lives in, searched in this order.
+// Go map iteration is randomised, so without a fixed order the same query could return a
+// different snippet on every run.
 var textFieldOrder = []string{"text", "content", "thinking", "reasoning", "message", "payload"}
 
 func findMatchingText(v any, needleLower string, depth int) (string, bool) {
@@ -186,7 +194,7 @@ func findMatchingText(v any, needleLower string, depth int) (string, bool) {
 		for key := range t {
 			keys = append(keys, key)
 		}
-		sort.Strings(keys) // 其余字段按键名排序，保证结果稳定
+		sort.Strings(keys) // remaining fields go in key order so results stay stable
 		for _, key := range keys {
 			if s, ok := findMatchingText(t[key], needleLower, depth+1); ok {
 				return s, true
@@ -196,7 +204,7 @@ func findMatchingText(v any, needleLower string, depth int) (string, bool) {
 	return "", false
 }
 
-// hitRole 尽力取出这条命中的角色（各源放的位置不一样）
+// hitRole does its best to recover the role of a hit (sources put it in different places)
 func hitRole(obj map[string]any) string {
 	if role := strOr(obj["role"], ""); role != "" {
 		return role
@@ -211,8 +219,9 @@ func hitRole(obj map[string]any) string {
 	return strOr(obj["type"], "")
 }
 
-// appendLowerASCII 把 src 里的 A-Z 折成小写追加到 dst。
-// 按字节处理，UTF-8 的多字节序列（首字节 >= 0x80）原样穿过，中文本来也没有大小写。
+// appendLowerASCII appends src to dst with A-Z folded to lowercase.
+// It works byte by byte, so UTF-8 multi-byte sequences (lead byte >= 0x80) pass through
+// untouched — scripts that have no case are unaffected.
 func appendLowerASCII(dst, src []byte) []byte {
 	for _, c := range src {
 		if 'A' <= c && c <= 'Z' {
@@ -223,8 +232,9 @@ func appendLowerASCII(dst, src []byte) []byte {
 	return dst
 }
 
-// indexFold 大小写无关地找 needleLower（needleLower 必须已经是小写），
-// 找不到返回 -1。不预先复制整个 s，省掉长行上的一次分配。
+// indexFold finds needleLower case-insensitively (needleLower must already be lowercase)
+// and returns -1 when absent. It does not copy all of s first, saving an allocation on
+// long lines.
 func indexFold(s, needleLower string) int {
 	n := len(needleLower)
 	if n == 0 {
@@ -249,14 +259,16 @@ func indexFold(s, needleLower string) int {
 	return -1
 }
 
-// snippetAround 截出命中处前后各 radius 个字符，两头有省略时加标记。
+// snippetAround cuts radius characters either side of the hit, marking each end it had
+// to trim.
 func snippetAround(text, needleLower string, radius int) string {
 	idx := indexFold(text, needleLower)
 	if idx < 0 {
 		return truncate(text, radius*2, "…")
 	}
 
-	// 先按字节开一个宽窗（UTF-8 最多 4 字节一个字符），再收到字符数
+	// Open a generous byte window first (UTF-8 is at most 4 bytes per character), then
+	// narrow it down to a character count
 	lo, hi := idx-radius*4, idx+len(needleLower)+radius*4
 	if lo < 0 {
 		lo = 0
@@ -264,7 +276,7 @@ func snippetAround(text, needleLower string, radius int) string {
 	if hi > len(text) {
 		hi = len(text)
 	}
-	for lo > 0 && !utf8.RuneStart(text[lo]) { // 对齐到字符边界
+	for lo > 0 && !utf8.RuneStart(text[lo]) { // align to a character boundary
 		lo--
 	}
 	for hi < len(text) && !utf8.RuneStart(text[hi]) {
@@ -283,7 +295,7 @@ func snippetAround(text, needleLower string, radius int) string {
 	return out
 }
 
-// trimRunesFromLeft 只保留末尾 n 个字符
+// trimRunesFromLeft keeps only the last n characters
 func trimRunesFromLeft(s string, n int) string {
 	if utf8.RuneCountInString(s) <= n {
 		return s
@@ -298,7 +310,7 @@ func trimRunesFromLeft(s string, n int) string {
 	return ""
 }
 
-// trimRunesFromRight 只保留开头 n 个字符
+// trimRunesFromRight keeps only the first n characters
 func trimRunesFromRight(s string, n int) string {
 	count := 0
 	for i := range s {

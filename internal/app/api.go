@@ -12,11 +12,12 @@ import (
 	"time"
 )
 
-// SessionQueryAPI 把请求分发到各个数据源适配器。
+// SessionQueryAPI dispatches requests to the individual source adapters.
 //
-// 会话列表按数据源做短 TTL 缓存（默认 2 秒，--cache-ttl 可调，0 = 不缓存）：
-// 查找会话、列表都用它，所以一次请求不必把所有会话文件重新扫一遍。
-// 消息与最终结果始终直接读文件，缓存只影响「有哪些会话」这层元数据。
+// Session lists are cached per source with a short TTL (2 seconds by default, tunable
+// with --cache-ttl, 0 disables it). Both lookup and listing go through it, so a single
+// request never has to rescan every session file. Messages and final results always read
+// from disk; the cache only covers the "which sessions exist" layer of metadata.
 type SessionQueryAPI struct {
 	sources  []SessionSource
 	cacheTTL time.Duration
@@ -25,10 +26,11 @@ type SessionQueryAPI struct {
 	cache map[string]*cachedRecords
 }
 
-// cachedRecords 一个数据源的列表缓存。
+// cachedRecords is one source's list cache.
 //
-// scan 保证同一数据源同一时刻只有一次扫描：缓存刚过期时若干请求同时打进来，
-// 各扫一遍目录是纯浪费（cache stampede）——现在是一个去扫、其余等它的结果。
+// scan guarantees at most one scan per source at a time. When the cache has just expired
+// and several requests arrive together, having each rescan the directory is pure waste
+// (a cache stampede) — now one scans and the rest wait for its result.
 type cachedRecords struct {
 	scan    sync.Mutex
 	at      time.Time
@@ -46,7 +48,7 @@ func newSessionQueryAPI(sources []SessionSource, cacheTTLSeconds float64) *Sessi
 	}
 }
 
-// recordsOf 某个数据源的会话列表（带 TTL 缓存）
+// recordsOf returns one source's session list (TTL cached)
 func (a *SessionQueryAPI) recordsOf(source SessionSource) []record {
 	if a.cacheTTL <= 0 {
 		return safeList(source)
@@ -70,27 +72,28 @@ func (a *SessionQueryAPI) recordsOf(source SessionSource) []record {
 	return entry.records
 }
 
-// safeList 单个数据源出错时不拖垮整个列表
+// safeList keeps one failing source from taking down the whole list
 func safeList(source SessionSource) (out []record) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			fmt.Fprintf(os.Stderr, "[WARN] %s 列出会话失败: %v\n", source.Mode(), rec)
+			fmt.Fprintf(os.Stderr, "[WARN] %s failed to list sessions: %v\n", source.Mode(), rec)
 			out = nil
 		}
 	}()
 	return source.List()
 }
 
-// listSessions 多源合并后的会话列表，以及一个弱校验值（ETag 用）。
+// listSessions returns the merged session list plus a weak validator (used as the ETag).
 //
-// 页面每 10 秒轮询一次，绝大多数时候列表根本没变——带上 ETag 之后
-// 这些轮询在 304 就结束了，不必每次把整个列表再序列化、再传一遍。
+// The web page polls every 10 seconds and the list has almost always not changed. With an
+// ETag those polls end at a 304, instead of serialising and transferring the entire list
+// again every time.
 func (a *SessionQueryAPI) listSessions() ([]map[string]any, string) {
 	all := []record{}
 	for _, source := range a.sources {
 		all = append(all, a.recordsOf(source)...)
 	}
-	// 按更新时间倒序；相等时保持数据源顺序（稳定排序）
+	// Newest update time first; equal times keep source order (stable sort)
 	sort.SliceStable(all, func(i, j int) bool { return all[i].newerThan(all[j]) })
 
 	out := make([]map[string]any, 0, len(all))
@@ -100,7 +103,8 @@ func (a *SessionQueryAPI) listSessions() ([]map[string]any, string) {
 	return out, listVersion(all)
 }
 
-// listVersion 列表的弱校验值：成员、更新时间、状态任一变化都会让它变。
+// listVersion is the list's weak validator: membership, update time or status changing
+// all change it.
 func listVersion(records []record) string {
 	h := fnv.New64a()
 	for _, r := range records {
@@ -113,7 +117,8 @@ func listVersion(records []record) string {
 	return `W/"` + strconv.FormatUint(h.Sum64(), 16) + `"`
 }
 
-// findSession 在所有启用的数据源里找最佳匹配（精确优先，跨源不互相遮蔽）
+// findSession picks the best match across every enabled source (exact hits win, and no
+// source shadows another)
 func (a *SessionQueryAPI) findSession(pattern string) (SessionSource, record, bool) {
 	pattern = strings.TrimSpace(pattern)
 	if strings.HasPrefix(pattern, "Run: ") {
@@ -155,12 +160,14 @@ func (a *SessionQueryAPI) getSession(pattern string) (map[string]any, bool) {
 	return item.public(), true
 }
 
-// safeParse 单个会话解析炸了不至于把请求变成 500：记一笔，按「没解析出来」处理。
-// 会话文件是外部写的，格式随时可能变——messages 和 final 都走这层。
+// safeParse keeps one session's parse blowing up from turning the request into a 500:
+// log it and treat the result as "nothing parsed". Session files are written by other
+// programs and their format can change at any time — messages and final both go through
+// this.
 func safeParse[T any](mode, what string, parse func() T) (out T) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			fmt.Fprintf(os.Stderr, "[WARN] %s 解析%s失败: %v\n", mode, what, rec)
+			fmt.Fprintf(os.Stderr, "[WARN] %s failed to parse %s: %v\n", mode, what, rec)
 			var zero T
 			out = zero
 		}
@@ -173,7 +180,7 @@ func (a *SessionQueryAPI) getMessages(pattern string, q messageQuery) ([]map[str
 	if !ok {
 		return nil, false
 	}
-	messages := safeParse(source.Mode(), "消息", func() []map[string]any {
+	messages := safeParse(source.Mode(), "messages", func() []map[string]any {
 		return source.Messages(item, q)
 	})
 	if messages == nil {
@@ -188,7 +195,7 @@ func (a *SessionQueryAPI) getFinalMessage(pattern string) (map[string]any, bool)
 		return nil, false
 	}
 
-	result := safeParse(source.Mode(), "最终结果", func() map[string]any {
+	result := safeParse(source.Mode(), "the final result", func() map[string]any {
 		return source.Final(item)
 	})
 
@@ -209,11 +216,11 @@ func (a *SessionQueryAPI) getFinalMessage(pattern string) (map[string]any, bool)
 	return result, true
 }
 
-// listProjects 把会话按项目归拢。
+// listProjects groups sessions by project.
 //
-// 这是这个工具唯一能做、别的工具做不了的事：同一个仓库上，你用 Claude Code、
-// Codex、Gemini 分别干过什么，在这里是一个视图。
-// 注意 hermes / openclaw 没有 cwd 也没有 project，会落到 ungrouped 里。
+// This is the one thing this tool can do that the others cannot: what you did on a given
+// repository with Claude Code, Codex and Gemini, all in a single view.
+// Note that hermes / openclaw have neither cwd nor project and land in ungrouped.
 func (a *SessionQueryAPI) listProjects() ([]map[string]any, int) {
 	type bucket struct {
 		sessions int
@@ -264,7 +271,7 @@ func (a *SessionQueryAPI) listProjects() ([]map[string]any, int) {
 			"isActive":      !b.latest.sortAt.IsZero() && time.Since(b.latest.sortAt) < activeWindow,
 		})
 	}
-	// 最近动过的项目排前面
+	// Most recently touched projects first
 	sort.SliceStable(out, func(i, j int) bool {
 		return toStr(out[i]["updatedAt"]) > toStr(out[j]["updatedAt"])
 	})

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Codex：~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl
+// Codex: ~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl
 type CodexSource struct {
 	root  string
 	cache *fileRecordCache
@@ -29,24 +29,30 @@ func (s *CodexSource) files() []string {
 	return files
 }
 
-// codexHeadLines 找元数据行时最多往下读几行（防御性上限，正常第一行就是）
+// codexHeadLines caps how far the metadata scan goes (a defensive backstop; normally
+// the very first line is the one)
 const codexHeadLines = 50
 
-// codexSalvageKeys 没有 session_meta 时，可以从别的行零散捡回来的字段。
+// codexSalvageKeys are the fields that can be picked up piecemeal from other rows when
+// there is no session_meta.
 //
-// 实测一个真实 rollout 的行类型分布：session_meta 带全套，turn_context 只带 cwd，
-// token_usage_record 只带 session_id——它们是互补的，能凑一点是一点。
+// Measured against a real rollout: session_meta carries the full set, turn_context only
+// cwd, token_usage_record only session_id — they complement each other, so salvaging
+// what is available is worth it.
 //
-// 注意这里**没有裸 `id`**：response_item（消息行）的 payload 带 id = "msg_…"，
-// 顺手捡的话就会把消息 ID 当成会话 ID 报出去，和 Pi 踩过的是同一个坑。
+// Note there is no bare `id` here. A response_item (message row) payload carries
+// id = "msg_...", and picking that up would report a message ID as the session ID —
+// exactly the trap Pi fell into.
 var codexSalvageKeys = []string{"session_id", "cwd", "cli_version"}
 
-// List 找元数据行；文件没变过就直接用缓存（见 fileRecordCache）
+// List finds the metadata row; unchanged files come straight from the cache
+// (see fileRecordCache)
 func (s *CodexSource) List() []record {
 	return s.cache.records(s.files(), func(path, modISO string) record {
-		// 原先只读第一行，首行不是元数据（被截断、或上游加了前导行）就全丢。
-		// 现在：session_meta 是权威且完整的那一行，拿到就停；找不到才退而求其次，
-		// 从后面的行里把认得出来的字段逐个补上。
+		// This used to read only the first line, losing everything when that line was not
+		// the metadata (truncated file, or a new preamble row upstream). Now: session_meta
+		// is the authoritative and complete row, so stop as soon as it appears; only when
+		// it never does fall back to salvaging recognisable fields from later rows.
 		payload := map[string]any{}
 		seen := 0
 		eachJSONL(path, func(obj map[string]any) bool {
@@ -64,7 +70,7 @@ func (s *CodexSource) List() []record {
 			return seen < codexHeadLines
 		})
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		// 用内容里最后一条记录的时间，而不是文件 mtime（见 updatedAtOf）
+		// Use the time on the last record in the file, not the file's mtime (see updatedAtOf)
 		updated := updatedAtOf(path, modISO)
 		return newRecord(map[string]any{
 			"source":     "codex",
@@ -96,7 +102,7 @@ func (s *CodexSource) Messages(r record, q messageQuery) []map[string]any {
 			return true
 		}
 		role := strOr(payload["role"], "unknown")
-		if role == "developer" { // 系统拼装的指令，不算对话
+		if role == "developer" { // machine-assembled instructions, not conversation
 			return true
 		}
 		parts := []map[string]any{}
@@ -124,7 +130,7 @@ func (s *CodexSource) Final(r record) map[string]any {
 	if path == "" {
 		return nil
 	}
-	// 只关心 type / payload.type / payload.role（以及用量那一行的小对象）
+	// Only type / payload.type / payload.role matter (plus the small usage object)
 	var rawLast []byte
 	usage := map[string]any{}
 	count := 0

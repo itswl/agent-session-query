@@ -29,14 +29,41 @@ func (s *CodexSource) files() []string {
 	return files
 }
 
-// List 只读首行元数据；文件没变过就直接用缓存（见 fileRecordCache）
+// codexHeadLines 找元数据行时最多往下读几行（防御性上限，正常第一行就是）
+const codexHeadLines = 50
+
+// codexMeta 判断一行是不是会话元数据，是就返回它的 payload。
+//
+// 认两种：显式的 type=session_meta，或者 payload 里带着只有元数据才有的字段。
+// 放宽一点是有意的——本机没有 Codex 数据可实测，只认类型名的话，哪天上游改了名字
+// 就会静默退化。反过来不会误判：消息行的 payload 是 type=message + role + content，
+// 既没有 session_id 也没有 cwd。
+func codexMeta(obj map[string]any) (map[string]any, bool) {
+	payload := getMap(obj, "payload")
+	if obj["type"] == "session_meta" {
+		return payload, true
+	}
+	if truthy(payload["session_id"]) || truthy(payload["cwd"]) {
+		return payload, true
+	}
+	return nil, false
+}
+
+// List 找元数据行；文件没变过就直接用缓存（见 fileRecordCache）
 func (s *CodexSource) List() []record {
 	return s.cache.records(s.files(), func(path, modISO string) record {
-		head := readJSONL(path, 1)
+		// 原先只读第一行。首行不是元数据（被截断、或上游加了前导行）就全丢，
+		// 而且有可能从别的行里捡到同名字段——和 Pi 踩到的是同一类问题。
 		payload := map[string]any{}
-		if len(head) > 0 {
-			payload = getMap(head[0], "payload")
-		}
+		seen := 0
+		eachJSONL(path, func(obj map[string]any) bool {
+			if meta, ok := codexMeta(obj); ok {
+				payload = meta
+				return false
+			}
+			seen++
+			return seen < codexHeadLines
+		})
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		return newRecord(map[string]any{
 			"source":     "codex",

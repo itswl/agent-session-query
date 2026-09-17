@@ -29,20 +29,40 @@ func (s *PiSource) files() []string {
 	return files
 }
 
-// List 只读首行元数据；文件没变过就直接用缓存（见 fileRecordCache）
+// piHeadLines 找 session 行时最多往下读几行（防御性上限，正常第一行就是）
+const piHeadLines = 50
+
+// piSessionID 没有 session 行时的退路：文件名形如 <时间>_<uuid>，取最后一段。
+// 正常会话用不到——只有被截断或续写的文件才会缺 session 行。
+func piSessionID(stem string) string {
+	if i := strings.LastIndexByte(stem, '_'); i >= 0 && i+1 < len(stem) {
+		return stem[i+1:]
+	}
+	return stem
+}
+
+// List 找 session 行拿元数据；文件没变过就直接用缓存（见 fileRecordCache）
 func (s *PiSource) List() []record {
 	return s.cache.records(s.files(), func(path, modISO string) record {
-		head := readJSONL(path, 1)
+		// 必须认准 type=session 那一行。原先无条件拿第一行的 id——而 model_change
+		// 记录自己也有 id 字段，首行不是 session 时就会把事件 id 当成会话 id 报出去
+		// （本机实测真的踩到了：报了 "e74f2cff" 而不是文件名里的 uuid）。
 		meta := map[string]any{}
-		if len(head) > 0 {
-			meta = head[0]
-		}
+		seen := 0
+		eachJSONL(path, func(obj map[string]any) bool {
+			if obj["type"] == "session" {
+				meta = obj
+				return false
+			}
+			seen++
+			return seen < piHeadLines
+		})
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		return newRecord(map[string]any{
 			"source":    "pi",
 			"key":       path,
 			"shortKey":  stem,
-			"sessionId": strOr(meta["id"], stem),
+			"sessionId": strOr(meta["id"], piSessionID(stem)),
 			"file":      path,
 			"hasFile":   true,
 			"status":    "done",

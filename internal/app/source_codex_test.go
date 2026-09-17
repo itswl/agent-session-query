@@ -34,3 +34,36 @@ func TestCodexSource(t *testing.T) {
 		t.Fatalf("usage = %v", usage)
 	}
 }
+
+// TestCodexMetaNotFirstLine：元数据行不在首行时也要找得到，
+// 且不能把消息行误判成元数据（消息 payload 有 id 但没有 session_id / cwd）
+func TestCodexMetaNotFirstLine(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "2026", "09", "13", "rollout-x.jsonl"),
+		`{"type":"response_item","payload":{"type":"message","role":"user","id":"not-a-session","content":[{"text":"先出现的消息"}]}}`,
+		`{"type":"session_meta","payload":{"session_id":"codex-late","cwd":"/w/late","cli_version":"9.9"}}`,
+	)
+	list := newCodexSource(root).List()
+	if len(list) != 1 {
+		t.Fatalf("list = %v", list)
+	}
+	if got := list[0].str("sessionId"); got != "codex-late" {
+		t.Fatalf("sessionId = %q —— 不能拿消息行的 id", got)
+	}
+	if list[0].str("cwd") != "/w/late" || list[0].str("cliVersion") != "9.9" {
+		t.Fatalf("record = %v", list[0].fields)
+	}
+}
+
+// TestCodexMetaWithoutTypeName：上游若改了类型名，靠字段形状也要认得出来
+func TestCodexMetaWithoutTypeName(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "2026", "09", "13", "rollout-y.jsonl"),
+		`{"type":"turn_context","payload":{"session_id":"codex-shape","cwd":"/w/shape"}}`,
+		`{"type":"response_item","payload":{"type":"message","role":"user","id":"m1","content":[{"text":"hi"}]}}`,
+	)
+	list := newCodexSource(root).List()
+	if got := list[0].str("sessionId"); got != "codex-shape" {
+		t.Fatalf("sessionId = %q", got)
+	}
+}

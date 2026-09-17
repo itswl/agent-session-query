@@ -6,10 +6,29 @@
 
 - **Hermes**：`sessions.json` 是 `key → 记录` 的映射，会话内容在同目录的 `<session_id>.jsonl`；消息取 `role` 为 `user`/`assistant` 的行，`content` 是字符串，推理在 `reasoning`。**新版 Hermes 不写 `sessions.json` / jsonl，会话全部落在 `~/.hermes/state.db`**：库存在即启用该源，列表与消息直接查 `sessions` / `messages` 表（时间戳是 epoch 秒，格式化成 UTC；assistant 的 `reasoning` 作为 thinking；`platform` 取 `sessions.source`）；两处都有时按 sessionId 去重，jsonl 优先。没有 jsonl 的会话 `final` 也回退到 `state.db`（只读打开，取最后一条 `active=1` 且 `finish_reason=stop` 的助手消息，`message_count` 缺失时回退成实际条数）
 - **OpenClaw**：同上结构，字段名是 `sessionId`/`stopReason`；消息取 `type=message` 的行，`message.content` 是块数组（`text`/`thinking`/`toolCall`/`toolResult`），`stopReason` 可能在 `message` 里也可能在行顶层
-- **Pi**：行类型有 `session`（首行元数据）、`model_change`、`message`；消息取 `message` 行（`message.role` + `message.content` 块数组）
-- **Claude Code**：消息行是 `type=user`/`assistant`，内容在 `message.content`（`text`/`thinking`/`tool_use`/`tool_result` 块）；跳过 `isSidechain`（子代理）以及 `queue-operation`、`attachment`、`mode` 等非对话行
-- **Codex**：消息行是 `type=response_item` 且 `payload.type=message`；`payload.role` 为 `developer` 的行（系统拼装的指令）不计入；用量取自 `token_usage_record`
+- **Pi**：行类型有 `session`（元数据）、`model_change`、`message`；消息取 `message` 行（`message.role` + `message.content` 块数组）。
+  列表的元数据**必须认准 `type=session` 那一行**：`model_change` 记录自己也有 `id` 字段，只读第一行就会把事件 id
+  当成会话 id 报出去（本机实测踩到过）。完全没有 `session` 行时（被截断或续写的文件）退回文件名里的 uuid
+- **Claude Code**：消息行是 `type=user`/`assistant`，内容在 `message.content`（`text`/`thinking`/`tool_use`/`tool_result` 块）；跳过 `isSidechain`（子代理）以及 `queue-operation`、`attachment`、`mode` 等非对话行。
+  `cwd` 不在首行，前面有一串非对话行——本机 174 个真实会话的分布是第 2 行 1 个 / 第 3 行 123 / 第 4 行 30 / 第 5 行 19 / 第 6 行 1
+- **Codex**：消息行是 `type=response_item` 且 `payload.type=message`；`payload.role` 为 `developer` 的行（系统拼装的指令）不计入；用量取自 `token_usage_record`。
+  元数据行认 `type=session_meta`，或者 `payload` 里带 `session_id` / `cwd`——放宽是有意的，只认类型名的话上游改名就会静默退化；
+  反过来不会误判，消息行的 payload 只有 `type`/`role`/`content`
 - **Gemini CLI**：文件是追加日志——首行元数据（`sessionId`/`startTime`）、`{"$set": {...}}` 补丁行、以及消息行；消息取 `type=user`/`type=gemini` 的行，`content` 可能是数组（user）或字符串（gemini）。工具调用型会话里正文很稀：发起调用时 `content` 是空串、内容在 `toolCalls` 字段（→ `toolCall` 块，只带 name/args），执行结果由后续 user 行 `content` 数组里的 `functionResponse` 项回传（→ `toolResult` 块）；`thoughts` 字符串或 `[{subject, description}]` 数组都作为 thinking（数组取各条 description）
+
+### 元数据的定位：读到拿齐为止，且认准行类型
+
+三个文件型数据源（Claude / Pi / Codex）的列表元数据都不在固定位置，早期实现用的是固定窗口
+（Claude 前 5 行、Pi 和 Codex 只读第 1 行），两种翻车方式都实际发生过：
+
+- **读不到**——Claude 的 `cwd` 落在第 6 行，于是 `project` 为空、项目聚合把它算进 ungrouped，不报错
+- **读到错的**——Pi 首行是 `model_change` 时，那条记录自己也有 `id`，于是会话 ID 被报成事件 ID
+
+现在统一成两条：**扫到拿齐需要的字段就停**（上限 50 行只是防御性兜底，常见情况第 1–3 行就停，
+比固定窗口还少读），并且**认准行类型再取字段**，而不是「第一行有什么就用什么」。
+
+Gemini 不在此列：它的元数据确实就在首行，而本机 33 个文件里有 2 个压根没有元数据行
+（首行直接是消息），那是数据本身缺失，代码正确地退化成用文件名和 mtime。
 
 ## 性能
 

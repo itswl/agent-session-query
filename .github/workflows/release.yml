@@ -67,8 +67,19 @@ jobs:
             tar czf "agent-session-query-$GOOS-$GOARCH.tar.gz" "$binary"
           fi
 
+      # action-gh-release 不会自动拿 tag 的注释当发布说明（不给 body 就是空正文），
+      # 显式取出来。打 tag 时记得带 --cleanup=verbatim，否则 Markdown 的 ## 标题
+      # 会被 git 当成注释行剥掉。
+      - name: 取 tag 注释当发布说明
+        run: |
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "$GITHUB_REF_NAME" > release-notes.md
+          fi
+
       - uses: softprops/action-gh-release@v3
         with:
+          body_path: release-notes.md
           files: |
             agent-session-query-*.tar.gz
             agent-session-query-*.zip

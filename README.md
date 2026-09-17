@@ -213,6 +213,14 @@ gofmt -l .            # 格式检查
 go vet ./...
 ```
 
+发版：tag 的注释会被 [release.yml](.github/workflows/release.yml) 拿去当 Release 正文，
+所以要带 `--cleanup=verbatim`——否则 Markdown 的 `##` 标题会被 git 当成注释行剥掉：
+
+```bash
+git tag -a v0.3.0 --cleanup=verbatim -F notes.md
+git push origin v0.3.0
+```
+
 新增一种数据源：实现 `SessionSource` 接口（`Mode` / `Location` / `Exists` / `List` / `Messages` / `Final`），在 `buildSources()` 的 `factories` 里注册，再把模式名加进 `knownModes`——多源合并、匹配排序、`source` 标记都是框架层统一处理的。
 
 ## 许可

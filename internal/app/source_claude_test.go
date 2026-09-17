@@ -10,9 +10,9 @@ func TestClaudeSource(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "proj-x", "11111111-2222-3333-4444-555555555555.jsonl")
 	write(t, path,
-		`{"type":"user","uuid":"u1","sessionId":"cccc","cwd":"/home/imwl/proj","timestamp":"2026-09-14T07:14:06.596Z","message":{"role":"user","content":"写一句问候"}}`,
-		`{"type":"assistant","uuid":"a1","timestamp":"2026-09-14T07:14:07.000Z","isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"子代理"}]}}`,
-		`{"type":"assistant","uuid":"a2","timestamp":"2026-09-14T07:14:09.100Z","message":{"id":"msg_1","model":"claude-x","stop_reason":"end_turn","usage":{"input_tokens":5},"content":[{"type":"thinking","thinking":"想"},{"type":"text","text":"您好"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}`,
+		`{"type":"user","uuid":"u1","sessionId":"cccc","cwd":"/home/imwl/proj","timestamp":"2026-09-14T07:14:06.596Z","message":{"role":"user","content":"write a greeting"}}`,
+		`{"type":"assistant","uuid":"a1","timestamp":"2026-09-14T07:14:07.000Z","isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"subagent"}]}}`,
+		`{"type":"assistant","uuid":"a2","timestamp":"2026-09-14T07:14:09.100Z","message":{"id":"msg_1","model":"claude-x","stop_reason":"end_turn","usage":{"input_tokens":5},"content":[{"type":"thinking","thinking":"thinking"},{"type":"text","text":"hello there"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}`,
 		`{"type":"user","uuid":"u2","timestamp":"2026-09-14T07:14:10.100Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"file1"}]}]}}`,
 	)
 
@@ -23,7 +23,7 @@ func TestClaudeSource(t *testing.T) {
 	}
 
 	msgs := s.Messages(list[0], messageQuery{limit: 50})
-	if len(msgs) != 3 { // sidechain 那条不算
+	if len(msgs) != 3 { // the sidechain one does not count
 		t.Fatalf("messages = %v", msgs)
 	}
 	if msgs[0]["id"] != "u1" || msgs[0]["role"] != "user" {
@@ -35,7 +35,7 @@ func TestClaudeSource(t *testing.T) {
 	}
 
 	final := s.Final(list[0])
-	if final["isFinal"] != true || final["text"] != "您好" || final["thinking"] != "想" {
+	if final["isFinal"] != true || final["text"] != "hello there" || final["thinking"] != "thinking" {
 		t.Fatalf("final = %v", final)
 	}
 	if final["stopReason"] != "end_turn" || final["id"] != "msg_1" {
@@ -47,13 +47,14 @@ func TestClaudeSource(t *testing.T) {
 	}
 }
 
-// TestClaudeHeadMetadataBeyondFiveLines：cwd 不在首行，前面可能有一串
-// queue-operation 之类的非对话行。原先固定只读前 5 行，落在第 6 行开外就静默丢了
-// cwd —— 列表里 project 变空、项目聚合失效，还不报错。
+// TestClaudeHeadMetadataBeyondFiveLines: cwd is not on the first line, and a run of
+// non-conversation rows such as queue-operation can precede it. The original fixed 5-line
+// window silently dropped any cwd past line 6 — project went empty in the list, project
+// grouping broke, and nothing reported an error.
 func TestClaudeHeadMetadataBeyondFiveLines(t *testing.T) {
 	root := t.TempDir()
 	lines := []string{}
-	// 前 8 行都是没有 cwd 的前导行
+	// The first 8 lines are preamble rows without cwd
 	for i := 0; i < 8; i++ {
 		lines = append(lines, `{"type":"queue-operation","operation":"enqueue","sessionId":"late-sid"}`)
 	}
@@ -66,24 +67,25 @@ func TestClaudeHeadMetadataBeyondFiveLines(t *testing.T) {
 		t.Fatalf("list = %v", list)
 	}
 	if got := list[0].str("cwd"); got != "/deep/in/the/file" {
-		t.Fatalf("第 9 行的 cwd 没读到: %q", got)
+		t.Fatalf("the cwd on line 9 was not picked up: %q", got)
 	}
 	if got := list[0].str("sessionId"); got != "late-sid" {
 		t.Fatalf("sessionId = %q", got)
 	}
-	// project 是按 cwd 推的，丢了 cwd 就会落进 ungrouped
+	// project is derived from cwd, so losing cwd drops the session into ungrouped
 	if got := toStr(list[0].public()["project"]); got != "/deep/in/the/file" {
 		t.Fatalf("project = %q", got)
 	}
 }
 
-// TestClaudeHeadStopsEarly：拿齐 sessionId + cwd 就该停，不要把整个文件读完
+// TestClaudeHeadStopsEarly: stop as soon as sessionId and cwd are both in hand rather
+// than reading the whole file
 func TestClaudeHeadStopsEarly(t *testing.T) {
 	root := t.TempDir()
 	lines := []string{
 		`{"type":"user","uuid":"u1","sessionId":"early","cwd":"/w","timestamp":"t","message":{"role":"user","content":"hi"}}`,
 	}
-	// 后面跟一条超长的行：真把整个文件读完的话，这里会明显变慢
+	// Followed by one very long line: reading the whole file would be visibly slower here
 	lines = append(lines, `{"type":"assistant","uuid":"a1","message":{"role":"assistant","content":[{"type":"text","text":"`+strings.Repeat("x", 4_000_000)+`"}]}}`)
 	write(t, filepath.Join(root, "proj", "cccc-dddd.jsonl"), lines...)
 

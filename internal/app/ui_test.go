@@ -11,7 +11,7 @@ import (
 func TestUIRoutes(t *testing.T) {
 	srv, _ := newTestServer(t, "secret")
 
-	// 页面免认证：它本身不含数据
+	// The page needs no authentication: it holds no data itself
 	resp, err := http.Get(srv.URL + "/ui")
 	if err != nil {
 		t.Fatal(err)
@@ -21,17 +21,17 @@ func TestUIRoutes(t *testing.T) {
 		t.Fatalf("/ui = %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
 	if !strings.Contains(body, "/ui/app.js") || !strings.Contains(body, "/ui/style.css") {
-		t.Fatalf("/ui 没有引用静态资源: %s", body[:min(200, len(body))])
+		t.Fatalf("/ui does not reference its static assets: %s", body[:min(200, len(body))])
 	}
 
-	// /ui/ 等价
+	// /ui/ is equivalent
 	if resp, err := http.Get(srv.URL + "/ui/"); err != nil || resp.StatusCode != 200 {
 		t.Fatalf("/ui/ = %v %v", resp, err)
 	} else {
 		resp.Body.Close()
 	}
 
-	// 静态资源与 Content-Type
+	// Static assets and their Content-Type
 	for _, asset := range []struct{ path, wantType, wantText string }{
 		{"/ui/app.js", "javascript", "textContent"},
 		{"/ui/style.css", "text/css", "--bg"},
@@ -45,27 +45,28 @@ func TestUIRoutes(t *testing.T) {
 			t.Fatalf("%s = %d %s", asset.path, resp.StatusCode, resp.Header.Get("Content-Type"))
 		}
 		if !strings.Contains(content, asset.wantText) {
-			t.Fatalf("%s 内容不对", asset.path)
+			t.Fatalf("%s has the wrong content", asset.path)
 		}
 	}
 
-	// 不存在的资源
+	// A missing asset
 	if resp, err := http.Get(srv.URL + "/ui/nope.js"); err != nil || resp.StatusCode != 404 {
 		t.Fatalf("/ui/nope.js = %v %v", resp, err)
 	} else {
 		resp.Body.Close()
 	}
 
-	// 页面免认证不等于数据免认证
+	// An unauthenticated page does not mean unauthenticated data
 	if resp, err := http.Get(srv.URL + "/sessions"); err != nil || resp.StatusCode != 401 {
-		t.Fatalf("没有 token 取数据应当 401，得到 %v %v", resp, err)
+		t.Fatalf("fetching data without a token should be 401, got %v %v", resp, err)
 	} else {
 		resp.Body.Close()
 	}
 }
 
-// TestUIRendersWithoutHTMLInjection：会话内容是第三方文本（工具输出、网页正文），
-// 页面必须只用 textContent 渲染。这条规则钉在测试里，防止以后有人图快改成拼接。
+// TestUIRendersWithoutHTMLInjection: session content is text other programs wrote (tool
+// output, web page bodies), so the page must render exclusively through textContent. This
+// rule is pinned here so nobody later swaps in string concatenation for convenience.
 func TestUIRendersWithoutHTMLInjection(t *testing.T) {
 	sub, err := uiSub()
 	if err != nil {
@@ -79,7 +80,7 @@ func TestUIRendersWithoutHTMLInjection(t *testing.T) {
 		}
 		for _, bad := range forbidden {
 			if strings.Contains(string(content), bad) {
-				t.Fatalf("%s 里出现了 %s —— 会话内容必须用 textContent 渲染", name, bad)
+				t.Fatalf("%s contains %s; session content must render through textContent", name, bad)
 			}
 		}
 	}
@@ -103,8 +104,8 @@ func readBody(t *testing.T, resp *http.Response) string {
 	return string(buf)
 }
 
-// TestFaviconRoute：浏览器打开任何页面都会去根路径要一次 /favicon.ico，
-// 不接住的话每次访问都在日志里留一条 404（配了 token 时是 401）。
+// TestFaviconRoute: browsers request /favicon.ico from the root on any page, and leaving
+// it unhandled puts a 404 in the log on every visit (a 401 once a token is configured).
 func TestFaviconRoute(t *testing.T) {
 	srv, _ := newTestServer(t, "secret")
 
@@ -113,9 +114,9 @@ func TestFaviconRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	// 配了 token 也要免认证：图标里没有数据
+	// Unauthenticated even with a token configured: the icon holds no data
 	if resp.StatusCode != 200 {
-		t.Fatalf("/favicon.ico = %d，应当免认证返回 200", resp.StatusCode)
+		t.Fatalf("/favicon.ico = %d; should return 200 without authentication", resp.StatusCode)
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "image/x-icon" {
 		t.Fatalf("Content-Type = %q", ct)
@@ -125,11 +126,11 @@ func TestFaviconRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// ICO 头：保留位 0、类型 1、图像数量 > 0
+	// ICO header: reserved 0, type 1, image count > 0
 	if len(icon) < 6 || icon[0] != 0 || icon[1] != 0 || icon[2] != 1 || icon[3] != 0 {
-		t.Fatalf("不是合法的 ICO，前 6 字节 = %v", icon[:min(6, len(icon))])
+		t.Fatalf("not a valid ICO, first 6 bytes = %v", icon[:min(6, len(icon))])
 	}
 	if count := int(icon[4]) | int(icon[5])<<8; count == 0 {
-		t.Fatal("ICO 里一个图像都没有")
+		t.Fatal("the ICO contains no images at all")
 	}
 }

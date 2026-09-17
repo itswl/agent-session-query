@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// TestStripDaemonFlag：不摘掉 -d 的话，子进程会再 daemonize 一次，无限套娃
+// TestStripDaemonFlag: leave -d in and the child daemonises again, forever
 func TestStripDaemonFlag(t *testing.T) {
 	cases := []struct {
 		in, want []string
@@ -20,7 +20,7 @@ func TestStripDaemonFlag(t *testing.T) {
 		{[]string{"-d=true", "--port", "1"}, []string{"--port", "1"}},
 		{[]string{"--daemon=false"}, []string{}},
 		{[]string{"--port", "8080"}, []string{"--port", "8080"}},
-		// 值恰好叫 d 或 daemon 的不能误伤
+		// A value that happens to be d or daemon must not be caught
 		{[]string{"--mode", "d"}, []string{"--mode", "d"}},
 		{[]string{"--hook_token=-d"}, []string{"--hook_token=-d"}},
 		{[]string{"--log-file", "/tmp/daemon"}, []string{"--log-file", "/tmp/daemon"}},
@@ -32,7 +32,7 @@ func TestStripDaemonFlag(t *testing.T) {
 	}
 }
 
-// TestProbeAddr：绑在通配地址上时要连回环，不能去连 0.0.0.0
+// TestProbeAddr: bound to a wildcard address, the probe must dial loopback, not 0.0.0.0
 func TestProbeAddr(t *testing.T) {
 	cases := map[string]string{
 		"0.0.0.0":   "127.0.0.1:8080",
@@ -56,41 +56,41 @@ func TestWaitForListen(t *testing.T) {
 	defer ln.Close()
 
 	if err := waitForListen(ln.Addr().String(), time.Second); err != nil {
-		t.Fatalf("已经在监听却没探到: %v", err)
+		t.Fatalf("already listening but the probe missed it: %v", err)
 	}
 
-	// 关掉之后应当探不到，且要在超时内返回
+	// Once closed the probe must fail, and must return within the timeout
 	addr := ln.Addr().String()
 	ln.Close()
 	started := time.Now()
 	if err := waitForListen(addr, 300*time.Millisecond); err == nil {
-		t.Fatal("端口已关却探到了")
+		t.Fatal("the port is closed but the probe found it")
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
-		t.Fatalf("超时后拖了太久才返回: %v", elapsed)
+		t.Fatalf("took far too long to return after the timeout: %v", elapsed)
 	}
 }
 
 func TestDefaultLogPath(t *testing.T) {
-	// 文件名带端口：同时跑多个实例时日志不会串在一起
+	// The port is in the filename so concurrent instances do not interleave their logs
 	a, b := defaultLogPath(8080), defaultLogPath(9090)
 	if a == b {
-		t.Fatalf("不同端口应当是不同的日志文件: %s", a)
+		t.Fatalf("different ports should mean different log files: %s", a)
 	}
 	if !strings.Contains(filepath.Base(a), "8080") {
-		t.Fatalf("日志文件名里应当带端口: %s", a)
+		t.Fatalf("the log filename should carry the port: %s", a)
 	}
 }
 
 func TestTailFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "log")
-	if err := os.WriteFile(path, []byte(strings.Repeat("x", 100)+"\n最后一行\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", 100)+"\nlast line\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := tailFile(path, 40); !strings.Contains(got, "最后一行") {
-		t.Fatalf("应当取到末尾: %q", got)
+	if got := tailFile(path, 40); !strings.Contains(got, "last line") {
+		t.Fatalf("should have read the tail: %q", got)
 	}
 	if got := tailFile(filepath.Join(t.TempDir(), "nope"), 40); got != "" {
-		t.Fatalf("文件不存在应当返回空: %q", got)
+		t.Fatalf("a missing file should yield the empty string: %q", got)
 	}
 }

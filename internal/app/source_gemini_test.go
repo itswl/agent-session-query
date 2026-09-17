@@ -10,11 +10,12 @@ func TestGeminiSource(t *testing.T) {
 	path := filepath.Join(root, "projA", "chats", "session-2026-09-13T12-50-41.jsonl")
 	write(t, path,
 		`{"sessionId":"g-1","startTime":"2026-09-13T12:50:41Z","lastUpdated":"2026-09-13T12:55:00Z"}`,
-		`{"$set":{"messages":[{"type":"user","id":"gu1","timestamp":"t1","content":[{"text":"嗨"}]}]}}`,
-		`{"type":"gemini","id":"gg1","timestamp":"t2","model":"gemini-2.5","thoughts":"琢磨","tokens":{"input":3},"content":"你好"}`,
-		// 工具调用轮：content 是空串，内容在 toolCalls；thoughts 是数组（取 description）
-		`{"type":"gemini","id":"gg2","timestamp":"t3","model":"gemini-2.5","content":"","thoughts":[{"subject":"找文件","description":"先看 package.json"}],"toolCalls":[{"id":"c1","name":"read_file","args":{"file_path":"package.json"},"result":[{"functionResponse":{"id":"c1","name":"read_file","response":{"output":"..."}}}]}]}`,
-		// user 行回传工具结果
+		`{"$set":{"messages":[{"type":"user","id":"gu1","timestamp":"t1","content":[{"text":"hey"}]}]}}`,
+		`{"type":"gemini","id":"gg1","timestamp":"t2","model":"gemini-2.5","thoughts":"mulling","tokens":{"input":3},"content":"hello"}`,
+		// A tool-call turn: content is the empty string, the substance is in toolCalls, and
+		// thoughts is an array (its description is taken)
+		`{"type":"gemini","id":"gg2","timestamp":"t3","model":"gemini-2.5","content":"","thoughts":[{"subject":"locate the file","description":"check package.json first"}],"toolCalls":[{"id":"c1","name":"read_file","args":{"file_path":"package.json"},"result":[{"functionResponse":{"id":"c1","name":"read_file","response":{"output":"..."}}}]}]}`,
+		// The user row carries the tool result back
 		`{"type":"user","id":"gu2","timestamp":"t4","content":[{"functionResponse":{"id":"c1","name":"read_file","response":{"output":"{\"name\":\"larkin\"}"}}}]}`,
 	)
 
@@ -23,7 +24,7 @@ func TestGeminiSource(t *testing.T) {
 	if len(list) != 1 || list[0].str("sessionId") != "g-1" || list[0].str("project") != "projA" {
 		t.Fatalf("list = %v", list[0].fields)
 	}
-	if list[0].str("updatedAt") != "2026-09-13T12:55:00Z" { // 用元数据时间，不扫全文件
+	if list[0].str("updatedAt") != "2026-09-13T12:55:00Z" { // uses the metadata time, never scans the whole file
 		t.Fatalf("updatedAt = %v", list[0].str("updatedAt"))
 	}
 
@@ -34,15 +35,16 @@ func TestGeminiSource(t *testing.T) {
 	if msgs[1]["role"] != "assistant" {
 		t.Fatalf("msg1 = %v", msgs[1])
 	}
-	// thoughts 字符串作为 thinking 插在最前面
+	// a thoughts string becomes a leading thinking block
 	parts := msgs[1]["content"].([]map[string]any)
-	if parts[0]["type"] != "thinking" || parts[0]["content"] != "琢磨" {
+	if parts[0]["type"] != "thinking" || parts[0]["content"] != "mulling" {
 		t.Fatalf("parts = %v", parts)
 	}
 
-	// 工具调用轮：thinking（数组 thoughts）+ toolCall；不带 result（由下一条 user 行承载）
+	// Tool-call turn: thinking (from the thoughts array) + toolCall, with no result
+	// (the next user row carries that)
 	parts2 := msgs[2]["content"].([]map[string]any)
-	if len(parts2) != 2 || parts2[0]["type"] != "thinking" || parts2[0]["content"] != "先看 package.json" {
+	if len(parts2) != 2 || parts2[0]["type"] != "thinking" || parts2[0]["content"] != "check package.json first" {
 		t.Fatalf("parts2 = %v", parts2)
 	}
 	if parts2[1]["type"] != "toolCall" || parts2[1]["name"] != "read_file" {
@@ -52,7 +54,7 @@ func TestGeminiSource(t *testing.T) {
 		t.Fatalf("toolCall args = %v", args)
 	}
 
-	// 工具结果回传：functionResponse → toolResult
+	// Tool result coming back: functionResponse becomes toolResult
 	parts3 := msgs[3]["content"].([]map[string]any)
 	if len(parts3) != 1 || parts3[0]["type"] != "toolResult" || parts3[0]["toolName"] != "read_file" {
 		t.Fatalf("parts3 = %v", parts3)
@@ -65,7 +67,7 @@ func TestGeminiSource(t *testing.T) {
 	if final["stopReason"] != "stop" || final["isFinal"] != true {
 		t.Fatalf("final = %v", final)
 	}
-	if final["thinking"] != "先看 package.json" {
+	if final["thinking"] != "check package.json first" {
 		t.Fatalf("final thinking = %v", final["thinking"])
 	}
 	tcs := final["toolCalls"].([]any)

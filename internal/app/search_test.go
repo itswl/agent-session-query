@@ -14,8 +14,9 @@ func TestIndexFold(t *testing.T) {
 	}{
 		{"Hello World", "world", 6},
 		{"HELLO", "hello", 0},
-		{"nginx.conf", "NGINX", -1}, // needle 必须已经是小写，调用方负责
-		{"配置 Nginx 反代", "nginx", 7}, // 「配置 」是 7 个字节
+		{"nginx.conf", "NGINX", -1}, // the needle must already be lowercase; that is the caller's job
+		{"配置 Nginx 反代", "nginx", 7}, // deliberately non-ASCII: "配置 " is 7 bytes, so this
+		//                                pins the byte offset against multibyte text
 		{"abc", "", 0},
 		{"abc", "abcd", -1},
 	}
@@ -27,30 +28,32 @@ func TestIndexFold(t *testing.T) {
 }
 
 func TestSnippetAround(t *testing.T) {
-	// 命中在正中间：两头都该有省略号，且不能把 UTF-8 切碎
+	// The hit sits in the middle, so both ends need an ellipsis — and the snippet must not
+	// slice a UTF-8 sequence in half. These fixtures are deliberately non-ASCII: that is
+	// precisely what they test.
 	long := strings.Repeat("一二三四五", 60) + "关键词" + strings.Repeat("六七八九十", 60)
 	got := snippetAround(long, "关键词", 10)
 	if !strings.Contains(got, "关键词") {
-		t.Fatalf("片段里没有命中词: %q", got)
+		t.Fatalf("the snippet does not contain the needle: %q", got)
 	}
 	if !strings.HasPrefix(got, "…") || !strings.HasSuffix(got, "…") {
-		t.Fatalf("两头都被截了却没有省略标记: %q", got)
+		t.Fatalf("both ends were trimmed but carry no ellipsis: %q", got)
 	}
 	if !utf8Valid(got) {
-		t.Fatalf("片段把 UTF-8 切碎了: %q", got)
+		t.Fatalf("the snippet broke a UTF-8 sequence: %q", got)
 	}
 	if n := len([]rune(got)); n > 40 {
-		t.Fatalf("片段太长: %d 字符", n)
+		t.Fatalf("the snippet is too long: %d characters", n)
 	}
 
-	// 短文本原样返回，不加省略号
+	// Short text is returned as-is, with no ellipsis
 	if got := snippetAround("就这么短", "这么", 20); got != "就这么短" {
-		t.Fatalf("短文本 = %q", got)
+		t.Fatalf("short text = %q", got)
 	}
-	// 命中在开头：只有尾部该有省略号
+	// The hit is at the start, so only the tail should carry an ellipsis
 	head := snippetAround("开头命中"+strings.Repeat("填充", 100), "开头", 5)
 	if strings.HasPrefix(head, "…") || !strings.HasSuffix(head, "…") {
-		t.Fatalf("命中在开头时 = %q", head)
+		t.Fatalf("hit at the start = %q", head)
 	}
 }
 
@@ -64,21 +67,21 @@ func utf8Valid(s string) bool {
 }
 
 func TestFindMatchingTextPrefersBody(t *testing.T) {
-	// 命中同时出现在字段名和正文里时，要返回正文
+	// When the needle appears in both a field name and the body, return the body
 	obj := map[string]any{
-		"snippetish": "无关",
+		"snippetish": "unrelated",
 		"message": map[string]any{
 			"role":    "assistant",
-			"content": []any{map[string]any{"type": "text", "text": "改了 nginx 的超时"}},
+			"content": []any{map[string]any{"type": "text", "text": "changed the nginx timeout"}},
 		},
 	}
 	got, ok := findMatchingText(obj, "nginx", 0)
-	if !ok || got != "改了 nginx 的超时" {
+	if !ok || got != "changed the nginx timeout" {
 		t.Fatalf("findMatchingText = %q %v", got, ok)
 	}
-	// 只在键名里出现，不算命中
+	// Appearing only in a key name is not a match
 	if _, ok := findMatchingText(map[string]any{"nginx": 1}, "nginx", 0); ok {
-		t.Fatal("键名不该算命中")
+		t.Fatal("a key name must not count as a match")
 	}
 }
 
@@ -87,13 +90,13 @@ func newSearchServer(t *testing.T) *httptest.Server {
 	root := t.TempDir()
 	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_a.jsonl"),
 		`{"type":"session","id":"s-hit","cwd":"/w/a"}`,
-		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"帮我配一下 Nginx 反向代理"}]}}`,
-		`{"type":"message","id":"m2","message":{"role":"assistant","content":[{"type":"text","text":"nginx 的 proxy_pass 要这么写"}]}}`,
-		`{"type":"message","id":"m3","message":{"role":"assistant","content":[{"type":"text","text":"第三处 NGINX 大写"}]}}`,
+		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"help me set up an Nginx reverse proxy"}]}}`,
+		`{"type":"message","id":"m2","message":{"role":"assistant","content":[{"type":"text","text":"nginx proxy_pass goes like this"}]}}`,
+		`{"type":"message","id":"m3","message":{"role":"assistant","content":[{"type":"text","text":"a third NGINX, upper case"}]}}`,
 	)
 	write(t, filepath.Join(root, "p", "2026-01-01T00-00-01_b.jsonl"),
 		`{"type":"session","id":"s-miss","cwd":"/w/b"}`,
-		`{"type":"message","id":"n1","message":{"role":"user","content":[{"type":"text","text":"完全无关的内容"}]}}`,
+		`{"type":"message","id":"n1","message":{"role":"user","content":[{"type":"text","text":"something else entirely"}]}}`,
 	)
 	sources := []SessionSource{newPiSource(root)}
 	srv := httptest.NewServer(newAPIServer(serverOptions{
@@ -111,67 +114,67 @@ func TestHTTPSearch(t *testing.T) {
 		t.Fatalf("/search = %d", code)
 	}
 	if body["total"] != float64(1) || body["scanned"] != float64(2) {
-		t.Fatalf("应当扫 2 个会话、命中 1 个: %v", body)
+		t.Fatalf("should scan 2 sessions and match 1: %v", body)
 	}
 	hit := body["results"].([]any)[0].(map[string]any)
 	if hit["sessionId"] != "s-hit" {
-		t.Fatalf("命中的会话不对: %v", hit["sessionId"])
+		t.Fatalf("the wrong session matched: %v", hit["sessionId"])
 	}
-	// 大小写无关：三条都该命中（Nginx / nginx / NGINX）
+	// Case-insensitive: all three should match (Nginx / nginx / NGINX)
 	if hit["matchCount"] != float64(3) {
-		t.Fatalf("matchCount = %v，大小写应当无关", hit["matchCount"])
+		t.Fatalf("matchCount = %v; matching should be case-insensitive", hit["matchCount"])
 	}
 	matches := hit["matches"].([]any)
 	first := matches[0].(map[string]any)
 	if !strings.Contains(first["snippet"].(string), "Nginx") || first["role"] != "user" {
-		t.Fatalf("第一条命中 = %v", first)
+		t.Fatalf("first hit = %v", first)
 	}
 
-	// per_session 限制每个会话返回几条
+	// per_session caps how many hits each session returns
 	if _, body := get(t, srv.URL+"/search?q=nginx&per_session=1", ""); body["results"].([]any)[0].(map[string]any)["matchCount"] != float64(1) {
-		t.Fatalf("per_session=1 未生效: %v", body)
+		t.Fatalf("per_session=1 had no effect: %v", body)
 	}
-	// limit 限制返回几个会话，但 matched 仍报真实总数
+	// limit caps how many sessions come back, but matched still reports the real total
 	code, body = get(t, srv.URL+"/search?q=nginx&limit=0", "")
 	if body["total"] != float64(0) || body["matched"] != float64(1) || body["truncated"] != true {
-		t.Fatalf("limit 截断后应仍报 matched: %v", body)
+		t.Fatalf("matched should still be reported after limit truncates: %v", body)
 	}
-	// 搜不到
-	if _, body := get(t, srv.URL+"/search?q=绝不会出现的词", ""); body["total"] != float64(0) || body["truncated"] != false {
-		t.Fatalf("无命中 = %v", body)
+	// Nothing found
+	if _, body := get(t, srv.URL+"/search?q=averyunlikelyneedle", ""); body["total"] != float64(0) || body["truncated"] != false {
+		t.Fatalf("no match = %v", body)
 	}
-	// q 必填
+	// q is required
 	if code, _ := get(t, srv.URL+"/search", ""); code != 400 {
-		t.Fatalf("缺 q 应当 400，得到 %d", code)
+		t.Fatalf("a missing q should be 400, got %d", code)
 	}
 }
 
 func TestHTTPSearchNeedsAuth(t *testing.T) {
-	// /search 返回会话正文，必须和 /sessions 一样要认证
+	// /search returns session bodies, so like /sessions it must require authentication
 	srv, _ := newTestServer(t, "secret")
 	if code, _ := get(t, srv.URL+"/search?q=x", ""); code != 401 {
-		t.Fatalf("无 token 搜索应当 401，得到 %d", code)
+		t.Fatalf("searching without a token should be 401, got %d", code)
 	}
-	if code, _ := get(t, srv.URL+"/search?q=问题", "secret"); code != 200 {
-		t.Fatalf("带 token 搜索 = %d", code)
+	if code, _ := get(t, srv.URL+"/search?q=question", "secret"); code != 200 {
+		t.Fatalf("searching with a token = %d", code)
 	}
 }
 
 func TestParseSince(t *testing.T) {
 	for _, raw := range []string{"30d", "12h", "90m", "2026-09-01", "2026-09-01T10:00:00Z"} {
 		if _, err := parseSince(raw); err != nil {
-			t.Errorf("parseSince(%q) 报错: %v", raw, err)
+			t.Errorf("parseSince(%q) errored: %v", raw, err)
 		}
 	}
 	for _, raw := range []string{"zzz", "", "-5x"} {
 		if _, err := parseSince(raw); err == nil {
-			t.Errorf("parseSince(%q) 应当报错", raw)
+			t.Errorf("parseSince(%q) should have errored", raw)
 		}
 	}
 }
 
 func TestEscapeLike(t *testing.T) {
-	// 搜 "100%" 不该变成匹配任意串
+	// Searching for "100%" must not turn into matching anything
 	if got := escapeLike("100%"); got != `100\%` {
 		t.Fatalf("escapeLike = %q", got)
 	}

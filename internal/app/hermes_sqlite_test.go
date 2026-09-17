@@ -10,7 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// makeHermesDB 造一个与 Hermes 同形的 state.db
+// makeHermesDB builds a state.db shaped like Hermes's
 func makeHermesDB(t *testing.T, dbPath string, schema string, statements []string) {
 	t.Helper()
 	db, err := sql.Open("sqlite", sqliteURI(dbPath))
@@ -21,7 +21,7 @@ func makeHermesDB(t *testing.T, dbPath string, schema string, statements []strin
 
 	for _, stmt := range append([]string{schema}, statements...) {
 		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("执行 %q 失败: %v", stmt, err)
+			t.Fatalf("executing %q failed: %v", stmt, err)
 		}
 	}
 }
@@ -59,75 +59,78 @@ func TestHermesSQLiteFinal(t *testing.T) {
 			cache_write_tokens, reasoning_tokens, estimated_cost_usd)
 		 VALUES ('h-webhook', 12, 1500, 220, 30, 40, 7, 0.0123)`,
 		`INSERT INTO messages (id, session_id, role, content, finish_reason, reasoning, timestamp, active)
-		 VALUES ('m1', 'h-webhook', 'assistant', '先看的这条', 'stop', '推理一', '2026-09-13T10:00:00Z', 1)`,
+		 VALUES ('m1', 'h-webhook', 'assistant', 'the earlier one', 'stop', 'reasoning one', '2026-09-13T10:00:00Z', 1)`,
 		`INSERT INTO messages (id, session_id, role, content, finish_reason, reasoning, timestamp, active)
-		 VALUES ('m2', 'h-webhook', 'assistant', '最终答案', 'stop', '推理二', '2026-09-13T10:05:00Z', 1)`,
+		 VALUES ('m2', 'h-webhook', 'assistant', 'the final answer', 'stop', 'reasoning two', '2026-09-13T10:05:00Z', 1)`,
 		`INSERT INTO messages (id, session_id, role, content, finish_reason, reasoning, timestamp, active)
-		 VALUES ('m3', 'h-webhook', 'assistant', '被软删了', 'stop', '推理三', '2026-09-13T10:09:00Z', 0)`,
+		 VALUES ('m3', 'h-webhook', 'assistant', 'soft deleted', 'stop', 'reasoning three', '2026-09-13T10:09:00Z', 0)`,
 		`INSERT INTO messages (id, session_id, role, content, finish_reason, reasoning, timestamp, active)
-		 VALUES ('m4', 'h-webhook', 'user', '用户消息', NULL, NULL, '2026-09-13T09:59:00Z', 1)`,
+		 VALUES ('m4', 'h-webhook', 'user', 'a user message', NULL, NULL, '2026-09-13T09:59:00Z', 1)`,
 	})
 
 	result := hermesSQLiteFinal(dbPath, "hermes", "h-webhook", "done")
 	if result == nil {
-		t.Fatal("应当从 state.db 取到最终消息")
+		t.Fatal("the final message should have come from state.db")
 	}
-	if result["text"] != "最终答案" || result["thinking"] != "推理二" {
-		t.Fatalf("取到的不是最后一条（active=1 的）助手消息: %v", result)
+	if result["text"] != "the final answer" || result["thinking"] != "reasoning two" {
+		t.Fatalf("this is not the last active=1 assistant message: %v", result)
 	}
 	if result["isFinal"] != true || result["isProcessing"] != false || result["messageCount"] != int64(12) {
-		t.Fatalf("终态字段不对: %v", result)
+		t.Fatalf("the terminal-state fields are wrong: %v", result)
 	}
 	if result["stopReason"] != "stop" || result["source"] != "hermes" || result["timestamp"] != "2026-09-13T10:05:00Z" {
-		t.Fatalf("字段不对: %v", result)
+		t.Fatalf("wrong fields: %v", result)
 	}
 	usage := result["usage"].(map[string]any)
 	if usage["inputTokens"] != int64(1500) || usage["estimatedCostUsd"] != 0.0123 || usage["reasoningTokens"] != int64(7) {
-		t.Fatalf("usage 不对: %v", usage)
+		t.Fatalf("usage is wrong: %v", usage)
 	}
 
-	// 没在 sessions 表里登记时：usage 为空对象，message_count 回退成实际条数
+	// Not registered in the sessions table: usage is an empty object and message_count falls
+	// back to the real count
 	makeHermesDB(t, dbPath, "", []string{
 		`INSERT INTO messages (id, session_id, role, content, finish_reason, reasoning, timestamp, active)
-		 VALUES ('n1', 'h-count', 'assistant', '靠计数', 'stop', NULL, '2026-09-14T10:00:00Z', 1)`,
+		 VALUES ('n1', 'h-count', 'assistant', 'counted instead', 'stop', NULL, '2026-09-14T10:00:00Z', 1)`,
 		`INSERT INTO messages (id, session_id, role, content, finish_reason, reasoning, timestamp, active)
-		 VALUES ('n2', 'h-count', 'user', '提问', NULL, NULL, '2026-09-14T09:59:00Z', 1)`,
+		 VALUES ('n2', 'h-count', 'user', 'a question', NULL, NULL, '2026-09-14T09:59:00Z', 1)`,
 	})
 	second := hermesSQLiteFinal(dbPath, "hermes", "h-count", "done")
 	if second == nil || second["messageCount"] != int64(2) {
-		t.Fatalf("message_count 应回退成 2: %v", second)
+		t.Fatalf("message_count should fall back to 2: %v", second)
 	}
 	if len(second["usage"].(map[string]any)) != 0 {
-		t.Fatalf("没有 sessions 记录时 usage 应为空: %v", second["usage"])
+		t.Fatalf("with no sessions row, usage should be empty: %v", second["usage"])
 	}
 
-	// 没有 finish_reason=stop 的助手消息 → nil，交给上层兜底
+	// No assistant message with finish_reason=stop yields nil, leaving the fallback to the
+	// layer above
 	if got := hermesSQLiteFinal(dbPath, "hermes", "h-empty", "done"); got != nil {
-		t.Fatalf("查不到应当返回 nil: %v", got)
+		t.Fatalf("a miss should return nil: %v", got)
 	}
-	// 非 hermes 源、空 session id、库不存在，都不走这条路径
+	// A non-hermes source, an empty session id, and a missing database all skip this path
 	if got := hermesSQLiteFinal(dbPath, "openclaw", "h-webhook", "done"); got != nil {
-		t.Fatalf("openclaw 不应走 sqlite: %v", got)
+		t.Fatalf("openclaw must not go through sqlite: %v", got)
 	}
 	if got := hermesSQLiteFinal(filepath.Join(t.TempDir(), "nope.db"), "hermes", "h-webhook", "done"); got != nil {
-		t.Fatalf("库不存在时应返回 nil: %v", got)
+		t.Fatalf("a missing database should return nil: %v", got)
 	}
 	if got := hermesSQLiteFinal("", "hermes", "h-webhook", "done"); got != nil {
-		t.Fatalf("没配 state.db 路径时应返回 nil: %v", got)
+		t.Fatalf("no configured state.db path should return nil: %v", got)
 	}
 }
 
-// TestFinalUsesConfiguredDBPath：Final 走的必须是数据源自己配的 stateDB，
-// 不是从 $HOME 重推一份——两者不一致时会静默查错库。
+// TestFinalUsesConfiguredDBPath: Final has to use the stateDB the source was configured
+// with rather than re-deriving one from $HOME — when the two disagree it would silently
+// query the wrong database.
 func TestFinalUsesConfiguredDBPath(t *testing.T) {
 	elsewhere := t.TempDir()
 	dbPath := filepath.Join(elsewhere, "state.db")
 	makeHermesDB(t, dbPath, hermesSchema, []string{
 		`INSERT INTO messages (id, session_id, role, content, finish_reason, reasoning, timestamp, active)
-		 VALUES ('x1', 'h-elsewhere', 'assistant', '别处那个库里的答案', 'stop', NULL, '2026-09-13T10:09:00Z', 1)`,
+		 VALUES ('x1', 'h-elsewhere', 'assistant', 'the answer in the other database', 'stop', NULL, '2026-09-13T10:09:00Z', 1)`,
 	})
 
-	// home 下什么都没有：只有真的用了 def.stateDB 才查得到
+	// There is nothing under home, so only genuinely using def.stateDB can find it
 	setHome(t, t.TempDir())
 	def := hermesDef(defaultHome())
 	def.stateDB = dbPath
@@ -136,8 +139,8 @@ func TestFinalUsesConfiguredDBPath(t *testing.T) {
 	final := source.Final(newRecord(map[string]any{
 		"source": "hermes", "sessionId": "h-elsewhere", "status": "done",
 	}, ""))
-	if final["text"] != "别处那个库里的答案" {
-		t.Fatalf("没用配置里的 state.db: %v", final)
+	if final["text"] != "the answer in the other database" {
+		t.Fatalf("the configured state.db was not used: %v", final)
 	}
 }
 
@@ -149,7 +152,7 @@ func TestJsonMapUsesSQLiteWhenFileMissing(t *testing.T) {
 	)
 	makeHermesDB(t, dbPath, hermesSchema, []string{
 		`INSERT INTO messages (id, session_id, role, content, finish_reason, reasoning, timestamp, active)
-		 VALUES ('w1', 'h-talk', 'assistant', '只在 state.db 里的回答', 'stop', NULL, '2026-09-13T10:09:00Z', 1)`,
+		 VALUES ('w1', 'h-talk', 'assistant', 'an answer that exists only in state.db', 'stop', NULL, '2026-09-13T10:09:00Z', 1)`,
 	})
 
 	source := newJsonMapSource(hermesDef(defaultHome()))
@@ -158,37 +161,37 @@ func TestJsonMapUsesSQLiteWhenFileMissing(t *testing.T) {
 		t.Fatalf("list = %v", list)
 	}
 	final := source.Final(list[0])
-	if final["isFinal"] != true || final["text"] != "只在 state.db 里的回答" {
+	if final["isFinal"] != true || final["text"] != "an answer that exists only in state.db" {
 		raw, _ := json.Marshal(final)
-		t.Fatalf("final 应来自 state.db: %s", raw)
+		t.Fatalf("final should come from state.db: %s", raw)
 	}
 	if final["error"] != nil {
-		t.Fatalf("不该走兜底错误: %v", final)
+		t.Fatalf("this should not hit the error fallback: %v", final)
 	}
 }
 
-// 新版 Hermes 的形态：sessions.json / jsonl 都不存在，会话全部在 state.db 里
+// The newer Hermes shape: no sessions.json and no jsonl, every session lives in state.db
 func TestHermesSQLiteOnlySource(t *testing.T) {
 	dbPath := newHermesFixture(t)
 	makeHermesDB(t, dbPath, hermesSchema, []string{
 		`INSERT INTO sessions (id, session_key, display_name, source, model,
 			input_tokens, output_tokens, estimated_cost_usd, started_at, ended_at)
-		 VALUES ('20260814_002606_1a7908', NULL, '桌面会话', 'desktop', 'deepseek-v4-pro',
+		 VALUES ('20260814_002606_1a7908', NULL, 'desktop session', 'desktop', 'deepseek-v4-pro',
 			1500, 220, 0.0123, 1786638366.44, NULL)`,
 		`INSERT INTO messages (id, session_id, role, content, reasoning, timestamp, active)
-		 VALUES (1, '20260814_002606_1a7908', 'user', '你是什么模型？', NULL, 1786638379.3163, 1)`,
+		 VALUES (1, '20260814_002606_1a7908', 'user', 'which model are you?', NULL, 1786638379.3163, 1)`,
 		`INSERT INTO messages (id, session_id, role, content, finish_reason, reasoning, timestamp, active)
-		 VALUES (2, '20260814_002606_1a7908', 'assistant', '我是 Hermes', 'stop', '想一下', 1786638385.27674, 1)`,
+		 VALUES (2, '20260814_002606_1a7908', 'assistant', 'I am Hermes', 'stop', 'let me think', 1786638385.27674, 1)`,
 		`INSERT INTO messages (id, session_id, role, content, reasoning, timestamp, active)
-		 VALUES (3, '20260814_002606_1a7908', 'user', '被软删的', NULL, 1786713684.97493, 0)`,
+		 VALUES (3, '20260814_002606_1a7908', 'user', 'soft deleted', NULL, 1786713684.97493, 0)`,
 	})
 
 	source := newJsonMapSource(hermesDef(defaultHome()))
 	if !source.Exists() {
-		t.Fatal("state.db 存在时 hermes 源应启用")
+		t.Fatal("the hermes source should be enabled when state.db exists")
 	}
 	if source.Location() != dbPath {
-		t.Fatalf("location 应指向 state.db: %v", source.Location())
+		t.Fatalf("location should point at state.db: %v", source.Location())
 	}
 
 	list := source.List()
@@ -199,7 +202,7 @@ func TestHermesSQLiteOnlySource(t *testing.T) {
 	if r.str("sessionId") != "20260814_002606_1a7908" || r.str("key") != "20260814_002606_1a7908" {
 		t.Fatalf("record = %v", r.fields)
 	}
-	if r.str("platform") != "desktop" || r.str("model") != "deepseek-v4-pro" || r.str("displayName") != "桌面会话" {
+	if r.str("platform") != "desktop" || r.str("model") != "deepseek-v4-pro" || r.str("displayName") != "desktop session" {
 		t.Fatalf("record = %v", r.fields)
 	}
 	if r.get("totalTokens") != float64(1720) || r.get("estimatedCostUsd") != 0.0123 {
@@ -208,26 +211,26 @@ func TestHermesSQLiteOnlySource(t *testing.T) {
 	if r.get("hasFile") != false || r.get("file") != nil {
 		t.Fatalf("record = %v", r.fields)
 	}
-	// updatedAt 取最后一条 active 消息的时间（epoch 秒 → UTC ISO）
+	// updatedAt takes the time of the last active message (epoch seconds to UTC ISO)
 	if r.str("createdAt") != "2026-08-13T16:26:06" || r.str("updatedAt") != "2026-08-13T16:26:25" {
 		t.Fatalf("createdAt/updatedAt = %v / %v", r.str("createdAt"), r.str("updatedAt"))
 	}
 
 	msgs := source.Messages(r, messageQuery{limit: 50})
-	if len(msgs) != 2 { // active=0 的不算
+	if len(msgs) != 2 { // the active=0 one does not count
 		t.Fatalf("messages = %v", msgs)
 	}
 	if msgs[0]["role"] != "user" || msgs[0]["timestamp"] != "2026-08-13T16:26:19" {
 		t.Fatalf("msgs[0] = %v", msgs[0])
 	}
 	blocks := msgs[1]["content"].([]map[string]any)
-	if len(blocks) != 2 || blocks[0]["type"] != "thinking" || blocks[0]["content"] != "想一下" ||
-		blocks[1]["type"] != "text" || blocks[1]["content"] != "我是 Hermes" {
+	if len(blocks) != 2 || blocks[0]["type"] != "thinking" || blocks[0]["content"] != "let me think" ||
+		blocks[1]["type"] != "text" || blocks[1]["content"] != "I am Hermes" {
 		t.Fatalf("blocks = %v", blocks)
 	}
 
 	final := source.Final(r)
-	if final["isFinal"] != true || final["text"] != "我是 Hermes" || final["thinking"] != "想一下" {
+	if final["isFinal"] != true || final["text"] != "I am Hermes" || final["thinking"] != "let me think" {
 		t.Fatalf("final = %v", final)
 	}
 }

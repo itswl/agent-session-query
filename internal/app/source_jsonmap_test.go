@@ -10,11 +10,11 @@ func TestJsonMapOpenClaw(t *testing.T) {
 	dir := t.TempDir()
 	sessionFile := filepath.Join(dir, "oc-1.jsonl")
 	write(t, sessionFile,
-		`{"type":"message","id":"om1","timestamp":"2026-09-13T15:00:00Z","stopReason":"stop","message":{"role":"assistant","content":[{"type":"text","text":"完成"},{"type":"thinking","thinking":"推理"}]},"usage":{"input_tokens":11}}`,
+		`{"type":"message","id":"om1","timestamp":"2026-09-13T15:00:00Z","stopReason":"stop","message":{"role":"assistant","content":[{"type":"text","text":"done"},{"type":"thinking","thinking":"reasoning"}]},"usage":{"input_tokens":11}}`,
 	)
-	// 索引用 json.Marshal 生成，别把路径拼进字符串字面量：
-	// Windows 上 sessionFile 是 C:\Users\...，反斜杠在 JSON 里是非法转义，
-	// 整份 sessions.json 会被判成坏 JSON，列表直接空掉。
+	// Build the index with json.Marshal rather than concatenating the path into a string
+	// literal: on Windows sessionFile is C:\Users\..., backslashes are invalid JSON escapes,
+	// and the whole sessions.json would be rejected as malformed, emptying the list.
 	index, err := json.Marshal(map[string]any{
 		"agent:default:hook:alert:prometheus:b5123b01": map[string]any{
 			"sessionId":   "oc-1",
@@ -43,7 +43,7 @@ func TestJsonMapOpenClaw(t *testing.T) {
 	if list[0].str("shortKey") != "hook:alert:prometheus:b5123b01" {
 		t.Fatalf("shortKey = %v", list[0].str("shortKey"))
 	}
-	if list[0].str("updatedAt") != "2026-09-15 16:16:56" { // 毫秒时间戳 → UTC，空格分隔
+	if list[0].str("updatedAt") != "2026-09-15 16:16:56" { // millisecond epoch to UTC, space separated
 		t.Fatalf("updatedAt = %v", list[0].str("updatedAt"))
 	}
 	if list[0].get("runtimeMs") != float64(123) || list[0].get("totalTokens") != float64(9) {
@@ -54,14 +54,14 @@ func TestJsonMapOpenClaw(t *testing.T) {
 	}
 
 	final := s.Final(list[0])
-	if final["isFinal"] != true || final["text"] != "完成" || final["thinking"] != "推理" {
+	if final["isFinal"] != true || final["text"] != "done" || final["thinking"] != "reasoning" {
 		t.Fatalf("final = %v", final)
 	}
 	if final["stopReason"] != "stop" || final["messageCount"] != 1 {
 		t.Fatalf("final = %v", final)
 	}
 
-	// 文件不存在时：hasFile=false / file=null，final 返回带 error 的兜底
+	// With no file: hasFile=false, file=null, and final returns the fallback carrying error
 	write(t, filepath.Join(dir, "sessions.json"),
 		`{"k2":{"sessionId":"missing","updatedAt":0}}`,
 	)
@@ -78,10 +78,10 @@ func TestJsonMapOpenClaw(t *testing.T) {
 func TestJsonMapHermes(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "h-1.jsonl"),
-		`{"role":"assistant","id":"hm1","timestamp":"2026-09-13T10:00:00Z","finish_reason":"stop","content":"干完了","reasoning":"推理"}`,
+		`{"role":"assistant","id":"hm1","timestamp":"2026-09-13T10:00:00Z","finish_reason":"stop","content":"all finished","reasoning":"reasoning"}`,
 	)
 	write(t, filepath.Join(dir, "sessions.json"),
-		`{"hook:task:x":{"session_id":"h-1","updated_at":"2026-09-13T10:00:00Z","created_at":"2026-09-13T09:00:00Z","display_name":"演示","platform":"feishu","total_tokens":100,"estimated_cost_usd":0.01}}`,
+		`{"hook:task:x":{"session_id":"h-1","updated_at":"2026-09-13T10:00:00Z","created_at":"2026-09-13T09:00:00Z","display_name":"demo","platform":"feishu","total_tokens":100,"estimated_cost_usd":0.01}}`,
 	)
 
 	def := hermesDef(dir)
@@ -90,7 +90,7 @@ func TestJsonMapHermes(t *testing.T) {
 	s := newJsonMapSource(def)
 
 	list := s.List()
-	if len(list) != 1 || list[0].str("status") != "done" || list[0].str("displayName") != "演示" {
+	if len(list) != 1 || list[0].str("status") != "done" || list[0].str("displayName") != "demo" {
 		t.Fatalf("list = %v", list[0].fields)
 	}
 	msgs := s.Messages(list[0], messageQuery{limit: 50})
@@ -98,11 +98,11 @@ func TestJsonMapHermes(t *testing.T) {
 		t.Fatalf("messages = %v", msgs)
 	}
 	parts := msgs[0]["content"].([]map[string]any)
-	if parts[0]["type"] != "thinking" || parts[1]["content"] != "干完了" {
+	if parts[0]["type"] != "thinking" || parts[1]["content"] != "all finished" {
 		t.Fatalf("parts = %v", parts)
 	}
 	final := s.Final(list[0])
-	if final["text"] != "干完了" || final["thinking"] != "推理" || final["isFinal"] != true {
+	if final["text"] != "all finished" || final["thinking"] != "reasoning" || final["isFinal"] != true {
 		t.Fatalf("final = %v", final)
 	}
 }

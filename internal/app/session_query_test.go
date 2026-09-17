@@ -16,12 +16,12 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// 工具函数
+// Helpers
 // ---------------------------------------------------------------------------
 
-// setHome 把 home 目录指到临时目录。
-// Windows 上 os.UserHomeDir() 读的是 %USERPROFILE% 而不是 $HOME，
-// 两个都设，测试才真的被隔离在临时目录里。
+// setHome points the home directory at a temp directory.
+// os.UserHomeDir() reads %USERPROFILE% on Windows rather than $HOME, so both have to be
+// set for the test to be genuinely isolated there.
 func setHome(t *testing.T, dir string) {
 	t.Helper()
 	t.Setenv("HOME", dir)
@@ -39,13 +39,14 @@ func write(t *testing.T, path string, lines ...string) {
 }
 
 func TestTruncateRuneSafe(t *testing.T) {
-	// 1000 个汉字截 3 个：必须按码点，不能把 UTF-8 切碎
+	// Deliberately non-ASCII: truncation must count code points, not bytes, and must never
+	// slice a UTF-8 sequence in half
 	got := truncate(strings.Repeat("好", 10), 3, "...[truncated]")
 	if got != "好好好...[truncated]" {
 		t.Fatalf("truncate = %q", got)
 	}
 	if truncate("abc", 3, "!") != "abc" {
-		t.Fatal("长度刚好不应截断")
+		t.Fatal("an exact-length string should not be truncated")
 	}
 }
 
@@ -56,7 +57,7 @@ func TestContentText(t *testing.T) {
 	}{
 		{"abc", "abc"},
 		{map[string]any{"text": "t"}, "t"},
-		{map[string]any{"text": 1, "content": "c"}, "c"}, // text 不是字符串就继续找下一个键
+		{map[string]any{"text": 1, "content": "c"}, "c"}, // a non-string text moves on to the next key
 		{[]any{map[string]any{"text": "a"}, "b"}, "a\nb"},
 		{[]any{"a", ""}, "a"},
 		{42, ""},
@@ -69,17 +70,17 @@ func TestContentText(t *testing.T) {
 }
 
 func TestMatchRank(t *testing.T) {
-	// 小写形式在建记录时就算好了（record.lowerSID / lowerKey）
+	// The lowercased forms are computed when the record is built (record.lowerSID / lowerKey)
 	r := newRecord(map[string]any{"sessionId": "abc-def", "key": "/r/proj/abc-def.jsonl"}, "")
 	cases := []struct {
 		pattern string
 		want    int
 	}{
-		{"abc-def", 0},               // 精确 sessionId
-		{"/r/proj/abc-def.jsonl", 1}, // 精确 key
-		{"proj/abc-def.jsonl", 2},    // key 后缀
-		{"proj", 3},                  // key 子串
-		{"c-d", 3},                   // key 里也有：key 子串优先于 sessionId 子串
+		{"abc-def", 0},               // exact sessionId
+		{"/r/proj/abc-def.jsonl", 1}, // exact key
+		{"proj/abc-def.jsonl", 2},    // key suffix
+		{"proj", 3},                  // key substring
+		{"c-d", 3},                   // also in key: a key substring beats a sessionId substring
 		{"zzz", -1},
 	}
 	for _, c := range cases {
@@ -88,36 +89,37 @@ func TestMatchRank(t *testing.T) {
 		}
 	}
 
-	// key 里没有、只有 sessionId 里有 → 4
+	// Absent from key, present only in sessionId: rank 4
 	r2 := newRecord(map[string]any{"sessionId": "uniq-sid-9", "key": "/r/other/file.jsonl"}, "")
 	if got := r2.matchRank("sid-9"); got != 4 {
 		t.Errorf("matchRank(sid-9) = %d, want 4", got)
 	}
 
-	// 大小写不敏感：pattern 传进来时已经是小写的
+	// Case-insensitive: the pattern arrives already lowercased
 	upper := newRecord(map[string]any{"sessionId": "ABC-DEF", "key": "/R/P.jsonl"}, "")
 	if got := upper.matchRank("abc-def"); got != 0 {
-		t.Errorf("大小写不敏感匹配 = %d, want 0", got)
+		t.Errorf("case-insensitive match = %d, want 0", got)
 	}
 }
 
-// TestRecordSortAcrossFormats：跨源排序按解析出来的时间，不是字典序。
-// Gemini 写 RFC3339Nano、文件源用 mtime 派生的形态、OpenClaw 是 epoch 毫秒，
-// 只比字符串的话带时区偏移的那个会排到完全错误的位置。
+// TestRecordSortAcrossFormats: cross-source ordering goes by the parsed time, not by
+// lexicographic order. Gemini writes RFC3339Nano, file sources use the shape derived from
+// mtime, and OpenClaw uses epoch milliseconds — compare the strings and the one carrying a
+// timezone offset lands in completely the wrong place.
 func TestRecordSortAcrossFormats(t *testing.T) {
 	records := []record{
 		newRecord(map[string]any{"key": "mtime"}, "2026-09-14T03:16:50"),        // UTC
-		newRecord(map[string]any{"key": "offset"}, "2026-09-14T11:20:00+08:00"), // = 03:20 UTC，最新
+		newRecord(map[string]any{"key": "offset"}, "2026-09-14T11:20:00+08:00"), // = 03:20 UTC, the newest
 		newRecord(map[string]any{"key": "nano"}, "2026-09-14T03:16:50.601Z"),    //
 		newRecord(map[string]any{"key": "epochms"}, float64(1789197000000)),     // 2026-09-14T02:30 UTC
-		newRecord(map[string]any{"key": "bad"}, "看不懂的时间"),                       // 解析不出来 → 垫底
+		newRecord(map[string]any{"key": "bad"}, "not a time at all"),            // unparseable, sorts last
 	}
 	sort.SliceStable(records, func(i, j int) bool { return records[i].newerThan(records[j]) })
 
 	want := []string{"offset", "nano", "mtime", "epochms", "bad"}
 	for i, key := range want {
 		if got := records[i].str("key"); got != key {
-			t.Fatalf("第 %d 位 = %q, want %q（完整顺序 %v）", i, got, key, keysOf(records))
+			t.Fatalf("position %d = %q, want %q (full order %v)", i, got, key, keysOf(records))
 		}
 	}
 }
@@ -131,7 +133,8 @@ func keysOf(records []record) []string {
 }
 
 // ---------------------------------------------------------------------------
-// 查询层（数据源各自的测试在 source_*_test.go，SQLite 在 hermes_sqlite_test.go）
+// The query layer (each source has its own tests in source_*_test.go, SQLite in
+// hermes_sqlite_test.go)
 // ---------------------------------------------------------------------------
 
 func TestFindSessionPrecedence(t *testing.T) {
@@ -150,27 +153,27 @@ func TestFindSessionPrecedence(t *testing.T) {
 		newClaudeSource(claudeRoot),
 	}, 2)
 
-	// 两个源都能精确匹配同一个 sessionId 时，取数据源顺序在前的
+	// When both sources match the same sessionId exactly, the earlier source wins
 	source, rec, ok := api.findSession("shared-id")
 	if !ok || source.Mode() != "pi" || rec.str("sessionId") != "shared-id" {
 		t.Fatalf("find = %v %v %v", source, rec.fields, ok)
 	}
 
-	// 模糊命中不能盖过另一个源里的精确命中
+	// A fuzzy hit must not shadow an exact hit in another source
 	write(t, filepath.Join(claudeRoot, "c", "session-y.jsonl"),
 		`{"type":"user","uuid":"u","sessionId":"deadbeef-shared-id-x","timestamp":"t","message":{"role":"user","content":"hi"}}`,
 	)
 	source, rec, _ = api.findSession("shared-id")
 	if source.Mode() != "pi" {
-		t.Fatalf("精确命中应优先，得到 %s %v", source.Mode(), rec.fields)
+		t.Fatalf("the exact hit should win, got %s %v", source.Mode(), rec.fields)
 	}
 
-	// "Session: " 前缀会被剥掉
+	// The "Session: " prefix is stripped
 	if _, _, ok := api.findSession("Session: shared-id"); !ok {
-		t.Fatal("Session: 前缀未生效")
+		t.Fatal("the Session: prefix had no effect")
 	}
 	if _, _, ok := api.findSession("   "); ok {
-		t.Fatal("空 pattern 不应命中")
+		t.Fatal("an empty pattern should match nothing")
 	}
 }
 
@@ -190,35 +193,35 @@ func TestListSortAndCache(t *testing.T) {
 		t.Fatalf("sessions = %v", sessions)
 	}
 	if etag == "" {
-		t.Fatal("应当有 ETag")
+		t.Fatal("there should be an ETag")
 	}
-	// 缓存生效期内新增文件不会出现；TTL=0 时立即可见
+	// A new file does not appear while the cache is valid; with TTL=0 it shows up at once
 	write(t, filepath.Join(root, "p3", "third.jsonl"), `{"type":"session","id":"third"}`)
 	if got, again := api.listSessions(); len(got) != 2 || again != etag {
-		t.Fatalf("缓存应命中，得到 %d 条 etag=%s", len(got), again)
+		t.Fatalf("the cache should have hit, got %d entries etag=%s", len(got), again)
 	}
 	uncached := newSessionQueryAPI([]SessionSource{newPiSource(root)}, 0)
 	got, newETag := uncached.listSessions()
 	if len(got) != 3 {
-		t.Fatalf("TTL=0 应立即看到 3 条，得到 %d", len(got))
+		t.Fatalf("TTL=0 should show 3 entries immediately, got %d", len(got))
 	}
 	if newETag == etag {
-		t.Fatal("列表变了，ETag 也该变")
+		t.Fatal("the list changed, so the ETag should have too")
 	}
 }
 
-// TestPublicIsACopy：public() 必须给副本——记录被列表缓存长期持有，
-// 交出去的 map 被改一下，后面所有读者拿到的都是脏数据。
+// TestPublicIsACopy: public() has to hand back a copy. Records are held by the list cache,
+// so one mutation of the map it returns leaves every later reader with dirty data.
 func TestPublicIsACopy(t *testing.T) {
 	r := newRecord(map[string]any{"sessionId": "s", "status": "done"}, "")
 	out := r.public()
 	out["status"] = "tampered"
 	if r.str("status") != "done" {
-		t.Fatalf("内部字段被改成了 %q", r.str("status"))
+		t.Fatalf("the internal field was changed to %q", r.str("status"))
 	}
 }
 
-// TestFileRecordCacheReusesUnchanged：文件没变就不该再解析一次文件头。
+// TestFileRecordCacheReusesUnchanged: an unchanged file must not have its head reparsed.
 func TestFileRecordCacheReusesUnchanged(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "p", "a.jsonl")
@@ -232,32 +235,32 @@ func TestFileRecordCacheReusesUnchanged(t *testing.T) {
 	}
 
 	if got := cache.records([]string{path}, build); len(got) != 1 || builds != 1 {
-		t.Fatalf("首次 = %d 条 / %d 次解析", len(got), builds)
+		t.Fatalf("first pass = %d entries / %d parses", len(got), builds)
 	}
 	if got := cache.records([]string{path}, build); len(got) != 1 || builds != 1 {
-		t.Fatalf("文件没变却又解析了一次：%d 次", builds)
+		t.Fatalf("the file did not change yet it was parsed again: %d times", builds)
 	}
 
-	// 内容变了（大小变化）就要重新解析
+	// Changed content (and therefore size) must trigger a reparse
 	write(t, path, `{"type":"session","id":"cached"}`, `{"type":"message"}`)
 	if cache.records([]string{path}, build); builds != 2 {
-		t.Fatalf("文件变了应重新解析，实际 %d 次", builds)
+		t.Fatalf("a changed file should be reparsed, got %d parses", builds)
 	}
 
-	// 文件没了就不再列出，缓存条目也要清掉
+	// A deleted file drops out of the listing and its cache entry goes with it
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
 	if got := cache.records([]string{path}, build); len(got) != 0 {
-		t.Fatalf("文件已删除仍列出 %d 条", len(got))
+		t.Fatalf("the file is gone but %d entries were still listed", len(got))
 	}
 	if len(cache.entries) != 0 {
-		t.Fatalf("缓存没清干净: %v", cache.entries)
+		t.Fatalf("the cache was not cleaned up: %v", cache.entries)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// HTTP 层
+// The HTTP layer
 // ---------------------------------------------------------------------------
 
 func newTestServerFixture(t *testing.T, token, sessionID string) (*httptest.Server, string) {
@@ -266,8 +269,8 @@ func newTestServerFixture(t *testing.T, token, sessionID string) (*httptest.Serv
 	sessionPath := filepath.Join(root, "p", "2026-01-01T00-00-00_abc.jsonl")
 	write(t, sessionPath,
 		`{"type":"session","id":"`+sessionID+`","cwd":"/tmp"}`,
-		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"问题"}]}}`,
-		`{"type":"message","id":"m2","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"答案"}]}}`,
+		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"question"}]}}`,
+		`{"type":"message","id":"m2","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"answer"}]}}`,
 	)
 	sources := []SessionSource{newPiSource(root)}
 	api := newSessionQueryAPI(sources, 2)
@@ -302,28 +305,28 @@ func get(t *testing.T, url, token string) (int, map[string]any) {
 func TestHTTPRoutes(t *testing.T) {
 	srv, sessionPath := newTestServer(t, "secret")
 
-	// 免认证端点
+	// Unauthenticated endpoints
 	if code, body := get(t, srv.URL+"/health", ""); code != 200 || body["status"] != "ok" {
 		t.Fatalf("/health = %d %v", code, body)
 	}
 	if code, _ := get(t, srv.URL+"/", ""); code != 200 {
 		t.Fatalf("/ = %d", code)
 	}
-	// /api 前缀只对 /sessions 系列生效：/api/health 会落到「认证之后」的 404
-	// （配了 token 时先撞 401）
+	// The /api prefix only applies to the /sessions family: /api/health falls through to the
+	// 404 that comes after authentication (and hits 401 first when a token is set)
 	if code, _ := get(t, srv.URL+"/api/health", ""); code != 401 {
-		t.Fatalf("/api/health (带 token 配置) = %d", code)
+		t.Fatalf("/api/health (token configured) = %d", code)
 	}
 
-	// 认证
+	// Authentication
 	if code, body := get(t, srv.URL+"/sessions", ""); code != 401 || body["error"] != "Unauthorized" {
-		t.Fatalf("无 token = %d %v", code, body)
+		t.Fatalf("no token = %d %v", code, body)
 	}
 	if code, _ := get(t, srv.URL+"/sessions", "wrong"); code != 401 {
-		t.Fatalf("错误 token = %d", code)
+		t.Fatalf("wrong token = %d", code)
 	}
 
-	// 列表
+	// Listing
 	code, body := get(t, srv.URL+"/sessions", "secret")
 	if code != 200 || body["total"] != float64(1) {
 		t.Fatalf("/sessions = %d %v", code, body)
@@ -334,64 +337,64 @@ func TestHTTPRoutes(t *testing.T) {
 		t.Fatalf("session = %v", first)
 	}
 
-	// /api 前缀等价
+	// The /api prefix is equivalent
 	if code, body := get(t, srv.URL+"/api/sessions", "secret"); code != 200 || body["total"] != float64(1) {
 		t.Fatalf("/api/sessions = %d %v", code, body)
 	}
 
-	// 单个会话（含 file 字段）
+	// A single session (including the file field)
 	if code, body := get(t, srv.URL+"/sessions/sess-1", "secret"); code != 200 || body["file"] != sessionPath {
 		t.Fatalf("/sessions/sess-1 = %d %v", code, body)
 	}
 
-	// 消息 + limit
+	// Messages plus limit
 	code, body = get(t, srv.URL+"/sessions/sess-1/messages?limit=1", "secret")
 	if code != 200 || body["total"] != float64(1) {
 		t.Fatalf("messages = %d %v", code, body)
 	}
 	msgs := body["messages"].([]any)
-	if msgs[0].(map[string]any)["id"] != "m1" { // limit 取最早的前 N 条
+	if msgs[0].(map[string]any)["id"] != "m1" { // limit takes the earliest N
 		t.Fatalf("messages[0] = %v", msgs[0])
 	}
 	if _, body := get(t, srv.URL+"/sessions/sess-1/messages?limit=abc", "secret"); body["total"] != float64(2) {
-		t.Fatalf("非法 limit 应回退 50: %v", body)
+		t.Fatalf("an invalid limit should fall back to 50: %v", body)
 	}
 
-	// 最终结果
+	// The final result
 	code, body = get(t, srv.URL+"/sessions/sess-1/final", "secret")
-	if code != 200 || body["text"] != "答案" || body["isFinal"] != true {
+	if code != 200 || body["text"] != "answer" || body["isFinal"] != true {
 		t.Fatalf("final = %d %v", code, body)
 	}
 
-	// 找不到 / 未知路径
+	// Not found / unknown path
 	if code, body := get(t, srv.URL+"/sessions/nope", "secret"); code != 404 || body["error"] != "Session not found" {
 		t.Fatalf("404 = %d %v", code, body)
 	}
 	if code, body := get(t, srv.URL+"/whatever", "secret"); code != 404 || body["error"] != "Not found" {
-		t.Fatalf("未知路径 = %d %v", code, body)
+		t.Fatalf("unknown path = %d %v", code, body)
 	}
 
-	// 不配 token 时 /api/health 是 404（免认证端点没有 /api 别名）
+	// Without a token /api/health is a 404 (unauthenticated endpoints have no /api alias)
 	openSrv, _ := newTestServer(t, "")
 	if code, _ := get(t, openSrv.URL+"/api/health", ""); code != 404 {
-		t.Fatalf("/api/health (无 token) = %d", code)
+		t.Fatalf("/api/health (no token) = %d", code)
 	}
 }
 
 func TestHTTPEncodedPattern(t *testing.T) {
-	// 含冒号的 pattern 要 URL 编码（%3A），解码后再去匹配
+	// A pattern containing a colon must be URL encoded (%3A) and decoded before matching
 	srv, _ := newTestServerFixture(t, "secret", "hook:alert:x")
 	code, body := get(t, srv.URL+"/sessions/hook%3Aalert%3Ax", "secret")
 	if code != 200 || body["sessionId"] != "hook:alert:x" {
-		t.Fatalf("编码 pattern = %d %v", code, body)
+		t.Fatalf("encoded pattern = %d %v", code, body)
 	}
 }
 
 func TestHTTPOptionsAndMethods(t *testing.T) {
 	srv, _ := newTestServer(t, "")
 
-	// 默认不放任何 CORS 头：不设 token 时是免认证的，
-	// 一个 Access-Control-Allow-Origin: * 就等于让任何网页都能读走本机会话内容
+	// No CORS headers by default: with no token the service is unauthenticated, and a single
+	// Access-Control-Allow-Origin: * would let any web page read this machine's sessions
 	req, _ := http.NewRequest(http.MethodOptions, srv.URL+"/sessions", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -399,7 +402,7 @@ func TestHTTPOptionsAndMethods(t *testing.T) {
 	}
 	resp.Body.Close()
 	if resp.StatusCode != 200 || resp.Header.Get("Access-Control-Allow-Origin") != "" {
-		t.Fatalf("默认不该有 CORS 头: %d %v", resp.StatusCode, resp.Header)
+		t.Fatalf("there should be no CORS header by default: %d %v", resp.StatusCode, resp.Header)
 	}
 
 	code, _ := get(t, srv.URL+"/sessions", "")
@@ -412,7 +415,7 @@ func TestHTTPOptionsAndMethods(t *testing.T) {
 	}
 	resp.Body.Close()
 	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
-		t.Fatalf("数据端点默认不该有 CORS 头，得到 %q", got)
+		t.Fatalf("data endpoints should carry no CORS header by default, got %q", got)
 	}
 
 	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/sessions", nil)
@@ -426,7 +429,8 @@ func TestHTTPOptionsAndMethods(t *testing.T) {
 	}
 }
 
-// TestHTTPCORSOptIn：--cors-origin 显式配了才放头，并且允许带 Authorization 预检
+// TestHTTPCORSOptIn: headers appear only once --cors-origin is set, and the preflight
+// must allow Authorization
 func TestHTTPCORSOptIn(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, "p", "a.jsonl"), `{"type":"session","id":"s"}`)
@@ -447,14 +451,14 @@ func TestHTTPCORSOptIn(t *testing.T) {
 		t.Fatalf("ACAO = %q", resp.Header.Get("Access-Control-Allow-Origin"))
 	}
 	if !strings.Contains(resp.Header.Get("Access-Control-Allow-Headers"), "Authorization") {
-		t.Fatalf("预检要放行 Authorization，否则跨域根本用不了 token: %v", resp.Header)
+		t.Fatalf("the preflight must allow Authorization, or a cross-origin client cannot use a token at all: %v", resp.Header)
 	}
 	if resp.Header.Get("Vary") != "Origin" {
-		t.Fatalf("按具体 origin 放行时要带 Vary: Origin，得到 %q", resp.Header.Get("Vary"))
+		t.Fatalf("allowing a specific origin requires Vary: Origin, got %q", resp.Header.Get("Vary"))
 	}
 }
 
-// TestHTTPLimitClamped：?limit= 必须夹在上限内，不然一个请求就能把内存打爆
+// TestHTTPLimitClamped: ?limit= has to be clamped, or a single request can exhaust memory
 func TestHTTPLimitClamped(t *testing.T) {
 	root := t.TempDir()
 	lines := []string{`{"type":"session","id":"big"}`}
@@ -470,15 +474,15 @@ func TestHTTPLimitClamped(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	if _, body := get(t, srv.URL+"/sessions/big/messages?limit=99999999", ""); body["total"] != float64(5) {
-		t.Fatalf("limit 未夹到上限 5: %v", body["total"])
+		t.Fatalf("limit was not clamped to 5: %v", body["total"])
 	}
-	// 负数与 0 仍然是「什么都不要」，与原行为一致
+	// Negative values and 0 still mean "nothing at all", matching the original behaviour
 	if _, body := get(t, srv.URL+"/sessions/big/messages?limit=-1", ""); body["total"] != float64(0) {
-		t.Fatalf("limit=-1 应返回 0 条: %v", body["total"])
+		t.Fatalf("limit=-1 should return 0 entries: %v", body["total"])
 	}
 }
 
-// TestHTTPSessionsETag：列表没变时轮询应当在 304 结束
+// TestHTTPSessionsETag: when the list has not changed, a poll should end at a 304
 func TestHTTPSessionsETag(t *testing.T) {
 	srv, _ := newTestServer(t, "secret")
 
@@ -491,7 +495,7 @@ func TestHTTPSessionsETag(t *testing.T) {
 	resp.Body.Close()
 	etag := resp.Header.Get("ETag")
 	if etag == "" {
-		t.Fatal("/sessions 应当带 ETag")
+		t.Fatal("/sessions should carry an ETag")
 	}
 
 	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/sessions", nil)
@@ -503,10 +507,10 @@ func TestHTTPSessionsETag(t *testing.T) {
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotModified {
-		t.Fatalf("同一个 ETag 应返回 304，得到 %d", resp.StatusCode)
+		t.Fatalf("the same ETag should return 304, got %d", resp.StatusCode)
 	}
 
-	// ETag 对不上就照常返回完整列表
+	// A mismatched ETag returns the full list as usual
 	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/sessions", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	req.Header.Set("If-None-Match", `W/"deadbeef"`)
@@ -516,22 +520,22 @@ func TestHTTPSessionsETag(t *testing.T) {
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("ETag 不匹配应返回 200，得到 %d", resp.StatusCode)
+		t.Fatalf("a mismatched ETag should return 200, got %d", resp.StatusCode)
 	}
 }
 
 func TestBuildSourcesModes(t *testing.T) {
-	// 未检测到任何数据源时回退 OpenClaw（all 与 auto 都一样）
+	// With no source detected, fall back to OpenClaw (the same for all and auto)
 	home := t.TempDir()
 	setHome(t, home)
 	if sources, err := buildSources("auto"); err != nil || len(sources) != 1 || sources[0].Mode() != "openclaw" {
-		t.Fatalf("auto 回退 = %v %v", sources, err)
+		t.Fatalf("auto fallback = %v %v", sources, err)
 	}
 	if sources, err := buildSources("all"); err != nil || len(sources) != 1 || sources[0].Mode() != "openclaw" {
-		t.Fatalf("all 回退 = %v %v", sources, err)
+		t.Fatalf("all fallback = %v %v", sources, err)
 	}
 
-	// 建出 pi / claude 两个源：auto 只启用存在的，all 同样只启用存在的
+	// Create the pi and claude sources: auto enables only those that exist, and so does all
 	write(t, filepath.Join(home, ".pi", "agent", "sessions", "p", "x.jsonl"), `{"type":"session","id":"x"}`)
 	write(t, filepath.Join(home, ".claude", "projects", "p", "y.jsonl"), `{"type":"user","uuid":"u","message":{"role":"user","content":"hi"}}`)
 	if sources, err := buildSources("auto"); err != nil || len(sources) != 2 ||
@@ -542,23 +546,24 @@ func TestBuildSourcesModes(t *testing.T) {
 		t.Fatalf("all = %v %v", sources, err)
 	}
 
-	// 单模式：不管目录存不存在都启用
+	// A single named mode enables it whether or not the directory exists
 	if sources, err := buildSources("pi"); err != nil || len(sources) != 1 || sources[0].Mode() != "pi" {
 		t.Fatalf("pi = %v %v", sources, err)
 	}
 	if _, err := buildSources("nope"); err == nil {
-		t.Fatal("未知模式应当报错")
+		t.Fatal("an unknown mode should error")
 	}
 }
 
-// TestAcceptQueueDepth：--accept-queue 显式指定就用它，0 表示按 max-connections 自动取
+// TestAcceptQueueDepth: an explicit --accept-queue is used as given; 0 derives it from
+// max-connections
 func TestAcceptQueueDepth(t *testing.T) {
 	cases := []struct{ maxConns, queue, want int }{
-		{50, 0, 100},  // 2 倍
-		{2, 0, 32},    // 太小，用下限
-		{200, 0, 400}, // 2 倍
-		{2, 5, 5},     // 显式指定，不再兜底到下限
-		{50, 1, 1},    // 显式压到最小
+		{50, 0, 100},  // twice max-connections
+		{2, 0, 32},    // too small, so the floor applies
+		{200, 0, 400}, // twice max-connections
+		{2, 5, 5},     // explicit, so the floor no longer applies
+		{50, 1, 1},    // explicitly squeezed to the minimum
 	}
 	for _, c := range cases {
 		if got := acceptQueueDepth(c.maxConns, c.queue); got != c.want {
@@ -567,7 +572,8 @@ func TestAcceptQueueDepth(t *testing.T) {
 	}
 }
 
-// TestMessageSink：取最早 N 条要能提前叫停，取最新 N 条要滚到末尾且内存只跟 limit 走
+// TestMessageSink: the earliest N must stop early, and the latest N must run to the end
+// while keeping memory tied to limit
 func TestMessageSink(t *testing.T) {
 	feed := func(sink *messageSink, n int) int {
 		fed := 0
@@ -587,47 +593,48 @@ func TestMessageSink(t *testing.T) {
 		return out
 	}
 
-	// 最早 3 条：喂到第 3 条就该收手
+	// Earliest 3: it should stop after the third
 	head := newMessageSink(messageQuery{limit: 3})
 	if fed := feed(head, 100); fed != 3 {
-		t.Fatalf("取最早 N 条应在第 3 条停下，实际喂了 %d 条", fed)
+		t.Fatalf("the earliest N should stop at the third, but %d were fed", fed)
 	}
 	if got := ids(head.result()); !reflect.DeepEqual(got, []int{0, 1, 2}) {
-		t.Fatalf("最早 3 条 = %v", got)
+		t.Fatalf("earliest 3 = %v", got)
 	}
 
-	// 最新 3 条：要一路扫完，结果按时间先后排
+	// Latest 3: it has to scan all the way, and the result comes back chronological
 	tail := newMessageSink(messageQuery{limit: 3, fromEnd: true})
 	if fed := feed(tail, 100); fed != 100 {
-		t.Fatalf("取最新 N 条必须扫完，实际只喂了 %d 条", fed)
+		t.Fatalf("the latest N must scan everything, but only %d were fed", fed)
 	}
 	if got := ids(tail.result()); !reflect.DeepEqual(got, []int{97, 98, 99}) {
-		t.Fatalf("最新 3 条 = %v", got)
+		t.Fatalf("latest 3 = %v", got)
 	}
 	if len(tail.items) != 3 {
-		t.Fatalf("环形缓冲应只留 3 条，实际 %d 条", len(tail.items))
+		t.Fatalf("the ring buffer should hold only 3, got %d", len(tail.items))
 	}
 
-	// 条数不够 limit 时原样返回
+	// Fewer than limit comes back as-is
 	few := newMessageSink(messageQuery{limit: 10, fromEnd: true})
 	feed(few, 2)
 	if got := ids(few.result()); !reflect.DeepEqual(got, []int{0, 1}) {
-		t.Fatalf("不足 limit 时 = %v", got)
+		t.Fatalf("below limit = %v", got)
 	}
-	// limit=0 一条都不收
+	// limit=0 takes nothing at all
 	zero := newMessageSink(messageQuery{limit: 0})
 	if fed := feed(zero, 5); fed != 1 || len(zero.result()) != 0 {
-		t.Fatalf("limit=0 应立即停且为空: fed=%d len=%d", fed, len(zero.result()))
+		t.Fatalf("limit=0 should stop immediately and stay empty: fed=%d len=%d", fed, len(zero.result()))
 	}
 }
 
-// TestHTTPMessagesOrder：?order=desc 取最新的 N 条（会话最有价值的是结尾）
+// TestHTTPMessagesOrder: ?order=desc returns the latest N (the end of a session is the
+// interesting part)
 func TestHTTPMessagesOrder(t *testing.T) {
 	root := t.TempDir()
 	lines := []string{`{"type":"session","id":"long"}`}
 	for i := 0; i < 10; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`{"type":"message","id":"m%d","message":{"role":"user","content":[{"type":"text","text":"第%d条"}]}}`, i, i))
+			`{"type":"message","id":"m%d","message":{"role":"user","content":[{"type":"text","text":"message %d"}]}}`, i, i))
 	}
 	write(t, filepath.Join(root, "p", "long.jsonl"), lines...)
 	sources := []SessionSource{newPiSource(root)}
@@ -647,34 +654,34 @@ func TestHTTPMessagesOrder(t *testing.T) {
 
 	_, asc := get(t, srv.URL+"/sessions/long/messages?limit=3", "")
 	if asc["order"] != "asc" || firstID(asc) != "m0" || lastID(asc) != "m2" {
-		t.Fatalf("默认应取最早 3 条: %v", asc)
+		t.Fatalf("the default should take the earliest 3: %v", asc)
 	}
 	_, desc := get(t, srv.URL+"/sessions/long/messages?limit=3&order=desc", "")
 	if desc["order"] != "desc" || firstID(desc) != "m7" || lastID(desc) != "m9" {
-		t.Fatalf("order=desc 应取最新 3 条、且仍按时间先后排: %v", desc)
+		t.Fatalf("order=desc should take the latest 3 and still be chronological: %v", desc)
 	}
-	// 条数不够时两头一样
+	// With fewer messages than the limit, both ends agree
 	_, all := get(t, srv.URL+"/sessions/long/messages?limit=50&order=desc", "")
 	if all["total"] != float64(10) || firstID(all) != "m0" {
-		t.Fatalf("limit 大于总数时应给全部: %v", all)
+		t.Fatalf("a limit above the total should return everything: %v", all)
 	}
 }
 
-// TestHTTPHealthAuthRequired：页面据此决定要不要弹令牌框
+// TestHTTPHealthAuthRequired: the page uses this to decide whether to show the token prompt
 func TestHTTPHealthAuthRequired(t *testing.T) {
 	withToken, _ := newTestServer(t, "secret")
 	if _, body := get(t, withToken.URL+"/health", ""); body["authRequired"] != true {
-		t.Fatalf("配了 token 应报 authRequired=true: %v", body)
+		t.Fatalf("with a token configured this should report authRequired=true: %v", body)
 	}
 	open, _ := newTestServer(t, "")
 	if _, body := get(t, open.URL+"/health", ""); body["authRequired"] != false {
-		t.Fatalf("没配 token 应报 authRequired=false: %v", body)
+		t.Fatalf("without a token this should report authRequired=false: %v", body)
 	}
 }
 
-// TestMatchRankPathSeparators：Windows 上 key 是 C:\...\abc.jsonl，
-// 用户却习惯敲 proj/abc.jsonl。两种分隔符都得认，否则「后缀精确命中」会掉成「子串命中」，
-// 跨源查询时可能被别的源的模糊命中抢先。
+// TestMatchRankPathSeparators: on Windows a key is C:\...\abc.jsonl while users habitually
+// type proj/abc.jsonl. Both separators have to count, or an exact suffix hit degrades to a
+// substring hit and another source's fuzzy match can win the cross-source lookup.
 func TestMatchRankPathSeparators(t *testing.T) {
 	winKey := `C:\Users\dev\.claude\projects\proj\abc-def.jsonl`
 	rec := newRecord(map[string]any{"sessionId": "abc-def", "key": winKey}, "")
@@ -683,40 +690,40 @@ func TestMatchRankPathSeparators(t *testing.T) {
 		pattern string
 		want    int
 	}{
-		{"abc-def", 0}, // 精确 sessionId
-		{winKey, 1},    // 原样贴 Windows 路径
-		{"c:/users/dev/.claude/projects/proj/abc-def.jsonl", 1}, // 正斜杠写法等价
-		{"proj/abc-def.jsonl", 2},                               // 后缀命中，不该掉成 3
-		{`proj\abc-def.jsonl`, 2},                               // 反斜杠写法同样命中
-		{"projects", 3},                                         // 子串
+		{"abc-def", 0}, // exact sessionId
+		{winKey, 1},    // the Windows path pasted verbatim
+		{"c:/users/dev/.claude/projects/proj/abc-def.jsonl", 1}, // the forward-slash spelling is equivalent
+		{"proj/abc-def.jsonl", 2},                               // a suffix hit, and must not degrade to 3
+		{`proj\abc-def.jsonl`, 2},                               // the backslash spelling matches too
+		{"projects", 3},                                         // substring
 		{"zzz", -1},
 	}
 	for _, c := range cases {
-		// findSession 对 pattern 做的就是这一步
+		// this is exactly what findSession does to the pattern
 		if got := rec.matchRank(normalizeForMatch(c.pattern)); got != c.want {
 			t.Errorf("matchRank(%q) = %d, want %d", c.pattern, got, c.want)
 		}
 	}
 }
 
-// TestSQLiteURIWindowsPath：反斜杠塞进 SQLite 的 file: URI 会有转义歧义
+// TestSQLiteURIWindowsPath: backslashes inside SQLite's file: URI are ambiguous with escapes
 func TestSQLiteURIWindowsPath(t *testing.T) {
 	got := sqliteURI(`C:\Users\dev\.hermes\state.db`)
 	if runtime.GOOS == "windows" {
 		if got != "file:C:/Users/dev/.hermes/state.db" {
-			t.Fatalf("Windows 路径应换成正斜杠: %q", got)
+			t.Fatalf("a Windows path should be converted to forward slashes: %q", got)
 		}
 		return
 	}
-	// 非 Windows 上反斜杠是合法文件名字符，filepath.ToSlash 不该动它
+	// Off Windows a backslash is a legal filename character and filepath.ToSlash leaves it be
 	if got != `file:C:\Users\dev\.hermes\state.db` {
-		t.Fatalf("非 Windows 不应改写路径: %q", got)
+		t.Fatalf("paths should not be rewritten off Windows: %q", got)
 	}
 }
 
-// TestProjectsAndActive：项目聚合 + 活跃标记。
-// 文件型数据源的 status 永远是 done，不按更新时间推断的话，
-// 一个正在写的会话和三个月前的会话在列表里长得一模一样。
+// TestProjectsAndActive: project grouping plus the live marker.
+// File-backed sources always report status done, so without inferring from the update time
+// a session being written right now looks identical to one from three months ago.
 func TestProjectsAndActive(t *testing.T) {
 	root := t.TempDir()
 	fresh := filepath.Join(root, "p1", "fresh.jsonl")
@@ -740,33 +747,33 @@ func TestProjectsAndActive(t *testing.T) {
 	for _, s := range sessions {
 		active[toStr(s["sessionId"])] = truthy(s["isActive"])
 		if toStr(s["project"]) == "" {
-			t.Fatalf("有 cwd 的会话应当带 project: %v", s)
+			t.Fatalf("a session with a cwd should carry a project: %v", s)
 		}
 	}
 	if !active["fresh"] {
-		t.Fatal("刚写的会话应当是活跃的")
+		t.Fatal("a just-written session should be active")
 	}
 	if active["stale"] || active["other"] {
-		t.Fatalf("三小时前的会话不该算活跃: %v", active)
+		t.Fatalf("a session from three hours ago should not count as active: %v", active)
 	}
 
 	projects, ungrouped := api.listProjects()
 	if len(projects) != 2 || ungrouped != 0 {
-		t.Fatalf("应当归成 2 个项目: %v (ungrouped=%d)", projects, ungrouped)
+		t.Fatalf("this should group into 2 projects: %v (ungrouped=%d)", projects, ungrouped)
 	}
-	// 最近动过的项目排前面
+	// The most recently touched project comes first
 	if projects[0]["project"] != "/w/alpha" || projects[0]["sessions"] != 2 {
-		t.Fatalf("第一个项目 = %v", projects[0])
+		t.Fatalf("first project = %v", projects[0])
 	}
 	if projects[0]["shortName"] != "alpha" || !truthy(projects[0]["isActive"]) {
-		t.Fatalf("项目字段不对: %v", projects[0])
+		t.Fatalf("the project fields are wrong: %v", projects[0])
 	}
 	if projects[1]["project"] != "/w/beta" || truthy(projects[1]["isActive"]) {
-		t.Fatalf("第二个项目 = %v", projects[1])
+		t.Fatalf("second project = %v", projects[1])
 	}
 }
 
-// TestExportMarkdown：导出的 Markdown 要能直接贴进 issue
+// TestExportMarkdown: the exported Markdown should paste straight into an issue
 func TestExportMarkdown(t *testing.T) {
 	srv, _ := newTestServer(t, "secret")
 
@@ -788,14 +795,14 @@ func TestExportMarkdown(t *testing.T) {
 	}
 
 	body := readBody(t, resp)
-	for _, want := range []string{"# 2026-01-01T00-00-00_abc", "**Source**: pi", "## Final result", "## Messages", "### user", "问题", "答案"} {
+	for _, want := range []string{"# 2026-01-01T00-00-00_abc", "**Source**: pi", "## Final result", "## Messages", "### user", "question", "answer"} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("导出里缺 %q:\n%s", want, body)
+			t.Fatalf("the export is missing %q:\n%s", want, body)
 		}
 	}
-	// 找不到的会话
+	// A session that does not exist
 	if code, _ := get(t, srv.URL+"/sessions/nope/export", "secret"); code != 404 {
-		t.Fatalf("不存在的会话导出应当 404，得到 %d", code)
+		t.Fatalf("exporting a nonexistent session should be 404, got %d", code)
 	}
 }
 
@@ -813,7 +820,7 @@ func TestSanitizeFilename(t *testing.T) {
 	}
 }
 
-// TestHTTPProjects：/projects 端点
+// TestHTTPProjects: the /projects endpoint
 func TestHTTPProjects(t *testing.T) {
 	srv, _ := newTestServer(t, "secret")
 	code, body := get(t, srv.URL+"/projects", "secret")
@@ -828,25 +835,26 @@ func TestHTTPProjects(t *testing.T) {
 		t.Fatalf("project = %v", projects[0])
 	}
 	if code, _ := get(t, srv.URL+"/projects", ""); code != 401 {
-		t.Fatal("/projects 应当要认证")
+		t.Fatal("/projects should require authentication")
 	}
 }
 
-// TestLastRecordTime：从文件尾部取最后一条记录的时间，三种放法都要认
+// TestLastRecordTime: read the last record's time from the tail of the file, accepting all
+// three placements
 func TestLastRecordTime(t *testing.T) {
 	dir := t.TempDir()
 	cases := []struct{ name, content, want string }{
-		{"顶层 timestamp", `{"type":"a","timestamp":"2026-09-01T01:00:00Z"}
+		{"top-level timestamp", `{"type":"a","timestamp":"2026-09-01T01:00:00Z"}
 {"type":"b","timestamp":"2026-09-02T02:00:00Z"}`, "2026-09-02T02:00:00Z"},
-		{"message 里的", `{"type":"message","message":{"timestamp":"2026-09-03T03:00:00Z"}}`, "2026-09-03T03:00:00Z"},
-		{"$set 补丁行", `{"sessionId":"g","lastUpdated":"2026-09-01T00:00:00Z"}
+		{"inside message", `{"type":"message","message":{"timestamp":"2026-09-03T03:00:00Z"}}`, "2026-09-03T03:00:00Z"},
+		{"a $set patch row", `{"sessionId":"g","lastUpdated":"2026-09-01T00:00:00Z"}
 {"$set":{"lastUpdated":"2026-09-04T04:00:00Z"}}`, "2026-09-04T04:00:00Z"},
-		{"末尾若干行没有时间", `{"type":"a","timestamp":"2026-09-05T05:00:00Z"}
+		{"trailing rows with no time", `{"type":"a","timestamp":"2026-09-05T05:00:00Z"}
 {"type":"mode"}
 {"type":"atis-latch"}`, "2026-09-05T05:00:00Z"},
-		{"一条时间都没有", `{"type":"mode"}
+		{"no time anywhere", `{"type":"mode"}
 {"type":"atis-latch"}`, ""},
-		{"空文件", "", ""},
+		{"empty file", "", ""},
 	}
 	for _, c := range cases {
 		path := filepath.Join(dir, sanitizeFilename(c.name)+".jsonl")
@@ -859,33 +867,35 @@ func TestLastRecordTime(t *testing.T) {
 	}
 }
 
-// TestLastRecordTimeGrowsWindow：尾部第一个窗口里凑不出完整记录时要逐级放大
+// TestLastRecordTimeGrowsWindow: when the first tail window holds no complete record, the
+// window has to grow
 func TestLastRecordTimeGrowsWindow(t *testing.T) {
 	saved := tailWindows
-	tailWindows = []int64{64, 512, 4 << 20} // 缩小窗口，方便构造
+	tailWindows = []int64{64, 512, 4 << 20} // shrunk so the case is easy to construct
 	defer func() { tailWindows = saved }()
 
 	path := filepath.Join(t.TempDir(), "big.jsonl")
-	// 最后一行很长：64 字节的窗口切在行中间，必须放大才读得到
+	// The last line is long: a 64-byte window cuts it in half, so it takes a larger one
 	long := `{"type":"a","timestamp":"2026-09-06T06:00:00Z","pad":"` + strings.Repeat("x", 300) + `"}`
 	if err := os.WriteFile(path, []byte("{\"type\":\"head\"}\n"+long+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if got := lastRecordTime(path); got != "2026-09-06T06:00:00Z" {
-		t.Fatalf("窗口没有逐级放大: %q", got)
+		t.Fatalf("the window did not grow: %q", got)
 	}
 }
 
-// TestUpdatedAtPrefersContentTime：列表时间要用「对话真正发生的时间」，
-// 而不是文件 mtime——有些操作会重写会话文件却不追加内容，实测本机 174 个真实
-// Claude 会话里 43 个两者相差超过 1 小时，最大差 235 小时。
+// TestUpdatedAtPrefersContentTime: the list time has to be when the conversation actually
+// happened, not the file's mtime. Something rewrites session files without appending
+// anything: measured over 174 real Claude sessions, 43 differed by more than an hour and
+// the worst by 235.
 func TestUpdatedAtPrefersContentTime(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "proj", "aaaa-bbbb.jsonl")
 	write(t, path,
 		`{"type":"user","uuid":"u1","sessionId":"sid","cwd":"/w","timestamp":"2026-09-11T11:25:29.029Z","message":{"role":"user","content":"hi"}}`,
 	)
-	// 把 mtime 改成「现在」：文件被碰过，但内容还是六天前的
+	// Set mtime to now: the file was touched, but its content is still six days old
 	now := time.Now()
 	if err := os.Chtimes(path, now, now); err != nil {
 		t.Fatal(err)
@@ -893,16 +903,17 @@ func TestUpdatedAtPrefersContentTime(t *testing.T) {
 
 	r := newClaudeSource(root).List()[0]
 	if got := r.str("updatedAt"); got != "2026-09-11T11:25:29.029Z" {
-		t.Fatalf("updatedAt = %q，应当用内容里的时间而不是 mtime", got)
+		t.Fatalf("updatedAt = %q; it should use the time in the content, not mtime", got)
 	}
-	// 顺带：不能因为文件刚被碰过就误判成「正在写入」
+	// And a file that was merely touched must not be mistaken for one being written
 	if truthy(r.public()["isActive"]) {
-		t.Fatal("六天前的会话不该因为 mtime 是刚才就算活跃")
+		t.Fatal("a six-day-old session must not count as active just because mtime is recent")
 	}
 }
 
-// TestUpdatedAtFallsBackToMtime：内容里没有可用时间时退回 mtime，
-// 而不是留空（留空会被排到列表最末尾，比用 mtime 还糟）
+// TestUpdatedAtFallsBackToMtime: with no usable time in the content, fall back to mtime
+// rather than leaving it empty — empty sorts to the very end of the list, which is worse
+// than using mtime.
 func TestUpdatedAtFallsBackToMtime(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "proj", "cccc-dddd.jsonl")
@@ -911,9 +922,9 @@ func TestUpdatedAtFallsBackToMtime(t *testing.T) {
 	r := newClaudeSource(root).List()[0]
 	updated := r.str("updatedAt")
 	if updated == "" {
-		t.Fatal("没有内容时间时应当退回 mtime，不能留空")
+		t.Fatal("with no content time it should fall back to mtime, not stay empty")
 	}
 	if _, ok := parseTimestamp(updated); !ok {
-		t.Fatalf("退回的 mtime 解析不了: %q", updated)
+		t.Fatalf("the mtime fallback does not parse: %q", updated)
 	}
 }

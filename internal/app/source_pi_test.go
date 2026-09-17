@@ -10,8 +10,8 @@ func TestPiSource(t *testing.T) {
 	path := filepath.Join(root, "proj", "2026-09-13T13-04-12-594Z_aaaa.jsonl")
 	write(t, path,
 		`{"type":"session","id":"pi-1","cwd":"/home/imwl/proj"}`,
-		`{"type":"message","id":"m1","timestamp":"2026-09-13T13:05:00Z","message":{"role":"user","content":[{"type":"text","text":"你好"}]}}`,
-		`{"type":"message","id":"m2","timestamp":"2026-09-13T13:05:05Z","message":{"role":"assistant","stopReason":"stop","model":"gemini-3.8-flash","usage":{"input_tokens":10},"content":[{"type":"thinking","thinking":"想想"},{"type":"text","text":"你好呀"}]}}`,
+		`{"type":"message","id":"m1","timestamp":"2026-09-13T13:05:00Z","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}`,
+		`{"type":"message","id":"m2","timestamp":"2026-09-13T13:05:05Z","message":{"role":"assistant","stopReason":"stop","model":"gemini-3.8-flash","usage":{"input_tokens":10},"content":[{"type":"thinking","thinking":"pondering"},{"type":"text","text":"hi there"}]}}`,
 	)
 
 	s := newPiSource(root)
@@ -32,14 +32,14 @@ func TestPiSource(t *testing.T) {
 	}
 
 	final := s.Final(list[0])
-	if final["isFinal"] != true || final["text"] != "你好呀" || final["thinking"] != "想想" {
+	if final["isFinal"] != true || final["text"] != "hi there" || final["thinking"] != "pondering" {
 		t.Fatalf("final = %v", final)
 	}
 	if final["messageCount"] != 2 {
 		t.Fatalf("messageCount = %v", final["messageCount"])
 	}
 
-	// limit 取最早的前 N 条
+	// limit takes the earliest N
 	if got := s.Messages(list[0], messageQuery{limit: 1}); len(got) != 1 || got[0]["id"] != "m1" {
 		t.Fatalf("limit=1 -> %v", got)
 	}
@@ -48,8 +48,10 @@ func TestPiSource(t *testing.T) {
 	}
 }
 
-// TestPiSessionLineNotFirst：session 行不在首行时，不能把别的行的 id 当会话 id。
-// 原先无条件取第一行的 id，而 model_change 记录自己也有 id —— 本机实测真踩到了。
+// TestPiSessionLineNotFirst: when the session row is not the first line, another row's id
+// must not become the session id. The original code took the first line's id
+// unconditionally, and a model_change record carries its own id — measured locally, this
+// really happened.
 func TestPiSessionLineNotFirst(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "proj", "2026-09-04T09-05-45-921Z_01a06baa-real-uuid.jsonl")
@@ -64,15 +66,15 @@ func TestPiSessionLineNotFirst(t *testing.T) {
 		t.Fatalf("list = %v", list)
 	}
 	if got := list[0].str("sessionId"); got != "pi-real" {
-		t.Fatalf("sessionId = %q —— 不能拿 model_change 的 id", got)
+		t.Fatalf("sessionId = %q; must not take model_change's id", got)
 	}
 	if got := list[0].str("cwd"); got != "/w/real" {
 		t.Fatalf("cwd = %q", got)
 	}
 }
 
-// TestPiNoSessionLine：完全没有 session 行时（被截断 / 续写的文件），
-// 退回文件名里的 uuid，而不是把某条事件的 id 当会话 id 报出去
+// TestPiNoSessionLine: with no session row at all (a truncated or resumed file), fall back
+// to the uuid in the filename rather than reporting some event's id as the session id
 func TestPiNoSessionLine(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, "proj", "2026-09-04T09-05-45-921Z_01a06baa-b9c1.jsonl"),
@@ -82,10 +84,10 @@ func TestPiNoSessionLine(t *testing.T) {
 
 	list := newPiSource(root).List()
 	if got := list[0].str("sessionId"); got != "01a06baa-b9c1" {
-		t.Fatalf("sessionId = %q，应当退回文件名里的 uuid", got)
+		t.Fatalf("sessionId = %q; should fall back to the uuid in the filename", got)
 	}
 	if got := list[0].str("cwd"); got != "" {
-		t.Fatalf("没有 session 行就不该凭空有 cwd: %q", got)
+		t.Fatalf("no session row should mean no cwd, got %q", got)
 	}
 }
 

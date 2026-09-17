@@ -47,6 +47,19 @@ go build -o agent-session-query ./cmd/agent-session-query
 
 启动后打印本次启用的数据源，浏览器打开 `http://127.0.0.1:8080/ui` 就能看到页面。
 
+加 `-d` 就丢到后台，父进程确认端口真的起来了才打印 PID 退出：
+
+```bash
+./agent-session-query -d --port 8080
+# 已在后台启动
+#   PID:   82575
+#   地址:  http://127.0.0.1:8080
+#   日志:  /tmp/agent-session-query-8080.log
+#   停止:  kill 82575
+```
+
+`-d` 是临时后台跑，进程挂了不会自己起来；要真正常驻用下面的 systemd / 计划任务。
+
 ### 常驻部署
 
 **Linux（systemd user service）**——单二进制，不需要 Docker：
@@ -199,6 +212,8 @@ HOOK_TOKEN=mysecrettoken docker compose up -d   # 六个源目录的挂载见 do
 | `--cache-ttl` | `2` | 会话列表缓存秒数；`0` = 不缓存 |
 | `--max-limit` | `1000` | `?limit=` 的上限，超出按上限截断 |
 | `--cors-origin` | 无（关闭） | 允许的跨域来源；填 `*` 或具体 origin。不填则不发任何 CORS 头 |
+| `-d` | 关 | 后台运行：脱离终端，输出写到日志文件 |
+| `--log-file` | 按端口推导 | `-d` 时的日志路径，默认 `<临时目录>/agent-session-query-<端口>.log` |
 | `--mcp` | 关 | 以 MCP server 跑在 stdio 上（见下），不监听端口 |
 | `--version` | — | 打印版本后退出 |
 

@@ -104,6 +104,22 @@ Hermes 新版会话全在 SQLite 里、没有 jsonl，所以 `JsonMapSource` 实
 `searchableSource` 接口走 `LIKE`（SQLite 的 LIKE 对 ASCII 本来就大小写无关）；
 其余五个源都只有文件，走通用路径就够。
 
+### 后台运行
+
+`-d` 不是 fork。Go 的运行时是多线程的，而 `fork` 只复制调用线程，子进程拿到的是一个半死的
+运行时——所以走「重新 exec 自己」：把 `-d` 从参数里摘掉（不摘就无限套娃），stdout/stderr
+接到日志文件，`Setsid`（Windows 上是 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`）
+让它脱离当前终端的会话。
+
+父进程不能 Start 完就走：那样端口被占、配置写错这类问题全都静默变成「启动成功」。所以要盯两件事：
+
+1. **端口起来了**——但「端口通了」不等于成功，通的可能是先前那个实例，而我们拉起的这个
+   已经因为 bind 失败死了
+2. **子进程还活着**——`cmd.Wait()` 放在 goroutine 里和探活赛跑；探活赢了也要再静置
+   300 ms 复查一次，因为子进程可能在探活刚成功的那一瞬才死
+
+失败时把日志末尾一并打到 stderr：子进程的输出全进了日志文件，不贴出来用户在终端上什么都看不到。
+
 ### MCP
 
 `--mcp` 走 stdio 上的 JSON-RPC 2.0（`json.Decoder` 逐个值读，天然处理换行分隔）。两条要点：

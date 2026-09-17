@@ -53,6 +53,8 @@ func Run(args []string) int {
 	acceptQueue := fs.Int("accept-queue", 0, "满载时的排队位数 (默认: 0 = 按 max-connections 自动取)")
 	corsOrigin := fs.String("cors-origin", "", "允许的跨域来源（默认关闭；填 * 或具体 origin）")
 	mcp := fs.Bool("mcp", false, "以 MCP server 跑在 stdio 上（供 Agent 调用），不监听端口")
+	daemon := fs.Bool("d", false, "后台运行：脱离终端，输出写到日志文件")
+	logPath := fs.String("log-file", "", "-d 时的日志路径（默认 <临时目录>/agent-session-query-<端口>.log）")
 	showVersion := fs.Bool("version", false, "打印版本后退出")
 
 	if err := fs.Parse(args); err != nil {
@@ -69,6 +71,15 @@ func Run(args []string) int {
 		fmt.Fprintf(os.Stderr, "无效的 --mode: %q（可选: auto, all, %s）\n", *mode, joinModes())
 		return 2
 	}
+	if *daemon && *mcp {
+		fmt.Fprintln(os.Stderr, "[FATAL] --mcp 是 stdio 上的协议，脱离终端就没意义了，不能和 -d 一起用")
+		return 2
+	}
+	// 重新 exec 自己跑到后台；父进程探活成功后打印 PID 退出
+	if *daemon {
+		return startDaemon(daemonOptions{args: args, logPath: *logPath, host: *host, port: *port})
+	}
+
 	// 没给 --hook_token 就看环境变量：命令行参数会出现在 ps 里，环境变量不会
 	if *hookToken == "" {
 		*hookToken = os.Getenv("HOOK_TOKEN")

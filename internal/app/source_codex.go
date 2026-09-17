@@ -2,25 +2,24 @@ package app
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 )
 
 // Codex：~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl
 type CodexSource struct {
-	root string
+	root  string
+	cache *fileRecordCache
 }
 
-func newCodexSource(root string) *CodexSource { return &CodexSource{root: root} }
+func newCodexSource(root string) *CodexSource {
+	return &CodexSource{root: root, cache: newFileRecordCache()}
+}
 
 func (s *CodexSource) Mode() string     { return "codex" }
 func (s *CodexSource) Location() string { return s.root }
 
-func (s *CodexSource) Exists() bool {
-	_, err := os.Stat(s.root)
-	return err == nil
-}
+func (s *CodexSource) Exists() bool { return fileExists(s.root) }
 
 func (s *CodexSource) files() []string {
 	files, err := filepath.Glob(filepath.Join(s.root, "*", "*", "*", "rollout-*.jsonl"))
@@ -30,45 +29,37 @@ func (s *CodexSource) files() []string {
 	return files
 }
 
+// List 只读首行元数据；文件没变过就直接用缓存（见 fileRecordCache）
 func (s *CodexSource) List() []record {
-	out := []record{}
-	for _, path := range s.files() {
+	return s.cache.records(s.files(), func(path, modISO string) record {
 		head := readJSONL(path, 1)
 		payload := map[string]any{}
 		if len(head) > 0 {
 			payload = getMap(head[0], "payload")
 		}
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		updated := mtimeISO(path)
-		out = append(out, record{
-			fields: map[string]any{
-				"source":     "codex",
-				"key":        path,
-				"shortKey":   stem,
-				"sessionId":  strOr(payload["session_id"], strOr(payload["id"], stem)),
-				"file":       path,
-				"hasFile":    true,
-				"status":     "done",
-				"cwd":        getOr(payload, "cwd", ""),
-				"cliVersion": getOr(payload, "cli_version", ""),
-				"updatedAt":  updated,
-			},
-			sortKey: updated,
-		})
-	}
-	return out
+		return newRecord(map[string]any{
+			"source":     "codex",
+			"key":        path,
+			"shortKey":   stem,
+			"sessionId":  strOr(payload["session_id"], strOr(payload["id"], stem)),
+			"file":       path,
+			"hasFile":    true,
+			"status":     "done",
+			"cwd":        getOr(payload, "cwd", ""),
+			"cliVersion": getOr(payload, "cli_version", ""),
+			"updatedAt":  modISO,
+		}, modISO)
+	})
 }
 
-func (s *CodexSource) Messages(r record, limit int) []map[string]any {
-	out := []map[string]any{}
+func (s *CodexSource) Messages(r record, q messageQuery) []map[string]any {
+	sink := newMessageSink(q)
 	path := r.str("file")
 	if path == "" {
-		return out
+		return sink.result()
 	}
 	eachJSONL(path, func(obj map[string]any) bool {
-		if len(out) >= limit {
-			return false
-		}
 		if obj["type"] != "response_item" {
 			return true
 		}
@@ -90,15 +81,14 @@ func (s *CodexSource) Messages(r record, limit int) []map[string]any {
 				parts = append(parts, map[string]any{"type": "text", "content": text})
 			}
 		}
-		out = append(out, map[string]any{
+		return sink.add(map[string]any{
 			"id":        getOr(payload, "id", ""),
 			"role":      role,
 			"timestamp": getOr(obj, "timestamp", ""),
 			"content":   parts,
 		})
-		return true
 	})
-	return out
+	return sink.result()
 }
 
 func (s *CodexSource) Final(r record) map[string]any {

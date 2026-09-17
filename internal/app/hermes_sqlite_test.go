@@ -13,7 +13,7 @@ import (
 // makeHermesDB 造一个与 Hermes 同形的 state.db
 func makeHermesDB(t *testing.T, dbPath string, schema string, statements []string) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+dbPath)
+	db, err := sql.Open("sqlite", sqliteURI(dbPath))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ CREATE TABLE messages (
 func newHermesFixture(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	dir := filepath.Join(home, ".hermes")
 	if err := os.MkdirAll(filepath.Join(dir, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
@@ -68,7 +68,7 @@ func TestHermesSQLiteFinal(t *testing.T) {
 		 VALUES ('m4', 'h-webhook', 'user', '用户消息', NULL, NULL, '2026-09-13T09:59:00Z', 1)`,
 	})
 
-	result := hermesSQLiteFinal("hermes", "h-webhook", "done")
+	result := hermesSQLiteFinal(dbPath, "hermes", "h-webhook", "done")
 	if result == nil {
 		t.Fatal("应当从 state.db 取到最终消息")
 	}
@@ -93,7 +93,7 @@ func TestHermesSQLiteFinal(t *testing.T) {
 		`INSERT INTO messages (id, session_id, role, content, finish_reason, reasoning, timestamp, active)
 		 VALUES ('n2', 'h-count', 'user', '提问', NULL, NULL, '2026-09-14T09:59:00Z', 1)`,
 	})
-	second := hermesSQLiteFinal("hermes", "h-count", "done")
+	second := hermesSQLiteFinal(dbPath, "hermes", "h-count", "done")
 	if second == nil || second["messageCount"] != int64(2) {
 		t.Fatalf("message_count 应回退成 2: %v", second)
 	}
@@ -102,16 +102,42 @@ func TestHermesSQLiteFinal(t *testing.T) {
 	}
 
 	// 没有 finish_reason=stop 的助手消息 → nil，交给上层兜底
-	if got := hermesSQLiteFinal("hermes", "h-empty", "done"); got != nil {
+	if got := hermesSQLiteFinal(dbPath, "hermes", "h-empty", "done"); got != nil {
 		t.Fatalf("查不到应当返回 nil: %v", got)
 	}
 	// 非 hermes 源、空 session id、库不存在，都不走这条路径
-	if got := hermesSQLiteFinal("openclaw", "h-webhook", "done"); got != nil {
+	if got := hermesSQLiteFinal(dbPath, "openclaw", "h-webhook", "done"); got != nil {
 		t.Fatalf("openclaw 不应走 sqlite: %v", got)
 	}
-	t.Setenv("HOME", t.TempDir())
-	if got := hermesSQLiteFinal("hermes", "h-webhook", "done"); got != nil {
+	if got := hermesSQLiteFinal(filepath.Join(t.TempDir(), "nope.db"), "hermes", "h-webhook", "done"); got != nil {
 		t.Fatalf("库不存在时应返回 nil: %v", got)
+	}
+	if got := hermesSQLiteFinal("", "hermes", "h-webhook", "done"); got != nil {
+		t.Fatalf("没配 state.db 路径时应返回 nil: %v", got)
+	}
+}
+
+// TestFinalUsesConfiguredDBPath：Final 走的必须是数据源自己配的 stateDB，
+// 不是从 $HOME 重推一份——两者不一致时会静默查错库。
+func TestFinalUsesConfiguredDBPath(t *testing.T) {
+	elsewhere := t.TempDir()
+	dbPath := filepath.Join(elsewhere, "state.db")
+	makeHermesDB(t, dbPath, hermesSchema, []string{
+		`INSERT INTO messages (id, session_id, role, content, finish_reason, reasoning, timestamp, active)
+		 VALUES ('x1', 'h-elsewhere', 'assistant', '别处那个库里的答案', 'stop', NULL, '2026-09-13T10:09:00Z', 1)`,
+	})
+
+	// home 下什么都没有：只有真的用了 def.stateDB 才查得到
+	setHome(t, t.TempDir())
+	def := hermesDef(defaultHome())
+	def.stateDB = dbPath
+
+	source := newJsonMapSource(def)
+	final := source.Final(newRecord(map[string]any{
+		"source": "hermes", "sessionId": "h-elsewhere", "status": "done",
+	}, ""))
+	if final["text"] != "别处那个库里的答案" {
+		t.Fatalf("没用配置里的 state.db: %v", final)
 	}
 }
 
@@ -187,7 +213,7 @@ func TestHermesSQLiteOnlySource(t *testing.T) {
 		t.Fatalf("createdAt/updatedAt = %v / %v", r.str("createdAt"), r.str("updatedAt"))
 	}
 
-	msgs := source.Messages(r, 50)
+	msgs := source.Messages(r, messageQuery{limit: 50})
 	if len(msgs) != 2 { // active=0 的不算
 		t.Fatalf("messages = %v", msgs)
 	}

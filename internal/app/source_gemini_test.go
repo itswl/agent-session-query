@@ -27,7 +27,7 @@ func TestGeminiSource(t *testing.T) {
 		t.Fatalf("updatedAt = %v", list[0].str("updatedAt"))
 	}
 
-	msgs := s.Messages(list[0], 50)
+	msgs := s.Messages(list[0], messageQuery{limit: 50})
 	if len(msgs) != 4 {
 		t.Fatalf("messages = %v", msgs)
 	}

@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -15,22 +15,81 @@ import (
 // record 是各数据源统一输出的一条会话记录。
 //
 // fields 是对外字段（source / key / sessionId / file / hasFile / status / updatedAt
-// 以及各源的额外字段）；sortKey 只用于列表排序，不对外出现。
+// 以及各源的额外字段）；其余都是派生出来的内部数据，不对外出现：
+// sortAt / sortKey 用于列表排序，lowerSID / lowerKey 是匹配用的小写形式——
+// 都在建记录时算好，查找时不必对每条记录重复做一次 ToLower。
 type record struct {
-	fields  map[string]any
-	sortKey string
+	fields map[string]any
+
+	sortAt   time.Time // 解析出来的更新时间；零值表示这条记录的时间解析不出来
+	sortKey  string    // 解析不出时间时的退路：原始字符串
+	lowerSID string
+	lowerKey string
 }
 
-func (r record) get(k string) any       { return r.fields[k] }
-func (r record) str(k string) string    { return toStr(r.fields[k]) }
-func (r record) truthy(k string) bool   { return truthy(r.fields[k]) }
-func (r record) public() map[string]any { return r.fields }
+// newRecord 由字段表和「更新时间的原始值」建一条记录。
+//
+// 各数据源的时间形态不一（mtime 的 2006-01-02T15:04:05、Gemini 的 RFC3339Nano、
+// Hermes 里直接来自 sessions.json 的字符串、epoch 数字……），统一在这里解析成
+// time.Time 再排序：只按字典序比字符串的话，一个带时区偏移的时间戳就能把跨源排序排错。
+func newRecord(fields map[string]any, updatedAt any) record {
+	at, _ := parseTimestampValue(updatedAt)
+	return record{
+		fields:   fields,
+		sortAt:   at,
+		sortKey:  toStr(updatedAt),
+		lowerSID: normalizeForMatch(toStr(fields["sessionId"])),
+		lowerKey: normalizeForMatch(toStr(fields["key"])),
+	}
+}
+
+// normalizeForMatch 把用来匹配的字符串统一成「小写 + 正斜杠」。
+//
+// 文件型数据源的 key 就是完整路径，分隔符跟着操作系统走——Windows 上是 `\`。
+// 不统一的话，同一个 pattern 在 Windows 上会从「后缀精确命中」掉到「子串命中」，
+// 而且用户按习惯敲 `proj/abc.jsonl` 根本匹配不上 `...\proj\abc.jsonl`。
+func normalizeForMatch(s string) string {
+	return strings.ToLower(strings.ReplaceAll(s, "\\", "/"))
+}
+
+func (r record) get(k string) any     { return r.fields[k] }
+func (r record) str(k string) string  { return toStr(r.fields[k]) }
+func (r record) truthy(k string) bool { return truthy(r.fields[k]) }
+
+// public 返回对外字段的副本。记录会被列表缓存长期持有、并发共享，
+// 直接把内部 map 交出去的话，调用方一次无心的赋值就会污染后续所有读者。
+func (r record) public() map[string]any {
+	out := make(map[string]any, len(r.fields))
+	for k, v := range r.fields {
+		out[k] = v
+	}
+	return out
+}
+
+// newerThan 列表排序用：更新时间晚的排前面。
+// 时间解析不出来的记录（sortAt 为零值）一律排在有时间的后面，它们之间按原始字符串倒序。
+func (r record) newerThan(other record) bool {
+	if !r.sortAt.IsZero() || !other.sortAt.IsZero() {
+		if r.sortAt.Equal(other.sortAt) {
+			return false // 相等时保持数据源顺序（配合 sort.SliceStable）
+		}
+		return r.sortAt.After(other.sortAt)
+	}
+	return r.sortKey > other.sortKey
+}
+
+// matchRank 见同名函数；这里用建记录时算好的小写形式。
+func (r record) matchRank(patternLower string) int {
+	return matchRank(patternLower, r.lowerSID, r.lowerKey)
+}
 
 // ---------------------------------------------------------------------------
 // 通用工具
 // ---------------------------------------------------------------------------
 
-// maxLineBytes 单行上限（Claude Code 的工具输出可能很大；超过就跳过该行）
+// maxLineBytes 单行上限（Claude Code 的工具输出可能很大）。缓冲按需增长，
+// 正常文件只用得到起始的 64 KB；真碰到超过上限的行，Scanner 会中止——
+// 注意是「这一行往后都不读了」，不是「跳过这一行」，所以下面要把错误报出来。
 const maxLineBytes = 256 * 1024 * 1024
 
 // eachJSONLLine 逐行读原始字节，回调里的切片只在本次调用内有效（缓冲会被复用），
@@ -53,6 +112,10 @@ func eachJSONLLine(path string, fn func(line []byte) bool) {
 		if !fn(line) {
 			return
 		}
+	}
+	// 超长行 / 读取失败会让剩下的内容整段读不到，静默截断比报错更难查
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "[WARN] 读取 %s 中断，该文件后续内容未解析: %v\n", path, err)
 	}
 }
 
@@ -121,9 +184,8 @@ func mtimeISO(path string) string {
 }
 
 // matchRank 计算 pattern 与会话记录的匹配度：0 最精确，-1 表示不匹配。
-func matchRank(patternLower string, f map[string]any) int {
-	sid := strings.ToLower(toStr(f["sessionId"]))
-	key := strings.ToLower(toStr(f["key"]))
+// pattern / sid / key 传进来时都该已经过 normalizeForMatch（小写 + 正斜杠）。
+func matchRank(patternLower, sid, key string) int {
 	if sid != "" && patternLower == sid {
 		return 0
 	}
@@ -252,6 +314,62 @@ func strField(m map[string]any, key string) string {
 		return s
 	}
 	return ""
+}
+
+// timeLayouts 各数据源见过的时间形态，按出现频率排（解析时逐个试）。
+// 不带时区的按 UTC 解析——各源写文件时用的都是 UTC。
+var timeLayouts = []string{
+	time.RFC3339Nano,                // 2026-09-14T03:16:50.601Z、带 +08:00 偏移的也认
+	"2006-01-02T15:04:05",           // mtime 派生的形态
+	"2006-01-02 15:04:05.999999999", // 空格分隔
+	"2006-01-02 15:04:05",
+}
+
+// parseTimestampValue 把「更新时间」的原始值解析成 UTC 时间。
+// 认字符串（上面几种排版，以及纯数字的 epoch）和数字（epoch 秒 / 毫秒）。
+func parseTimestampValue(v any) (time.Time, bool) {
+	switch t := v.(type) {
+	case string:
+		return parseTimestamp(t)
+	case float64, int, int64:
+		sec, _ := toFloat(v)
+		return epochToTime(sec)
+	}
+	return time.Time{}, false
+}
+
+func parseTimestamp(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range timeLayouts {
+		if parsed, err := time.Parse(layout, s); err == nil {
+			return parsed.UTC(), true
+		}
+	}
+	// 纯数字的 epoch（有的实现把时间戳当字符串写进 JSON）
+	if sec, err := strconv.ParseFloat(s, 64); err == nil {
+		return epochToTime(sec)
+	}
+	return time.Time{}, false
+}
+
+// epochToTime epoch 秒或毫秒 → UTC 时间。超过 1e11 的按毫秒算
+// （1e11 秒是公元 5138 年，1e11 毫秒是 1973 年，这个分界不会误判）。
+func epochToTime(v float64) (time.Time, bool) {
+	if v == 0 {
+		return time.Time{}, false
+	}
+	if v > 1e11 || v < -1e11 {
+		v /= 1000
+	}
+	if v < -62135596800 || v > 253402300799 {
+		return time.Time{}, false
+	}
+	sec := int64(v)
+	nsec := int64((v - float64(sec)) * float64(time.Second))
+	return time.Unix(sec, nsec).UTC(), true
 }
 
 // utcFromSeconds 把秒级时间戳格式化成 UTC 的两种形态；

@@ -1,25 +1,24 @@
 package app
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 )
 
 // Gemini CLI：~/.gemini/tmp/<项目>/chats/session-*.jsonl
 type GeminiSource struct {
-	root string
+	root  string
+	cache *fileRecordCache
 }
 
-func newGeminiSource(root string) *GeminiSource { return &GeminiSource{root: root} }
+func newGeminiSource(root string) *GeminiSource {
+	return &GeminiSource{root: root, cache: newFileRecordCache()}
+}
 
 func (s *GeminiSource) Mode() string     { return "gemini" }
 func (s *GeminiSource) Location() string { return s.root }
 
-func (s *GeminiSource) Exists() bool {
-	_, err := os.Stat(s.root)
-	return err == nil
-}
+func (s *GeminiSource) Exists() bool { return fileExists(s.root) }
 
 func (s *GeminiSource) files() []string {
 	files, err := filepath.Glob(filepath.Join(s.root, "*", "chats", "session-*.jsonl"))
@@ -29,15 +28,21 @@ func (s *GeminiSource) files() []string {
 	return files
 }
 
-// metaOf 只读首行拿元数据（列表用，不扫全文件）
+// metaHeadLines metaOf 最多往下找几行——元数据就在首行，
+// 但没有硬上限的话，一个缺元数据的文件会让「列个表」变成整文件扫描。
+const metaHeadLines = 5
+
+// metaOf 读文件头拿元数据（列表用，不扫全文件）
 func (s *GeminiSource) metaOf(path string) map[string]any {
 	meta := map[string]any{}
+	seen := 0
 	eachJSONL(path, func(obj map[string]any) bool {
 		if truthy(obj["sessionId"]) {
 			meta = obj
 			return false
 		}
-		return true
+		seen++
+		return seen < metaHeadLines
 	})
 	return meta
 }
@@ -131,9 +136,9 @@ func eachGeminiEntry(path string, fn func(entry map[string]any) bool) {
 	})
 }
 
+// List 只读文件头拿元数据；文件没变过就直接用缓存（见 fileRecordCache）
 func (s *GeminiSource) List() []record {
-	out := []record{}
-	for _, path := range s.files() {
+	return s.cache.records(s.files(), func(path, modISO string) record {
 		meta := s.metaOf(path)
 		// 用元数据里的时间；没有就退回文件修改时间（都不需要扫全文件）
 		lastTs := meta["lastUpdated"]
@@ -141,37 +146,30 @@ func (s *GeminiSource) List() []record {
 			lastTs = meta["startTime"]
 		}
 		if !truthy(lastTs) {
-			lastTs = mtimeISO(path)
+			lastTs = modISO
 		}
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		out = append(out, record{
-			fields: map[string]any{
-				"source":    "gemini",
-				"key":       path,
-				"shortKey":  stem,
-				"sessionId": strOr(meta["sessionId"], stem),
-				"file":      path,
-				"hasFile":   true,
-				"status":    "done",
-				"project":   filepath.Base(filepath.Dir(filepath.Dir(path))),
-				"updatedAt": lastTs,
-			},
-			sortKey: toStr(lastTs),
-		})
-	}
-	return out
+		return newRecord(map[string]any{
+			"source":    "gemini",
+			"key":       path,
+			"shortKey":  stem,
+			"sessionId": strOr(meta["sessionId"], stem),
+			"file":      path,
+			"hasFile":   true,
+			"status":    "done",
+			"project":   filepath.Base(filepath.Dir(filepath.Dir(path))),
+			"updatedAt": lastTs,
+		}, lastTs)
+	})
 }
 
-func (s *GeminiSource) Messages(r record, limit int) []map[string]any {
+func (s *GeminiSource) Messages(r record, q messageQuery) []map[string]any {
+	sink := newMessageSink(q)
 	path := r.str("file")
 	if path == "" {
-		return []map[string]any{}
+		return sink.result()
 	}
-	out := []map[string]any{}
 	eachGeminiEntry(path, func(m map[string]any) bool {
-		if len(out) >= limit {
-			return false
-		}
 		if m["type"] != "user" && m["type"] != "gemini" {
 			return true
 		}
@@ -179,15 +177,14 @@ func (s *GeminiSource) Messages(r record, limit int) []map[string]any {
 		if m["type"] == "gemini" {
 			role = "assistant"
 		}
-		out = append(out, map[string]any{
+		return sink.add(map[string]any{
 			"id":        getOr(m, "id", ""),
 			"role":      role,
 			"timestamp": getOr(m, "timestamp", ""),
 			"content":   geminiParts(m),
 		})
-		return true
 	})
-	return out
+	return sink.result()
 }
 
 func (s *GeminiSource) Final(r record) map[string]any {

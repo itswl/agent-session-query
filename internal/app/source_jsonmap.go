@@ -18,27 +18,14 @@ func (s *JsonMapSource) Mode() string { return s.def.mode }
 
 // Location 返回实际存在的那份索引（sessions.json 优先；新版 Hermes 只有 state.db）
 func (s *JsonMapSource) Location() string {
-	if _, err := os.Stat(s.def.sessionsJSON); err == nil {
-		return s.def.sessionsJSON
-	}
-	if s.def.stateDB != "" {
-		if _, err := os.Stat(s.def.stateDB); err == nil {
-			return s.def.stateDB
-		}
+	if !fileExists(s.def.sessionsJSON) && s.def.stateDB != "" && fileExists(s.def.stateDB) {
+		return s.def.stateDB
 	}
 	return s.def.sessionsJSON
 }
 
 func (s *JsonMapSource) Exists() bool {
-	if _, err := os.Stat(s.def.sessionsJSON); err == nil {
-		return true
-	}
-	if s.def.stateDB != "" {
-		if _, err := os.Stat(s.def.stateDB); err == nil {
-			return true
-		}
-	}
-	return false
+	return fileExists(s.def.sessionsJSON) || (s.def.stateDB != "" && fileExists(s.def.stateDB))
 }
 
 // kv 保留 sessions.json 里的原始顺序（Go map 不保序，而顺序会影响同分记录的先后）
@@ -82,14 +69,11 @@ func (s *JsonMapSource) load() []kv {
 
 // fileOf 取会话记录对应的 jsonl 文件路径。
 func (s *JsonMapSource) fileOf(r record) string {
-	if path := r.str("file"); path != "" {
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
+	if path := r.str("file"); path != "" && fileExists(path) {
+		return path
 	}
 	if sid := r.str("sessionId"); sid != "" {
-		alt := filepath.Join(s.def.sessionsDir, sid+".jsonl")
-		if _, err := os.Stat(alt); err == nil {
+		if alt := filepath.Join(s.def.sessionsDir, sid+".jsonl"); fileExists(alt) {
 			return alt
 		}
 	}
@@ -113,15 +97,9 @@ func (s *JsonMapSource) List() []record {
 
 		file := strOr(info["sessionFile"], "")
 		var filePublic any
-		hasFile := false
-		if file != "" {
-			if _, err := os.Stat(file); err == nil {
-				hasFile = true
-			}
-		}
+		hasFile := file != "" && fileExists(file)
 		if !hasFile && sid != "" {
-			alt := filepath.Join(s.def.sessionsDir, sid+".jsonl")
-			if _, err := os.Stat(alt); err == nil {
+			if alt := filepath.Join(s.def.sessionsDir, sid+".jsonl"); fileExists(alt) {
 				file, hasFile = alt, true
 			}
 		}
@@ -142,29 +120,27 @@ func (s *JsonMapSource) List() []record {
 			"file":      filePublic,
 			"hasFile":   hasFile,
 		}
-		sortKey := ""
+		var updatedRaw any // 交给 newRecord 解析成排序用的时间
 
 		if isOpenClaw {
-			updated := info["updatedAt"]
+			updated := info["updatedAt"] // epoch 毫秒
 			updatedStr := ""
 			if truthy(updated) {
+				updatedStr = toStr(updated)
 				if ms, ok := toFloat(updated); ok {
-					if dashed, iso, ok := utcFromSeconds(ms / 1000); ok {
-						updatedStr, sortKey = dashed, iso
-					} else {
-						updatedStr = toStr(updated)
+					if dashed, _, ok := utcFromSeconds(ms / 1000); ok {
+						updatedStr = dashed
 					}
-				} else {
-					updatedStr = toStr(updated)
 				}
 			}
+			updatedRaw = updated
 			fields["status"] = getOr(info, "status", "unknown")
 			fields["updatedAt"] = updatedStr
 			fields["model"] = getOr(info, "model", "")
 			fields["runtimeMs"] = getOr(info, "runtimeMs", float64(0))
 			fields["totalTokens"] = getOr(info, "totalTokens", float64(0))
 		} else { // hermes
-			sortKey = toStr(info["updated_at"])
+			updatedRaw = info["updated_at"]
 			fields["status"] = "done"
 			fields["updatedAt"] = getOr(info, "updated_at", "")
 			fields["createdAt"] = getOr(info, "created_at", "")
@@ -174,12 +150,13 @@ func (s *JsonMapSource) List() []record {
 			fields["estimatedCostUsd"] = getOr(info, "estimated_cost_usd", float64(0))
 		}
 
-		out = append(out, record{fields: fields, sortKey: sortKey})
+		out = append(out, newRecord(fields, updatedRaw))
 	}
 
 	// 新版 Hermes：会话全部在 state.db 里，sessions.json 可能根本不存在；
-	// 已列出的 sessionId 跳过，避免双重列出
-	if s.def.stateDB != "" {
+	// 已列出的 sessionId 跳过，避免双重列出。
+	// 先 stat 一下：库不存在时没必要每次列表都去开一个连接、再报一行错。
+	if s.def.stateDB != "" && fileExists(s.def.stateDB) {
 		seen := map[string]bool{}
 		for _, r := range out {
 			if sid := r.str("sessionId"); sid != "" {
@@ -192,28 +169,26 @@ func (s *JsonMapSource) List() []record {
 }
 
 // Messages：OpenClaw / Hermes 的消息格式由行内容自辨（type=message 或 role=user/assistant）。
-func (s *JsonMapSource) Messages(r record, limit int) []map[string]any {
-	out := []map[string]any{}
+func (s *JsonMapSource) Messages(r record, q messageQuery) []map[string]any {
+	sink := newMessageSink(q)
 	path := s.fileOf(r)
 	if path == "" {
 		// 没有会话文件（新版 Hermes 全 SQLite）：消息也直接查 state.db
-		if s.def.stateDB != "" {
-			return hermesSQLiteMessages(s.def.stateDB, r.str("sessionId"), limit)
+		if s.def.stateDB != "" && fileExists(s.def.stateDB) {
+			return hermesSQLiteMessages(s.def.stateDB, r.str("sessionId"), q)
 		}
-		return out
+		return sink.result()
 	}
 	eachJSONL(path, func(obj map[string]any) bool {
-		if len(out) >= limit {
-			return false
-		}
 		if obj["type"] == "message" {
-			out = append(out, s.formatMessage(obj))
-		} else if role := obj["role"]; role == "user" || role == "assistant" {
-			out = append(out, s.formatMessage(obj))
+			return sink.add(s.formatMessage(obj))
+		}
+		if role := obj["role"]; role == "user" || role == "assistant" {
+			return sink.add(s.formatMessage(obj))
 		}
 		return true
 	})
-	return out
+	return sink.result()
 }
 
 // formatMessage 格式化单条消息（OpenClaw content 数组 / Hermes 字符串）。
@@ -296,7 +271,7 @@ func (s *JsonMapSource) Final(r record) map[string]any {
 	path := s.fileOf(r)
 
 	if path == "" {
-		if result := hermesSQLiteFallback(s.def.mode, sessionID, status); result != nil {
+		if result := hermesSQLiteFallback(s.def, sessionID, status); result != nil {
 			return result
 		}
 		return map[string]any{
@@ -346,7 +321,7 @@ func (s *JsonMapSource) Final(r record) map[string]any {
 	}
 
 	if firstStop == nil {
-		if result := hermesSQLiteFallback(s.def.mode, sessionID, status); result != nil {
+		if result := hermesSQLiteFallback(s.def, sessionID, status); result != nil {
 			return result
 		}
 		return map[string]any{
@@ -421,8 +396,14 @@ func (s *JsonMapSource) Final(r record) map[string]any {
 	return result
 }
 
-// hermesSQLiteFallback：Hermes 的 webhook 会话有时只把最终消息落在 ~/.hermes/state.db，
+// hermesSQLiteFallback：Hermes 的 webhook 会话有时只把最终消息落在 state.db，
 // jsonl 里什么都没有，这时只能去 SQLite 里捞（见 hermes_sqlite.go）。
-func hermesSQLiteFallback(mode, sessionID, status string) map[string]any {
-	return hermesSQLiteFinal(mode, sessionID, status)
+//
+// 用数据源自己配置的 stateDB 路径——List / Messages 一直是这么做的，
+// 这里也一样，不再自己从 $HOME 重推一遍（两条路径算出来不一样时会静默查错库）。
+func hermesSQLiteFallback(def jsonMapDef, sessionID, status string) map[string]any {
+	if def.stateDB == "" {
+		return nil
+	}
+	return hermesSQLiteFinal(def.stateDB, def.mode, sessionID, status)
 }

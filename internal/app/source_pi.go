@@ -2,25 +2,24 @@ package app
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 )
 
 // Pi：~/.pi/agent/sessions/<项目>/<时间>_<uuid>.jsonl
 type PiSource struct {
-	root string
+	root  string
+	cache *fileRecordCache
 }
 
-func newPiSource(root string) *PiSource { return &PiSource{root: root} }
+func newPiSource(root string) *PiSource {
+	return &PiSource{root: root, cache: newFileRecordCache()}
+}
 
 func (s *PiSource) Mode() string     { return "pi" }
 func (s *PiSource) Location() string { return s.root }
 
-func (s *PiSource) Exists() bool {
-	_, err := os.Stat(s.root)
-	return err == nil
-}
+func (s *PiSource) Exists() bool { return fileExists(s.root) }
 
 func (s *PiSource) files() []string {
 	files, err := filepath.Glob(filepath.Join(s.root, "*", "*.jsonl"))
@@ -30,46 +29,36 @@ func (s *PiSource) files() []string {
 	return files
 }
 
+// List 只读首行元数据；文件没变过就直接用缓存（见 fileRecordCache）
 func (s *PiSource) List() []record {
-	out := []record{}
-	for _, path := range s.files() {
+	return s.cache.records(s.files(), func(path, modISO string) record {
 		head := readJSONL(path, 1)
-		var meta map[string]any
+		meta := map[string]any{}
 		if len(head) > 0 {
 			meta = head[0]
-		} else {
-			meta = map[string]any{}
 		}
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		updated := mtimeISO(path)
-		out = append(out, record{
-			fields: map[string]any{
-				"source":    "pi",
-				"key":       path,
-				"shortKey":  stem,
-				"sessionId": strOr(meta["id"], stem),
-				"file":      path,
-				"hasFile":   true,
-				"status":    "done",
-				"cwd":       getOr(meta, "cwd", ""),
-				"updatedAt": updated,
-			},
-			sortKey: updated,
-		})
-	}
-	return out
+		return newRecord(map[string]any{
+			"source":    "pi",
+			"key":       path,
+			"shortKey":  stem,
+			"sessionId": strOr(meta["id"], stem),
+			"file":      path,
+			"hasFile":   true,
+			"status":    "done",
+			"cwd":       getOr(meta, "cwd", ""),
+			"updatedAt": modISO,
+		}, modISO)
+	})
 }
 
-func (s *PiSource) Messages(r record, limit int) []map[string]any {
-	out := []map[string]any{}
+func (s *PiSource) Messages(r record, q messageQuery) []map[string]any {
+	sink := newMessageSink(q)
 	path := r.str("file")
 	if path == "" {
-		return out
+		return sink.result()
 	}
 	eachJSONL(path, func(obj map[string]any) bool {
-		if len(out) >= limit {
-			return false
-		}
 		if obj["type"] != "message" {
 			return true
 		}
@@ -94,15 +83,14 @@ func (s *PiSource) Messages(r record, limit int) []map[string]any {
 				parts = append(parts, map[string]any{"type": kind, "content": truncate(contentText(m), 500, "...[truncated]")})
 			}
 		}
-		out = append(out, map[string]any{
+		return sink.add(map[string]any{
 			"id":        getOr(obj, "id", ""),
 			"role":      strOr(msg["role"], "unknown"),
 			"timestamp": getOr(msg, "timestamp", getOr(obj, "timestamp", "")),
 			"content":   parts,
 		})
-		return true
 	})
-	return out
+	return sink.result()
 }
 
 func (s *PiSource) Final(r record) map[string]any {

@@ -9,7 +9,9 @@ services:
         GO_IMAGE: ${GO_IMAGE:-golang:1.24-alpine}
     container_name: agent-session-query
     ports:
-      - "8080:8080"
+      # 只映射到宿主机回环：服务能读到完整会话内容，别默认摊给整个局域网。
+      # 要给别人用就改成 "8080:8080"，并且一定要配上 HOOK_TOKEN。
+      - "127.0.0.1:8080:8080"
     volumes:
       # 六个数据源目录都可以挂；没数据的源服务会自动跳过。
       # 注意：宿主机上不存在的目录会被 Docker 自动建成空目录（root 属主）。
@@ -21,7 +23,10 @@ services:
       - ~/.claude/projects:/root/.claude/projects:ro
       - ~/.codex/sessions:/root/.codex/sessions:ro
       - ~/.gemini/tmp:/root/.gemini/tmp:ro
-    # 参数直接透传给二进制：SESSION_MODE 默认 auto；HOOK_TOKEN 留空则不启用认证
+    # 令牌走环境变量，不走命令行参数——参数会出现在 ps / docker inspect 里
+    environment:
+      HOOK_TOKEN: "${HOOK_TOKEN:-}"
+    # 其余参数直接透传给二进制；容器里必须绑 0.0.0.0，否则端口映射不出来
     command:
       - "--host"
       - "0.0.0.0"
@@ -29,6 +34,4 @@ services:
       - "8080"
       - "--mode"
       - "${SESSION_MODE:-auto}"
-      - "--hook_token"
-      - "${HOOK_TOKEN:-}"
     restart: unless-stopped

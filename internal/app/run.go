@@ -32,15 +32,23 @@ import (
 
 // Run 解析参数并启动服务，返回进程退出码（入口在 cmd/agent-session-query）。
 func Run(args []string) int {
+	enableUTF8Console() // Windows 的传统控制台默认不是 UTF-8，中文会乱码
+
 	fs := flag.NewFlagSet("agent-session-query", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	host := fs.String("host", "0.0.0.0", "绑定主机 (默认: 0.0.0.0)")
+	// 默认只监听回环：这个服务能读到完整会话内容（含工具输出），
+	// 默认又是免认证的，绑 0.0.0.0 等于把本机所有 Agent 记录摊给整个局域网。
+	// 要给别人用就显式 --host 0.0.0.0，并在反向代理上加认证（Dockerfile 的 CMD 就是这么传的）。
+	host := fs.String("host", "127.0.0.1", "绑定主机 (默认: 127.0.0.1，仅本机；对外暴露用 0.0.0.0)")
 	port := fs.Int("port", 8080, "端口 (默认: 8080)")
 	mode := fs.String("mode", "auto", "模式: auto 自动检测 / all 全部启用 / "+joinModes())
 	hookToken := fs.String("hook_token", "", "Bearer token（设置后所有 /sessions 端点都要带）")
 	maxConnections := fs.Int("max-connections", 50, "最大并发连接数 (默认: 50)")
 	cacheTTL := fs.Float64("cache-ttl", 2.0, "会话列表缓存秒数 (默认: 2；0 = 每次重新扫描)")
 	timeout := fs.Int("timeout", 30, "连接超时秒数 (默认: 30)")
+	maxLimit := fs.Int("max-limit", defaultMaxLimit, "?limit= 的上限 (默认: 1000)")
+	acceptQueue := fs.Int("accept-queue", 0, "满载时的排队位数 (默认: 0 = 按 max-connections 自动取)")
+	corsOrigin := fs.String("cors-origin", "", "允许的跨域来源（默认关闭；填 * 或具体 origin）")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -72,10 +80,26 @@ func Run(args []string) int {
 	} else {
 		fmt.Println("警告: 未设置认证hook_token，API 公开访问")
 	}
-	fmt.Printf("最大并发连接数: %d, 连接超时: %ds, 列表缓存: %gs\n", *maxConnections, *timeout, *cacheTTL)
+	fmt.Printf("最大并发连接数: %d (排队位 %d，最多等 %s), 连接超时: %ds, 列表缓存: %gs, limit 上限: %d\n",
+		*maxConnections, acceptQueueDepth(*maxConnections, *acceptQueue), acceptQueueWait,
+		*timeout, *cacheTTL, *maxLimit)
+	if *corsOrigin != "" {
+		fmt.Printf("已开启跨域: Access-Control-Allow-Origin: %s\n", *corsOrigin)
+		if *corsOrigin == "*" && *hookToken == "" {
+			fmt.Println("警告: --cors-origin * 且未设 token —— 任何网页都能读走本机会话内容")
+		}
+	}
 
 	api := newSessionQueryAPI(sources, *cacheTTL)
-	server := newAPIServer(*mode, sources, api, *hookToken, *maxConnections)
+	server := newAPIServer(serverOptions{
+		mode:           *mode,
+		sources:        sources,
+		api:            api,
+		token:          *hookToken,
+		corsOrigin:     *corsOrigin,
+		maxConnections: *maxConnections,
+		maxLimit:       *maxLimit,
+	})
 
 	httpServer := &http.Server{
 		Handler:           server,
@@ -93,7 +117,7 @@ func Run(args []string) int {
 		fmt.Fprintf(os.Stderr, "[FATAL] 监听失败: %v\n", err)
 		return 1
 	}
-	listener := newLimitListener(inner, *maxConnections)
+	listener := newLimitListener(inner, *maxConnections, *acceptQueue)
 	listener.server = server
 
 	fmt.Println("\nSession API 启动成功")

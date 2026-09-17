@@ -17,6 +17,16 @@ func uiSub() (fs.FS, error) {
 	return fs.Sub(uiAssets, "ui")
 }
 
+// uiCSP 页面的内容安全策略。
+//
+// 页面渲染的是第三方文本（工具输出、网页正文），XSS 的后果是 localStorage 里的
+// token 被读走。渲染一律走 textContent 是第一道防线（ui_test.go 钉着），
+// CSP 是第二道：脚本样式只许同源、不许内联、不许被别人 iframe 套进去。
+// 页面本身没有内联 script/style，加这条不需要改任何东西。
+const uiCSP = "default-src 'self'; script-src 'self'; style-src 'self'; " +
+	"img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; " +
+	"base-uri 'none'; form-action 'none'"
+
 // serveUIAssets 处理 /ui 与 /ui/*。
 //
 // 页面本身不含任何数据（要 token 才能拿到），所以和 /health 一样免认证；
@@ -27,6 +37,10 @@ func serveUIAssets(w http.ResponseWriter, r *http.Request, path string) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "Internal server error"})
 		return
 	}
+
+	w.Header().Set("Content-Security-Policy", uiCSP)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 
 	if path == "/ui" || path == "/ui/" {
 		index, err := fs.ReadFile(sub, "index.html")

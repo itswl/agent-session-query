@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -15,12 +14,20 @@ import (
 	"time"
 )
 
+// defaultLimit / defaultMaxLimit：?limit= 的缺省值与硬上限
+const (
+	defaultLimit    = 50
+	defaultMaxLimit = 1000
+)
+
 // apiServer：路由 + 认证 + 连接限制 + 统计
 type apiServer struct {
-	mode    string
-	sources []SessionSource
-	api     *SessionQueryAPI
-	token   string
+	mode       string
+	sources    []SessionSource
+	api        *SessionQueryAPI
+	token      string
+	corsOrigin string
+	maxLimit   int
 
 	maxConnections int
 
@@ -30,8 +37,29 @@ type apiServer struct {
 	badRequests int64
 }
 
-func newAPIServer(mode string, sources []SessionSource, api *SessionQueryAPI, token string, maxConnections int) *apiServer {
-	return &apiServer{mode: mode, sources: sources, api: api, token: token, maxConnections: maxConnections}
+type serverOptions struct {
+	mode           string
+	sources        []SessionSource
+	api            *SessionQueryAPI
+	token          string
+	corsOrigin     string
+	maxConnections int
+	maxLimit       int
+}
+
+func newAPIServer(opts serverOptions) *apiServer {
+	if opts.maxLimit < 1 {
+		opts.maxLimit = defaultMaxLimit
+	}
+	return &apiServer{
+		mode:           opts.mode,
+		sources:        opts.sources,
+		api:            opts.api,
+		token:          opts.token,
+		corsOrigin:     opts.corsOrigin,
+		maxLimit:       opts.maxLimit,
+		maxConnections: opts.maxConnections,
+	}
 }
 
 func (s *apiServer) stats() map[string]any {
@@ -43,6 +71,12 @@ func (s *apiServer) stats() map[string]any {
 		"total_connections":  s.totalConns,
 		"bad_requests":       s.badRequests,
 	}
+}
+
+func (s *apiServer) countBadRequest() {
+	s.mu.Lock()
+	s.badRequests++
+	s.mu.Unlock()
 }
 
 // connState 用来统计连接数（active = 当前打开的连接）
@@ -70,28 +104,39 @@ func (s *apiServer) checkAuth(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(header[len("Bearer "):]), []byte(s.token)) == 1
 }
 
+// applyCORS 只有显式配了 --cors-origin 才放 CORS 头。
+//
+// 原先是无条件 Access-Control-Allow-Origin: *。配上「不设 token 就免认证」这个默认值，
+// 等于用户访问的任何网页都能 fetch 本机的 /sessions 把会话内容（源码、工具输出）读走——
+// 裸 GET 是 simple request，不触发预检，浏览器看见 * 就直接把响应交给对方脚本。
+// 自带的 /ui 是同源的，本来就不需要 CORS。
+func (s *apiServer) applyCORS(w http.ResponseWriter) {
+	if s.corsOrigin == "" {
+		return
+	}
+	w.Header().Set("Access-Control-Allow-Origin", s.corsOrigin)
+	if s.corsOrigin != "*" {
+		w.Header().Add("Vary", "Origin")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 响应
 // ---------------------------------------------------------------------------
 
-// writeJSON 输出 JSON（不转义 HTML、不转义非 ASCII）
+// writeJSON 流式输出 JSON（不转义 HTML、不转义非 ASCII）。
+//
+// 不在内存里先缓冲整个响应：一个大会话的 messages 能有十几 MB，
+// 缓冲一份等于把峰值内存翻倍，并发几个就很可观。
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(v); err != nil {
-		body := []byte(`{"error":"Internal server error"}`)
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write(body)
-		return
+		// 响应头已经发出去了，改不了状态码，只能记一笔
+		fmt.Fprintf(os.Stderr, "[ERROR] 序列化响应失败: %v\n", err)
 	}
-	body := bytes.TrimRight(buf.Bytes(), "\n")
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	w.WriteHeader(status)
-	_, _ = w.Write(body)
 }
 
 func writePlain(w http.ResponseWriter, status int, body string) {
@@ -99,6 +144,27 @@ func writePlain(w http.ResponseWriter, status int, body string) {
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(body))
+}
+
+// statusRecorder 记下实际写出的状态码：内嵌页面走 http.FileServer，
+// 404 是它自己写的，不记的话访问日志里全是 200。
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusRecorder) WriteHeader(code int) {
+	if w.status == 0 {
+		w.status = code
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusRecorder) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(p)
 }
 
 // ---------------------------------------------------------------------------
@@ -113,12 +179,15 @@ func (s *apiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	s.applyCORS(w)
 
 	switch r.Method {
 	case http.MethodOptions:
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if s.corsOrigin != "" {
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Max-Age", "600")
+		}
 		w.Header().Set("Content-Length", "0")
 		w.WriteHeader(http.StatusOK)
 		return
@@ -143,7 +212,9 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			"status":  "ok",
 			"mode":    s.mode,
 			"sources": sourceModes(s.sources),
-			"stats":   s.stats(),
+			// 页面据此决定要不要弹令牌框：服务端没设 token 时不该还逼人随便填一个
+			"authRequired": s.token != "",
+			"stats":        s.stats(),
 		})
 		return http.StatusOK
 	}
@@ -174,8 +245,12 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 
 	// 内嵌的只读页面 - 不要求认证（页面里没有数据，数据仍要带 token 走 /sessions）
 	if isUIPath(path) {
-		serveUIAssets(w, r, path)
-		return http.StatusOK
+		rec := &statusRecorder{ResponseWriter: w}
+		serveUIAssets(rec, r, path)
+		if rec.status == 0 {
+			return http.StatusOK
+		}
+		return rec.status
 	}
 
 	// /api 前缀兼容：统一在这里去掉（只去 "/api" 四个字符，保留后面的 "/"）
@@ -190,7 +265,14 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 	}
 
 	if path == "/sessions" {
-		sessions := s.api.listSessions()
+		sessions, etag := s.api.listSessions()
+		// 页面每 10 秒轮询一次，列表多半没变：带上 ETag 就能在 304 结束
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Cache-Control", "no-cache")
+		if etagMatches(r.Header.Get("If-None-Match"), etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return http.StatusNotModified
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions, "total": len(sessions)})
 		return http.StatusOK
 	}
@@ -211,12 +293,17 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 
 		case len(parts) == 2 && parts[0] != "" && parts[1] == "messages":
 			pattern := unescapePattern(parts[0])
-			messages, ok := s.api.getMessages(pattern, parseLimit(r))
+			query := s.parseMessageQuery(r)
+			messages, ok := s.api.getMessages(pattern, query)
 			if !ok {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "Session not found"})
 				return http.StatusNotFound
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"messages": messages, "total": len(messages)})
+			writeJSON(w, http.StatusOK, map[string]any{
+				"messages": messages,
+				"total":    len(messages),
+				"order":    orderName(query.fromEnd),
+			})
 			return http.StatusOK
 
 		case len(parts) == 2 && parts[0] != "" && parts[1] == "final":
@@ -235,6 +322,23 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 	return http.StatusNotFound
 }
 
+// etagMatches 比对 If-None-Match（可能是逗号分隔的一串，也可能是 *）
+func etagMatches(header, etag string) bool {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return false
+	}
+	if header == "*" {
+		return true
+	}
+	for _, candidate := range strings.Split(header, ",") {
+		if strings.TrimSpace(candidate) == etag {
+			return true
+		}
+	}
+	return false
+}
+
 func unescapePattern(segment string) string {
 	if pattern, err := url.PathUnescape(segment); err == nil {
 		return pattern
@@ -242,17 +346,40 @@ func unescapePattern(segment string) string {
 	return segment
 }
 
-// parseLimit 取 ?limit=，非法或缺省都是 50
-func parseLimit(r *http.Request) int {
-	values, ok := r.URL.Query()["limit"]
-	if !ok || len(values) != 1 {
-		return 50
+// parseLimit 取 ?limit=，非法或缺省都是 defaultLimit，并夹在 [0, maxLimit] 内。
+//
+// 不夹上限的话，?limit=99999999 会把一个 99 MB 的会话在内存里摊成 14 MB 的响应
+// （实测 RSS 11 MB → 145 MB），几个并发请求就能把进程打爆。
+func (s *apiServer) parseLimit(r *http.Request) int {
+	limit := defaultLimit
+	if values, ok := r.URL.Query()["limit"]; ok && len(values) == 1 {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(values[0])); err == nil {
+			limit = parsed
+		}
 	}
-	limit, err := strconv.Atoi(strings.TrimSpace(values[0]))
-	if err != nil {
-		return 50
+	if limit < 0 {
+		return 0
+	}
+	if limit > s.maxLimit {
+		return s.maxLimit
 	}
 	return limit
+}
+
+// parseMessageQuery 取 ?limit= 与 ?order=（desc 表示要最新的 N 条）
+func (s *apiServer) parseMessageQuery(r *http.Request) messageQuery {
+	order := strings.TrimSpace(r.URL.Query().Get("order"))
+	return messageQuery{
+		limit:   s.parseLimit(r),
+		fromEnd: strings.EqualFold(order, "desc"),
+	}
+}
+
+func orderName(fromEnd bool) string {
+	if fromEnd {
+		return "desc"
+	}
+	return "asc"
 }
 
 func logRequest(r *http.Request, status int) {
@@ -266,51 +393,125 @@ func logRequest(r *http.Request, status int) {
 }
 
 // ---------------------------------------------------------------------------
-// 连接限制：超过上限的连接直接返回 503
+// 连接限制：超过上限的连接返回 503
 // ---------------------------------------------------------------------------
 
-type limitListener struct {
-	net.Listener
-	sem     chan struct{}
-	timeout time.Duration
-	server  *apiServer
+// acceptQueueWait 满载时一个连接最多排队多久，等不到就 503
+const acceptQueueWait = 10 * time.Second
+
+// 排队位的自动取值：maxConnections 的 autoAcceptQueueFactor 倍，不低于 minAcceptQueue。
+// 队列只是给突发流量一点缓冲，取太小的话（比如 --max-connections 2）一个 20 并发的
+// 小突发就会被打掉大半，而原先靠阻塞 accept 时这些请求是能排上队的。
+const (
+	minAcceptQueue        = 32
+	autoAcceptQueueFactor = 2
+)
+
+// acceptQueueDepth 算实际的排队位数：queue <= 0 表示按 maxConnections 自动取。
+func acceptQueueDepth(maxConnections, queue int) int {
+	if queue > 0 {
+		return queue
+	}
+	auto := maxConnections * autoAcceptQueueFactor
+	if auto < minAcceptQueue {
+		return minAcceptQueue
+	}
+	return auto
 }
 
-func newLimitListener(inner net.Listener, maxConnections int) *limitListener {
+// limitListener 控制同时在处理的连接数。
+//
+// accept 循环单独跑一个 goroutine，拿到许可的连接经 ready 交给 http.Server：
+// 原先是在 Accept() 里原地等许可，满载时整个 accept 循环停摆——第 51 个连接等 10 秒，
+// 第 52 个得等它走完才开始排，队伍越长越慢。现在每个连接各排各的，互不挡道。
+//
+// waiting 限制同时排队的连接数：排队的位置也满了就立刻 503，免得大量连接把 goroutine
+// 和文件描述符堆起来——这层背压原先是靠阻塞 accept 实现的，现在要显式写出来。
+type limitListener struct {
+	net.Listener
+	sem     chan struct{} // 并发处理许可
+	waiting chan struct{} // 排队位
+	ready   chan net.Conn
+	failed  chan error
+	timeout time.Duration
+	server  *apiServer
+
+	once sync.Once
+	err  error // 只在 Accept 里读写（http.Server 单 goroutine 调用）
+}
+
+// newLimitListener：maxConnections 是同时处理的上限，queue 是排队位数
+// （<= 0 按 maxConnections 自动取，见 acceptQueueDepth）。
+func newLimitListener(inner net.Listener, maxConnections, queue int) *limitListener {
 	if maxConnections < 1 {
 		maxConnections = 1
 	}
-	return &limitListener{Listener: inner, sem: make(chan struct{}, maxConnections), timeout: 10 * time.Second}
+	return &limitListener{
+		Listener: inner,
+		sem:      make(chan struct{}, maxConnections),
+		waiting:  make(chan struct{}, acceptQueueDepth(maxConnections, queue)),
+		ready:    make(chan net.Conn),
+		failed:   make(chan error, 1),
+		timeout:  acceptQueueWait,
+	}
 }
 
 func (l *limitListener) Accept() (net.Conn, error) {
+	l.once.Do(func() { go l.acceptLoop() })
+	if l.err != nil {
+		return nil, l.err
+	}
+	select {
+	case conn := <-l.ready:
+		return conn, nil
+	case err := <-l.failed:
+		l.err = err
+		return nil, err
+	}
+}
+
+func (l *limitListener) acceptLoop() {
 	for {
 		conn, err := l.Listener.Accept()
 		if err != nil {
-			return nil, err
+			l.failed <- err
+			return
 		}
-
 		select {
-		case l.sem <- struct{}{}:
-			return &releaseConn{Conn: conn, release: func() { <-l.sem }}, nil
-		default:
+		case l.sem <- struct{}{}: // 有空位，直接放行
+			l.ready <- l.wrap(conn)
+		case l.waiting <- struct{}{}: // 满了但还能排队
+			go func() {
+				defer func() { <-l.waiting }()
+				l.admit(conn)
+			}()
+		default: // 连排队的位置都没了
+			l.reject(conn)
 		}
+	}
+}
 
-		// 已满：最多等 10 秒，等不到就 503
-		timer := time.NewTimer(l.timeout)
-		select {
-		case l.sem <- struct{}{}:
-			timer.Stop()
-			return &releaseConn{Conn: conn, release: func() { <-l.sem }}, nil
-		case <-timer.C:
-			writeOverloaded(conn)
-			_ = conn.Close()
-			if l.server != nil {
-				l.server.mu.Lock()
-				l.server.badRequests++
-				l.server.mu.Unlock()
-			}
-		}
+// admit 排队等一个许可，等到了就把连接交出去，超时就 503
+func (l *limitListener) admit(conn net.Conn) {
+	timer := time.NewTimer(l.timeout)
+	defer timer.Stop()
+	select {
+	case l.sem <- struct{}{}:
+		l.ready <- l.wrap(conn)
+	case <-timer.C:
+		l.reject(conn)
+	}
+}
+
+func (l *limitListener) wrap(conn net.Conn) net.Conn {
+	return &releaseConn{Conn: conn, release: func() { <-l.sem }}
+}
+
+func (l *limitListener) reject(conn net.Conn) {
+	writeOverloaded(conn)
+	_ = conn.Close()
+	if l.server != nil {
+		l.server.countBadRequest()
 	}
 }
 
@@ -339,8 +540,6 @@ type countingWriter struct {
 }
 
 func (w countingWriter) Write(p []byte) (int, error) {
-	w.server.mu.Lock()
-	w.server.badRequests++
-	w.server.mu.Unlock()
+	w.server.countBadRequest()
 	return os.Stderr.Write(p)
 }

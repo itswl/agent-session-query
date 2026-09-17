@@ -77,7 +77,7 @@ func TestJsonMapHermes(t *testing.T) {
 	if len(list) != 1 || list[0].str("status") != "done" || list[0].str("displayName") != "演示" {
 		t.Fatalf("list = %v", list[0].fields)
 	}
-	msgs := s.Messages(list[0], 50)
+	msgs := s.Messages(list[0], messageQuery{limit: 50})
 	if len(msgs) != 1 || msgs[0]["timestamp"] != "2026-09-13T10:00:00Z" {
 		t.Fatalf("messages = %v", msgs)
 	}

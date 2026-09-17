@@ -2,8 +2,10 @@ package app
 
 import (
 	"fmt"
+	"hash/fnv"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,10 +21,15 @@ type SessionQueryAPI struct {
 	cacheTTL time.Duration
 
 	mu    sync.Mutex
-	cache map[string]cachedRecords
+	cache map[string]*cachedRecords
 }
 
+// cachedRecords 一个数据源的列表缓存。
+//
+// scan 保证同一数据源同一时刻只有一次扫描：缓存刚过期时若干请求同时打进来，
+// 各扫一遍目录是纯浪费（cache stampede）——现在是一个去扫、其余等它的结果。
 type cachedRecords struct {
+	scan    sync.Mutex
 	at      time.Time
 	records []record
 }
@@ -34,7 +41,7 @@ func newSessionQueryAPI(sources []SessionSource, cacheTTLSeconds float64) *Sessi
 	return &SessionQueryAPI{
 		sources:  sources,
 		cacheTTL: time.Duration(cacheTTLSeconds * float64(time.Second)),
-		cache:    map[string]cachedRecords{},
+		cache:    map[string]*cachedRecords{},
 	}
 }
 
@@ -43,19 +50,23 @@ func (a *SessionQueryAPI) recordsOf(source SessionSource) []record {
 	if a.cacheTTL <= 0 {
 		return safeList(source)
 	}
-	now := time.Now()
+
 	a.mu.Lock()
-	if hit, ok := a.cache[source.Mode()]; ok && now.Sub(hit.at) < a.cacheTTL {
-		a.mu.Unlock()
-		return hit.records
+	entry, ok := a.cache[source.Mode()]
+	if !ok {
+		entry = &cachedRecords{}
+		a.cache[source.Mode()] = entry
 	}
 	a.mu.Unlock()
 
-	records := safeList(source)
-	a.mu.Lock()
-	a.cache[source.Mode()] = cachedRecords{at: now, records: records}
-	a.mu.Unlock()
-	return records
+	entry.scan.Lock()
+	defer entry.scan.Unlock()
+	if !entry.at.IsZero() && time.Since(entry.at) < a.cacheTTL {
+		return entry.records
+	}
+	entry.records = safeList(source)
+	entry.at = time.Now()
+	return entry.records
 }
 
 // safeList 单个数据源出错时不拖垮整个列表
@@ -69,19 +80,36 @@ func safeList(source SessionSource) (out []record) {
 	return source.List()
 }
 
-func (a *SessionQueryAPI) listSessions() []map[string]any {
+// listSessions 多源合并后的会话列表，以及一个弱校验值（ETag 用）。
+//
+// 页面每 10 秒轮询一次，绝大多数时候列表根本没变——带上 ETag 之后
+// 这些轮询在 304 就结束了，不必每次把整个列表再序列化、再传一遍。
+func (a *SessionQueryAPI) listSessions() ([]map[string]any, string) {
 	all := []record{}
 	for _, source := range a.sources {
 		all = append(all, a.recordsOf(source)...)
 	}
 	// 按更新时间倒序；相等时保持数据源顺序（稳定排序）
-	sort.SliceStable(all, func(i, j int) bool { return all[i].sortKey > all[j].sortKey })
+	sort.SliceStable(all, func(i, j int) bool { return all[i].newerThan(all[j]) })
 
 	out := make([]map[string]any, 0, len(all))
 	for _, item := range all {
 		out = append(out, item.public())
 	}
-	return out
+	return out, listVersion(all)
+}
+
+// listVersion 列表的弱校验值：成员、更新时间、状态任一变化都会让它变。
+func listVersion(records []record) string {
+	h := fnv.New64a()
+	for _, r := range records {
+		for _, field := range []string{"source", "key", "updatedAt", "status"} {
+			_, _ = h.Write([]byte(r.str(field)))
+			_, _ = h.Write([]byte{0})
+		}
+		_, _ = h.Write([]byte{0x1e})
+	}
+	return `W/"` + strconv.FormatUint(h.Sum64(), 16) + `"`
 }
 
 // findSession 在所有启用的数据源里找最佳匹配（精确优先，跨源不互相遮蔽）
@@ -96,14 +124,14 @@ func (a *SessionQueryAPI) findSession(pattern string) (SessionSource, record, bo
 	if pattern == "" {
 		return nil, record{}, false
 	}
-	patternLower := strings.ToLower(pattern)
+	patternLower := normalizeForMatch(pattern)
 
 	var bestSource SessionSource
 	var bestRecord record
 	bestRank := -1
 	for _, source := range a.sources {
 		for _, item := range a.recordsOf(source) {
-			rank := matchRank(patternLower, item.fields)
+			rank := item.matchRank(patternLower)
 			if rank == -1 {
 				continue
 			}
@@ -126,12 +154,31 @@ func (a *SessionQueryAPI) getSession(pattern string) (map[string]any, bool) {
 	return item.public(), true
 }
 
-func (a *SessionQueryAPI) getMessages(pattern string, limit int) ([]map[string]any, bool) {
+// safeParse 单个会话解析炸了不至于把请求变成 500：记一笔，按「没解析出来」处理。
+// 会话文件是外部写的，格式随时可能变——messages 和 final 都走这层。
+func safeParse[T any](mode, what string, parse func() T) (out T) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] %s 解析%s失败: %v\n", mode, what, rec)
+			var zero T
+			out = zero
+		}
+	}()
+	return parse()
+}
+
+func (a *SessionQueryAPI) getMessages(pattern string, q messageQuery) ([]map[string]any, bool) {
 	source, item, ok := a.findSession(pattern)
 	if !ok {
 		return nil, false
 	}
-	return source.Messages(item, limit), true
+	messages := safeParse(source.Mode(), "消息", func() []map[string]any {
+		return source.Messages(item, q)
+	})
+	if messages == nil {
+		messages = []map[string]any{}
+	}
+	return messages, true
 }
 
 func (a *SessionQueryAPI) getFinalMessage(pattern string) (map[string]any, bool) {
@@ -140,16 +187,9 @@ func (a *SessionQueryAPI) getFinalMessage(pattern string) (map[string]any, bool)
 		return nil, false
 	}
 
-	var result map[string]any
-	func() {
-		defer func() {
-			if rec := recover(); rec != nil {
-				fmt.Fprintf(os.Stderr, "[WARN] %s 解析最终结果失败: %v\n", source.Mode(), rec)
-				result = nil
-			}
-		}()
-		result = source.Final(item)
-	}()
+	result := safeParse(source.Mode(), "最终结果", func() map[string]any {
+		return source.Final(item)
+	})
 
 	if result == nil {
 		status := item.str("status")

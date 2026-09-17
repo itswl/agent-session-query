@@ -2,25 +2,24 @@ package app
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 )
 
 // Claude Code：~/.claude/projects/<项目>/<session-uuid>.jsonl
 type ClaudeCodeSource struct {
-	root string
+	root  string
+	cache *fileRecordCache
 }
 
-func newClaudeSource(root string) *ClaudeCodeSource { return &ClaudeCodeSource{root: root} }
+func newClaudeSource(root string) *ClaudeCodeSource {
+	return &ClaudeCodeSource{root: root, cache: newFileRecordCache()}
+}
 
 func (s *ClaudeCodeSource) Mode() string     { return "claude" }
 func (s *ClaudeCodeSource) Location() string { return s.root }
 
-func (s *ClaudeCodeSource) Exists() bool {
-	_, err := os.Stat(s.root)
-	return err == nil
-}
+func (s *ClaudeCodeSource) Exists() bool { return fileExists(s.root) }
 
 func (s *ClaudeCodeSource) files() []string {
 	files, err := filepath.Glob(filepath.Join(s.root, "*", "*.jsonl"))
@@ -30,9 +29,9 @@ func (s *ClaudeCodeSource) files() []string {
 	return files
 }
 
+// List 只读每个会话文件的头几行拿元数据；文件没变过就直接用缓存（见 fileRecordCache）
 func (s *ClaudeCodeSource) List() []record {
-	out := []record{}
-	for _, path := range s.files() {
+	return s.cache.records(s.files(), func(path, modISO string) record {
 		head := readJSONL(path, 5)
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		sid := stem
@@ -45,23 +44,18 @@ func (s *ClaudeCodeSource) List() []record {
 				cwd = obj["cwd"]
 			}
 		}
-		updated := mtimeISO(path)
-		out = append(out, record{
-			fields: map[string]any{
-				"source":    "claude",
-				"key":       path,
-				"shortKey":  stem,
-				"sessionId": sid,
-				"file":      path,
-				"hasFile":   true,
-				"status":    "done",
-				"cwd":       cwd,
-				"updatedAt": updated,
-			},
-			sortKey: updated,
-		})
-	}
-	return out
+		return newRecord(map[string]any{
+			"source":    "claude",
+			"key":       path,
+			"shortKey":  stem,
+			"sessionId": sid,
+			"file":      path,
+			"hasFile":   true,
+			"status":    "done",
+			"cwd":       cwd,
+			"updatedAt": modISO,
+		}, modISO)
+	})
 }
 
 // parts 把 Claude Code 的 content 收敛成统一的块数组
@@ -94,16 +88,13 @@ func (s *ClaudeCodeSource) parts(content any) []map[string]any {
 	return parts
 }
 
-func (s *ClaudeCodeSource) Messages(r record, limit int) []map[string]any {
-	out := []map[string]any{}
+func (s *ClaudeCodeSource) Messages(r record, q messageQuery) []map[string]any {
+	sink := newMessageSink(q)
 	path := r.str("file")
 	if path == "" {
-		return out
+		return sink.result()
 	}
 	eachJSONL(path, func(obj map[string]any) bool {
-		if len(out) >= limit {
-			return false
-		}
 		if obj["type"] != "user" && obj["type"] != "assistant" {
 			return true
 		}
@@ -111,15 +102,14 @@ func (s *ClaudeCodeSource) Messages(r record, limit int) []map[string]any {
 			return true
 		}
 		msg := getMap(obj, "message")
-		out = append(out, map[string]any{
+		return sink.add(map[string]any{
 			"id":        getOr(obj, "uuid", ""),
 			"role":      strOr(msg["role"], strOr(obj["type"], "")),
 			"timestamp": getOr(obj, "timestamp", ""),
 			"content":   s.parts(msg["content"]),
 		})
-		return true
 	})
-	return out
+	return sink.result()
 }
 
 func (s *ClaudeCodeSource) Final(r record) map[string]any {

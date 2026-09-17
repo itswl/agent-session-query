@@ -11,29 +11,26 @@ import (
 	_ "modernc.org/sqlite" // 纯 Go 的 SQLite 驱动（不用 cgo，交叉编译照旧）
 )
 
-// hermesSQLiteFinal 读取 ~/.hermes/state.db，取会话的最终消息。
+// hermesSQLiteFinal 读取 Hermes 的 state.db，取会话的最终消息。
 //
 // Hermes 的 webhook 会话有时只把最终消息落在 state.db 里，jsonl 里什么都没有——
 // 这时候会话记录没有 file，final 只能从 SQLite 取。
 //
 // 返回 nil 表示「这里也没有最终消息」（库不存在、查不到、或读取失败），由上层走兜底响应。
-func hermesSQLiteFinal(mode, sessionID, status string) map[string]any {
-	if mode != "hermes" || sessionID == "" {
+func hermesSQLiteFinal(dbPath, mode, sessionID, status string) map[string]any {
+	if mode != "hermes" || sessionID == "" || dbPath == "" {
 		return nil
 	}
-	dbPath := filepath.Join(defaultHome(), ".hermes", "state.db")
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil
 	}
 
-	// 只读打开：不建 -wal/-shm、不改动别人的库；超时保护 3 秒
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	db, err := openHermesDB(dbPath)
 	if err != nil {
 		warnHermesSQLite(sessionID, err)
 		return nil
 	}
 	defer db.Close()
-	db.SetMaxOpenConns(1)
 
 	var messageCount sql.NullInt64
 	var inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens sql.NullInt64
@@ -139,9 +136,17 @@ func nullFloatOrZero(v sql.NullFloat64) float64 {
 	return 0
 }
 
+// sqliteURI 把文件路径拼成 SQLite 的 URI 形式。
+//
+// Windows 上路径是 C:\Users\...\state.db，反斜杠塞进 URI 会有转义歧义；
+// 统一换成正斜杠，SQLite 在 Windows 上认 file:C:/Users/.../state.db 这种写法。
+func sqliteURI(dbPath string) string {
+	return "file:" + filepath.ToSlash(dbPath)
+}
+
 // openHermesDB 只读打开 state.db：不建 -wal/-shm、不改动别人的库
 func openHermesDB(dbPath string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	db, err := sql.Open("sqlite", sqliteURI(dbPath)+"?mode=ro")
 	if err != nil {
 		return nil, err
 	}
@@ -197,10 +202,10 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) []record {
 		if !updated.Valid {
 			updated = startedAt
 		}
-		updatedAt, sortKey := "", ""
+		updatedAt := ""
 		if updated.Valid {
 			if _, iso, ok := utcFromSeconds(updated.Float64); ok {
-				updatedAt, sortKey = iso, iso
+				updatedAt = iso
 			}
 		}
 		createdAt := ""
@@ -212,34 +217,32 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) []record {
 		totalTokens := float64(nullIntOrZero(inputTokens)) + float64(nullIntOrZero(outputTokens))
 
 		keyStr := key.String
-		out = append(out, record{
-			fields: map[string]any{
-				"source":           mode,
-				"key":              keyStr,
-				"shortKey":         keyStr,
-				"sessionId":        sid.String,
-				"file":             nil,
-				"hasFile":          false,
-				"status":           "done",
-				"updatedAt":        updatedAt,
-				"createdAt":        createdAt,
-				"displayName":      displayName.String,
-				"platform":         platform.String,
-				"model":            model.String,
-				"totalTokens":      totalTokens,
-				"estimatedCostUsd": nullFloatOrZero(cost),
-			},
-			sortKey: sortKey,
-		})
+		out = append(out, newRecord(map[string]any{
+			"source":           mode,
+			"key":              keyStr,
+			"shortKey":         keyStr,
+			"sessionId":        sid.String,
+			"file":             nil,
+			"hasFile":          false,
+			"status":           "done",
+			"updatedAt":        updatedAt,
+			"createdAt":        createdAt,
+			"displayName":      displayName.String,
+			"platform":         platform.String,
+			"model":            model.String,
+			"totalTokens":      totalTokens,
+			"estimatedCostUsd": nullFloatOrZero(cost),
+		}, updatedAt))
 	}
 	return out
 }
 
 // hermesSQLiteMessages 读没有 jsonl 的会话的消息（state.db 里的 user/assistant 行，
-// 与 jsonl 路径同构：assistant 的 reasoning 作为 thinking；时间戳是 epoch 秒 → UTC ISO）
-func hermesSQLiteMessages(dbPath, sessionID string, limit int) []map[string]any {
+// 与 jsonl 路径同构：assistant 的 reasoning 作为 thinking；时间戳是 epoch 秒 → UTC ISO）。
+// 取最新 N 条时直接让 SQL 倒着取再翻回来，不用把整段消息都读出来。
+func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string]any {
 	out := []map[string]any{}
-	if limit <= 0 {
+	if q.limit <= 0 {
 		return out
 	}
 	db, err := openHermesDB(dbPath)
@@ -249,14 +252,18 @@ func hermesSQLiteMessages(dbPath, sessionID string, limit int) []map[string]any 
 	}
 	defer db.Close()
 
+	order := "ASC"
+	if q.fromEnd {
+		order = "DESC"
+	}
 	rows, err := db.Query(`
 		SELECT id, role, content, reasoning, timestamp
 		FROM messages
 		WHERE session_id = ?
 		  AND COALESCE(active, 1) = 1
 		  AND role IN ('user', 'assistant')
-		ORDER BY timestamp ASC, id ASC
-		LIMIT ?`, sessionID, limit)
+		ORDER BY timestamp `+order+`, id `+order+`
+		LIMIT ?`, sessionID, q.limit)
 	if err != nil {
 		warnHermesSQLite(sessionID, err)
 		return out
@@ -282,6 +289,11 @@ func hermesSQLiteMessages(dbPath, sessionID string, limit int) []map[string]any 
 			"timestamp": sqliteTimeString(timestamp),
 			"content":   parts,
 		})
+	}
+	if q.fromEnd { // 倒着查出来的，翻回时间先后顺序
+		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+			out[i], out[j] = out[j], out[i]
+		}
 	}
 	return out
 }

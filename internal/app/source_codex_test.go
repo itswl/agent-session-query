@@ -22,7 +22,7 @@ func TestCodexSource(t *testing.T) {
 		t.Fatalf("list = %v", list)
 	}
 
-	msgs := s.Messages(list[0], 50)
+	msgs := s.Messages(list[0], messageQuery{limit: 50})
 	if len(msgs) != 2 { // developer 那条不算
 		t.Fatalf("messages = %v", msgs)
 	}

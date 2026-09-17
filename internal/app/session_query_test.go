@@ -2,10 +2,14 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +18,15 @@ import (
 // ---------------------------------------------------------------------------
 // 工具函数
 // ---------------------------------------------------------------------------
+
+// setHome 把 home 目录指到临时目录。
+// Windows 上 os.UserHomeDir() 读的是 %USERPROFILE% 而不是 $HOME，
+// 两个都设，测试才真的被隔离在临时目录里。
+func setHome(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+}
 
 func write(t *testing.T, path string, lines ...string) {
 	t.Helper()
@@ -56,7 +69,8 @@ func TestContentText(t *testing.T) {
 }
 
 func TestMatchRank(t *testing.T) {
-	f := map[string]any{"sessionId": "abc-def", "key": "/r/proj/abc-def.jsonl"}
+	// 小写形式在建记录时就算好了（record.lowerSID / lowerKey）
+	r := newRecord(map[string]any{"sessionId": "abc-def", "key": "/r/proj/abc-def.jsonl"}, "")
 	cases := []struct {
 		pattern string
 		want    int
@@ -69,16 +83,51 @@ func TestMatchRank(t *testing.T) {
 		{"zzz", -1},
 	}
 	for _, c := range cases {
-		if got := matchRank(c.pattern, f); got != c.want {
+		if got := r.matchRank(c.pattern); got != c.want {
 			t.Errorf("matchRank(%q) = %d, want %d", c.pattern, got, c.want)
 		}
 	}
 
 	// key 里没有、只有 sessionId 里有 → 4
-	f2 := map[string]any{"sessionId": "uniq-sid-9", "key": "/r/other/file.jsonl"}
-	if got := matchRank("sid-9", f2); got != 4 {
+	r2 := newRecord(map[string]any{"sessionId": "uniq-sid-9", "key": "/r/other/file.jsonl"}, "")
+	if got := r2.matchRank("sid-9"); got != 4 {
 		t.Errorf("matchRank(sid-9) = %d, want 4", got)
 	}
+
+	// 大小写不敏感：pattern 传进来时已经是小写的
+	upper := newRecord(map[string]any{"sessionId": "ABC-DEF", "key": "/R/P.jsonl"}, "")
+	if got := upper.matchRank("abc-def"); got != 0 {
+		t.Errorf("大小写不敏感匹配 = %d, want 0", got)
+	}
+}
+
+// TestRecordSortAcrossFormats：跨源排序按解析出来的时间，不是字典序。
+// Gemini 写 RFC3339Nano、文件源用 mtime 派生的形态、OpenClaw 是 epoch 毫秒，
+// 只比字符串的话带时区偏移的那个会排到完全错误的位置。
+func TestRecordSortAcrossFormats(t *testing.T) {
+	records := []record{
+		newRecord(map[string]any{"key": "mtime"}, "2026-09-14T03:16:50"),        // UTC
+		newRecord(map[string]any{"key": "offset"}, "2026-09-14T11:20:00+08:00"), // = 03:20 UTC，最新
+		newRecord(map[string]any{"key": "nano"}, "2026-09-14T03:16:50.601Z"),    //
+		newRecord(map[string]any{"key": "epochms"}, float64(1789197000000)),     // 2026-09-14T02:30 UTC
+		newRecord(map[string]any{"key": "bad"}, "看不懂的时间"),                       // 解析不出来 → 垫底
+	}
+	sort.SliceStable(records, func(i, j int) bool { return records[i].newerThan(records[j]) })
+
+	want := []string{"offset", "nano", "mtime", "epochms", "bad"}
+	for i, key := range want {
+		if got := records[i].str("key"); got != key {
+			t.Fatalf("第 %d 位 = %q, want %q（完整顺序 %v）", i, got, key, keysOf(records))
+		}
+	}
+}
+
+func keysOf(records []record) []string {
+	out := []string{}
+	for _, r := range records {
+		out = append(out, r.str("key"))
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -136,18 +185,74 @@ func TestListSortAndCache(t *testing.T) {
 	}
 
 	api := newSessionQueryAPI([]SessionSource{newPiSource(root)}, 60)
-	sessions := api.listSessions()
+	sessions, etag := api.listSessions()
 	if len(sessions) != 2 || sessions[0]["sessionId"] != "new" {
 		t.Fatalf("sessions = %v", sessions)
 	}
+	if etag == "" {
+		t.Fatal("应当有 ETag")
+	}
 	// 缓存生效期内新增文件不会出现；TTL=0 时立即可见
 	write(t, filepath.Join(root, "p3", "third.jsonl"), `{"type":"session","id":"third"}`)
-	if got := api.listSessions(); len(got) != 2 {
-		t.Fatalf("缓存应命中，得到 %d 条", len(got))
+	if got, again := api.listSessions(); len(got) != 2 || again != etag {
+		t.Fatalf("缓存应命中，得到 %d 条 etag=%s", len(got), again)
 	}
 	uncached := newSessionQueryAPI([]SessionSource{newPiSource(root)}, 0)
-	if got := uncached.listSessions(); len(got) != 3 {
+	got, newETag := uncached.listSessions()
+	if len(got) != 3 {
 		t.Fatalf("TTL=0 应立即看到 3 条，得到 %d", len(got))
+	}
+	if newETag == etag {
+		t.Fatal("列表变了，ETag 也该变")
+	}
+}
+
+// TestPublicIsACopy：public() 必须给副本——记录被列表缓存长期持有，
+// 交出去的 map 被改一下，后面所有读者拿到的都是脏数据。
+func TestPublicIsACopy(t *testing.T) {
+	r := newRecord(map[string]any{"sessionId": "s", "status": "done"}, "")
+	out := r.public()
+	out["status"] = "tampered"
+	if r.str("status") != "done" {
+		t.Fatalf("内部字段被改成了 %q", r.str("status"))
+	}
+}
+
+// TestFileRecordCacheReusesUnchanged：文件没变就不该再解析一次文件头。
+func TestFileRecordCacheReusesUnchanged(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "p", "a.jsonl")
+	write(t, path, `{"type":"session","id":"cached"}`)
+
+	cache := newFileRecordCache()
+	builds := 0
+	build := func(p, modISO string) record {
+		builds++
+		return newRecord(map[string]any{"key": p, "sessionId": "cached"}, modISO)
+	}
+
+	if got := cache.records([]string{path}, build); len(got) != 1 || builds != 1 {
+		t.Fatalf("首次 = %d 条 / %d 次解析", len(got), builds)
+	}
+	if got := cache.records([]string{path}, build); len(got) != 1 || builds != 1 {
+		t.Fatalf("文件没变却又解析了一次：%d 次", builds)
+	}
+
+	// 内容变了（大小变化）就要重新解析
+	write(t, path, `{"type":"session","id":"cached"}`, `{"type":"message"}`)
+	if cache.records([]string{path}, build); builds != 2 {
+		t.Fatalf("文件变了应重新解析，实际 %d 次", builds)
+	}
+
+	// 文件没了就不再列出，缓存条目也要清掉
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := cache.records([]string{path}, build); len(got) != 0 {
+		t.Fatalf("文件已删除仍列出 %d 条", len(got))
+	}
+	if len(cache.entries) != 0 {
+		t.Fatalf("缓存没清干净: %v", cache.entries)
 	}
 }
 
@@ -166,7 +271,9 @@ func newTestServerFixture(t *testing.T, token, sessionID string) (*httptest.Serv
 	)
 	sources := []SessionSource{newPiSource(root)}
 	api := newSessionQueryAPI(sources, 2)
-	srv := httptest.NewServer(newAPIServer("auto", sources, api, token, 50))
+	srv := httptest.NewServer(newAPIServer(serverOptions{
+		mode: "auto", sources: sources, api: api, token: token, maxConnections: 50,
+	}))
 	t.Cleanup(srv.Close)
 	return srv, sessionPath
 }
@@ -282,14 +389,30 @@ func TestHTTPEncodedPattern(t *testing.T) {
 
 func TestHTTPOptionsAndMethods(t *testing.T) {
 	srv, _ := newTestServer(t, "")
+
+	// 默认不放任何 CORS 头：不设 token 时是免认证的，
+	// 一个 Access-Control-Allow-Origin: * 就等于让任何网页都能读走本机会话内容
 	req, _ := http.NewRequest(http.MethodOptions, srv.URL+"/sessions", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != 200 || resp.Header.Get("Access-Control-Allow-Origin") != "*" {
-		t.Fatalf("OPTIONS = %d %v", resp.StatusCode, resp.Header)
+	if resp.StatusCode != 200 || resp.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("默认不该有 CORS 头: %d %v", resp.StatusCode, resp.Header)
+	}
+
+	code, _ := get(t, srv.URL+"/sessions", "")
+	if code != 200 {
+		t.Fatalf("GET /sessions = %d", code)
+	}
+	resp, err = http.Get(srv.URL + "/sessions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("数据端点默认不该有 CORS 头，得到 %q", got)
 	}
 
 	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/sessions", nil)
@@ -303,10 +426,104 @@ func TestHTTPOptionsAndMethods(t *testing.T) {
 	}
 }
 
+// TestHTTPCORSOptIn：--cors-origin 显式配了才放头，并且允许带 Authorization 预检
+func TestHTTPCORSOptIn(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "p", "a.jsonl"), `{"type":"session","id":"s"}`)
+	sources := []SessionSource{newPiSource(root)}
+	srv := httptest.NewServer(newAPIServer(serverOptions{
+		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 2),
+		token: "secret", corsOrigin: "https://ops.example", maxConnections: 50,
+	}))
+	t.Cleanup(srv.Close)
+
+	req, _ := http.NewRequest(http.MethodOptions, srv.URL+"/sessions", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.Header.Get("Access-Control-Allow-Origin") != "https://ops.example" {
+		t.Fatalf("ACAO = %q", resp.Header.Get("Access-Control-Allow-Origin"))
+	}
+	if !strings.Contains(resp.Header.Get("Access-Control-Allow-Headers"), "Authorization") {
+		t.Fatalf("预检要放行 Authorization，否则跨域根本用不了 token: %v", resp.Header)
+	}
+	if resp.Header.Get("Vary") != "Origin" {
+		t.Fatalf("按具体 origin 放行时要带 Vary: Origin，得到 %q", resp.Header.Get("Vary"))
+	}
+}
+
+// TestHTTPLimitClamped：?limit= 必须夹在上限内，不然一个请求就能把内存打爆
+func TestHTTPLimitClamped(t *testing.T) {
+	root := t.TempDir()
+	lines := []string{`{"type":"session","id":"big"}`}
+	for i := 0; i < 20; i++ {
+		lines = append(lines, `{"type":"message","id":"m","message":{"role":"user","content":[{"type":"text","text":"x"}]}}`)
+	}
+	write(t, filepath.Join(root, "p", "big.jsonl"), lines...)
+	sources := []SessionSource{newPiSource(root)}
+	srv := httptest.NewServer(newAPIServer(serverOptions{
+		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 2),
+		maxConnections: 50, maxLimit: 5,
+	}))
+	t.Cleanup(srv.Close)
+
+	if _, body := get(t, srv.URL+"/sessions/big/messages?limit=99999999", ""); body["total"] != float64(5) {
+		t.Fatalf("limit 未夹到上限 5: %v", body["total"])
+	}
+	// 负数与 0 仍然是「什么都不要」，与原行为一致
+	if _, body := get(t, srv.URL+"/sessions/big/messages?limit=-1", ""); body["total"] != float64(0) {
+		t.Fatalf("limit=-1 应返回 0 条: %v", body["total"])
+	}
+}
+
+// TestHTTPSessionsETag：列表没变时轮询应当在 304 结束
+func TestHTTPSessionsETag(t *testing.T) {
+	srv, _ := newTestServer(t, "secret")
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/sessions", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("/sessions 应当带 ETag")
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/sessions", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("If-None-Match", etag)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("同一个 ETag 应返回 304，得到 %d", resp.StatusCode)
+	}
+
+	// ETag 对不上就照常返回完整列表
+	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/sessions", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("If-None-Match", `W/"deadbeef"`)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ETag 不匹配应返回 200，得到 %d", resp.StatusCode)
+	}
+}
+
 func TestBuildSourcesModes(t *testing.T) {
 	// 未检测到任何数据源时回退 OpenClaw（all 与 auto 都一样）
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	if sources, err := buildSources("auto"); err != nil || len(sources) != 1 || sources[0].Mode() != "openclaw" {
 		t.Fatalf("auto 回退 = %v %v", sources, err)
 	}
@@ -331,5 +548,168 @@ func TestBuildSourcesModes(t *testing.T) {
 	}
 	if _, err := buildSources("nope"); err == nil {
 		t.Fatal("未知模式应当报错")
+	}
+}
+
+// TestAcceptQueueDepth：--accept-queue 显式指定就用它，0 表示按 max-connections 自动取
+func TestAcceptQueueDepth(t *testing.T) {
+	cases := []struct{ maxConns, queue, want int }{
+		{50, 0, 100},  // 2 倍
+		{2, 0, 32},    // 太小，用下限
+		{200, 0, 400}, // 2 倍
+		{2, 5, 5},     // 显式指定，不再兜底到下限
+		{50, 1, 1},    // 显式压到最小
+	}
+	for _, c := range cases {
+		if got := acceptQueueDepth(c.maxConns, c.queue); got != c.want {
+			t.Errorf("acceptQueueDepth(%d, %d) = %d, want %d", c.maxConns, c.queue, got, c.want)
+		}
+	}
+}
+
+// TestMessageSink：取最早 N 条要能提前叫停，取最新 N 条要滚到末尾且内存只跟 limit 走
+func TestMessageSink(t *testing.T) {
+	feed := func(sink *messageSink, n int) int {
+		fed := 0
+		for i := 0; i < n; i++ {
+			fed++
+			if !sink.add(map[string]any{"id": i}) {
+				break
+			}
+		}
+		return fed
+	}
+	ids := func(items []map[string]any) []int {
+		out := []int{}
+		for _, m := range items {
+			out = append(out, m["id"].(int))
+		}
+		return out
+	}
+
+	// 最早 3 条：喂到第 3 条就该收手
+	head := newMessageSink(messageQuery{limit: 3})
+	if fed := feed(head, 100); fed != 3 {
+		t.Fatalf("取最早 N 条应在第 3 条停下，实际喂了 %d 条", fed)
+	}
+	if got := ids(head.result()); !reflect.DeepEqual(got, []int{0, 1, 2}) {
+		t.Fatalf("最早 3 条 = %v", got)
+	}
+
+	// 最新 3 条：要一路扫完，结果按时间先后排
+	tail := newMessageSink(messageQuery{limit: 3, fromEnd: true})
+	if fed := feed(tail, 100); fed != 100 {
+		t.Fatalf("取最新 N 条必须扫完，实际只喂了 %d 条", fed)
+	}
+	if got := ids(tail.result()); !reflect.DeepEqual(got, []int{97, 98, 99}) {
+		t.Fatalf("最新 3 条 = %v", got)
+	}
+	if len(tail.items) != 3 {
+		t.Fatalf("环形缓冲应只留 3 条，实际 %d 条", len(tail.items))
+	}
+
+	// 条数不够 limit 时原样返回
+	few := newMessageSink(messageQuery{limit: 10, fromEnd: true})
+	feed(few, 2)
+	if got := ids(few.result()); !reflect.DeepEqual(got, []int{0, 1}) {
+		t.Fatalf("不足 limit 时 = %v", got)
+	}
+	// limit=0 一条都不收
+	zero := newMessageSink(messageQuery{limit: 0})
+	if fed := feed(zero, 5); fed != 1 || len(zero.result()) != 0 {
+		t.Fatalf("limit=0 应立即停且为空: fed=%d len=%d", fed, len(zero.result()))
+	}
+}
+
+// TestHTTPMessagesOrder：?order=desc 取最新的 N 条（会话最有价值的是结尾）
+func TestHTTPMessagesOrder(t *testing.T) {
+	root := t.TempDir()
+	lines := []string{`{"type":"session","id":"long"}`}
+	for i := 0; i < 10; i++ {
+		lines = append(lines, fmt.Sprintf(
+			`{"type":"message","id":"m%d","message":{"role":"user","content":[{"type":"text","text":"第%d条"}]}}`, i, i))
+	}
+	write(t, filepath.Join(root, "p", "long.jsonl"), lines...)
+	sources := []SessionSource{newPiSource(root)}
+	srv := httptest.NewServer(newAPIServer(serverOptions{
+		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 2), maxConnections: 50,
+	}))
+	t.Cleanup(srv.Close)
+
+	firstID := func(body map[string]any) string {
+		msgs := body["messages"].([]any)
+		return msgs[0].(map[string]any)["id"].(string)
+	}
+	lastID := func(body map[string]any) string {
+		msgs := body["messages"].([]any)
+		return msgs[len(msgs)-1].(map[string]any)["id"].(string)
+	}
+
+	_, asc := get(t, srv.URL+"/sessions/long/messages?limit=3", "")
+	if asc["order"] != "asc" || firstID(asc) != "m0" || lastID(asc) != "m2" {
+		t.Fatalf("默认应取最早 3 条: %v", asc)
+	}
+	_, desc := get(t, srv.URL+"/sessions/long/messages?limit=3&order=desc", "")
+	if desc["order"] != "desc" || firstID(desc) != "m7" || lastID(desc) != "m9" {
+		t.Fatalf("order=desc 应取最新 3 条、且仍按时间先后排: %v", desc)
+	}
+	// 条数不够时两头一样
+	_, all := get(t, srv.URL+"/sessions/long/messages?limit=50&order=desc", "")
+	if all["total"] != float64(10) || firstID(all) != "m0" {
+		t.Fatalf("limit 大于总数时应给全部: %v", all)
+	}
+}
+
+// TestHTTPHealthAuthRequired：页面据此决定要不要弹令牌框
+func TestHTTPHealthAuthRequired(t *testing.T) {
+	withToken, _ := newTestServer(t, "secret")
+	if _, body := get(t, withToken.URL+"/health", ""); body["authRequired"] != true {
+		t.Fatalf("配了 token 应报 authRequired=true: %v", body)
+	}
+	open, _ := newTestServer(t, "")
+	if _, body := get(t, open.URL+"/health", ""); body["authRequired"] != false {
+		t.Fatalf("没配 token 应报 authRequired=false: %v", body)
+	}
+}
+
+// TestMatchRankPathSeparators：Windows 上 key 是 C:\...\abc.jsonl，
+// 用户却习惯敲 proj/abc.jsonl。两种分隔符都得认，否则「后缀精确命中」会掉成「子串命中」，
+// 跨源查询时可能被别的源的模糊命中抢先。
+func TestMatchRankPathSeparators(t *testing.T) {
+	winKey := `C:\Users\dev\.claude\projects\proj\abc-def.jsonl`
+	rec := newRecord(map[string]any{"sessionId": "abc-def", "key": winKey}, "")
+
+	cases := []struct {
+		pattern string
+		want    int
+	}{
+		{"abc-def", 0}, // 精确 sessionId
+		{winKey, 1},    // 原样贴 Windows 路径
+		{"c:/users/dev/.claude/projects/proj/abc-def.jsonl", 1}, // 正斜杠写法等价
+		{"proj/abc-def.jsonl", 2},                               // 后缀命中，不该掉成 3
+		{`proj\abc-def.jsonl`, 2},                               // 反斜杠写法同样命中
+		{"projects", 3},                                         // 子串
+		{"zzz", -1},
+	}
+	for _, c := range cases {
+		// findSession 对 pattern 做的就是这一步
+		if got := rec.matchRank(normalizeForMatch(c.pattern)); got != c.want {
+			t.Errorf("matchRank(%q) = %d, want %d", c.pattern, got, c.want)
+		}
+	}
+}
+
+// TestSQLiteURIWindowsPath：反斜杠塞进 SQLite 的 file: URI 会有转义歧义
+func TestSQLiteURIWindowsPath(t *testing.T) {
+	got := sqliteURI(`C:\Users\dev\.hermes\state.db`)
+	if runtime.GOOS == "windows" {
+		if got != "file:C:/Users/dev/.hermes/state.db" {
+			t.Fatalf("Windows 路径应换成正斜杠: %q", got)
+		}
+		return
+	}
+	// 非 Windows 上反斜杠是合法文件名字符，filepath.ToSlash 不该动它
+	if got != `file:C:\Users\dev\.hermes\state.db` {
+		t.Fatalf("非 Windows 不应改写路径: %q", got)
 	}
 }

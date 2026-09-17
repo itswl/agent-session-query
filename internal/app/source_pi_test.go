@@ -23,7 +23,7 @@ func TestPiSource(t *testing.T) {
 		t.Fatalf("record = %v", list[0].fields)
 	}
 
-	msgs := s.Messages(list[0], 50)
+	msgs := s.Messages(list[0], messageQuery{limit: 50})
 	if len(msgs) != 2 || msgs[0]["role"] != "user" {
 		t.Fatalf("messages = %v", msgs)
 	}
@@ -40,10 +40,10 @@ func TestPiSource(t *testing.T) {
 	}
 
 	// limit 取最早的前 N 条
-	if got := s.Messages(list[0], 1); len(got) != 1 || got[0]["id"] != "m1" {
+	if got := s.Messages(list[0], messageQuery{limit: 1}); len(got) != 1 || got[0]["id"] != "m1" {
 		t.Fatalf("limit=1 -> %v", got)
 	}
-	if got := s.Messages(list[0], 0); len(got) != 0 {
+	if got := s.Messages(list[0], messageQuery{limit: 0}); len(got) != 0 {
 		t.Fatalf("limit=0 -> %v", got)
 	}
 }

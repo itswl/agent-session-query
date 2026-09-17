@@ -80,10 +80,11 @@ see **[docs/deploy.md](docs/deploy.md)**.
 Three panes: **session list / message stream / final result**. A token is only requested
 when the server was started with `--hook_token`, and it stays in the browser's localStorage.
 
-- **Left**: typing in the search box filters metadata live; pressing <kbd>Enter</kbd>
-  **searches message bodies** and the results carry matching snippets. The list can be
-  grouped by time or by project, and a session currently being written gets a pulsing green
-  dot
+- **Left**: typing filters sessionId, path and cwd instantly, and the same keystrokes also
+  **search the message bodies** on the server. Body matches are appended below the metadata
+  ones under a "N more in message bodies" divider, carrying the matching snippet, so one
+  query covers both without a mode to switch. <kbd>Enter</kbd> only skips the wait. The list
+  can be grouped by time or by project, and a session being written gets a pulsing green dot
 - **Middle**: the message timeline (text / thinking / toolCall / toolResult blocks). You can
   switch between the earliest and latest 200 messages, and filter to user or assistant
 - **Right**: the final result stays visible — stopReason, the answer, the thinking, usage and
@@ -93,9 +94,10 @@ It refreshes every 10 seconds without disturbing what you are reading (expanded 
 scroll position are preserved). `/ui#<sessionId>` works as a deep link, light and dark follow
 the system, and narrow windows collapse to two panes and then one.
 
-Shortcuts: <kbd>j</kbd> <kbd>k</kbd> move between sessions · <kbd>/</kbd> focus search ·
-<kbd>Enter</kbd> search message bodies · <kbd>g</kbd> <kbd>G</kbd> jump to the start/end of
-the stream · <kbd>r</kbd> refresh · <kbd>Esc</kbd> clear or leave the search.
+Shortcuts: <kbd>j</kbd> <kbd>k</kbd> move between sessions (metadata matches and body
+matches alike) · <kbd>/</kbd> focus search · <kbd>Enter</kbd> search the bodies now instead
+of waiting · <kbd>g</kbd> <kbd>G</kbd> jump to the start/end of the stream · <kbd>r</kbd>
+refresh · <kbd>Esc</kbd> clear the search.
 
 ## Endpoints at a glance
 

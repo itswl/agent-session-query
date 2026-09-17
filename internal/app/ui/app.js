@@ -16,6 +16,10 @@ const TOKEN_KEY = 'agent-session-query-token';
 const MESSAGE_LIMIT = 200;
 const REFRESH_MS = 10000;
 const SEARCH_DEBOUNCE_MS = 150;
+// Content search keeps its own, slower beat: it scans every session file on the server,
+// so it waits for a real pause in typing and ignores queries too short to narrow anything.
+const CONTENT_DEBOUNCE_MS = 300;
+const CONTENT_MIN_CHARS = 2;
 const BIG_BLOCK_CHARS = 600;
 const STICK_TO_BOTTOM_PX = 48;
 
@@ -30,7 +34,10 @@ const state = {
   role: '',            // '' / 'user' / 'assistant'
   order: 'desc',       // desc = the latest N (the end of a session is the interesting part)
   grouping: 'time',    // time = by update time; project = grouped by project (cwd)
-  search: null,        // content search results; null means the normal list
+  content: null,       // content search for the current keyword:
+                       //   { query, searching, results, matched, truncated, tookMs }
+  contentTimer: null,
+  contentAbort: null,  // AbortController for the search still in flight
   detail: null,        // { sessionId, signature, messages, final }
   openBlocks: new Set(),
   timer: null,
@@ -45,10 +52,10 @@ const $ = (id) => document.getElementById(id);
 // API
 // ---------------------------------------------------------------------------
 
-async function api(path) {
+async function api(path, options) {
   const headers = {};
   if (state.token) headers.Authorization = 'Bearer ' + state.token;
-  const res = await fetch(path, { headers });
+  const res = await fetch(path, Object.assign({ headers }, options));
   if (res.status === 401) {
     const err = new Error('unauthorized');
     err.status = 401;
@@ -99,6 +106,17 @@ function kv(pairs) {
 
 function setStatus(text) {
   setText($('status'), text);
+}
+
+// idleStatus is the default line. A content search overwrites it with its own summary,
+// and the ten-second refresh must not undo that while the user is still reading it.
+function idleStatus() {
+  const found = state.content;
+  if (found && !found.searching && found.query === state.keyword) {
+    return '\u201c' + found.query + '\u201d · ' + found.matched + ' in message bodies · ' +
+      found.scanned + ' scanned · ' + found.tookMs + ' ms';
+  }
+  return state.sessions.length + ' sessions · updated ' + state.loadedAt;
 }
 
 function button(className, label, onClick) {
@@ -203,25 +221,43 @@ function visibleSessions() {
 // incremental patch below can reuse their nodes exactly like any other row.
 function listRows() {
   const sessions = visibleSessions();
+  let rows;
   if (state.grouping !== 'project') {
-    return sessions.map((s) => ({ kind: 'session', id: s.sessionId, session: s }));
+    rows = sessions.map((s) => ({ kind: 'session', id: s.sessionId, session: s }));
+  } else {
+    // sessions is already newest-first, so Map insertion order puts the most recently
+    // touched project first
+    const groups = new Map();
+    for (const s of sessions) {
+      const name = s.project || '(no project)';
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name).push(s);
+    }
+    rows = [];
+    for (const [name, items] of groups) {
+      rows.push({
+        kind: 'group', id: 'group:' + name, name,
+        count: items.length, active: items.some((s) => s.isActive),
+      });
+      for (const s of items) rows.push({ kind: 'session', id: s.sessionId, session: s });
+    }
   }
-  // sessions is already newest-first, so Map insertion order puts the most recently
-  // touched project first
-  const groups = new Map();
-  for (const s of sessions) {
-    const name = s.project || '(no project)';
-    if (!groups.has(name)) groups.set(name, []);
-    groups.get(name).push(s);
-  }
-  const rows = [];
-  for (const [name, items] of groups) {
-    rows.push({
-      kind: 'group', id: 'group:' + name, name,
-      count: items.length, active: items.some((s) => s.isActive),
-    });
-    for (const s of items) rows.push({ kind: 'session', id: s.sessionId, session: s });
-  }
+  return rows.concat(contentRows(sessions));
+}
+
+// contentRows is the second half of the list: sessions whose message bodies matched but
+// whose metadata did not, so they are not already listed above. The metadata half is
+// local and instant; this half arrives from the server a moment later.
+function contentRows(shown) {
+  const found = state.content;
+  if (!found || found.query !== state.keyword) return [];
+
+  const listed = new Set(shown.map((s) => s.sessionId));
+  const extra = (found.results || []).filter((hit) =>
+    !listed.has(hit.sessionId) && (!state.source || hit.source === state.source));
+
+  const rows = [{ kind: 'content-head', id: 'content-head', found, extra: extra.length }];
+  for (const hit of extra) rows.push({ kind: 'hit', id: 'hit:' + hit.sessionId, session: hit });
   return rows;
 }
 
@@ -241,6 +277,13 @@ function fillGroup(node, row) {
   node.title = row.name;
   setText(count, row.count);
   node.classList.toggle('live', !!row.active);
+}
+
+function buildRow(row) {
+  if (row.kind === 'group') return buildGroup(row.id);
+  if (row.kind === 'content-head') return buildContentHead(row.id);
+  if (row.kind === 'hit') return buildHit(row.id, row.session.sessionId);
+  return buildItem(row.id);
 }
 
 function buildItem(sessionId) {
@@ -289,18 +332,14 @@ function emptyListState() {
   const keyword = state.keyword.trim();
   if (!keyword) return el('p', 'empty-list', 'No matching sessions');
 
+  // Only reached for a query too short to have triggered the automatic content search
   const box = el('div', 'empty-list');
   box.appendChild(el('p', '', 'No sessionId, path or cwd matches \u201c' + keyword + '\u201d'));
-  box.appendChild(button('ghost', 'Search message bodies', () => runContentSearch(keyword)));
-  box.appendChild(el('p', 'dim tiny-note', 'or press Enter'));
+  box.appendChild(button('ghost', 'Search message bodies anyway', () => runContentSearch(keyword)));
   return box;
 }
 
 function renderList() {
-  if (state.search) {
-    renderSearchResults();
-    return;
-  }
   const list = $('list');
   const rows = listRows();
 
@@ -320,13 +359,17 @@ function renderList() {
   rows.forEach((row, index) => {
     let node = existing.get(row.id);
     if (node) existing.delete(row.id);
-    else node = row.kind === 'group' ? buildGroup(row.id) : buildItem(row.id);
+    else node = buildRow(row);
 
     if (row.kind === 'group') {
       fillGroup(node, row);
+    } else if (row.kind === 'content-head') {
+      fillContentHead(node, row);
     } else {
-      fillItem(node, row.session);
-      const active = row.id === state.selectedId;
+      if (row.kind === 'hit') fillHit(node, row.session);
+      else fillItem(node, row.session);
+      // Hit rows carry a prefixed row id, so compare against the session id itself
+      const active = row.session.sessionId === state.selectedId;
       node.classList.toggle('active', active);
       node.setAttribute('aria-selected', active ? 'true' : 'false');
     }
@@ -340,79 +383,140 @@ function renderList() {
 }
 
 // ---------------------------------------------------------------------------
-// Content search (press Enter in the search box; typing alone filters metadata live)
+// Content search. Typing filters metadata locally and instantly; the same keystrokes also
+// schedule a server-side scan of the message bodies, whose results are appended below the
+// metadata matches rather than replacing them. Enter just skips the wait.
 // ---------------------------------------------------------------------------
 
-async function runContentSearch(query) {
-  const text = String(query || '').trim();
-  if (!text) {
-    exitSearch();
+function cancelContentSearch() {
+  if (state.contentTimer) {
+    clearTimeout(state.contentTimer);
+    state.contentTimer = null;
+  }
+  // Aborting matters on both ends: the browser drops a response it would discard anyway,
+  // and the server stops a scan that holds every core it can get
+  if (state.contentAbort) {
+    state.contentAbort.abort();
+    state.contentAbort = null;
+  }
+}
+
+function scheduleContentSearch(keyword) {
+  cancelContentSearch();
+  if (keyword.length < CONTENT_MIN_CHARS) {
+    if (state.content) {
+      state.content = null;
+      renderList();
+    }
     return;
   }
-  setStatus('Searching for \u201c' + text + '\u201d\u2026');
+  state.contentTimer = setTimeout(() => runContentSearch(keyword), CONTENT_DEBOUNCE_MS);
+}
+
+async function runContentSearch(keyword) {
+  const text = String(keyword || '').trim();
+  cancelContentSearch();
+  // CONTENT_MIN_CHARS throttles the automatic path only: asking for a one-character
+  // search outright is allowed
+  if (!text) {
+    state.content = null;
+    renderList();
+    return;
+  }
+
+  const controller = new AbortController();
+  state.contentAbort = controller;
+  state.content = { query: text, searching: true, results: [] };
+  renderList();
+
   try {
-    const data = await api('/search?q=' + encodeURIComponent(text) + '&limit=50');
-    state.search = data;
-    renderSearchResults();
-    setStatus('\u201c' + text + '\u201d · ' + data.matched + ' sessions matched · ' +
-      data.scanned + ' scanned · ' + data.tookMs + ' ms');
+    const data = await api('/search?q=' + encodeURIComponent(text) + '&limit=50',
+      { signal: controller.signal });
+    // A newer keystroke may have landed while this was in flight
+    if (controller.signal.aborted || state.keyword !== text) return;
+    state.content = Object.assign({ query: text, searching: false }, data);
+    state.contentAbort = null;
+    renderList();
+    setStatus(idleStatus());
   } catch (err) {
+    if (err.name === 'AbortError') return; // superseded, not a failure
+    state.content = null;
+    renderList();
     handleError(err);
     setStatus('Search failed: ' + err.message);
   }
 }
 
-function exitSearch() {
-  if (!state.search) return;
-  state.search = null;
-  renderList();
-  setStatus(state.sessions.length + ' sessions · updated ' + state.loadedAt);
+function buildContentHead(id) {
+  const node = el('div', 'content-head');
+  node.dataset.id = id;
+  node.appendChild(el('span', 'content-head-label'));
+  node.appendChild(el('span', 'dim'));
+  return node;
 }
 
-function renderSearchResults() {
-  const list = $('list');
-  const data = state.search;
-  const box = document.createDocumentFragment();
-
-  const head = el('div', 'search-head');
-  head.appendChild(el('span', '', data.matched + ' sessions matched'));
-  if (data.truncated) head.appendChild(el('span', 'dim', '(showing the first ' + data.total + ')'));
-  head.appendChild(button('ghost tiny', 'Leave search', exitSearch));
-  box.appendChild(head);
-
-  if ((data.results || []).length === 0) {
-    box.appendChild(el('p', 'empty-list', 'Nothing found'));
+function fillContentHead(node, row) {
+  const [label, note] = node.children;
+  const found = row.found;
+  if (found.searching) {
+    setText(label, 'Searching message bodies\u2026');
+    setText(note, '');
+    return;
   }
-  for (const found of data.results || []) {
-    const item = el('div', 'item hit' + (found.sessionId === state.selectedId ? ' active' : ''));
-    item.dataset.id = found.sessionId;
-    item.setAttribute('role', 'option');
-    item.tabIndex = -1;
-    item.addEventListener('click', () => selectSession(found.sessionId));
-
-    const row = el('div', 'row1');
-    row.appendChild(sourceTag(found.source));
-    if (found.isActive) row.appendChild(el('span', 'live on'));
-    row.appendChild(el('span', 'hit-count', found.matchCount + ' hits'));
-    const time = el('span', 'time', relTime(found.updatedAt));
-    time.title = found.updatedAt || '';
-    row.appendChild(time);
-    item.appendChild(row);
-
-    const key = el('div', 'key', found.shortKey || found.sessionId);
-    key.title = found.key || '';
-    item.appendChild(key);
-    // Only the first hit: the left pane has no room for more, and clicking opens the rest
-    const first = (found.matches || [])[0];
-    if (first) {
-      const snippet = el('div', 'snippet', first.snippet);
-      snippet.title = (first.role || '') + ' · ' + (first.timestamp || '');
-      item.appendChild(snippet);
-    }
-    box.appendChild(item);
+  if (!found.matched) {
+    setText(label, 'Nothing in message bodies');
+    setText(note, '');
+    return;
   }
-  list.replaceChildren(box);
+  setText(label, row.extra
+    ? row.extra + ' more in message bodies'
+    : 'Also in message bodies, all listed above');
+  // matched counts every session with a hit, including the ones already listed above
+  setText(note, found.truncated ? '(of ' + found.matched + ', showing the first 50)' : '');
 }
+
+function buildHit(rowId, sessionId) {
+  const item = el('div', 'item hit');
+  item.dataset.id = rowId;
+  item.dataset.sid = sessionId;
+  item.setAttribute('role', 'option');
+  item.tabIndex = -1;
+  item.addEventListener('click', () => selectSession(item.dataset.sid));
+
+  const row = el('div', 'row1');
+  row.appendChild(el('span', 'tag'));        // source
+  row.appendChild(el('span', 'live'));       // live dot
+  row.appendChild(el('span', 'hit-count'));  // how many hits in this session
+  row.appendChild(el('span', 'time'));
+  item.appendChild(row);
+  item.appendChild(el('div', 'key'));
+  item.appendChild(el('div', 'snippet'));
+  return item;
+}
+
+function fillHit(item, hit) {
+  const [tag, live, count, time] = item.children[0].children;
+  const cls = sourceClass(hit.source);
+  if (tag.className !== cls) tag.className = cls;
+  setText(tag, hit.source);
+  live.classList.toggle('on', !!hit.isActive);
+  live.title = hit.isActive ? 'being written' : '';
+  setText(count, hit.matchCount + (hit.matchCount === 1 ? ' hit' : ' hits'));
+  setText(time, relTime(hit.updatedAt));
+  time.title = hit.updatedAt || '';
+
+  const key = item.children[1];
+  setText(key, hit.shortKey || hit.sessionId);
+  key.title = hit.key || '';
+
+  // Only the first hit: the left pane has no room for more, and opening the session shows
+  // the rest in context
+  const first = (hit.matches || [])[0] || {};
+  const snippet = item.children[2];
+  setText(snippet, first.snippet || '');
+  snippet.title = (first.role || '') + ' · ' + (first.timestamp || '');
+}
+
 
 function renderSources() {
   const select = $('source-filter');
@@ -829,7 +933,7 @@ async function refresh() {
     renderSources();
     renderList();
     await syncDetail({});
-    setStatus(state.sessions.length + ' sessions · updated ' + state.loadedAt);
+    setStatus(idleStatus());
   } catch (err) {
     handleError(err);
     setStatus('Refresh failed: ' + err.message);
@@ -855,7 +959,10 @@ function isTyping(node) {
 }
 
 function moveSelection(delta) {
-  const sessions = state.search ? (state.search.results || []) : visibleSessions();
+  // Both halves are navigable: metadata matches first, then the content hits
+  const sessions = listRows()
+    .filter((r) => r.kind === 'session' || r.kind === 'hit')
+    .map((r) => r.session);
   if (sessions.length === 0) return;
   const index = sessions.findIndex((s) => s.sessionId === state.selectedId);
   const next = index < 0
@@ -872,14 +979,13 @@ function scrollMessages(toBottom) {
 }
 
 function clearSearch() {
-  if (state.search) {
-    exitSearch();
-    return;
-  }
-  if (!state.keyword) return;
+  if (!state.keyword && !state.content) return;
   state.keyword = '';
   $('search').value = '';
+  cancelContentSearch();
+  state.content = null;
   renderList();
+  setStatus(idleStatus());
 }
 
 document.addEventListener('keydown', (event) => {
@@ -950,26 +1056,29 @@ $('search').addEventListener('input', (event) => {
   if (state.searchTimer) clearTimeout(state.searchTimer);
   state.searchTimer = setTimeout(() => {
     state.keyword = value;
-    if (state.search) return; // viewing search results: wait for Enter to research, or an exit
-    renderList();
+    renderList();                 // metadata: local, immediate
+    scheduleContentSearch(value); // message bodies: server-side, a moment later
   }, SEARCH_DEBOUNCE_MS);
 });
 
-// Enter runs a full-text search; typing without Enter still filters metadata live
+// The content search runs on its own; Enter only skips the wait for it
 $('search').addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
-    runContentSearch(event.target.value);
-  } else if (event.key === 'Escape' && state.search) {
+    const value = event.target.value.trim();
+    if (state.searchTimer) clearTimeout(state.searchTimer);
+    state.keyword = value;
+    renderList();
+    runContentSearch(value);
+  } else if (event.key === 'Escape') {
     event.preventDefault();
-    exitSearch();
+    clearSearch();
   }
 });
 
 // List grouping: by time / by project
 $('grouping').addEventListener('change', (event) => {
   state.grouping = event.target.value;
-  exitSearch();
   renderList();
 });
 

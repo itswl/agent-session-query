@@ -78,8 +78,10 @@ go build -o agent-session-query ./cmd/agent-session-query
 三栏：**会话列表 / 消息流 / 最终结果**。只有服务端带 `--hook_token` 启动时才会要求填 token，
 填完存在浏览器的 localStorage 里。
 
-- **左栏**：在搜索框里输入会实时过滤元数据；按 <kbd>Enter</kbd> 则是**搜索消息正文**，结果会
-  带上命中的片段。列表可以按时间或按项目分组，正在写入的会话会有一个呼吸的绿点
+- **左栏**：输入会即时过滤 sessionId / 路径 / cwd，同时这些击键也会在服务端**搜索消息正文**。
+  正文命中以「N more in message bodies」分隔线附在元数据结果下方，带上命中片段——一次查询
+  同时覆盖两边，不用切模式。<kbd>Enter</kbd> 只是免去等待。列表可以按时间或按项目分组，
+  正在写入的会话会有一个呼吸的绿点
 - **中栏**：消息时间线（text / thinking / toolCall / toolResult 各类块）。可以在最早和最新的
   200 条之间切换，也可以只看 user 或 assistant
 - **右栏**：最终结果常驻——stopReason、答案、思考过程、用量与成本，以及会话元数据
@@ -88,9 +90,9 @@ go build -o agent-session-query ./cmd/agent-session-query
 页面每 10 秒刷新一次，且不会打断你正在看的内容（展开的块和滚动位置都会保留）。
 `/ui#<sessionId>` 可以作为深链接使用，明暗主题跟随系统，窗口变窄会依次收成两栏、一栏。
 
-快捷键：<kbd>j</kbd> <kbd>k</kbd> 切换会话 · <kbd>/</kbd> 聚焦搜索框 ·
-<kbd>Enter</kbd> 搜索消息正文 · <kbd>g</kbd> <kbd>G</kbd> 跳到消息流首尾 ·
-<kbd>r</kbd> 刷新 · <kbd>Esc</kbd> 清空或退出搜索。
+快捷键：<kbd>j</kbd> <kbd>k</kbd> 切换会话（元数据命中与正文命中一并遍历）·
+<kbd>/</kbd> 聚焦搜索框 · <kbd>Enter</kbd> 立刻搜正文而不等待 ·
+<kbd>g</kbd> <kbd>G</kbd> 跳到消息流首尾 · <kbd>r</kbd> 刷新 · <kbd>Esc</kbd> 清空搜索。
 
 ## 接口一览
 

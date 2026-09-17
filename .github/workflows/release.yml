@@ -1,4 +1,4 @@
-# 打 tag（v*）自动交叉编译四个平台，产物挂到 GitHub Release。
+# 打 tag（v*）自动交叉编译六个平台，产物挂到 GitHub Release。
 # 本仓库唯一的依赖是纯 Go 的 SQLite 驱动，CGO 关掉后交叉编译无需任何 C 工具链。
 name: release
 
@@ -10,7 +10,29 @@ permissions:
   contents: write
 
 jobs:
+  # 测试必须跑在真机上：交叉编译出来的测试二进制没法在别的平台执行。
+  # 发 Windows 产物就得有 Windows runner 把它验一遍，否则等于盲发。
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        env:
+          CGO_ENABLED: '0'
+        run: go test ./...
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -20,18 +42,15 @@ jobs:
           - { goos: linux, goarch: arm64 }
           - { goos: darwin, goarch: amd64 }
           - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64, ext: .exe }
+          - { goos: windows, goarch: arm64, ext: .exe }
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
-      # 测试只能跑在原生平台（交叉目标的测试二进制没法执行），所以单独一步、不带 GOOS/GOARCH
-      - name: Test
-        env:
-          CGO_ENABLED: '0'
-        run: go test ./...
+          cache: true
 
       - name: Build
         env:
@@ -39,9 +58,17 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          go build -trimpath -ldflags '-s -w' -o agent-session-query ./cmd/agent-session-query
-          tar czf "agent-session-query-${GOOS}-${GOARCH}.tar.gz" agent-session-query
+          binary="agent-session-query${{ matrix.ext }}"
+          go build -trimpath -ldflags '-s -w' -o "$binary" ./cmd/agent-session-query
+          # Windows 上解 tar.gz 不顺手，产物打成 zip
+          if [ "$GOOS" = windows ]; then
+            zip -q "agent-session-query-$GOOS-$GOARCH.zip" "$binary"
+          else
+            tar czf "agent-session-query-$GOOS-$GOARCH.tar.gz" "$binary"
+          fi
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: agent-session-query-*.tar.gz
+          files: |
+            agent-session-query-*.tar.gz
+            agent-session-query-*.zip

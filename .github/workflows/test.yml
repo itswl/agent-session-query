@@ -1,0 +1,69 @@
+# 每次 push / PR 都跑一遍：三个平台的测试 + 格式/vet/交叉编译自检。
+# release.yml 只在打 tag 时触发，光靠它的话问题要到发版当天才暴露。
+name: test
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # 竞态检测要 cgo 和一个 C 编译器。Linux / macOS runner 上现成，
+      # Windows runner 的工具链不总在 PATH 上，那边跑普通测试就够了。
+      - name: Test
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = Windows ]; then
+            CGO_ENABLED=0 go test ./...
+          else
+            go test -race ./...
+          fi
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件没过 gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        env:
+          CGO_ENABLED: '0'
+        run: go vet ./...
+
+      # 交叉编译自检：发版的六个平台都要能编出来（含各平台专有文件，如 console_windows.go）
+      - name: 交叉编译自检
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            echo "  $target"
+            GOOS=${target%/*} GOARCH=${target#*/} go build ./... || exit 1
+            GOOS=${target%/*} GOARCH=${target#*/} go vet ./... || exit 1
+          done

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 )
@@ -11,9 +12,24 @@ func TestJsonMapOpenClaw(t *testing.T) {
 	write(t, sessionFile,
 		`{"type":"message","id":"om1","timestamp":"2026-09-13T15:00:00Z","stopReason":"stop","message":{"role":"assistant","content":[{"type":"text","text":"完成"},{"type":"thinking","thinking":"推理"}]},"usage":{"input_tokens":11}}`,
 	)
-	write(t, filepath.Join(dir, "sessions.json"),
-		`{"agent:default:hook:alert:prometheus:b5123b01":{"sessionId":"oc-1","sessionFile":"`+sessionFile+`","updatedAt":1789489016671,"status":"done","model":"m","runtimeMs":123,"totalTokens":9}}`,
-	)
+	// 索引用 json.Marshal 生成，别把路径拼进字符串字面量：
+	// Windows 上 sessionFile 是 C:\Users\...，反斜杠在 JSON 里是非法转义，
+	// 整份 sessions.json 会被判成坏 JSON，列表直接空掉。
+	index, err := json.Marshal(map[string]any{
+		"agent:default:hook:alert:prometheus:b5123b01": map[string]any{
+			"sessionId":   "oc-1",
+			"sessionFile": sessionFile,
+			"updatedAt":   1789489016671,
+			"status":      "done",
+			"model":       "m",
+			"runtimeMs":   123,
+			"totalTokens": 9,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "sessions.json"), string(index))
 
 	def := openclawDef(dir)
 	def.sessionsJSON = filepath.Join(dir, "sessions.json")

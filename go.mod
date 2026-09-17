@@ -1,6 +1,6 @@
 module github.com/itswl/agent-session-query
 
-go 1.22
+go 1.24
 
 require modernc.org/sqlite v1.34.5
 

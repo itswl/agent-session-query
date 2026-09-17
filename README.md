@@ -60,7 +60,7 @@ go build -o agent-session-query ./cmd/agent-session-query
 
 `-d` 是临时后台跑，进程挂了不会自己起来；要真正常驻用下面的 systemd / 计划任务。
 
-要常驻运行（systemd / Windows 计划任务 / Docker）见 **[docs/deploy.md](docs/deploy.md)**。
+要常驻运行（Linux systemd / macOS launchd / Windows 计划任务 / Docker）见 **[docs/deploy.md](docs/deploy.md)**。
 
 ## Web 页面（`/ui`）
 
@@ -150,7 +150,7 @@ Docker 环境变量：`HOOK_TOKEN`、`SESSION_MODE`（默认 `auto`）、`GO_IMA
 |---|---|
 | [docs/api.md](docs/api.md) | 完整 HTTP API：参数、匹配规则、响应字段 |
 | [docs/mcp.md](docs/mcp.md) | MCP：两种传输、客户端配置、工具表 |
-| [docs/deploy.md](docs/deploy.md) | 常驻部署：systemd / Windows 计划任务 / Docker |
+| [docs/deploy.md](docs/deploy.md) | 常驻部署：systemd / launchd / Windows 计划任务 / Docker |
 | [docs/development.md](docs/development.md) | 目录结构、测试、发版、新增数据源 |
 | [docs/internals.md](docs/internals.md) | 实现细节：各源解析、性能、全文搜索、跨平台 |
 

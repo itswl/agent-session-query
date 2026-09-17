@@ -1,27 +1,35 @@
 # agent-session-query
 
-在本机上查询各种 Agent / CLI 的会话记录：**自带一个只读的 Web 页面，提供 HTTP API，也能当 MCP server 给 Agent 用**。不改动任何会话数据。
+Query the session records left behind by the agent CLIs on your machine: **a read-only web
+page, an HTTP API, and an MCP server for agents to call**. It never modifies session data.
 
-单二进制（无 cgo、无常驻运行时），`scp` 到任何同架构的机器上就能跑。唯一的外部依赖是纯 Go 的 SQLite 驱动（读 Hermes 的 `state.db`），交叉编译照旧。
+A single binary (no cgo, no resident runtime) — `scp` it to any machine of the same
+architecture and run it. The only external dependency is a pure-Go SQLite driver (for
+reading Hermes's `state.db`), so cross-compilation still works as usual.
 
-六种数据源，存在哪几种就查哪几种，可同时合并查询：
+Six sources; whichever exist are queried, and they can be merged in one query:
 
-| 数据源 | 会话位置 | 会话 ID |
-|--------|----------|---------|
-| Hermes | `~/.hermes/sessions/`（`sessions.json`）或 `~/.hermes/state.db`（新版全 SQLite） | `sessions.json` 里的 `session_id` / `sessions` 表的 `id` |
-| OpenClaw | `~/.openclaw/agents/default/sessions/` | `sessions.json` 里的 `sessionId` |
-| Pi | `~/.pi/agent/sessions/<项目>/*.jsonl` | 会话文件首行 `id` |
-| Claude Code | `~/.claude/projects/<项目>/*.jsonl` | 文件名（uuid）/ `sessionId` 字段 |
-| Codex | `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` | 首行 `payload.session_id` |
-| Gemini CLI | `~/.gemini/tmp/<项目>/chats/session-*.jsonl` | 首行 `sessionId` |
+| Source | Where sessions live | Session ID |
+|--------|---------------------|------------|
+| Hermes | `~/.hermes/sessions/` (`sessions.json`) or `~/.hermes/state.db` (newer, all SQLite) | `session_id` in `sessions.json` / `id` in the `sessions` table |
+| OpenClaw | `~/.openclaw/agents/default/sessions/` | `sessionId` in `sessions.json` |
+| Pi | `~/.pi/agent/sessions/<project>/*.jsonl` | `id` on the session row |
+| Claude Code | `~/.claude/projects/<project>/*.jsonl` | the filename (a uuid) / the `sessionId` field |
+| Codex | `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl` | `payload.session_id` on the metadata row |
+| Gemini CLI | `~/.gemini/tmp/<project>/chats/session-*.jsonl` | `sessionId` on the first line |
 
-表里的 `~` 按运行用户的 home 解析：Linux/macOS 是 `$HOME`，Windows 是 `%USERPROFILE%`（即 `C:\Users\<你>\.claude\projects` 这种）。各数据源的解析细节见 [docs/internals.md](docs/internals.md)。
+The `~` in that table resolves to the running user's home: `$HOME` on Linux and macOS,
+`%USERPROFILE%` on Windows (so `C:\Users\<you>\.claude\projects` and the like). Per-source
+parsing details are in [docs/internals.md](docs/internals.md).
 
-## 快速开始
+## Quick start
 
-### 下载编译产物
+### Download a build
 
-不用装 Go：push 形如 `v0.1.0` 的 tag 会触发 [GitHub Actions](.github/workflows/release.yml) 自动交叉编译**六个平台**（`linux` / `darwin` / `windows` × `amd64` / `arm64`），产物挂在 Releases 页，解包即用。Unix 是 `.tar.gz`，Windows 是 `.zip`：
+No Go toolchain needed. Pushing a tag like `v0.1.0` triggers
+[GitHub Actions](.github/workflows/release.yml), which cross-compiles **six platforms**
+(`linux` / `darwin` / `windows` × `amd64` / `arm64`) and attaches the artifacts to the
+Releases page. Unpack and run. Unix gets `.tar.gz`, Windows `.zip`:
 
 ```bash
 tar xzf agent-session-query-darwin-arm64.tar.gz
@@ -34,130 +42,152 @@ Expand-Archive agent-session-query-windows-amd64.zip -DestinationPath .
 .\agent-session-query.exe --port 8080
 ```
 
-产物没有签名，系统会拦一下：macOS 用 `xattr -d com.apple.quarantine agent-session-query`；Windows 的 SmartScreen 弹「已保护你的电脑」时点「更多信息 → 仍要运行」。
+The artifacts are unsigned, so the OS will stop you once: on macOS run
+`xattr -d com.apple.quarantine agent-session-query`; on Windows, when SmartScreen says
+"Windows protected your PC", choose "More info → Run anyway".
 
-### 本地构建
+### Build locally
 
 ```bash
 go build -o agent-session-query ./cmd/agent-session-query
-./agent-session-query --port 8080                     # 自动检测：存在的数据源都启用
-./agent-session-query --mode claude                    # 只看某一种
-./agent-session-query --hook_token mysecrettoken       # 带认证
+./agent-session-query --port 8080                     # auto-detect: enable whatever exists
+./agent-session-query --mode claude                    # just one source
+./agent-session-query --hook_token mysecrettoken       # with authentication
 ```
 
-启动后打印本次启用的数据源，浏览器打开 `http://127.0.0.1:8080/ui` 就能看到页面。
+It prints the sources it enabled, then open `http://127.0.0.1:8080/ui` in a browser.
 
-加 `-d` 就丢到后台，父进程确认端口真的起来了才打印 PID 退出：
+Add `-d` to put it in the background; the parent confirms the port really came up before
+printing the PID and exiting:
 
 ```bash
 ./agent-session-query -d --port 8080
-# 已在后台启动
-#   PID:   82575
-#   地址:  http://127.0.0.1:8080
-#   日志:  /tmp/agent-session-query-8080.log
-#   停止:  kill 82575
+# Started in the background
+#   PID:     82575
+#   Address: http://127.0.0.1:8080
+#   Log:     /tmp/agent-session-query-8080.log
+#   Stop:    kill 82575
 ```
 
-`-d` 是临时后台跑，进程挂了不会自己起来；要真正常驻用下面的 systemd / 计划任务。
+`-d` is for running in the background temporarily — nothing restarts the process if it dies.
+For a supervised service (Linux systemd / macOS launchd / Windows scheduled task / Docker),
+see **[docs/deploy.md](docs/deploy.md)**.
 
-要常驻运行（Linux systemd / macOS launchd / Windows 计划任务 / Docker）见 **[docs/deploy.md](docs/deploy.md)**。
+## Web page (`/ui`)
 
-## Web 页面（`/ui`）
+Three panes: **session list / message stream / final result**. A token is only requested
+when the server was started with `--hook_token`, and it stays in the browser's localStorage.
 
-三栏：**会话列表 / 消息流 / 最终结果**。服务端设了 `--hook_token` 才会要令牌，令牌存在浏览器的
-localStorage 里。
+- **Left**: typing in the search box filters metadata live; pressing <kbd>Enter</kbd>
+  **searches message bodies** and the results carry matching snippets. The list can be
+  grouped by time or by project, and a session currently being written gets a pulsing green
+  dot
+- **Middle**: the message timeline (text / thinking / toolCall / toolResult blocks). You can
+  switch between the earliest and latest 200 messages, and filter to user or assistant
+- **Right**: the final result stays visible — stopReason, the answer, the thinking, usage and
+  cost, and session metadata (one click to copy the sessionId, one to export Markdown)
 
-- **左栏**：搜索框打字是即时过滤元数据，按 <kbd>Enter</kbd> 是**全文搜正文**、结果带命中片段；
-  可切「按时间 / 按项目」分组；正在被写入的会话带一个呼吸绿点
-- **中栏**：消息时间线（text / thinking / toolCall / toolResult 分块）。可切「最早 / 最新 200 条」
-  和「只看 user / assistant」
-- **右栏**：最终结果常驻——stopReason、正文、思考过程、用量与费用、会话元信息
-  （sessionId 一键复制、一键导出 Markdown）
+It refreshes every 10 seconds without disturbing what you are reading (expanded blocks and
+scroll position are preserved). `/ui#<sessionId>` works as a deep link, light and dark follow
+the system, and narrow windows collapse to two panes and then one.
 
-10 秒自动刷新且不会掀掉正在读的内容（展开的折叠块、滚动位置都保住）；`/ui#<sessionId>` 可当深链；
-亮 / 暗随系统；窄屏自动退成两栏 / 单栏。
+Shortcuts: <kbd>j</kbd> <kbd>k</kbd> move between sessions · <kbd>/</kbd> focus search ·
+<kbd>Enter</kbd> search message bodies · <kbd>g</kbd> <kbd>G</kbd> jump to the start/end of
+the stream · <kbd>r</kbd> refresh · <kbd>Esc</kbd> clear or leave the search.
 
-快捷键：<kbd>j</kbd> <kbd>k</kbd> 切换会话 · <kbd>/</kbd> 聚焦搜索 · <kbd>Enter</kbd> 全文搜内容 ·
-<kbd>g</kbd> <kbd>G</kbd> 跳消息流首 / 末 · <kbd>r</kbd> 刷新 · <kbd>Esc</kbd> 清空 / 退出搜索。
+## Endpoints at a glance
 
-## 端点速查
+Every query is a `GET` (MCP's `/mcp` is a `POST`). Once `--hook_token` is set, endpoints
+marked "yes" require `Authorization: Bearer <token>`.
 
-所有查询都是 `GET`（MCP 的 `/mcp` 是 `POST`）。配置了 `--hook_token` 后，标「需要」的端点要带
-`Authorization: Bearer <token>`。
+| Endpoint | Auth | What it does |
+|----------|------|--------------|
+| `/` `/health` `/stats` | no | Service info and health check |
+| `/ui` `/favicon.ico` | no | The embedded page (which holds no data) |
+| `/sessions` | yes | List every session (merged across sources, newest first) |
+| `/sessions/<pattern>` | yes | One session; add `/messages`, `/final` or `/export` |
+| `/search?q=` | yes | **Full-text search** across every source |
+| `/projects` | yes | Session counts grouped by project (cwd) |
+| `/mcp` | yes | MCP's Streamable HTTP transport (`POST`) |
 
-| 端点 | 认证 | 说明 |
-|------|------|------|
-| `/` `/health` `/stats` | 免 | 服务信息 / 健康检查 |
-| `/ui` `/favicon.ico` | 免 | 内嵌页面（不含数据） |
-| `/sessions` | 需要 | 列出所有会话（多源合并，按更新时间倒序） |
-| `/sessions/<pattern>` | 需要 | 单个会话；加 `/messages` `/final` `/export` |
-| `/search?q=` | 需要 | **全文搜正文**，跨所有数据源 |
-| `/projects` | 需要 | 按项目（cwd）归拢的统计 |
-| `/mcp` | 需要 | MCP 的 Streamable HTTP 传输（`POST`） |
-
-完整参数、`<pattern>` 匹配规则、响应字段见 **[docs/api.md](docs/api.md)**。
+Full parameters, the `<pattern>` matching rules and every response field are in
+**[docs/api.md](docs/api.md)**.
 
 ## MCP
 
-`--mcp` 跑在 stdio 上，HTTP 模式下另有 `POST /mcp`。于是 **Agent 可以查自己的历史**——
-让 Claude Code 去搜你上周用 Codex 解决过的同一个问题。五个工具：`search_sessions` /
-`list_sessions` / `list_projects` / `get_session` / `get_messages`。
+`--mcp` runs on stdio, and in HTTP mode there is also `POST /mcp`. That lets **an agent query
+its own history** — Claude Code can go looking for the same problem you solved with Codex
+last week. Five tools: `search_sessions` / `list_sessions` / `list_projects` / `get_session` /
+`get_messages`.
 
-客户端配置与安全说明见 **[docs/mcp.md](docs/mcp.md)**。
+Client configuration and the security notes are in **[docs/mcp.md](docs/mcp.md)**.
 
-## 配置
+## Configuration
 
-| 参数 | 默认 | 说明 |
-|------|------|------|
-| `--host` | `127.0.0.1` | 监听地址；对外暴露改 `0.0.0.0`（并配上 `--hook_token`） |
-| `--port` | `8080` | 监听端口 |
-| `--mode` | `auto` | `auto`（存在即启用）/ `all`（六个都启用）/ `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` |
-| `--hook_token` | 无 | Bearer 令牌；不设置则免认证 |
-| `--max-connections` | `50` | 最大并发连接数，超出的先排队 |
-| `--accept-queue` | `0`（自动） | 满载时的排队位数；`0` = `2 × max-connections`，不低于 32。排满了立刻返回 503 |
-| `--timeout` | `30` | 连接超时（秒） |
-| `--cache-ttl` | `2` | 会话列表缓存秒数；`0` = 不缓存 |
-| `--max-limit` | `1000` | `?limit=` 的上限，超出按上限截断 |
-| `--cors-origin` | 无（关闭） | 允许的跨域来源；填 `*` 或具体 origin。不填则不发任何 CORS 头 |
-| `-d` | 关 | 后台运行：脱离终端，输出写到日志文件 |
-| `--log-file` | 按端口推导 | `-d` 时的日志路径，默认 `<临时目录>/agent-session-query-<端口>.log` |
-| `--mcp` | 关 | 以 MCP server 跑在 stdio 上（见下），不监听端口 |
-| `--version` | — | 打印版本后退出 |
+| Flag | Default | What it does |
+|------|---------|--------------|
+| `--host` | `127.0.0.1` | Bind address; use `0.0.0.0` to expose it (and set `--hook_token`) |
+| `--port` | `8080` | Listen port |
+| `--mode` | `auto` | `auto` (enable whatever exists) / `all` (enable all six) / `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` |
+| `--hook_token` | none | Bearer token; without it the API is unauthenticated |
+| `--max-connections` | `50` | Maximum concurrent connections; anything past it queues |
+| `--accept-queue` | `0` (auto) | Queue slots when at capacity; `0` means `2 × max-connections`, never below 32. A full queue returns 503 immediately |
+| `--timeout` | `30` | Connection timeout in seconds |
+| `--cache-ttl` | `2` | Seconds to cache the session list; `0` disables caching |
+| `--max-limit` | `1000` | Upper bound for `?limit=`; anything larger is clamped |
+| `--cors-origin` | none (off) | Allowed CORS origin; `*` or a specific origin. Unset means no CORS headers at all |
+| `-d` | off | Run in the background, detached from the terminal, logging to a file |
+| `--log-file` | derived from the port | Log path used with `-d`; defaults to `<tmp>/agent-session-query-<port>.log` |
+| `--mcp` | off | Run as an MCP server on stdio (see above); does not listen on a port |
+| `--version` | — | Print the version and exit |
 
-Docker 环境变量：`HOOK_TOKEN`、`SESSION_MODE`（默认 `auto`）、`GO_IMAGE`（构建参数）。
+Docker environment variables: `HOOK_TOKEN`, `SESSION_MODE` (default `auto`), and `GO_IMAGE`
+(a build argument).
 
-不给 `--hook_token` 时会读环境变量 `HOOK_TOKEN`——**命令行参数会出现在 `ps` 里，环境变量不会**，常驻部署建议用后者。
+Without `--hook_token` the `HOOK_TOKEN` environment variable is read instead — **command-line
+arguments show up in `ps`, environment variables do not**, so prefer the latter for anything
+long-running.
 
-## 安全
+## Security
 
-- 能读到完整会话内容（含工具输出），**对外暴露务必设置 `--hook_token`**
-- 默认只绑 `127.0.0.1`、默认不发 CORS 头：不设 token 时，这两条是拦住「随便哪个网页 fetch 本机 `/sessions` 把会话读走」的唯一屏障，改之前想清楚
-- 放在 HTTPS 反向代理（Nginx/Caddy）之后，不要直接暴露到公网；`/ui` 页面不含数据但请在反代层加认证
-- `/ui` 带 `Content-Security-Policy`（脚本样式只许同源、不许内联、不许被 iframe 套），页面渲染一律走 `textContent`
-- 令牌定期轮换；不要写进镜像或仓库；容器挂载会话目录用 `:ro`
+- It can read complete session content, tool output included, so **always set
+  `--hook_token`** before exposing it
+- It binds `127.0.0.1` and sends no CORS headers by default. Without a token, those two are
+  the only things standing between any web page you visit and a `fetch` of your local
+  `/sessions` — think it through before changing either
+- Put it behind an HTTPS reverse proxy (Nginx, Caddy) rather than on the public internet.
+  `/ui` carries no data, but authenticate it at the proxy anyway
+- `/ui` ships a `Content-Security-Policy` (same-origin scripts and styles only, nothing
+  inline, no framing) and renders exclusively through `textContent`
+- Rotate tokens; keep them out of images and repositories; mount session directories `:ro`
 
-## 故障排除
+## Troubleshooting
 
-1. **某个数据源没被启用**（`/health` 的 `sources` 里没有它）：对照上面的表确认目录存在，`--mode all`
-   会打印缺了哪个。Hermes 看 `sessions.json` **或** `state.db`，任一存在即启用。容器里确认目录挂进去了。
-2. **列表为空**：`/health` 看启用了哪些源，确认进程对目录有读权限。
-3. **401**：`Authorization: Bearer <token>` 与启动时的 `--hook_token` 是否一致。
-4. **端口占用**：换 `--port`。
+1. **A source was not enabled** (it is missing from `sources` in `/health`): check the
+   directory exists using the table above; `--mode all` prints which ones were missing.
+   Hermes needs `sessions.json` **or** `state.db`, either is enough. In a container, confirm
+   the directory was actually mounted.
+2. **The list is empty**: check `/health` for which sources are enabled, and that the process
+   can read those directories.
+3. **401**: check that `Authorization: Bearer <token>` matches the `--hook_token` the server
+   started with.
+4. **Port already in use**: pick another `--port`.
 
-## 文档
+## Documentation
 
 | | |
 |---|---|
-| [docs/api.md](docs/api.md) | 完整 HTTP API：参数、匹配规则、响应字段 |
-| [docs/mcp.md](docs/mcp.md) | MCP：两种传输、客户端配置、工具表 |
-| [docs/deploy.md](docs/deploy.md) | 常驻部署：systemd / launchd / Windows 计划任务 / Docker |
-| [docs/development.md](docs/development.md) | 目录结构、测试、发版、新增数据源 |
-| [docs/internals.md](docs/internals.md) | 实现细节：各源解析、性能、全文搜索、跨平台 |
+| [docs/api.md](docs/api.md) | The full HTTP API: parameters, matching rules, response fields |
+| [docs/mcp.md](docs/mcp.md) | MCP: both transports, client configuration, the tool table |
+| [docs/deploy.md](docs/deploy.md) | Supervised deployment: systemd / launchd / Windows scheduled task / Docker |
+| [docs/development.md](docs/development.md) | Layout, tests, releasing, adding a source |
+| [docs/internals.md](docs/internals.md) | Implementation: per-source parsing, performance, search, cross-platform |
 
-## 许可
+## License
 
-MIT，见 [LICENSE](LICENSE)。
+MIT, see [LICENSE](LICENSE).
 
 ---
 
-**注意**：本服务是只读的，不会改动任何 Hermes / OpenClaw / Pi / Claude Code / Codex / Gemini 的会话数据。
+**Note**: this service is read-only. It never modifies the session data of Hermes, OpenClaw,
+Pi, Claude Code, Codex or Gemini.

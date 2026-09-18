@@ -1495,6 +1495,22 @@ $('source-filter').addEventListener('change', (event) => {
 });
 
 // Reading on: fetch the next page when the reader reaches the edge that has one
+// Touch devices report the gesture directly, so they do not have to infer it from a
+// scroll position that the chrome's own hiding keeps moving.
+let touchAnchorY = null;
+$('messages').addEventListener('touchstart', (event) => {
+  touchAnchorY = event.touches.length ? event.touches[0].clientY : null;
+}, { passive: true });
+$('messages').addEventListener('touchmove', (event) => {
+  if (touchAnchorY === null || !event.touches.length) return;
+  const y = event.touches[0].clientY;
+  const dy = touchAnchorY - y; // > 0: the finger moved up, content moves down
+  if (Math.abs(dy) < CHROME_JITTER_PX) return;
+  touchAnchorY = y;
+  slideChromeByTouch(dy);
+}, { passive: true });
+$('messages').addEventListener('touchend', () => { touchAnchorY = null; }, { passive: true });
+
 $('messages').addEventListener('scroll', () => {
   const pane = $('messages');
   slideChrome(pane.scrollTop);
@@ -1627,6 +1643,19 @@ function slideChrome(y) {
     chromeLastY = y;
     return;
   }
+  // No decision is taken at either end of the scroll range. Hiding the chrome changes the
+  // container's height and therefore the scroll geometry, so a bounce at an edge produces
+  // scroll events that look like the reader moving — which is what made the block flip
+  // back and forth a few times when a phone was pulled to the bottom. (An overscroll
+  // bounce lives here, which is why it showed up there first.)
+  const pane = $('messages');
+  if (y <= 0 || y >= pane.scrollHeight - pane.clientHeight - 1) {
+    if (y <= 0) {
+      chromeLastY = y;
+      setChromeHidden(false); // the top of the conversation always shows it
+    }
+    return;
+  }
   // No width check: the stream head slides everywhere, and the header/pane-switcher rules
   // simply do not apply above the phone breakpoint.
   if (y < CHROME_HIDE_AFTER_PX) {
@@ -1639,10 +1668,29 @@ function slideChrome(y) {
   chromeLastY = y;
 }
 
+// On a touch screen the finger decides, not the scroll position: a reader dragging
+// upwards is moving down the conversation, and that stays true however the layout
+// reflows underneath. The scroll path above is what remains for a mouse or a trackpad,
+// where the wheel is the only signal there is.
+function slideChromeByTouch(dy) {
+  const pane = $('messages');
+  if (performance.now() < scrollQuietUntil) return;
+  if (pane.scrollTop <= 0) {
+    setChromeHidden(false);
+    return;
+  }
+  setChromeHidden(dy > 0);
+}
+
 function setChromeHidden(hidden) {
   if (hidden === chromeHidden) return;
   chromeHidden = hidden;
   document.body.classList.toggle('chrome-hidden', hidden);
+  // The layout changed under the scroll position, so the delta the scroll handler sees
+  // next is not the reader's; take the current position as the new baseline. The quiet
+  // window covers the reflow that follows.
+  chromeLastY = $('messages').scrollTop;
+  scrollQuietUntil = performance.now() + 250;
 }
 
 // showPane switches the phone layout. On a wide screen the attribute is inert: the CSS

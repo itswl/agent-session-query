@@ -81,7 +81,9 @@ see **[docs/deploy.md](docs/deploy.md)**.
 Three panes: **session list / message stream / final result**. A token is only requested
 when the server was started with `--hook_token`, and it stays in the browser's localStorage.
 
-- **Left**: typing filters sessionId, path and cwd instantly, and the same keystrokes also
+- **Left**: each session shows a readable name — opencode's own session title, or for the
+  other sources the first real user message — instead of a bare sessionId. Typing filters
+  sessionId, path and cwd instantly, and the same keystrokes also
   **search the message bodies** on the server. Body matches are appended below the metadata
   ones under a "N more in message bodies" divider, carrying the matching snippet, so one
   query covers both without a mode to switch. <kbd>Enter</kbd> only skips the wait. The list

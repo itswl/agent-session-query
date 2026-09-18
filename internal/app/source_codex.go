@@ -47,6 +47,22 @@ var codexSalvageKeys = []string{"session_id", "cwd", "cli_version"}
 
 // List finds the metadata row; unchanged files come straight from the cache
 // (see fileRecordCache)
+// codexUserTitle is the first real user message of a Codex session, as a title. The
+// opening instruction rows are role=user too but assembled by the CLI (AGENTS.md
+// instructions, environment context); titleFromUserText rejects them by their openings.
+func codexUserTitle(path string) string {
+	return firstUserTitle(path, codexHeadLines, func(obj map[string]any) (string, bool) {
+		if obj["type"] != "response_item" {
+			return "", false
+		}
+		payload, _ := obj["payload"].(map[string]any)
+		if payload == nil || payload["type"] != "message" || payload["role"] != "user" {
+			return "", false
+		}
+		return blockArrayText(payload["content"])
+	})
+}
+
 func (s *CodexSource) List() []record {
 	return s.cache.records(s.files(), func(path, modISO string) record {
 		// This used to read only the first line, losing everything when that line was not
@@ -75,7 +91,7 @@ func (s *CodexSource) List() []record {
 		return newRecord(map[string]any{
 			"source":     "codex",
 			"key":        path,
-			"shortKey":   stem,
+			"shortKey":   firstNonEmpty(codexUserTitle(path), stem),
 			"sessionId":  strOr(payload["session_id"], strOr(payload["id"], stem)),
 			"file":       path,
 			"hasFile":    true,

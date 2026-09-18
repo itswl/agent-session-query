@@ -795,7 +795,9 @@ func TestExportMarkdown(t *testing.T) {
 	}
 
 	body := readBody(t, resp)
-	for _, want := range []string{"# 2026-01-01T00-00-00_abc", "**Source**: pi", "## Final result", "## Messages", "### user", "question", "answer"} {
+	// The export heading is the display name, which since the title work is the first user
+	// message ("question") rather than the file stem
+	for _, want := range []string{"# question", "**Source**: pi", "## Final result", "## Messages", "### user", "question", "answer"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("the export is missing %q:\n%s", want, body)
 		}

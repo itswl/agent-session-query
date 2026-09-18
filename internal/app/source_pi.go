@@ -43,6 +43,41 @@ func piSessionID(stem string) string {
 	return stem
 }
 
+// piUserTitle is the first real user message of a Pi session, as a title. A message
+// row's content is a block array or a plain string.
+func piUserTitle(path string) string {
+	return firstUserTitle(path, piHeadLines, func(obj map[string]any) (string, bool) {
+		if obj["type"] != "message" {
+			return "", false
+		}
+		msg, _ := obj["message"].(map[string]any)
+		if msg == nil || msg["role"] != "user" {
+			return "", false
+		}
+		return blockArrayText(msg["content"])
+	})
+}
+
+// blockArrayText concatenates the text of a content block array, or returns the value
+// itself when it is a plain string.
+func blockArrayText(content any) (string, bool) {
+	switch c := content.(type) {
+	case string:
+		return c, true
+	case []any:
+		texts := []string{}
+		for _, item := range c {
+			if m, ok := item.(map[string]any); ok {
+				if t := strField(m, "text"); t != "" {
+					texts = append(texts, t)
+				}
+			}
+		}
+		return strings.Join(texts, "\n"), len(texts) > 0
+	}
+	return "", false
+}
+
 // List finds the session row for metadata; unchanged files come straight from the
 // cache (see fileRecordCache)
 func (s *PiSource) List() []record {
@@ -68,7 +103,7 @@ func (s *PiSource) List() []record {
 		return newRecord(map[string]any{
 			"source":    "pi",
 			"key":       path,
-			"shortKey":  stem,
+			"shortKey":  firstNonEmpty(piUserTitle(path), stem),
 			"sessionId": strOr(meta["id"], piSessionID(stem)),
 			"file":      path,
 			"hasFile":   true,

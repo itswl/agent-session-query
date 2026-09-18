@@ -142,6 +142,21 @@ func eachGeminiEntry(path string, fn func(entry map[string]any) bool) {
 
 // List reads only the file head for metadata; unchanged files come straight from the
 // cache (see fileRecordCache)
+// geminiUserTitle is the first real user message of a Gemini CLI session, as a title.
+// content is a string or a block array; the first metadata line has no type and is not a
+// user row, so the shared head scan skips it naturally.
+// geminiHeadLines caps how far the title scan goes, matching the other file sources.
+const geminiHeadLines = 50
+
+func geminiUserTitle(path string) string {
+	return firstUserTitle(path, geminiHeadLines, func(obj map[string]any) (string, bool) {
+		if obj["type"] != "user" {
+			return "", false
+		}
+		return blockArrayText(obj["content"])
+	})
+}
+
 func (s *GeminiSource) List() []record {
 	return s.cache.records(s.files(), func(path, modISO string) record {
 		meta := s.metaOf(path)
@@ -163,7 +178,7 @@ func (s *GeminiSource) List() []record {
 		return newRecord(map[string]any{
 			"source":    "gemini",
 			"key":       path,
-			"shortKey":  stem,
+			"shortKey":  firstNonEmpty(geminiUserTitle(path), stem),
 			"sessionId": strOr(meta["sessionId"], stem),
 			"file":      path,
 			"hasFile":   true,

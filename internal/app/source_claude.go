@@ -64,10 +64,11 @@ func (s *ClaudeCodeSource) List() []record {
 			seen++
 			return !(haveSID && haveCWD) && seen < claudeHeadLines
 		})
+		name := firstNonEmpty(claudeUserTitle(path), stem)
 		return newRecord(map[string]any{
 			"source":    "claude",
 			"key":       path,
-			"shortKey":  stem,
+			"shortKey":  name,
 			"sessionId": sid,
 			"file":      path,
 			"hasFile":   true,
@@ -75,6 +76,36 @@ func (s *ClaudeCodeSource) List() []record {
 			"cwd":       cwd,
 			"updatedAt": updated,
 		}, updated)
+	})
+}
+
+// claudeUserTitle is the first real user message of a Claude Code session, as a title.
+// A user row's content is a string or a block array; text blocks concatenate. Command
+// plumbing and caveat rows open with a tag and are rejected inside titleFromUserText.
+func claudeUserTitle(path string) string {
+	return firstUserTitle(path, claudeHeadLines, func(obj map[string]any) (string, bool) {
+		if obj["type"] != "user" {
+			return "", false
+		}
+		msg, _ := obj["message"].(map[string]any)
+		if msg == nil {
+			return "", false
+		}
+		switch content := msg["content"].(type) {
+		case string:
+			return content, true
+		case []any:
+			texts := []string{}
+			for _, item := range content {
+				if m, ok := item.(map[string]any); ok && m["type"] == "text" {
+					if t := strField(m, "text"); t != "" {
+						texts = append(texts, t)
+					}
+				}
+			}
+			return strings.Join(texts, "\n"), len(texts) > 0
+		}
+		return "", false
 	})
 }
 

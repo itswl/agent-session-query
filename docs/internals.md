@@ -64,6 +64,26 @@ and deployment see the [README](../README.md).
   milliseconds throughout (opened read-only — verified that reads work through the live
   write-ahead log, so sessions still being written are visible)
 
+### Session titles
+
+opencode writes a real title for every session (`session.title`), and that is what its
+list shows. The other sources write none, so their lists used to show a sessionId or a
+filename. The closest equivalent is the first real user message — which is also where
+opencode's own titles come from, it just has a model summarise the line. So each file
+source's head scan now also picks up the first user message, and the title lands in
+`shortKey` (with the old stem as fallback, so a noisy file loses nothing).
+
+Not every first user row is a question: Claude Code opens with command plumbing and
+caveat rows, Codex with AGENTS.md instructions and environment context — all of them
+`role=user` but machine-assembled. `titleFromUserText` rejects them by their openings
+(each prefix was seen in real local data), takes the first line of what survives, and
+truncates to 80 runes. Coverage measured locally: 190/192 Claude sessions, 31/33 Gemini,
+2/2 Pi, 2/2 Codex come out with a title.
+
+The extraction runs inside the `fileRecordCache` build callback, so it costs nothing on
+unchanged files; the first read after a change reads up to the head-scan cap, which is
+also where cwd already comes from.
+
 ### A session's update time: read the tail, do not trust mtime
 
 The list sorts by `updatedAt`, and file-backed sources originally took that straight from the

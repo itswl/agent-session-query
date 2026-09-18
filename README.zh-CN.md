@@ -79,7 +79,8 @@ go build -o agent-session-query ./cmd/agent-session-query
 三栏：**会话列表 / 消息流 / 最终结果**。只有服务端带 `--hook_token` 启动时才会要求填 token，
 填完存在浏览器的 localStorage 里。
 
-- **左栏**：输入会即时过滤 sessionId / 路径 / cwd，同时这些击键也会在服务端**搜索消息正文**。
+- **左栏**：每个会话显示一个可读的名字——opencode 用它自带的会话标题，其他源取首条真实
+  用户消息——而不是一串 sessionId。输入会即时过滤 sessionId / 路径 / cwd，同时这些击键也会在服务端**搜索消息正文**。
   正文命中以「N more in message bodies」分隔线附在元数据结果下方，带上命中片段——一次查询
   同时覆盖两边，不用切模式。<kbd>Enter</kbd> 只是免去等待。列表可以按时间或按项目分组，
   正在写入的会话会有一个呼吸的绿点

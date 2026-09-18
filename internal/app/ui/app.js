@@ -301,12 +301,47 @@ function buildGroup(id) {
   return node;
 }
 
+// visibleProjectNames is the set of group headers currently on screen
+function visibleProjectNames() {
+  const names = new Set();
+  for (const session of visibleSessions()) names.add(session.project || '(no project)');
+  return [...names];
+}
+
+// foldAllGroups flips every project at once: it collapses when anything is open, and
+// opens everything when they all are — which is what the button's label promises
+function foldAllGroups() {
+  const names = visibleProjectNames();
+  if (!names.length) return;
+  const collapse = !names.every((name) => state.collapsedGroups.has(name));
+  for (const name of names) {
+    if (collapse) state.collapsedGroups.add(name);
+    else state.collapsedGroups.delete(name);
+  }
+  saveViewPrefs();
+  renderList();
+  syncFoldAllButton();
+}
+
+// The button only means something while the list is grouped by project, and says which
+// way it will go next
+function syncFoldAllButton() {
+  const button = $('fold-groups');
+  if (!button) return;
+  button.classList.toggle('hidden', state.grouping !== 'project');
+  const names = state.grouping === 'project' ? visibleProjectNames() : [];
+  const everyFolded = names.length > 0 && names.every((n) => state.collapsedGroups.has(n));
+  button.textContent = everyFolded ? 'Expand all' : 'Collapse all';
+  button.title = everyFolded ? 'Expand every project' : 'Collapse every project';
+}
+
 function toggleGroup(rowId) {
   const name = rowId.replace(/^group:/, '');
   if (state.collapsedGroups.has(name)) state.collapsedGroups.delete(name);
   else state.collapsedGroups.add(name);
   saveViewPrefs();
   renderList();
+  syncFoldAllButton(); // folding one group can flip the button's promise
 }
 
 function fillGroup(node, row) {
@@ -315,8 +350,11 @@ function fillGroup(node, row) {
   const short = String(row.name).split(/[\\/]/).filter(Boolean).pop() || row.name;
   setText(caret, row.collapsed ? '\u25b8' : '\u25be');
   setText(name, short);
-  node.title = row.name + ' — click to ' + (row.collapsed ? 'expand' : 'collapse');
-  setText(count, row.count);
+  // Say what the number counts. A bare "2" next to a row reading "3726 msgs" reads as a
+  // second message count; it is the number of sessions in this project.
+  setText(count, row.count + (row.count === 1 ? ' session' : ' sessions'));
+  node.title = row.name + ' · ' + row.count + (row.count === 1 ? ' session' : ' sessions') +
+    ' — click to ' + (row.collapsed ? 'expand' : 'collapse');
   node.classList.toggle('collapsed', !!row.collapsed);
   node.setAttribute('aria-expanded', row.collapsed ? 'false' : 'true');
   node.classList.toggle('live', !!row.active);
@@ -1430,6 +1468,7 @@ $('grouping').addEventListener('change', (event) => {
   state.grouping = event.target.value;
   saveViewPrefs();
   renderList();
+  syncFoldAllButton(); // the fold-all button only means something grouped by project
 });
 
 $('source-filter').addEventListener('change', (event) => {
@@ -1450,6 +1489,8 @@ $('messages').addEventListener('scroll', () => {
     loadMore('newer');
   }
 }, { passive: true });
+
+$('fold-groups').addEventListener('click', foldAllGroups);
 
 $('toggle-list').addEventListener('click', () => {
   state.hideList = !state.hideList;
@@ -1561,6 +1602,7 @@ async function start() {
   applyViewPrefs();
   showPane(state.pane);
   applyPaneFolds();
+  syncFoldAllButton();
   const hashId = decodeURIComponent(location.hash.replace(/^#/, ''));
   if (hashId) state.selectedId = hashId;
   await refresh();

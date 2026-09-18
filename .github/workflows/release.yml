@@ -81,13 +81,17 @@ jobs:
             echo "$GITHUB_REF_NAME" > release-notes.md
           fi
 
-      # A forced tag update (retagging to fix a note, say) fires this workflow again,
-      # and the action then leaves behind a duplicate draft release. github.event.created
-      # is true only when the tag is newly created, which is the only case worth publishing.
+      # Publish with gh itself. action-gh-release was leaving a duplicate draft release
+      # behind on every publish (two release objects, same second, one run — seen on
+      # v0.6.0 and v0.7.0); gh release create makes exactly one or fails loudly.
+      # A forced tag update (retagging to fix a note) would fire this workflow again;
+      # github.event.created is true only for a newly created tag, which is the only
+      # case worth publishing.
       - if: ${{ github.event.created }}
-        uses: softprops/action-gh-release@v3
-        with:
-          body_path: release-notes.md
-          files: |
-            agent-session-query-*.tar.gz
-            agent-session-query-*.zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            agent-session-query-*.tar.gz agent-session-query-*.zip

@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -158,7 +160,7 @@ func geminiUserTitle(path string) string {
 }
 
 func (s *GeminiSource) List() []record {
-	return s.cache.records(s.files(), func(path, modISO string) record {
+	records := s.cache.records(s.files(), func(path, modISO string) record {
 		meta := s.metaOf(path)
 		// The first line's lastUpdated is its value at session start; later $set patch rows
 		// update it. Measured locally, 29 of 33 sessions had a stale first-line time, off by
@@ -181,55 +183,133 @@ func (s *GeminiSource) List() []record {
 			"shortKey":  firstNonEmpty(geminiUserTitle(path), stem),
 			"sessionId": strOr(meta["sessionId"], stem),
 			"file":      path,
+			"files":     []string{path},
 			"hasFile":   true,
 			"status":    "done",
 			"project":   filepath.Base(filepath.Dir(filepath.Dir(path))),
 			"updatedAt": lastTs,
 		}, lastTs)
 	})
+	return mergeGeminiSessions(records)
+}
+
+// mergeGeminiSessions folds files that share a sessionId into one record.
+//
+// Gemini CLI continues a session in a new file (measured locally: two files one minute
+// apart, same sessionId) — one conversation split across files, not two sessions.
+// Before this merge each file was its own record, and the damage was twofold: the list
+// showed two rows that clicked to the same place (the UI keys rows by sessionId, so the
+// second row's click looked like re-selecting the first and did nothing), and the other
+// file's messages were unreachable — matching by sessionId returns one record.
+func mergeGeminiSessions(records []record) []record {
+	out := make([]record, 0, len(records))
+	index := map[string]int{}
+	for _, rec := range records {
+		id := rec.str("sessionId")
+		if id == "" {
+			out = append(out, rec)
+			continue
+		}
+		if at, ok := index[id]; ok {
+			out[at] = mergeGeminiRecord(out[at], rec)
+			continue
+		}
+		index[id] = len(out)
+		out = append(out, rec)
+	}
+	return out
+}
+
+// mergeGeminiRecord combines two files of one session: files keep filename order (the
+// filename carries the timestamp, so that is chronological), the title comes from
+// whichever file has one, and updatedAt from whichever is newer.
+func mergeGeminiRecord(a, b record) record {
+	files := append(geminiFilesOf(a), geminiFilesOf(b)...)
+	sort.Strings(files)
+	fields := map[string]any{}
+	for k, v := range a.fields {
+		fields[k] = v
+	}
+	fields["files"] = files
+	fields["file"] = files[0]
+	if toStr(fields["shortKey"]) == "" {
+		fields["shortKey"] = b.str("shortKey")
+	}
+	updatedAt := a.str("updatedAt")
+	if b.sortAt.After(a.sortAt) {
+		updatedAt = b.str("updatedAt")
+	}
+	return newRecord(fields, updatedAt)
+}
+
+// geminiFilesOf lists the files behind one record: the merged set, or the single file.
+func geminiFilesOf(r record) []string {
+	if raw, ok := r.fields["files"].([]string); ok && len(raw) > 0 {
+		return raw
+	}
+	if path := r.str("file"); path != "" {
+		return []string{path}
+	}
+	return nil
 }
 
 func (s *GeminiSource) Messages(r record, q messageQuery) []map[string]any {
 	sink := newMessageSink(q)
-	path := r.str("file")
-	if path == "" {
-		return sink.result()
-	}
-	eachGeminiEntry(path, func(m map[string]any) bool {
-		if m["type"] != "user" && m["type"] != "gemini" {
-			return true
-		}
-		role := "user"
-		if m["type"] == "gemini" {
-			role = "assistant"
-		}
-		return sink.add(map[string]any{
-			"id":        getOr(m, "id", ""),
-			"role":      role,
-			"timestamp": getOr(m, "timestamp", ""),
-			"content":   geminiParts(m),
+	// One session may span several files (see mergeGeminiSessions); filename order is
+	// chronological, so reading them in sequence reconstructs the conversation
+	for _, path := range geminiFilesOf(r) {
+		eachGeminiEntry(path, func(m map[string]any) bool {
+			if m["type"] != "user" && m["type"] != "gemini" {
+				return true
+			}
+			role := "user"
+			if m["type"] == "gemini" {
+				role = "assistant"
+			}
+			return sink.add(map[string]any{
+				"id":        getOr(m, "id", ""),
+				"role":      role,
+				"timestamp": getOr(m, "timestamp", ""),
+				"content":   geminiParts(m),
+			})
 		})
-	})
+	}
 	return sink.result()
 }
 
+// Search covers every file of a session; the generic path only reads rec's single
+// file field and would miss the continuation files.
+func (s *GeminiSource) Search(ctx context.Context, r record, q searchQuery) []map[string]any {
+	var out []map[string]any
+	for _, path := range geminiFilesOf(r) {
+		out = append(out, searchFile(ctx, path, q)...)
+		if len(out) >= q.perSession {
+			break
+		}
+	}
+	return out
+}
+
 func (s *GeminiSource) Final(r record) map[string]any {
-	path := r.str("file")
-	if path == "" {
+	if len(geminiFilesOf(r)) == 0 {
 		return nil
 	}
 	var lastGemini map[string]any
 	count := 0
-	eachGeminiEntry(path, func(m map[string]any) bool {
-		if m["type"] != "user" && m["type"] != "gemini" {
+	// Files are chronological, so the last gemini row of the last file is the final
+	// answer, while the count covers the whole session
+	for _, path := range geminiFilesOf(r) {
+		eachGeminiEntry(path, func(m map[string]any) bool {
+			if m["type"] != "user" && m["type"] != "gemini" {
+				return true
+			}
+			count++
+			if m["type"] == "gemini" {
+				lastGemini = m
+			}
 			return true
-		}
-		count++
-		if m["type"] == "gemini" {
-			lastGemini = m
-		}
-		return true
-	})
+		})
+	}
 	if lastGemini == nil {
 		return map[string]any{
 			"status":       "done",

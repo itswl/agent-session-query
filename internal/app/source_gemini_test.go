@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -77,5 +79,59 @@ func TestGeminiSource(t *testing.T) {
 	tc := tcs[0].(map[string]any)
 	if tc["name"] != "read_file" || tc["arguments"].(map[string]any)["file_path"] != "package.json" {
 		t.Fatalf("final toolCall = %v", tc)
+	}
+}
+
+// TestGeminiMergesContinuationFiles: Gemini CLI continues a session in a new file with
+// the same sessionId (measured locally: two files one minute apart). They are one
+// conversation — one list row, messages read from both files in filename order, and a
+// search that only knows the record finds the continuation file too. Before the merge,
+// the second row's click did nothing (the UI keys rows by sessionId) and the second
+// file's messages were unreachable.
+func TestGeminiMergesContinuationFiles(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "p", "chats")
+	write(t, filepath.Join(dir, "session-2026-09-14T03-16-80e8c90b.jsonl"),
+		`{"sessionId":"sid-80e8c90b","startTime":"2026-09-14T03:16:50Z"}`,
+		`{"type":"user","content":[{"text":"帮我连一下vpn"}],"timestamp":"2026-09-14T03:16:52Z"}`,
+	)
+	write(t, filepath.Join(dir, "session-2026-09-14T03-17-80e8c90b.jsonl"),
+		`{"sessionId":"sid-80e8c90b","startTime":"2026-09-14T03:17:49Z"}`,
+		`{"type":"gemini","content":"vpn 连好了","timestamp":"2026-09-14T03:18:01Z"}`,
+	)
+	s := newGeminiSource(root)
+
+	records := s.List()
+	if len(records) != 1 {
+		t.Fatalf("two continuation files must be one session, got %d records", len(records))
+	}
+	rec := records[0]
+	if rec.str("sessionId") != "sid-80e8c90b" {
+		t.Errorf("sessionId = %q", rec.str("sessionId"))
+	}
+	if !strings.Contains(rec.str("file"), "03-16") {
+		t.Errorf("file must point at the earliest file, got %q", rec.str("file"))
+	}
+
+	msgs := s.Messages(rec, messageQuery{limit: 100})
+	if len(msgs) != 2 {
+		t.Fatalf("messages from both files expected, got %d", len(msgs))
+	}
+	if msgs[0]["role"] != "user" || msgs[1]["role"] != "assistant" {
+		t.Errorf("roles = %v / %v", msgs[0]["role"], msgs[1]["role"])
+	}
+
+	final := s.Final(rec)
+	if final["text"] != "vpn 连好了" {
+		t.Errorf("final text = %q (must come from the continuation file)", final["text"])
+	}
+	if final["messageCount"] != 2 {
+		t.Errorf("messageCount = %v (must count both files)", final["messageCount"])
+	}
+
+	// The searchableSource path must reach the continuation file as well
+	q := searchQuery{needle: "连好了", lowered: []byte("连好了"), perSession: 5}
+	if hits := s.Search(context.Background(), rec, q); len(hits) == 0 {
+		t.Fatal("search must find text that only exists in the continuation file")
 	}
 }

@@ -67,7 +67,7 @@ func exportCoverage(item record, final map[string]any, written int, which string
 	}
 	switch {
 	case total > 0 && int64(written) < total:
-		return fmt.Sprintf("%d of %d messages (the %s %d; the rest is not in this document)",
+		return fmt.Sprintf("%d of %d messages (the %s %d; the rest is not in this file)",
 			written, total, which, written), false
 	case total > 0 && int64(written) == total:
 		return fmt.Sprintf("all %d messages", total), true

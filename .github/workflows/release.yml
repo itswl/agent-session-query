@@ -87,11 +87,23 @@ jobs:
       # A forced tag update (retagging to fix a note) would fire this workflow again;
       # github.event.created is true only for a newly created tag, which is the only
       # case worth publishing.
+      # Runs once per build job (each contributes its own platform's artifact), so:
+      # nullglob — this job produces either .tar.gz or .zip, never both, and a
+      #   non-matching glob must expand to nothing rather than fail the shell;
+      # view-then-create-or-upload — six jobs race to publish one release; the first
+      #   creates it, the rest upload their artifacts onto it.
       - if: ${{ github.event.created }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --notes-file release-notes.md \
-            agent-session-query-*.tar.gz agent-session-query-*.zip
+          shopt -s nullglob
+          files=(agent-session-query-*.tar.gz agent-session-query-*.zip)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file release-notes.md \
+              "${files[@]}" || \
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          fi

@@ -70,6 +70,33 @@ jobs:
           else
             tar czf "agent-session-query-$GOOS-$GOARCH.tar.gz" "$binary"
           fi
+      # Each job uploads its own archive; a single publish job collects them all below.
+      # Publishing from every build job meant six of them racing to create one release,
+      # and gh release create is not atomic: on v0.10.1 two jobs passed the "does it
+      # exist" check in the same second and two releases appeared, each holding part of
+      # the artifacts. One publisher removes the race rather than narrowing it.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-session-query-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: agent-session-query-${{ matrix.goos }}-${{ matrix.goarch }}.*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # A forced tag update (retagging to fix a note) fires this workflow again;
+    # github.event.created is true only for a newly created tag, which is the only case
+    # worth publishing.
+    if: ${{ github.event.created }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
       # action-gh-release does not pick up the tag annotation as release notes on its own
       # (no body means an empty body), so read it out explicitly. Remember --cleanup=verbatim
@@ -81,29 +108,11 @@ jobs:
             echo "$GITHUB_REF_NAME" > release-notes.md
           fi
 
-      # Publish with gh itself. action-gh-release was leaving a duplicate draft release
-      # behind on every publish (two release objects, same second, one run — seen on
-      # v0.6.0 and v0.7.0); gh release create makes exactly one or fails loudly.
-      # A forced tag update (retagging to fix a note) would fire this workflow again;
-      # github.event.created is true only for a newly created tag, which is the only
-      # case worth publishing.
-      # Runs once per build job (each contributes its own platform's artifact), so:
-      # nullglob — this job produces either .tar.gz or .zip, never both, and a
-      #   non-matching glob must expand to nothing rather than fail the shell;
-      # view-then-create-or-upload — six jobs race to publish one release; the first
-      #   creates it, the rest upload their artifacts onto it.
-      - if: ${{ github.event.created }}
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          shopt -s nullglob
-          files=(agent-session-query-*.tar.gz agent-session-query-*.zip)
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" \
-              --title "$GITHUB_REF_NAME" \
-              --notes-file release-notes.md \
-              "${files[@]}" || \
-            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
-          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            dist/agent-session-query-*.tar.gz dist/agent-session-query-*.zip

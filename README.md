@@ -104,6 +104,11 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   **conversation table of contents**: the user's turns, numbered, click to jump to one in
   the stream. It covers the loaded window and says so when the session is longer
 
+It installs as a web app: open `/ui` on a phone and "Add to Home Screen" gives it an
+icon, a name and a window without browser chrome, and it honours the notch and home
+indicator when it does. (The icons are drawn by `go run tools/icongen.go` — standard
+library only, so the same source produces the same bytes anywhere.)
+
 On a phone the title row and the pane switcher slide away as you scroll down and come back
 as you scroll up, and the three panes become one screen at a time with a **Sessions /
 Conversation / Details** switcher, and the search box and list filters belong to Sessions — they do

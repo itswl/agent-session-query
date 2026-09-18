@@ -2,7 +2,19 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- viewport-fit=cover so the page can reach under a notch and the home indicator; the
+       stylesheet then pads by the safe-area insets. Without it those areas stay blank in
+       standalone mode and the layout sits in a letterbox. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <!-- Installed as a web app: the manifest is what Android and desktop Chrome read, the
+       apple-* tags are what iOS reads. -->
+  <link rel="manifest" href="/ui/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/ui/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Sessions">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#171a21" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <title>Agent sessions</title>
 <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
 <link rel="stylesheet" href="/ui/style.css">

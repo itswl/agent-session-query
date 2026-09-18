@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"io"
 	"io/fs"
 	"net/http"
@@ -186,5 +187,87 @@ func TestUIAssetUnknownIs404(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("a missing asset = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestWebAppManifest: the page is installable — add to home screen, open as a web app —
+// which needs the manifest and the icons it names to be embedded and served with the
+// types a browser will accept. A file the generator wrote but go:embed did not pick up
+// would fail here rather than on someone's phone.
+func TestWebAppManifest(t *testing.T) {
+	srv, _ := newTestServer(t, "secret")
+
+	resp, err := http.Get(srv.URL + "/ui/manifest.webmanifest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != 200 {
+		t.Fatalf("manifest = %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/manifest+json" {
+		t.Errorf("manifest Content-Type = %q", ct)
+	}
+
+	var manifest struct {
+		Name     string `json:"name"`
+		StartURL string `json:"start_url"`
+		Display  string `json:"display"`
+		Icons    []struct {
+			Src     string `json:"src"`
+			Sizes   string `json:"sizes"`
+			Purpose string `json:"purpose"`
+		} `json:"icons"`
+	}
+	if err := json.Unmarshal([]byte(body), &manifest); err != nil {
+		t.Fatalf("the manifest is not JSON: %v", err)
+	}
+	if manifest.Display != "standalone" || manifest.StartURL != "/ui" {
+		t.Errorf("display/start_url = %q/%q", manifest.Display, manifest.StartURL)
+	}
+	if len(manifest.Icons) == 0 {
+		t.Fatal("the manifest names no icons")
+	}
+	maskable := false
+	for _, icon := range manifest.Icons {
+		if icon.Purpose == "maskable" {
+			maskable = true
+		}
+		resp, err := http.Get(srv.URL + icon.Src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/png" {
+			t.Errorf("%s = %d %s", icon.Src, resp.StatusCode, resp.Header.Get("Content-Type"))
+		}
+	}
+	if !maskable {
+		t.Error("no maskable icon: Android crops the icon to its own shape")
+	}
+
+	// iOS ignores the manifest and reads these instead
+	page, err := http.Get(srv.URL + "/ui")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := readBody(t, page)
+	for _, want := range []string{
+		`rel="manifest"`, `rel="apple-touch-icon"`,
+		`name="apple-mobile-web-app-capable"`, `viewport-fit=cover`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("the page is missing %s", want)
+		}
+	}
+
+	// Android draws the status bar from it, so a wrong type is a silently unstyled bar
+	resp, err = http.Get(srv.URL + "/ui/apple-touch-icon.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("apple-touch-icon = %d", resp.StatusCode)
 	}
 }

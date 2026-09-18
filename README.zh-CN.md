@@ -94,6 +94,10 @@ go build -o agent-session-query ./cmd/agent-session-query
   （一键复制 sessionId，一键导出 Markdown），以及**对话目录**：用户的每一轮提问按序号排列，
   点击即可跳到消息流中的对应位置。目录覆盖当前加载的窗口，会话更长时会明确标注
 
+它可以装成 Web 应用：手机上打开 `/ui`，用「添加到主屏幕」即可获得图标、名称，以及一个
+没有浏览器外壳的窗口，刘海和底部指示条也会自动避让。（图标由 `go run tools/icongen.go`
+生成——只用标准库，所以同样的源在任何机器上产出同样的字节。）
+
 手机上下滑时标题栏和切换栏会自动收起，上滑或回到顶部时回来；三栏变成一次一屏，用
 **Sessions / Conversation / Details** 切换——搜索框和列表过滤器
 也归到 Sessions 栏里（它们对会话和详情没有任何作用），所以 Conversation 栏从标题行直接进入

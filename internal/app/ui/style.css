@@ -246,6 +246,26 @@ body.hide-list .list, body.hide-side .side { display: none; }
 
   .keyhint { display: none; }
 
+  /* Installed as a web app the page runs edge to edge — under a notch and under the home
+     indicator. The backgrounds are meant to reach those edges, so the padding goes on the
+     bars and on the scrollable content rather than on the app: insetting #app would leave
+     the letterbox bars plainly visible. env() resolves to 0 everywhere there is no inset. */
+  #app > header {
+    padding-top: calc(8px + env(safe-area-inset-top));
+    padding-left: calc(10px + env(safe-area-inset-left));
+    padding-right: calc(10px + env(safe-area-inset-right));
+  }
+  .panes, #controls {
+    padding-left: calc(10px + env(safe-area-inset-left));
+    padding-right: calc(10px + env(safe-area-inset-right));
+  }
+  .list { padding-bottom: env(safe-area-inset-bottom); }
+  .messages { padding-bottom: calc(48px + env(safe-area-inset-bottom)); }
+  .side { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+
+  /* The last row of a list or a conversation should be reachable above the indicator */
+  .panes { padding-bottom: 6px; }
+
   /* Scrolling down slides the title row and the pane switcher away; see slideChrome. */
   #app > header, .panes {
     overflow: hidden;

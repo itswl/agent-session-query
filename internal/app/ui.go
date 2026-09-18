@@ -136,6 +136,10 @@ func assetContentType(name string) string {
 		return "text/html; charset=utf-8"
 	case strings.HasSuffix(name, ".svg"):
 		return "image/svg+xml"
+	case strings.HasSuffix(name, ".png"):
+		return "image/png"
+	case strings.HasSuffix(name, ".webmanifest"):
+		return "application/manifest+json"
 	}
 	return "application/octet-stream"
 }

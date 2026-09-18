@@ -52,6 +52,7 @@ const state = {
   contentAbort: null,  // AbortController for the search still in flight
   detail: null,        // { sessionId, signature, messages, final }
   focusAt: '',         // when set, the stream window is anchored at this time (a search hit)
+  exportFormat: 'md',  // md / jsonl / json / html
   loadingMore: false,  // a page is in flight
   noMore: { older: false, newer: false }, // an edge that came back empty
   collapsedGroups: new Set(), // project names folded away in By project grouping
@@ -971,7 +972,23 @@ function usageCard(usage) {
   return card;
 }
 
-// downloadExport exports the session as Markdown.
+// The export formats the server offers. Kept in the order the route lists them, with the
+// label rather than the bare extension: "jsonl" alone does not say what it is for.
+const EXPORT_FORMATS = [
+  ['md', 'Markdown'],
+  ['jsonl', 'JSONL (one per line)'],
+  ['json', 'JSON (one document)'],
+  ['html', 'HTML (standalone)'],
+];
+
+// exportFormatLabel names the format the button will produce, so the picker beside it
+// needs no explanation of its own
+function exportFormatLabel() {
+  const found = EXPORT_FORMATS.find(([value]) => value === state.exportFormat);
+  return found ? found[1] : EXPORT_FORMATS[0][1];
+}
+
+// downloadExport exports the session in the chosen format.
 // The endpoint requires authentication, so a plain <a href> will not do — the request has
 // to carry the Authorization header and the download is built from the response.
 async function downloadExport(record, node) {
@@ -982,7 +999,7 @@ async function downloadExport(record, node) {
     // size and had no business here — it made the button export the latest 200 messages of
     // a session that might have sixteen thousand, with nothing in the file to say so.
     const path = '/sessions/' + encodeURIComponent(record.sessionId) +
-      '/export?order=' + state.order;
+      '/export?order=' + state.order + '&format=' + state.exportFormat;
     const headers = {};
     if (state.token) headers.Authorization = 'Bearer ' + state.token;
     const res = await fetch(path, { headers });
@@ -1011,7 +1028,23 @@ function sessionCard(record, final) {
   const head = el('div', 'card-head');
   head.appendChild(el('h3', '', 'Session'));
   head.appendChild(copyButton(record.sessionId));
-  head.appendChild(button('ghost tiny', 'Export md',
+  // Four formats, one control. The format is a preference and is remembered with the
+  // others; a per-session choice would be surprising the next time you exported.
+  const picker = el('select', 'fmt');
+  picker.setAttribute('aria-label', 'Export format');
+  for (const [value, label] of EXPORT_FORMATS) {
+    const option = el('option', '', label);
+    option.value = value;
+    picker.appendChild(option);
+  }
+  picker.value = state.exportFormat;
+  picker.addEventListener('change', () => {
+    state.exportFormat = picker.value;
+    saveViewPrefs();
+    renderSide(record); // the button names the format it will produce
+  });
+  head.appendChild(picker);
+  head.appendChild(button('ghost tiny', 'Export ' + exportFormatLabel().split(' ')[0].toLowerCase(),
     (event) => downloadExport(record, event.currentTarget)));
   card.appendChild(head);
 
@@ -1574,6 +1607,7 @@ function saveViewPrefs() {
       role: state.role,
       auto: $('auto').checked,
       pane: state.pane,
+      exportFormat: state.exportFormat,
       hideList: state.hideList,
       hideSide: state.hideSide,
       collapsed: [...state.collapsedGroups],
@@ -1600,6 +1634,7 @@ function applyViewPrefs() {
   if (typeof prefs.auto === 'boolean') $('auto').checked = prefs.auto;
   // Names of projects folded away; a name that no longer exists simply never matches
   if (['list', 'stream', 'side'].indexOf(prefs.pane) >= 0) state.pane = prefs.pane;
+  if (EXPORT_FORMATS.some(([v]) => v === prefs.exportFormat)) state.exportFormat = prefs.exportFormat;
   if (typeof prefs.hideList === 'boolean') state.hideList = prefs.hideList;
   if (typeof prefs.hideSide === 'boolean') state.hideSide = prefs.hideSide;
   if (Array.isArray(prefs.collapsed)) state.collapsedGroups = new Set(prefs.collapsed);

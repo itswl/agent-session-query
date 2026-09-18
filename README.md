@@ -100,7 +100,8 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   under either speaker. Tool blocks are coloured by category (run / read / write / search
   / network / delegate)
 - **Right**: the final result stays visible — stopReason, the answer, the thinking, usage and
-  cost, session metadata (one click to copy the sessionId, one to export Markdown), and a
+  cost, session metadata (one click to copy the sessionId, one to export in any of the
+  four formats — Markdown, JSONL, JSON or a standalone HTML page), and a
   **conversation table of contents**: the user's turns, numbered, click to jump to one in
   the stream. It covers the loaded window and says so when the session is longer
 

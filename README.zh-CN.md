@@ -13,7 +13,7 @@ MCP server**。它不会修改任何会话数据。
 | 数据源 | 会话存放位置 | 会话 ID |
 |--------|--------------|---------|
 | Hermes | `~/.hermes/sessions/`（`sessions.json`）或 `~/.hermes/state.db`（较新版本，全 SQLite） | `sessions.json` 里的 `session_id` / `sessions` 表里的 `id` |
-| OpenClaw | `~/.openclaw/agents/default/sessions/` | `sessions.json` 里的 `sessionId` |
+| OpenClaw | `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite`（SQLite，2026.9+；旧版 `sessions.json` 布局仍可读） | `session_windows` 表的 `session_id` |
 | Pi | `~/.pi/agent/sessions/<project>/*.jsonl` | session 行上的 `id` |
 | Claude Code | `~/.claude/projects/<project>/*.jsonl` | 文件名（一个 uuid）/ `sessionId` 字段 |
 | Codex | `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl` | 元数据行上的 `payload.session_id` |

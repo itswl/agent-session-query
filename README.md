@@ -14,7 +14,7 @@ Seven sources; whichever exist are queried, and they can be merged in one query:
 | Source | Where sessions live | Session ID |
 |--------|---------------------|------------|
 | Hermes | `~/.hermes/sessions/` (`sessions.json`) or `~/.hermes/state.db` (newer, all SQLite) | `session_id` in `sessions.json` / `id` in the `sessions` table |
-| OpenClaw | `~/.openclaw/agents/default/sessions/` | `sessionId` in `sessions.json` |
+| OpenClaw | `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite` (SQLite, 2026.9+; older `sessions.json` layouts still read) | `session_id` in `session_windows` |
 | Pi | `~/.pi/agent/sessions/<project>/*.jsonl` | `id` on the session row |
 | Claude Code | `~/.claude/projects/<project>/*.jsonl` | the filename (a uuid) / the `sessionId` field |
 | Codex | `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl` | `payload.session_id` on the metadata row |

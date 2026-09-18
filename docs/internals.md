@@ -16,7 +16,21 @@ and deployment see the [README](../README.md).
   no jsonl also falls back to `state.db` for `final` (opened read-only, taking the last
   `active=1` assistant message with `finish_reason=stop`, and falling back to the real count
   when `message_count` is missing)
-- **OpenClaw**: the same structure, with the fields named `sessionId` / `stopReason`. Messages
+- **OpenClaw 2026.9+**: one SQLite database per agent at
+  `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite` — `session_windows` is the
+  session list (status, model, display_name, unix-millisecond times) and
+  `transcript_events` holds the transcript rows, whose JSON shape is what the jsonl used
+  to be (`type=session` carries the cwd; `message` rows carry role / content /
+  stopReason / usage). A tool result arrives as its own message with role `toolResult`
+  carrying `toolCallId` / `toolName`, and becomes one `toolResult` block. `display_name`
+  is the title when set (chat-channel sessions); CLI runs leave it empty and the first
+  user message is the title. Successive CLI turns on the same session key append to the
+  same session window, so one conversation is one session. The database opens read-only
+  and reads work through the live write-ahead log. The pre-SQLite layout
+  (`~/.openclaw/agents/default/sessions/sessions.json` plus a jsonl per session) still
+  reads through the old path when no agent database exists
+- **OpenClaw (pre-SQLite)** and **Hermes jsonl**: the same sessions.json structure, with the
+  fields named `sessionId` / `stopReason`. Messages
   are the `type=message` rows, `message.content` is a block array (`text` / `thinking` /
   `toolCall` / `toolResult`), and `stopReason` may sit inside `message` or at the top level
 - **Pi**: row types are `session` (metadata), `model_change` and `message`; messages come from

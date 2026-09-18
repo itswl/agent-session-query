@@ -109,9 +109,9 @@ func (s *OpenCodeSource) List() []record {
 			"status":    "done",
 			"cwd":       directory.String,
 			"model":     openCodeModelName(model.String),
-			"updatedAt": openCodeMillis(updated),
-			"createdAt": openCodeMillis(created),
-		}, openCodeMillis(updated)))
+			"updatedAt": millisToISO(updated),
+			"createdAt": millisToISO(created),
+		}, millisToISO(updated)))
 	}
 	return out
 }
@@ -135,9 +135,9 @@ func openCodeModelName(raw string) string {
 	return m.ID
 }
 
-// openCodeMillis formats a unix-milliseconds column the way the other SQLite source
-// formats its epochs, so sorting and display agree across sources.
-func openCodeMillis(ms sql.NullInt64) string {
+// millisToISO formats a unix-milliseconds column the way the file sources format
+// their epochs, so sorting and display agree across sources.
+func millisToISO(ms sql.NullInt64) string {
 	if !ms.Valid || ms.Int64 <= 0 {
 		return ""
 	}

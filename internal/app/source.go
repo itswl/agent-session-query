@@ -111,8 +111,15 @@ func buildSources(mode string) ([]SessionSource, error) {
 	home := defaultHome()
 
 	factories := map[string]func() SessionSource{
-		"hermes":   func() SessionSource { return newJsonMapSource(hermesDef(home)) },
-		"openclaw": func() SessionSource { return newJsonMapSource(openclawDef(home)) },
+		"hermes": func() SessionSource { return newJsonMapSource(hermesDef(home)) },
+		"openclaw": func() SessionSource {
+			// 2026.9 OpenClaw is SQLite; the pre-SQLite sessions.json layout stays as the
+			// fallback for older installs
+			if dbs := openClawAgentDBs(home); len(dbs) > 0 {
+				return newOpenClawSource(dbs)
+			}
+			return newJsonMapSource(openclawDef(home))
+		},
 		"pi":       func() SessionSource { return newPiSource(filepath.Join(home, ".pi", "agent", "sessions")) },
 		"claude":   func() SessionSource { return newClaudeSource(filepath.Join(home, ".claude", "projects")) },
 		"codex":    func() SessionSource { return newCodexSource(filepath.Join(home, ".codex", "sessions")) },

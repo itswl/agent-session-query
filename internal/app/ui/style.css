@@ -373,7 +373,18 @@ body.hide-list .list, body.hide-side .side { display: none; }
 .stream-head {
   flex: 0 0 auto; padding: 12px 18px 10px;
   background: var(--panel); border-bottom: 1px solid var(--line);
+  /* Slides away while you read downwards and returns on the way up, like the phone
+     header does. It names the session and holds the order/filter controls, which is
+     information you have once you are reading and something you reach for by scrolling
+     back. Applies at every width: the ~130px it occupies is worth having back on a
+     laptop too. */
 }
+/* Hidden outright rather than animated shut. max-height: 0, height: 0 and min-height: 0
+   together still left this flex item 23px tall — the box kept a line's worth of height
+   however it was clamped — and a stray 23px strip with a border under it is worse than
+   the abruptness of a display change. The phone header, which is not a flex item, still
+   slides. */
+body.chrome-hidden .stream-head { display: none; }
 .stream-head:empty { display: none; }
 .stream-head h2 { font-size: 15px; margin: 0 0 2px; word-break: break-all; font-family: var(--mono); font-weight: 650; }
 .stream-head .sub { color: var(--dim); font-size: 12.5px; word-break: break-all; margin: 0; }

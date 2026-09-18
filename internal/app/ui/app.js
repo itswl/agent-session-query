@@ -1627,10 +1627,8 @@ function slideChrome(y) {
     chromeLastY = y;
     return;
   }
-  if (!window.matchMedia('(max-width: 860px)').matches) {
-    if (chromeHidden) setChromeHidden(false);
-    return;
-  }
+  // No width check: the stream head slides everywhere, and the header/pane-switcher rules
+  // simply do not apply above the phone breakpoint.
   if (y < CHROME_HIDE_AFTER_PX) {
     setChromeHidden(false);
   } else if (y > chromeLastY + CHROME_JITTER_PX) {

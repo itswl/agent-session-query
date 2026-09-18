@@ -71,4 +71,4 @@ report the true totals — `matched` / `total` cover everything before paginatio
 `since` / `until` bound a session's update time on either side, in any of the relative
 forms (`24h`, `7d`) or an absolute date (`2026-09-01`). A session with no parseable time
 falls outside a bounded query rather than being guessed onto either side.
-| `get_messages` | A session's messages; `order=desc` returns the latest N, `role` narrows to `user` or `assistant` |
+| `get_messages` | A session's messages; `order=desc` returns the latest N, `role` narrows to `user` or `assistant`, `at` anchors the window at an instant (pass a hit's timestamp from `search_sessions` to land on it) |

@@ -47,6 +47,7 @@ const state = {
   contentTimer: null,
   contentAbort: null,  // AbortController for the search still in flight
   detail: null,        // { sessionId, signature, messages, final }
+  focusAt: '',         // when set, the stream window is anchored at this time (a search hit)
   collapsedGroups: new Set(), // project names folded away in By project grouping
   msgCounts: new Map(),       // sessionId → message count, learned as sessions are opened
   openBlocks: new Set(),
@@ -522,7 +523,10 @@ function buildHit(rowId, sessionId) {
   item.dataset.sid = sessionId;
   item.setAttribute('role', 'option');
   item.tabIndex = -1;
-  item.addEventListener('click', () => selectSession(item.dataset.sid));
+  item.addEventListener('click', () => {
+    const first = (item._hit && item._hit.matches && item._hit.matches[0]) || {};
+    selectSession(item.dataset.sid, first.timestamp || '');
+  });
 
   const row = el('div', 'row1');
   row.appendChild(el('span', 'tag'));        // source
@@ -536,6 +540,7 @@ function buildHit(rowId, sessionId) {
 }
 
 function fillHit(item, hit) {
+  item._hit = hit; // the click handler needs the match timestamp to anchor the window
   const [tag, live, count, time] = item.children[0].children;
   const cls = sourceClass(hit.source);
   if (tag.className !== cls) tag.className = cls;
@@ -621,6 +626,7 @@ function renderStreamHead(record) {
     (value) => {
       if (value === state.order) return;
       state.order = value;
+      state.focusAt = ''; // paging to an end is a deliberate move away from the anchor
       saveViewPrefs();
       syncDetail({ force: true });
     },
@@ -642,9 +648,18 @@ function renderStreamHead(record) {
     const shown = (detail.messages.messages || []).length;
     const total = detail.final && typeof detail.final.messageCount === 'number'
       ? detail.final.messageCount : shown;
-    const label = total > shown
-      ? total + ' messages · showing the ' + (state.order === 'desc' ? 'latest ' : 'earliest ') + shown
-      : shown + ' messages';
+    // An anchored window is neither the start nor the end of the session, and saying
+    // "latest 200" there would be a lie — so it says what it is, with a way out
+    let label;
+    if (state.focusAt) {
+      label = total > shown
+        ? total + ' messages · ' + shown + ' from the match'
+        : shown + ' messages';
+    } else {
+      label = total > shown
+        ? total + ' messages · showing the ' + (state.order === 'desc' ? 'latest ' : 'earliest ') + shown
+        : shown + ' messages';
+    }
     bar.appendChild(el('span', 'count', label));
   }
   box.appendChild(bar);
@@ -1069,8 +1084,12 @@ function gotoMessage(index) {
   setTimeout(() => node.classList.remove('flash'), 1400);
 }
 
-function selectSession(sessionId) {
-  if (!sessionId || sessionId === state.selectedId) return;
+// selectSession opens a session. focusAt, when given, anchors the message window at that
+// instant instead of at the end — how a search hit becomes somewhere you can land.
+function selectSession(sessionId, focusAt) {
+  if (!sessionId) return;
+  if (sessionId === state.selectedId && (focusAt || '') === state.focusAt) return;
+  state.focusAt = focusAt || '';
   state.selectedId = sessionId;
   // On a phone the list and the conversation are different screens: picking a session
   // there means you want to read it
@@ -1118,8 +1137,11 @@ async function syncDetail(options) {
   state.busy = true;
   try {
     const id = encodeURIComponent(record.sessionId);
+    // The anchor travels with the request, not with the session: it belongs to how this
+    // session was opened and goes away the moment you page to an end yourself
+    const at = state.focusAt ? '&at=' + encodeURIComponent(state.focusAt) : '';
     const [messages, final] = await Promise.all([
-      api('/sessions/' + id + '/messages?limit=' + MESSAGE_LIMIT + '&order=' + state.order),
+      api('/sessions/' + id + '/messages?limit=' + MESSAGE_LIMIT + '&order=' + state.order + at),
       api('/sessions/' + id + '/final'),
     ]);
     state.detail = { sessionId: record.sessionId, signature, messages, final };

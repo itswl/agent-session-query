@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // SessionSource is the data source adapter: one shape for list / messages / final.
@@ -27,6 +28,12 @@ type SessionSource interface {
 type messageQuery struct {
 	limit   int
 	fromEnd bool
+	// at positions the window at a point in time instead of at one end of the session:
+	// ascending, the first limit messages at or after it; descending, the last limit
+	// messages at or before it. It is how a search hit becomes a place you can land on —
+	// a match in the middle of a 16 000-message session is in neither end's window.
+	// Zero means "no anchoring", the usual case.
+	at time.Time
 }
 
 // messageSink collects messages according to a messageQuery.
@@ -56,6 +63,18 @@ func newMessageSink(q messageQuery) *messageSink {
 func (s *messageSink) add(m map[string]any) bool {
 	if s.q.limit == 0 {
 		return false
+	}
+	if !s.q.at.IsZero() {
+		// A message with no readable timestamp is kept rather than dropped: silently
+		// losing rows is worse than one extra row in an anchored window.
+		if ts, ok := parseTimestamp(toStr(m["timestamp"])); ok {
+			if s.q.fromEnd && ts.After(s.q.at) {
+				return true // newer than the anchor; the window ends before it
+			}
+			if !s.q.fromEnd && ts.Before(s.q.at) {
+				return true // older than the anchor; the window starts at it
+			}
+		}
 	}
 	if !s.q.fromEnd {
 		s.items = append(s.items, m)

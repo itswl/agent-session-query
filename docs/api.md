@@ -9,7 +9,7 @@ no alias.
 | `/` `/health` `/stats` | no | Service info and health check (with connection stats and `authRequired`) |
 | `/sessions` | yes | List every session (merged across sources, newest first) |
 | `/sessions/<pattern>` | yes | One session's metadata |
-| `/sessions/<pattern>/messages?limit=50&order=asc` | yes | A session's messages; `order=asc` (the default) takes the earliest N, `order=desc` the latest N |
+| `/sessions/<pattern>/messages?limit=50&order=asc` | yes | A session's messages; `order=asc` (the default) takes the earliest N, `order=desc` the latest N, and `at=<time>` anchors the window at that instant instead of at an end |
 | `/sessions/<pattern>/final` | yes | A session's final result |
 | `/sessions/<pattern>/export?limit=200&order=desc` | yes | Export as Markdown (`text/markdown` + `Content-Disposition`) |
 | `/search?q=&limit=30&per_session=3&since=30d` | yes | **Full-text search** across every source |

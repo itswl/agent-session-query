@@ -260,3 +260,68 @@ func TestSearchSkipsMetadataFields(t *testing.T) {
 		t.Errorf("snippet = %q, want the body text", hit["snippet"])
 	}
 }
+
+// TestMessagesAnchoredAt: ?at= positions the window at a point in time instead of at an
+// end, which is how a search hit in the middle of a long session becomes reachable — the
+// stream otherwise only ever loads one end.
+func TestMessagesAnchoredAt(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_anchor.jsonl"),
+		`{"type":"session","id":"s-anchor","cwd":"/w"}`,
+		`{"type":"message","id":"a1","timestamp":"2026-09-01T00:00:00Z","message":{"role":"user","content":[{"type":"text","text":"oldest"}]}}`,
+		`{"type":"message","id":"a2","timestamp":"2026-09-02T00:00:00Z","message":{"role":"user","content":[{"type":"text","text":"second"}]}}`,
+		`{"type":"message","id":"a3","timestamp":"2026-09-03T00:00:00Z","message":{"role":"user","content":[{"type":"text","text":"middle"}]}}`,
+		`{"type":"message","id":"a4","timestamp":"2026-09-04T00:00:00Z","message":{"role":"user","content":[{"type":"text","text":"fourth"}]}}`,
+		`{"type":"message","id":"a5","timestamp":"2026-09-05T00:00:00Z","message":{"role":"user","content":[{"type":"text","text":"newest"}]}}`,
+	)
+	sources := []SessionSource{newPiSource(root)}
+	srv := httptest.NewServer(newAPIServer(serverOptions{
+		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 0), maxConnections: 50,
+	}))
+	t.Cleanup(srv.Close)
+
+	texts := func(body map[string]any) []string {
+		out := []string{}
+		for _, raw := range body["messages"].([]any) {
+			m := raw.(map[string]any)
+			for _, b := range m["content"].([]any) {
+				if blk := b.(map[string]any); blk["type"] == "text" {
+					out = append(out, blk["content"].(string))
+				}
+			}
+		}
+		return out
+	}
+
+	// Ascending from the anchor: it starts there and runs forward
+	_, body := get(t, srv.URL+"/sessions/s-anchor/messages?limit=2&order=asc&at=2026-09-03T00:00:00Z", "")
+	if got := texts(body); len(got) != 2 || got[0] != "middle" || got[1] != "fourth" {
+		t.Fatalf("asc from the anchor = %v, want [middle fourth]", got)
+	}
+
+	// Descending: the window ends at the anchor
+	_, body = get(t, srv.URL+"/sessions/s-anchor/messages?limit=2&order=desc&at=2026-09-03T00:00:00Z", "")
+	if got := texts(body); len(got) != 2 || got[0] != "second" || got[1] != "middle" {
+		t.Fatalf("desc to the anchor = %v, want [second middle]", got)
+	}
+
+	// An anchor before everything: ascending gets the head
+	_, body = get(t, srv.URL+"/sessions/s-anchor/messages?limit=2&order=asc&at=2020-01-01T00:00:00Z", "")
+	if got := texts(body); len(got) != 2 || got[0] != "oldest" {
+		t.Fatalf("asc from before the session = %v, want the head", got)
+	}
+
+	// An anchor after everything: descending gets the tail
+	_, body = get(t, srv.URL+"/sessions/s-anchor/messages?limit=2&order=desc&at=2030-01-01T00:00:00Z", "")
+	if got := texts(body); len(got) != 2 || got[1] != "newest" {
+		t.Fatalf("desc from after the session = %v, want the tail", got)
+	}
+
+	// An epoch is accepted too, and a bad value is a 400 rather than a silent ignore
+	if code, _ := get(t, srv.URL+"/sessions/s-anchor/messages?at=1789000000", ""); code != 200 {
+		t.Fatalf("an epoch anchor = %d", code)
+	}
+	if code, _ := get(t, srv.URL+"/sessions/s-anchor/messages?at=nonsense", ""); code != 400 {
+		t.Fatalf("a bad anchor should be 400, got %d", code)
+	}
+}

@@ -279,14 +279,30 @@ func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string
 	if q.fromEnd {
 		order = "DESC"
 	}
+	// at anchors the window at a point in time (see messageQuery); the comparison runs
+	// with the same direction as the ordering so the window sits on the right side of it
+	anchor, anchorArg := "", any(nil)
+	if !q.at.IsZero() {
+		if q.fromEnd {
+			anchor, anchorArg = " AND timestamp <= ?", q.at.Unix()
+		} else {
+			anchor, anchorArg = " AND timestamp >= ?", q.at.Unix()
+		}
+	}
+	args := []any{sessionID}
+	if anchorArg != nil {
+		args = append(args, anchorArg)
+	}
+	args = append(args, q.limit)
+
 	rows, err := db.Query(`
 		SELECT id, role, content, reasoning, tool_calls, tool_name, timestamp
 		FROM messages
 		WHERE session_id = ?
 		  AND COALESCE(active, 1) = 1
-		  AND role IN ('user', 'assistant', 'tool')
+		  AND role IN ('user', 'assistant', 'tool')`+anchor+`
 		ORDER BY timestamp `+order+`, id `+order+`
-		LIMIT ?`, sessionID, q.limit)
+		LIMIT ?`, args...)
 	if err != nil {
 		warnHermesSQLite(sessionID, err)
 		return out

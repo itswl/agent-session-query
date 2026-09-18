@@ -372,7 +372,11 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 
 		case len(parts) == 2 && parts[0] != "" && parts[1] == "messages":
 			pattern := unescapePattern(parts[0])
-			query := s.parseMessageQuery(r)
+			query, err := s.parseMessageQuery(r)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+				return http.StatusBadRequest
+			}
 			messages, ok := s.api.getMessages(pattern, "", query)
 			if !ok {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "Session not found"})
@@ -387,7 +391,12 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 
 		case len(parts) == 2 && parts[0] != "" && parts[1] == "export":
 			pattern := unescapePattern(parts[0])
-			body, filename, ok := s.api.exportMarkdown(pattern, s.parseMessageQuery(r))
+			exportQuery, err := s.parseMessageQuery(r)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+				return http.StatusBadRequest
+			}
+			body, filename, ok := s.api.exportMarkdown(pattern, exportQuery)
 			if !ok {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "Session not found"})
 				return http.StatusNotFound
@@ -462,12 +471,40 @@ func (s *apiServer) parseLimit(r *http.Request) int {
 }
 
 // parseMessageQuery reads ?limit= and ?order= (desc asks for the latest N)
-func (s *apiServer) parseMessageQuery(r *http.Request) messageQuery {
+func (s *apiServer) parseMessageQuery(r *http.Request) (messageQuery, error) {
 	order := strings.TrimSpace(r.URL.Query().Get("order"))
-	return messageQuery{
+	q := messageQuery{
 		limit:   s.parseLimit(r),
 		fromEnd: strings.EqualFold(order, "desc"),
 	}
+	// ?at= positions the window at a point in time rather than at one end, which is how a
+	// caller lands on a specific message in a long session (a search hit, say). Absolute
+	// forms only: "30d" would be a different question.
+	if raw := strings.TrimSpace(r.URL.Query().Get("at")); raw != "" {
+		at, err := parseAt(raw)
+		if err != nil {
+			return messageQuery{}, err
+		}
+		q.at = at
+	}
+	return q, nil
+}
+
+// parseAt reads an absolute instant: RFC3339, "2006-01-02T15:04:05", "2006-01-02", or a
+// bare epoch in seconds or milliseconds.
+func parseAt(raw string) (time.Time, error) {
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05", "2006-01-02"} {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.UTC(), nil
+		}
+	}
+	if n, err := strconv.ParseFloat(raw, 64); err == nil {
+		if n > 1e11 { // milliseconds
+			return time.UnixMilli(int64(n)).UTC(), nil
+		}
+		return time.Unix(int64(n), 0).UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("bad at value: %q (want an ISO time or an epoch)", raw)
 }
 
 // parseSearchQuery reads the /search parameters: q is required, limit is how many

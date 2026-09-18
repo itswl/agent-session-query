@@ -277,6 +277,15 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			limit:   limit,
 			fromEnd: strings.EqualFold(argString(args, "order"), "desc"),
 		}
+		// Anchoring is how a search hit in the middle of a long session is reachable:
+		// without it the window only ever comes from one end
+		if raw := strings.TrimSpace(argString(args, "at")); raw != "" {
+			at, err := parseAt(raw)
+			if err != nil {
+				return nil, err
+			}
+			q.at = at
+		}
 		// A role filter applies before the limit, so limit stays "N of this role" rather
 		// than "N of everything, then whatever survived". That needs the whole slice, so
 		// the fetch is widened and cut back afterwards.

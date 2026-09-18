@@ -112,7 +112,7 @@ go build -o agent-session-query ./cmd/agent-session-query
 | `/` `/health` `/stats` | 否 | 服务信息与健康检查 |
 | `/ui` `/favicon.ico` | 否 | 内嵌页面（本身不含任何数据） |
 | `/sessions` | 是 | 列出全部会话（跨数据源合并，最新在前） |
-| `/sessions/<pattern>` | 是 | 单个会话；可接 `/messages`、`/final` 或 `/export` |
+| `/sessions/<pattern>` | 是 | 单个会话；可接 `/messages`（支持 `order` / `limit` / `at`）、`/final` 或 `/export` |
 | `/search?q=` | 是 | 跨全部数据源的**全文搜索** |
 | `/projects` | 是 | 按项目（cwd）分组的会话数 |
 | `/mcp` | 是 | MCP 的 Streamable HTTP 传输（`POST`） |

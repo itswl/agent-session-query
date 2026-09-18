@@ -87,11 +87,15 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   **search the message bodies** on the server. Body matches are appended below the metadata
   ones under a "N more in message bodies" divider, carrying the matching snippet, so one
   query covers both without a mode to switch. <kbd>Enter</kbd> only skips the wait. The list
-  can be grouped by time or by project, and a session being written gets a pulsing green dot
+  can be grouped by time or by project — project headers fold away when clicked — and a
+  session being written gets a pulsing green dot. Rows carry the message count where the
+  source knows it (the SQLite-backed ones) or once the session has been opened
 - **Middle**: the message timeline (text / thinking / toolCall / toolResult blocks). You can
   switch between the earliest and latest 200 messages, and filter to user or assistant
 - **Right**: the final result stays visible — stopReason, the answer, the thinking, usage and
-  cost, and session metadata (one click to copy the sessionId, one to export Markdown)
+  cost, session metadata (one click to copy the sessionId, one to export Markdown), and a
+  **conversation table of contents**: the user's turns, numbered, click to jump to one in
+  the stream. It covers the loaded window and says so when the session is longer
 
 It refreshes every 10 seconds without disturbing what you are reading (expanded blocks and
 scroll position are preserved). `/ui#<sessionId>` works as a deep link, light and dark follow

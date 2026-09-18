@@ -40,6 +40,7 @@ const state = {
   contentAbort: null,  // AbortController for the search still in flight
   detail: null,        // { sessionId, signature, messages, final }
   collapsedGroups: new Set(), // project names folded away in By project grouping
+  msgCounts: new Map(),       // sessionId → message count, learned as sessions are opened
   openBlocks: new Set(),
   timer: null,
   searchTimer: null,
@@ -322,6 +323,7 @@ function buildItem(sessionId) {
   const row = el('div', 'row1');
   row.appendChild(el('span', 'tag'));   // source
   row.appendChild(el('span', 'live'));  // live dot (only shown while a session is being written)
+  row.appendChild(el('span', 'msgs'));  // message count (from the source, or learned on open)
   row.appendChild(el('span', 'time'));  // relative time
   item.appendChild(row);
   item.appendChild(el('div', 'key'));
@@ -330,7 +332,7 @@ function buildItem(sessionId) {
 }
 
 function fillItem(item, session) {
-  const [tag, live, time] = item.children[0].children;
+  const [tag, live, msgs, time] = item.children[0].children;
   const cls = sourceClass(session.source);
   if (tag.className !== cls) tag.className = cls;
   setText(tag, session.source);
@@ -338,6 +340,10 @@ function fillItem(item, session) {
   // from the update time (the server works this out)
   live.classList.toggle('on', !!session.isActive);
   live.title = session.isActive ? 'being written' : '';
+  // The SQLite sources report a true count; the file sources do not count on list (the
+  // list never reads file bodies), so their number is learned when the session is opened
+  const n = Number(session.messageCount) || state.msgCounts.get(session.sessionId) || 0;
+  setText(msgs, n ? n + (n === 1 ? ' msg' : ' msgs') : '');
   setText(time, relTime(session.updatedAt));
   time.title = session.updatedAt || '';
 
@@ -666,6 +672,7 @@ function messageNode(message, index) {
     .filter((item) => (item.node.textContent || '').trim() !== '');
 
   const node = el('div', 'msg ' + (message.role || '') + (blocks.length === 0 ? ' is-empty' : ''));
+  node.dataset.index = index;
   const head = el('div', 'head');
   head.appendChild(el('span', 'role', message.role || '?'));
   // A message with nothing displayable is worth one line of explanation, not a whole block
@@ -710,14 +717,19 @@ function renderMessages() {
   const wasAtBottom = sameView &&
     pane.scrollHeight - pane.scrollTop - pane.clientHeight < STICK_TO_BOTTOM_PX;
 
-  const messages = (detail.messages.messages || [])
-    .filter((m) => !state.role || m.role === state.role);
+  // The index is the position in the full list, not in the filtered one, so the
+  // conversation TOC can address a message regardless of the current role filter
+  const all = detail.messages.messages || [];
+  const shown = [];
+  all.forEach((message, index) => {
+    if (!state.role || message.role === state.role) shown.push({ message, index });
+  });
 
   const box = document.createDocumentFragment();
-  if (messages.length === 0) {
+  if (shown.length === 0) {
     box.appendChild(el('p', 'empty', state.role ? 'No ' + state.role + ' messages' : 'This session has no messages'));
   }
-  messages.forEach((message, index) => box.appendChild(messageNode(message, index)));
+  shown.forEach(({ message, index }) => box.appendChild(messageNode(message, index)));
   pane.replaceChildren(box);
   pane.dataset.view = view;
 
@@ -868,12 +880,97 @@ function renderSide(record) {
   const usage = usageCard((detail.final && detail.final.usage) || {});
   if (usage) box.appendChild(usage);
   box.appendChild(sessionCard(record, detail.final));
+  box.appendChild(tocCard());
   side.replaceChildren(box);
 }
 
 // ---------------------------------------------------------------------------
 // Selection and detail synchronisation
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Conversation table of contents
+// ---------------------------------------------------------------------------
+
+// tocCard lists the user's messages in the loaded window — the questions, which are what
+// you navigate a long session by. Clicking one jumps to it in the stream.
+function tocCard() {
+  const detail = state.detail;
+  const card = el('section', 'card toc-card');
+  const all = (detail && detail.messages.messages) || [];
+  const entries = [];
+  all.forEach((message, index) => {
+    // Only turns that actually say something. In Claude's format a tool result comes
+    // back as a user-role message, and those are not questions to navigate by.
+    if (message.role === 'user' && tocPreviewOf(message) !== '') {
+      entries.push({ message, index });
+    }
+  });
+
+  const head = el('h3', '', 'Conversation');
+  if (entries.length) head.appendChild(el('span', 'count', entries.length));
+  card.appendChild(head);
+
+  // The list covers the loaded window, which is the latest page by default; say so when
+  // the session is longer, or the missing early turns look like a bug
+  const total = Number(detail && detail.final && detail.final.messageCount) || 0;
+  if (total > all.length) {
+    card.appendChild(el('p', 'dim toc-note',
+      'From the latest ' + all.length + ' of ' + total + ' messages'));
+  }
+
+  if (!entries.length) {
+    card.appendChild(el('p', 'dim', 'No user messages in this window'));
+    return card;
+  }
+
+  const list = el('ol', 'toc');
+  entries.forEach((entry, at) => {
+    const item = el('li');
+    const jump = el('button', 'toc-item');
+    jump.type = 'button';
+    jump.appendChild(el('span', 'toc-no', at + 1));
+    jump.appendChild(el('span', 'toc-text', tocPreviewOf(entry.message)));
+    jump.title = tocPreviewOf(entry.message, 400);
+    jump.addEventListener('click', () => gotoMessage(entry.index));
+    item.appendChild(jump);
+    list.appendChild(item);
+  });
+  card.appendChild(list);
+  return card;
+}
+
+// tocPreviewOf is a message's own words, folded to one line; "" when it has none (a
+// tool result, an attachment, a bare signature)
+function tocPreviewOf(message, max) {
+  const limit = max || 70;
+  for (const block of message.content || []) {
+    if (block.type === 'text' && block.content) {
+      const one = String(block.content).replace(/\s+/g, ' ').trim();
+      if (!one) continue;
+      return one.length > limit ? one.slice(0, limit) + '\u2026' : one;
+    }
+  }
+  return '';
+}
+
+// gotoMessage scrolls a message into view and flashes it. The role filter can hide the
+// target, so a miss drops the filter and retries once rather than doing nothing.
+function gotoMessage(index) {
+  const pane = $('messages');
+  const find = () => pane.querySelector('.msg[data-index="' + index + '"]');
+
+  let node = find();
+  if (!node && state.role) {
+    state.role = '';
+    renderMessages();
+    node = find();
+  }
+  if (!node) return;
+  node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  node.classList.add('flash');
+  setTimeout(() => node.classList.remove('flash'), 1400);
+}
 
 function selectSession(sessionId) {
   if (!sessionId || sessionId === state.selectedId) return;
@@ -926,6 +1023,16 @@ async function syncDetail(options) {
       api('/sessions/' + id + '/final'),
     ]);
     state.detail = { sessionId: record.sessionId, signature, messages, final };
+    // Learn the count for sources that do not report one on list, and refresh the row's
+    // badge — the incremental patch only touches what actually changed.
+    // It comes from final, not from messages.total: that one is capped at the page size
+    // (200), so a 1209-message session would show "200". final.messageCount is the real
+    // number — every source already scans for the last message, so it costs nothing.
+    const total = Number(final && final.messageCount) || 0;
+    if (total && !state.msgCounts.has(record.sessionId)) {
+      state.msgCounts.set(record.sessionId, total);
+      renderList();
+    }
     renderStreamHead(record);
     renderMessages();
     renderSide(record);

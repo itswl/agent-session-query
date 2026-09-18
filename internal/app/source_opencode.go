@@ -76,7 +76,8 @@ func (s *OpenCodeSource) List() []record {
 	defer db.Close()
 
 	rows, err := db.Query(`
-		SELECT id, directory, title, slug, model, time_created, time_updated
+		SELECT id, directory, title, slug, model, time_created, time_updated,
+		       (SELECT COUNT(*) FROM message m WHERE m.session_id = session.id)
 		FROM session
 		WHERE time_archived IS NULL`)
 	if err != nil {
@@ -87,8 +88,8 @@ func (s *OpenCodeSource) List() []record {
 	out := []record{}
 	for rows.Next() {
 		var id, directory, title, slug, model sql.NullString
-		var created, updated sql.NullInt64
-		if err := rows.Scan(&id, &directory, &title, &slug, &model, &created, &updated); err != nil {
+		var created, updated, messageCount sql.NullInt64
+		if err := rows.Scan(&id, &directory, &title, &slug, &model, &created, &updated, &messageCount); err != nil {
 			return out
 		}
 		if !id.Valid || id.String == "" {
@@ -109,8 +110,10 @@ func (s *OpenCodeSource) List() []record {
 			"status":    "done",
 			"cwd":       directory.String,
 			"model":     openCodeModelName(model.String),
-			"updatedAt": millisToISO(updated),
-			"createdAt": millisToISO(created),
+			// message carries a (session_id, ...) index, so the count is an index scan
+			"messageCount": messageCount.Int64,
+			"updatedAt":    millisToISO(updated),
+			"createdAt":    millisToISO(created),
 		}, millisToISO(updated)))
 	}
 	return out

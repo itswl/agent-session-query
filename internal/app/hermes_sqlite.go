@@ -181,7 +181,8 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) []record {
 		       s.input_tokens, s.output_tokens, s.reasoning_tokens, s.estimated_cost_usd,
 		       s.started_at, s.ended_at,
 		       (SELECT MAX(m.timestamp) FROM messages m
-		         WHERE m.session_id = s.id AND COALESCE(m.active, 1) = 1)
+		         WHERE m.session_id = s.id AND COALESCE(m.active, 1) = 1),
+		       s.message_count
 		FROM sessions s
 		WHERE s.hidden = 0`)
 	if err != nil {
@@ -196,8 +197,10 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) []record {
 		var inputTokens, outputTokens, reasoningTokens sql.NullInt64
 		var cost sql.NullFloat64
 		var startedAt, endedAt, lastMsg sql.NullFloat64
+		var messageCount sql.NullInt64
 		if err := rows.Scan(&sid, &key, &displayName, &platform, &model, &cwd,
-			&inputTokens, &outputTokens, &reasoningTokens, &cost, &startedAt, &endedAt, &lastMsg); err != nil {
+			&inputTokens, &outputTokens, &reasoningTokens, &cost, &startedAt, &endedAt, &lastMsg,
+			&messageCount); err != nil {
 			warnHermesSQLite("list", err)
 			return out
 		}
@@ -246,6 +249,9 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) []record {
 			"model":            model.String,
 			"totalTokens":      totalTokens,
 			"estimatedCostUsd": nullFloatOrZero(cost),
+			// Hermes maintains the count itself; the file sources have no such column
+			// and get theirs lazily in the page once a session is opened
+			"messageCount": nullIntOrZero(messageCount),
 		}, updatedAt))
 	}
 	return out

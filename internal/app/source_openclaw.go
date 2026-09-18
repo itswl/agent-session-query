@@ -85,6 +85,8 @@ func (s *OpenClawSource) listOne(dbPath string) []record {
 	rows, err := db.Query(`
 		SELECT session_id, status, model_provider, model, display_name,
 		       COALESCE(transcript_updated_at, updated_at),
+		       (SELECT COUNT(*) FROM transcript_events te
+		         WHERE te.session_id = session_windows.session_id),
 		       (SELECT json_extract(te.event_json, '$.cwd')
 		          FROM transcript_events te
 		         WHERE te.session_id = session_windows.session_id
@@ -105,9 +107,9 @@ func (s *OpenClawSource) listOne(dbPath string) []record {
 	list := []record{}
 	for rows.Next() {
 		var id, status, provider, model, displayName, cwd, firstUser sql.NullString
-		var updated sql.NullInt64
+		var updated, messageCount sql.NullInt64
 		if err := rows.Scan(&id, &status, &provider, &model, &displayName,
-			&updated, &cwd, &firstUser); err != nil {
+			&updated, &messageCount, &cwd, &firstUser); err != nil {
 			return list
 		}
 		if !id.Valid || id.String == "" {
@@ -145,7 +147,9 @@ func (s *OpenClawSource) listOne(dbPath string) []record {
 			"status":    strOr(status.String, "done"),
 			"cwd":       cwd.String,
 			"model":     fullModel,
-			"updatedAt": millisToISO(updated),
+			// transcript_events is keyed (session_id, seq), so the count is an index scan
+			"messageCount": messageCount.Int64,
+			"updatedAt":    millisToISO(updated),
 		}, millisToISO(updated)))
 	}
 	return list

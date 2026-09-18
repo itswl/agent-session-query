@@ -243,9 +243,9 @@ func TestHermesSQLiteListAndToolMessages(t *testing.T) {
 	makeHermesDB(t, dbPath, hermesSchema, []string{
 		// title wins over display_name; cwd is the new column
 		`INSERT INTO sessions (id, session_key, title, display_name, cwd, model,
-		                       started_at, ended_at, estimated_cost_usd)
+		                       started_at, ended_at, estimated_cost_usd, message_count)
 		 VALUES ('h-live', '', '排查接口 502', '', '/w/proj', 'deepseek-chat',
-		         1789705755.0, 1789705770.0, 0.0012)`,
+		         1789705755.0, 1789705770.0, 0.0012, 7)`,
 		// hidden: Bot Mode sessions must not be listed (Hermes itself filters them)
 		`INSERT INTO sessions (id, session_key, display_name, hidden, started_at, ended_at)
 		 VALUES ('h-hidden', 'k-hidden', 'bot session', 1, 1789705755.0, 1789705770.0)`,
@@ -269,7 +269,12 @@ func TestHermesSQLiteListAndToolMessages(t *testing.T) {
 
 	records := hermesSQLiteList(dbPath, "hermes", nil)
 	if len(records) != 2 {
+		// A column/scan mismatch returns an empty list rather than an error, so this
+		// count also guards the SELECT list staying in step with the Scan
 		t.Fatalf("the hidden session must be skipped: %d records", len(records))
+	}
+	if n := records[0].get("messageCount"); n != int64(7) {
+		t.Errorf("messageCount = %v, want 7 (sessions.message_count)", n)
 	}
 	live := records[0] // newest first
 	if live.str("shortKey") != "排查接口 502" {

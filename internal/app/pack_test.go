@@ -147,3 +147,71 @@ func TestPackJSONL(t *testing.T) {
 		t.Errorf("the record does not point at its transcript: %v", session["transcript"])
 	}
 }
+
+// TestPackExtendsAShortOpening: an opening message is not always a statement of intent —
+// "评审一下" says nothing about what is being reviewed, because it was said into a
+// conversation that already had context. The next user turns usually say what it was
+// about, so a short opening is extended with them; a long one is left alone.
+func TestPackExtendsAShortOpening(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_short.jsonl"),
+		`{"type":"session","id":"s-short","cwd":"/w"}`,
+		`{"type":"message","id":"m1","timestamp":"2026-09-01T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"评审一下"}]}}`,
+		`{"type":"message","id":"m2","timestamp":"2026-09-01T10:01:00Z","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"which repository?"}]}}`,
+		// A machine-assembled row: role=user but nobody said it
+		`{"type":"message","id":"m3","timestamp":"2026-09-01T10:02:00Z","message":{"role":"user","content":[{"type":"text","text":"<local-command-caveat>Caveat: generated while running local commands"}]}}`,
+		`{"type":"message","id":"m4","timestamp":"2026-09-01T10:03:00Z","message":{"role":"user","content":[{"type":"text","text":"就是 hookstack 那个仓库，看有没有设计问题"}]}}`,
+	)
+	// A terse opening whose own message carries on: the sentence that identifies the work
+	// is the second paragraph
+	write(t, filepath.Join(root, "p", "2026-01-03T00-00-00_terse.jsonl"),
+		`{"type":"session","id":"s-terse","cwd":"/w"}`,
+		`{"type":"message","id":"m1","timestamp":"2026-09-03T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"参考评审一下\n\n✦ larkin 的未来方向不是走向企业级大而全，而是纵向做深"}]}}`,
+		`{"type":"message","id":"m2","timestamp":"2026-09-03T10:01:00Z","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"ok"}]}}`,
+	)
+	// A session whose opening already says what it wants
+	write(t, filepath.Join(root, "p", "2026-01-02T00-00-00_long.jsonl"),
+		`{"type":"session","id":"s-long","cwd":"/w"}`,
+		`{"type":"message","id":"m1","timestamp":"2026-09-02T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"把 auth 模块的重试逻辑改成指数退避，最大 30 秒"}]}}`,
+		`{"type":"message","id":"m2","timestamp":"2026-09-02T10:01:00Z","message":{"role":"user","content":[{"type":"text","text":"另外记得补测试"}]}}`,
+	)
+	sources := []SessionSource{newPiSource(root)}
+	srv := httptest.NewServer(newAPIServer(serverOptions{
+		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 0), maxConnections: 50,
+	}))
+	t.Cleanup(srv.Close)
+
+	resp, _ := http.Get(srv.URL + "/export")
+	body := readBody(t, resp)
+
+	asks := []string{}
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "- **Asked**: ") {
+			asks = append(asks, strings.TrimPrefix(line, "- **Asked**: "))
+		}
+	}
+	if len(asks) != 3 {
+		t.Fatalf("got %d Asked lines, want 3:\n%s", len(asks), firstLines(body, 30))
+	}
+	// Oldest first: 09-01 short, 09-02 already complete, 09-03 terse-but-continues
+	short, long, terse := asks[0], asks[1], asks[2]
+
+	if !strings.Contains(short, "评审一下") || !strings.Contains(short, "就是 hookstack 那个仓库") {
+		t.Errorf("a short opening was not extended with what followed: %q", short)
+	}
+	if strings.Contains(short, "local-command-caveat") {
+		t.Errorf("a machine-assembled row was taken for a user turn: %q", short)
+	}
+	if !strings.HasPrefix(long, "把 auth 模块的重试逻辑") {
+		t.Errorf("the long opening is not first on its line: %q", long)
+	}
+	if strings.Contains(long, "另外记得补测试") {
+		t.Errorf("an opening that already says what it wants was extended anyway: %q", long)
+	}
+	if !strings.Contains(terse, "参考评审一下") || !strings.Contains(terse, "larkin 的未来方向") {
+		t.Errorf("a terse first line was not followed into its own message: %q", terse)
+	}
+	if strings.Count(terse, "参考评审一下") != 1 {
+		t.Errorf("the opening is repeated on its own line: %q", terse)
+	}
+}

@@ -267,7 +267,7 @@ func renderPackMarkdown(a *SessionQueryAPI, entries []packEntry, summary packSum
 			fmt.Fprintf(&b, " · **Messages**: %d", int(n))
 		}
 		b.WriteString("\n")
-		fmt.Fprintf(&b, "- **Asked**: %s\n", firstLine(toStr(item["shortKey"])))
+		fmt.Fprintf(&b, "- **Asked**: %s\n", packAsk(entry.source, entry.rec, item))
 
 		if final != nil {
 			text := strings.TrimSpace(toStr(final["text"]))
@@ -335,7 +335,7 @@ func renderPackJSONL(entries []packEntry, summary packSummary) string {
 			"source":     item["source"],
 			"cwd":        item["cwd"],
 			"updatedAt":  item["updatedAt"],
-			"asked":      firstLine(toStr(item["shortKey"])),
+			"asked":      packAsk(entry.source, entry.rec, item),
 			"transcript": "/sessions/" + url.PathEscape(toStr(item["sessionId"])) + "/export?format=jsonl",
 		}
 		if final != nil {
@@ -346,6 +346,112 @@ func renderPackJSONL(entries []packEntry, summary packSummary) string {
 		writeJSONLine(&b, record)
 	}
 	return b.String()
+}
+
+// A pack entry leads with the opening message, and an opening message is not always a
+// statement of intent: "参考评审一下" says nothing about what is being reviewed, because it
+// was said into a conversation that already had context. When the opening is too short to
+// stand on its own, the next user turns usually say what it was about, so they are appended
+// until there is enough to read.
+//
+// The threshold is length, which is a proxy — a long, vague opening goes unextended. It is
+// the cheap proxy: reading intent would mean a model, and a pack is assembled without one.
+const (
+	// 24, not 40: a rune count means different things per script. Twenty-four Chinese
+	// characters is a sentence with a subject and an object — "把 auth 模块的重试逻辑改成指数
+	// 退避，最大 30 秒" is 26 and complete — while forty would let a bare "帮我看看" through.
+	packAskMinChars     = 24
+	packAskBudget       = 200 // stop once the ask line has this much
+	packAskMaxParts     = 3   // ...or this many messages, whichever comes first
+	packAskScanMessages = 12  // how far in to look for user turns
+)
+
+// packAsk builds an entry's "asked" line, extending a short opening with what followed
+func packAsk(source SessionSource, rec record, item map[string]any) string {
+	opening := firstLine(toStr(item["shortKey"]))
+	if len([]rune(opening)) >= packAskMinChars {
+		return opening
+	}
+	// Reading the head of the session is cheap — the source stops once it has enough
+	messages := safeParse(source.Mode(), "messages", func() []map[string]any {
+		return source.Messages(rec, messageQuery{limit: packAskScanMessages})
+	})
+
+	parts := []string{opening}
+	length := len([]rune(opening))
+	for _, message := range messages {
+		if len(parts) >= packAskMaxParts {
+			break
+		}
+		if toStr(message["role"]) != "user" {
+			continue
+		}
+		// blockText, not contentText: a message's blocks are []map[string]any, which
+		// contentText does not walk, so it returned "" and firstLine turned that into
+		// "(no opening message)" — appended as if it were a turn.
+		//
+		// titleFromUserText then does the two jobs it already does for a session's display
+		// name: it rejects machine-assembled rows by their opening (a caveat row, Codex's
+		// AGENTS.md instructions) and folds the rest to one line.
+		text := titleFromUserText(blockText(message["content"]))
+		if text == "" {
+			continue
+		}
+		if len([]rune(text)) < packAskMinChars {
+			// A terse first line is not always the whole turn: "参考评审一下" can be
+			// followed, in the same message, by the material it refers to
+			text = packSnippet(blockText(message["content"]))
+		}
+		// The opening is itself the first user message, so the same turn comes round again
+		// here and must not be repeated. A candidate that merely *contains* it is a
+		// different matter — that one has more to say, which is the whole point.
+		if text == opening || strings.Contains(strings.Join(parts, " "), text) {
+			continue
+		}
+		// The candidate usually opens with the same words as the ask line, because it is
+		// that message; print what it adds rather than saying it twice
+		if rest := strings.TrimSpace(strings.TrimPrefix(text, opening)); rest != "" && strings.HasPrefix(text, opening) {
+			text = rest
+		}
+		if strings.Contains(strings.Join(parts, " "), text) {
+			continue
+		}
+		parts = append(parts, text)
+		length += len([]rune(text))
+		if length >= packAskBudget {
+			break
+		}
+	}
+	return strings.Join(parts, " \u00b7 ")
+}
+
+// packSnippet is a message as one line, capped. The first line is preferred when it stands
+// on its own; when it does not, the start of the whole message is used instead, because the
+// sentence that identifies the work may be the second paragraph.
+func packSnippet(text string) string {
+	folded := strings.Join(strings.Fields(text), " ")
+	const limit = 120
+	if len([]rune(folded)) <= limit {
+		return folded
+	}
+	return string([]rune(folded)[:limit]) + " \u2026"
+}
+
+// blockText is the first text block of a message, or the value itself when a source hands
+// back a plain string. The empty return means "nothing said here" and callers skip it.
+func blockText(content any) string {
+	if blocks, ok := content.([]map[string]any); ok {
+		for _, block := range blocks {
+			if toStr(block["type"]) != "text" {
+				continue
+			}
+			if text := strings.TrimSpace(toStr(block["content"])); text != "" {
+				return text
+			}
+		}
+		return ""
+	}
+	return strings.TrimSpace(contentText(content))
 }
 
 // packQuote folds an outcome onto one line and caps it: a conclusion is a paragraph or a

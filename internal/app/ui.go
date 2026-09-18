@@ -58,7 +58,7 @@ func serveUIAssets(w http.ResponseWriter, r *http.Request, path string) {
 		// The page is embedded, so a new binary should mean a new page: do not let the
 		// browser hold on to a stale copy
 		w.Header().Set("Cache-Control", "no-cache")
-		_, _ = w.Write(index)
+		_, _ = w.Write(versionedAssetRefs(index, sub))
 		return
 	}
 
@@ -82,6 +82,27 @@ func serveUIAssets(w http.ResponseWriter, r *http.Request, path string) {
 		return
 	}
 	_, _ = w.Write(data)
+}
+
+// versionedAssetRefs stamps the page's asset URLs with a content hash.
+//
+// The ETag on an asset is only consulted if the browser asks — and a copy cached before
+// there were any cache headers carries no validator, so it is never revalidated and the
+// page keeps running old JavaScript through an upgrade. A URL that changes with the
+// content cannot be served from a stale cache at all, and the HTML that names it is
+// itself no-cache, so the new URL is what the browser sees next.
+func versionedAssetRefs(index []byte, fsys fs.FS) []byte {
+	page := string(index)
+	for _, name := range []string{"app.js", "style.css"} {
+		data, err := fs.ReadFile(fsys, name)
+		if err != nil {
+			continue
+		}
+		sum := sha256.Sum256(data)
+		stamp := hex.EncodeToString(sum[:6])
+		page = strings.ReplaceAll(page, "/ui/"+name, "/ui/"+name+"?v="+stamp)
+	}
+	return []byte(page)
 }
 
 // assetETag identifies one embedded asset by its content.

@@ -9,9 +9,9 @@ no alias.
 | `/` `/health` `/stats` | no | Service info and health check (with connection stats and `authRequired`) |
 | `/sessions` | yes | List every session (merged across sources, newest first) |
 | `/sessions/<pattern>` | yes | One session's metadata |
-| `/sessions/<pattern>/messages?limit=50&order=asc` | yes | A session's messages; `order=asc` (the default) takes the earliest N, `order=desc` the latest N, and `at=<time>` anchors the window at that instant instead of at an end |
+| `/sessions/<pattern>/messages?limit=50&order=asc` | yes | A session's messages; `order=asc` (the default) takes the earliest N, `order=desc` the latest N, and `at=<time>` anchors the window at that instant instead of at an end. Capped by `--max-limit` |
 | `/sessions/<pattern>/final` | yes | A session's final result |
-| `/sessions/<pattern>/export?limit=200&order=desc` | yes | Export as Markdown (`text/markdown` + `Content-Disposition`) |
+| `/sessions/<pattern>/export?order=desc` | yes | Export as Markdown (`text/markdown` + `Content-Disposition`). **No `limit` means the whole session** (up to 20 000 messages); the file states what it covers, and says so when it is partial |
 | `/search?q=&limit=30&per_session=3&since=30d&until=&pattern=&role=` | yes | **Full-text search** across every source; `pattern` scopes it to one session, `role` keeps only `user` or `assistant` hits |
 | `/projects` | yes | Session counts grouped by project (cwd) |
 | `/mcp` | yes | MCP's Streamable HTTP transport, `POST`; see [mcp.md](mcp.md) |

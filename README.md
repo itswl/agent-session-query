@@ -91,10 +91,11 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   session being written gets a pulsing green dot. Rows carry the message count where the
   source knows it (the SQLite-backed ones) or once the session has been opened
 - **Middle**: the message timeline (text / thinking / toolCall / toolResult blocks). You can
-  switch between the earliest and latest 200 messages, and filter to user, assistant or
-  **tools** — the last shows only the turns that carried a tool call or its result, which
-  is what you want when reading a transcript to find out what actually ran. Tool blocks
-  are coloured by category (run / read / write / search / network / delegate)
+  switch between the earliest and latest 200 messages, and filter to **user** (the human's
+  words), **assistant** (the model's) or **tools** (tool calls and their results) — three
+  distinct categories rather than a role-field test, so tool traffic no longer shows up
+  under either speaker. Tool blocks are coloured by category (run / read / write / search
+  / network / delegate)
 - **Right**: the final result stays visible — stopReason, the answer, the thinking, usage and
   cost, session metadata (one click to copy the sessionId, one to export Markdown), and a
   **conversation table of contents**: the user's turns, numbered, click to jump to one in

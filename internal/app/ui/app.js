@@ -714,10 +714,19 @@ function isToolMessage(message) {
 }
 
 // matchesRole is the one place the stream filter is decided, shared by the renderer and
-// the table of contents
+// the table of contents.
+//
+// The three filters are meant to be distinct categories, so user and assistant mean the
+// human's words and the model's words — not "messages whose role field says so". A tool
+// result carries role user in Claude's format and a tool call rides inside an assistant
+// message, so filtering on role alone put tool traffic under both speakers at once.
+// Anything tool-shaped now belongs to tools, and to tools only.
 function matchesRole(message) {
   if (!state.role) return true;
   if (state.role === 'tools') return isToolMessage(message);
+  // A turn that both speaks and calls a tool is genuinely both: it stays with its
+  // speaker (its words are why you are reading it) and also appears under tools
+  if (!hasWords(message)) return false;
   return message.role === state.role;
 }
 

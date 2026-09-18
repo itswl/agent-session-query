@@ -282,3 +282,176 @@ func TestMCPHTTPSecurity(t *testing.T) {
 		t.Fatalf("a disallowed origin should be 403, got %d", code)
 	}
 }
+
+// newMCPWindowServer builds three sessions at known times (old / mid / recent) for the
+// time-window and pagination tests.
+func newMCPWindowServer(t *testing.T) *mcpServer {
+	t.Helper()
+	root := t.TempDir()
+	write(t, filepath.Join(root, "w", "2026-01-01T00-00-00_old.jsonl"),
+		`{"type":"session","id":"w-old","cwd":"/w/proj"}`,
+		`{"type":"message","id":"o1","message":{"role":"user","content":[{"type":"text","text":"an old question"}],"timestamp":"2026-09-01T10:00:00Z"}}`,
+	)
+	write(t, filepath.Join(root, "w", "2026-01-02T00-00-00_mid.jsonl"),
+		`{"type":"session","id":"w-mid","cwd":"/w/proj"}`,
+		`{"type":"message","id":"i1","message":{"role":"user","content":[{"type":"text","text":"a question from the middle"}],"timestamp":"2026-09-10T10:00:00Z"}}`,
+	)
+	write(t, filepath.Join(root, "w", "2026-01-03T00-00-00_new.jsonl"),
+		`{"type":"session","id":"w-new","cwd":"/w/proj"}`,
+		`{"type":"message","id":"n1","message":{"role":"user","content":[{"type":"text","text":"a question about nginx"}],"timestamp":"2026-09-17T10:00:00Z"}}`,
+		`{"type":"message","id":"n2","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"an answer"}],"timestamp":"2026-09-17T10:01:00Z"}}`,
+	)
+	sources := []SessionSource{newPiSource(root)}
+	return &mcpServer{api: newSessionQueryAPI(sources, 2), sources: sources, maxLimit: defaultMaxLimit}
+}
+
+func mcpCallTool(t *testing.T, s *mcpServer, args map[string]any) map[string]any {
+	t.Helper()
+	resp := mcpRoundTrip(t, s, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "list_sessions", "arguments": args},
+	})
+	text, isErr := toolText(t, resp[0])
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatalf("tool result is not JSON: %v (%s)", err, text)
+	}
+	return out
+}
+
+func TestMCPAnnotations(t *testing.T) {
+	s := newMCPServer(t)
+	responses := mcpRoundTrip(t, s, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+	tools := responses[0].Result.(map[string]any)["tools"].([]any)
+	for _, raw := range tools {
+		tool := raw.(map[string]any)
+		ann := tool["annotations"].(map[string]any)
+		if ann["readOnlyHint"] != true {
+			t.Errorf("%s: readOnlyHint missing or false: %v", tool["name"], ann)
+		}
+		if ann["openWorldHint"] != false {
+			t.Errorf("%s: openWorldHint must be false: %v", tool["name"], ann)
+		}
+	}
+}
+
+func TestMCPTimeWindow(t *testing.T) {
+	s := newMCPWindowServer(t)
+
+	// since=2026-09-15: only the newest session
+	out := mcpCallTool(t, s, map[string]any{"since": "2026-09-15"})
+	ids := windowIDs(out)
+	if len(ids) != 1 || ids[0] != "w-new" {
+		t.Fatalf("since=2026-09-15 → %v, want [w-new]", ids)
+	}
+
+	// until=2026-09-05: only the oldest
+	out = mcpCallTool(t, s, map[string]any{"until": "2026-09-05"})
+	ids = windowIDs(out)
+	if len(ids) != 1 || ids[0] != "w-old" {
+		t.Fatalf("until=2026-09-05 → %v, want [w-old]", ids)
+	}
+
+	// a window keeps only what falls inside it
+	out = mcpCallTool(t, s, map[string]any{"since": "2026-09-05", "until": "2026-09-15"})
+	ids = windowIDs(out)
+	if len(ids) != 1 || ids[0] != "w-mid" {
+		t.Fatalf("window → %v, want [w-mid]", ids)
+	}
+
+	// a bad value is a tool error, not a silent ignore
+	resp := mcpRoundTrip(t, s, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "list_sessions", "arguments": map[string]any{"since": "not-a-date"}},
+	})
+	if text, isErr := toolText(t, resp[0]); !isErr {
+		t.Fatalf("a bad since must be a tool error, got %s", text)
+	}
+}
+
+func windowIDs(out map[string]any) []string {
+	ids := []string{}
+	for _, raw := range out["sessions"].([]any) {
+		ids = append(ids, raw.(map[string]any)["sessionId"].(string))
+	}
+	return ids
+}
+
+func TestMCPCursorPagination(t *testing.T) {
+	s := newMCPWindowServer(t)
+
+	// Page through three sessions two at a time
+	page1 := mcpCallTool(t, s, map[string]any{"limit": 2})
+	if ids := windowIDs(page1); len(ids) != 2 {
+		t.Fatalf("page 1 → %v", ids)
+	}
+	cursor, ok := page1["nextCursor"].(string)
+	if !ok || cursor == "" {
+		t.Fatalf("page 1 must carry a nextCursor: %v", page1["nextCursor"])
+	}
+	page2 := mcpCallTool(t, s, map[string]any{"limit": 2, "cursor": cursor})
+	ids2 := windowIDs(page2)
+	if len(ids2) != 1 {
+		t.Fatalf("page 2 → %v, want the one remaining session", ids2)
+	}
+	if _, has := page2["nextCursor"]; has {
+		t.Fatalf("the last page must carry no nextCursor, got %v", page2["nextCursor"])
+	}
+	// Pages must not overlap
+	for _, id := range windowIDs(page1) {
+		if ids2[0] == id {
+			t.Fatalf("pages overlap at %s", id)
+		}
+	}
+	// A cursor past the end yields an empty page, not an error
+	last := mcpCallTool(t, s, map[string]any{"limit": 2, "cursor": encodeCursor(99)})
+	if n := len(last["sessions"].([]any)); n != 0 {
+		t.Fatalf("an out-of-range cursor → %d sessions, want 0", n)
+	}
+}
+
+func TestMCPRoleFilter(t *testing.T) {
+	s := newMCPWindowServer(t)
+	call := func(args map[string]any) map[string]any {
+		t.Helper()
+		resp := mcpRoundTrip(t, s, map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+			"params": map[string]any{"name": "get_messages", "arguments": args},
+		})
+		text, isErr := toolText(t, resp[0])
+		if isErr {
+			t.Fatalf("tool error: %s", text)
+		}
+		var out map[string]any
+		if err := json.Unmarshal([]byte(text), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	out := call(map[string]any{"pattern": "w-new", "role": "user"})
+	msgs := out["messages"].([]any)
+	if len(msgs) != 1 || msgs[0].(map[string]any)["role"] != "user" {
+		t.Fatalf("role=user → %v", msgs)
+	}
+	if out["total"] != float64(1) {
+		t.Fatalf("total must count the filtered set: %v", out["total"])
+	}
+
+	out = call(map[string]any{"pattern": "w-new", "role": "assistant"})
+	if len(out["messages"].([]any)) != 1 {
+		t.Fatalf("role=assistant → %v", out["messages"])
+	}
+
+	// An unknown role is rejected rather than returning everything
+	resp := mcpRoundTrip(t, s, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "get_messages", "arguments": map[string]any{"pattern": "w-new", "role": "system"}},
+	})
+	if _, isErr := toolText(t, resp[0]); !isErr {
+		t.Fatal("role=system must be a tool error")
+	}
+}

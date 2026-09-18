@@ -44,8 +44,24 @@ current MCP specification (2025-06-18):
 
 | Tool | What it does |
 |------|--------------|
-| `search_sessions` | Full-text search over message bodies; takes `query` / `limit` / `per_session` / `since` |
-| `list_sessions` | List sessions newest first, optionally filtered by `source` / `project` |
+| `search_sessions` | Full-text search over message bodies; takes `query` / `limit` / `per_session` / `since` / `until` |
+| `list_sessions` | List sessions newest first, optionally filtered by `source` / `project` / `since` / `until` |
 | `list_projects` | Group by project to see which agents were used on a given repository |
 | `get_session` | One session's metadata and final result |
-| `get_messages` | A session's messages; `order=desc` returns the latest N |
+
+
+Every tool declares `readOnlyHint` / `idempotentHint` annotations, so clients that honour
+them can skip call confirmations for what is a read-only query service.
+
+### Pagination
+
+`search_sessions`, `list_sessions` and `get_messages` paginate: when a page is not the
+last, the result carries `nextCursor`; pass it back as the `cursor` argument to continue.
+A cursor is only meaningful for the same tool and the same other arguments.
+
+### Time bounds
+
+`since` / `until` bound a session's update time on either side, in any of the relative
+forms (`24h`, `7d`) or an absolute date (`2026-09-01`). A session with no parseable time
+falls outside a bounded query rather than being guessed onto either side.
+| `get_messages` | A session's messages; `order=desc` returns the latest N, `role` narrows to `user` or `assistant` |

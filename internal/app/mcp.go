@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -154,11 +156,30 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			}
 			q.since = since
 		}
+		if raw := strings.TrimSpace(argString(args, "until")); raw != "" {
+			until, err := parseSince(raw)
+			if err != nil {
+				return nil, fmt.Errorf("bad until value: %w", err)
+			}
+			q.until = until
+		}
 		found := s.api.search(ctx, q)
-		return map[string]any{
-			"results": found.results, "matched": found.matched,
+		offset := decodeCursor(argString(args, "cursor"))
+		if offset > len(found.results) {
+			offset = len(found.results)
+		}
+		results := found.results[offset:]
+		if len(results) > q.limit {
+			results = results[:q.limit]
+		}
+		out := map[string]any{
+			"results": results, "matched": found.matched,
 			"scanned": found.scanned, "truncated": found.matched > len(found.results),
-		}, nil
+		}
+		if offset+len(results) < len(found.results) {
+			out["nextCursor"] = encodeCursor(offset + len(results))
+		}
+		return out, nil
 
 	case "list_sessions":
 		sessions, _ := s.api.listSessions()
@@ -180,12 +201,44 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			}
 			sessions = filtered
 		}
-		limit := argInt(args, "limit", mcpDefaultLimit, s.maxLimit)
+		// since/until bound the update time; a session with no parseable time is left out
+		// of a bounded query rather than guessed into either side
+		window, err := parseTimeWindow(args)
+		if err != nil {
+			return nil, err
+		}
+		if !window.since.IsZero() || !window.until.IsZero() {
+			filtered := sessions[:0:0]
+			for _, item := range sessions {
+				at, ok := parseTimestamp(toStr(item["updatedAt"]))
+				if !ok {
+					continue
+				}
+				if !window.since.IsZero() && at.Before(window.since) {
+					continue
+				}
+				if !window.until.IsZero() && at.After(window.until) {
+					continue
+				}
+				filtered = append(filtered, item)
+			}
+			sessions = filtered
+		}
 		total := len(sessions)
+		limit := argInt(args, "limit", mcpDefaultLimit, s.maxLimit)
+		offset := decodeCursor(argString(args, "cursor"))
+		if offset > total {
+			offset = total
+		}
+		sessions = sessions[offset:]
 		if len(sessions) > limit {
 			sessions = sessions[:limit]
 		}
-		return map[string]any{"sessions": sessions, "total": total, "returned": len(sessions)}, nil
+		out := map[string]any{"sessions": sessions, "total": total, "returned": len(sessions)}
+		if offset+len(sessions) < total {
+			out["nextCursor"] = encodeCursor(offset + len(sessions))
+		}
+		return out, nil
 
 	case "list_projects":
 		projects, ungrouped := s.api.listProjects()
@@ -208,19 +261,80 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if pattern == "" {
 			return nil, errors.New("missing argument: pattern")
 		}
+		limit := argInt(args, "limit", 50, s.maxLimit)
 		q := messageQuery{
-			limit:   argInt(args, "limit", 50, s.maxLimit),
+			limit:   limit,
 			fromEnd: strings.EqualFold(argString(args, "order"), "desc"),
+		}
+		// A role filter applies before the limit, so limit stays "N of this role" rather
+		// than "N of everything, then whatever survived". That needs the whole slice, so
+		// the fetch is widened and cut back afterwards.
+		role := strings.TrimSpace(argString(args, "role"))
+		if role != "" && role != "user" && role != "assistant" {
+			return nil, fmt.Errorf("role must be user or assistant, got %q", role)
+		}
+		if role != "" {
+			q.limit = s.maxLimit
 		}
 		messages, ok := s.api.getMessages(pattern, q)
 		if !ok {
 			return nil, fmt.Errorf("no session matches %q", pattern)
 		}
-		return map[string]any{"messages": messages, "total": len(messages), "order": orderName(q.fromEnd)}, nil
+		if role != "" {
+			filtered := messages[:0:0]
+			for _, m := range messages {
+				if toStr(m["role"]) == role {
+					filtered = append(filtered, m)
+				}
+			}
+			messages = filtered
+		}
+		total := len(messages)
+		offset := decodeCursor(argString(args, "cursor"))
+		if offset > total {
+			offset = total
+		}
+		messages = messages[offset:]
+		if len(messages) > limit {
+			messages = messages[:limit]
+		}
+		out := map[string]any{"messages": messages, "total": total, "order": orderName(q.fromEnd)}
+		if role != "" {
+			out["role"] = role
+		}
+		if offset+len(messages) < total {
+			out["nextCursor"] = encodeCursor(offset + len(messages))
+		}
+		return out, nil
 
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
+}
+
+// parseTimeWindow reads the since/until pair off a tool call. Both use the same relative
+// grammar (30d means "30 days ago" either side of the comparison).
+func parseTimeWindow(args map[string]any) (struct {
+	since, until time.Time
+}, error) {
+	var w struct {
+		since, until time.Time
+	}
+	if raw := strings.TrimSpace(argString(args, "since")); raw != "" {
+		t, err := parseSince(raw)
+		if err != nil {
+			return w, err
+		}
+		w.since = t
+	}
+	if raw := strings.TrimSpace(argString(args, "until")); raw != "" {
+		t, err := parseSince(raw)
+		if err != nil {
+			return w, fmt.Errorf("bad until value: %w", err)
+		}
+		w.until = t
+	}
+	return w, nil
 }
 
 func argString(args map[string]any, key string) string {
@@ -247,6 +361,44 @@ func strSchema(desc string) map[string]any {
 	return map[string]any{"type": "string", "description": desc}
 }
 
+// readOnlyAnnotations marks every tool here: they only read session data, never modify
+// it, touch nothing outside this machine, and repeating one returns the same answer.
+// Clients use readOnlyHint to skip call confirmations, so it must stay truthful — the
+// day a tool writes anything, its annotation has to go.
+func readOnlyAnnotations(title string) map[string]any {
+	return map[string]any{
+		"title":           title,
+		"readOnlyHint":    true,
+		"idempotentHint":  true,
+		"openWorldHint":   false,
+		"destructiveHint": false,
+	}
+}
+
+// Cursors are opaque offsets: encodeCursor/decodeCursor keep the wire format
+// base64 so a client never mistakes one for a plain number. A cursor is only
+// meaningful for the same tool and arguments it was issued with.
+func encodeCursor(offset int) string {
+	return base64.StdEncoding.EncodeToString([]byte(strconv.Itoa(offset)))
+}
+
+func decodeCursor(raw string) int {
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw))
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(string(decoded))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// cursorSchema is the same description on every paginated tool
+func cursorSchema() map[string]any {
+	return strSchema("continue from a previous page: pass back the nextCursor the last call returned")
+}
+
 func intSchema(desc string) map[string]any {
 	return map[string]any{"type": "integer", "description": desc}
 }
@@ -258,6 +410,7 @@ func mcpTools() []map[string]any {
 			"description": "Full-text search across the session history of every agent CLI on this " +
 				"machine (Claude Code, Codex, Gemini CLI, Pi, Hermes, OpenClaw). Answers " +
 				"\"which session did I deal with X in?\". Case-insensitive.",
+			"annotations": readOnlyAnnotations("Search sessions"),
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -265,30 +418,38 @@ func mcpTools() []map[string]any {
 					"limit":       intSchema("how many sessions to return at most, default 20"),
 					"per_session": intSchema("how many hits per session at most, default 3"),
 					"since":       strSchema("only search sessions updated after this, e.g. 30d / 12h / 2026-09-01; narrows the scan when history is large"),
+					"until":       strSchema("only search sessions updated before this, e.g. 7d (a week ago) / 2026-09-01"),
+					"cursor":      cursorSchema(),
 				},
 				"required": []string{"query"},
 			},
 		},
 		{
 			"name":        "list_sessions",
-			"description": "List sessions newest first, optionally filtered by source or project (cwd).",
+			"description": "List sessions newest first, optionally filtered by source, project (cwd) or update time.",
+			"annotations": readOnlyAnnotations("List sessions"),
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"source":  strSchema("restrict to one source: " + strings.Join(knownModes, " / ")),
 					"project": strSchema("filter by project path (cwd), substring match"),
+					"since":   strSchema("only sessions updated after this, e.g. 30d / 12h / 2026-09-01"),
+					"until":   strSchema("only sessions updated before this, e.g. 7d (a week ago) / 2026-09-01"),
 					"limit":   intSchema("how many to return at most, default 20"),
+					"cursor":  cursorSchema(),
 				},
 			},
 		},
 		{
 			"name":        "list_projects",
 			"description": "Group sessions by project (cwd) to see which agents were used on a given repository, and how many sessions each has.",
+			"annotations": readOnlyAnnotations("List projects"),
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		{
 			"name":        "get_session",
 			"description": "Fetch one session's metadata and final result. pattern may be a full sessionId, a fragment of one, or a fragment of the file path.",
+			"annotations": readOnlyAnnotations("Get session"),
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"pattern": strSchema("a sessionId, a fragment of one, or a file path fragment")},
@@ -297,13 +458,16 @@ func mcpTools() []map[string]any {
 		},
 		{
 			"name":        "get_messages",
-			"description": "Fetch a session's messages. The interesting part of a long session is usually its end, so use order=desc for the latest N.",
+			"description": "Fetch a session's messages. The interesting part of a long session is usually its end, so use order=desc for the latest N. role narrows to the human intent (user) or the answers (assistant).",
+			"annotations": readOnlyAnnotations("Get messages"),
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"pattern": strSchema("a sessionId, a fragment of one, or a file path fragment"),
 					"limit":   intSchema("how many to return at most, default 50"),
 					"order":   strSchema("asc for the earliest N (default), desc for the latest N"),
+					"role":    strSchema("keep only this role: user or assistant"),
+					"cursor":  cursorSchema(),
 				},
 				"required": []string{"pattern"},
 			},

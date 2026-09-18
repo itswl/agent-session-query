@@ -48,6 +48,7 @@ type searchQuery struct {
 	limit      int       // how many sessions to return at most
 	perSession int       // how many hits per session at most
 	since      time.Time // only search sessions updated after this; zero means no limit
+	until      time.Time // only search sessions updated before this; zero means no limit
 }
 
 // searchableSource lets a source implement content search itself.
@@ -78,6 +79,9 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 	for _, source := range a.sources {
 		for _, rec := range a.recordsOf(source) {
 			if !q.since.IsZero() && (rec.sortAt.IsZero() || rec.sortAt.Before(q.since)) {
+				continue
+			}
+			if !q.until.IsZero() && (rec.sortAt.IsZero() || rec.sortAt.After(q.until)) {
 				continue
 			}
 			all = append(all, candidate{source: source, rec: rec})

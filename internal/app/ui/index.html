@@ -23,19 +23,25 @@
 <div id="app" class="hidden">
   <header>
     <div class="brand"><span class="dot"></span><h1>Agent sessions</h1></div>
-    <input id="search" type="search" placeholder="Search sessionId, path, cwd and message bodies">
-    <select id="source-filter" aria-label="Filter by source"><option value="">All sources</option></select>
-    <select id="grouping" aria-label="Group the list">
-      <option value="time">By time</option>
-      <option value="project">By project</option>
-    </select>
-      <button id="fold-groups" class="ghost tiny" title="Collapse every project">Collapse all</button>
-    <label class="auto"><input type="checkbox" id="auto" checked> Auto-refresh</label>
+    <!-- Search and list filters. On a wide screen these sit in the header like any
+         other control (display: contents keeps the layout identical); on a phone they
+         belong to the Sessions pane, and are hidden with the other panes, since none of
+         them do anything to a conversation or a details pane. -->
+    <div id="controls">
+      <input id="search" type="search" placeholder="Search sessionId, path, cwd and message bodies">
+      <select id="source-filter" aria-label="Filter by source"><option value="">All sources</option></select>
+      <select id="grouping" aria-label="Group the list">
+        <option value="time">By time</option>
+        <option value="project">By project</option>
+      </select>
+        <button id="fold-groups" class="ghost tiny" title="Collapse every project">Collapse all</button>
+      <label class="auto"><input type="checkbox" id="auto" checked> Auto-refresh</label>
+      <span id="status" class="status"></span>
+    </div>
     <button id="refresh" class="ghost" title="Refresh (r)">Refresh</button>
     <button id="logout" class="ghost">Change token</button>
     <button id="toggle-list" class="ghost pane-toggle" title="Hide the session list" aria-label="Toggle the session list">&#8249;</button>
     <button id="toggle-side" class="ghost pane-toggle" title="Hide the details pane" aria-label="Toggle the details pane">&#8250;</button>
-    <span id="status" class="status"></span>
   </header>
 
   <!-- Phones get one pane at a time; this picks which. Hidden from 861px up, where all

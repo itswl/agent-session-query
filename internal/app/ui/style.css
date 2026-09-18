@@ -117,7 +117,11 @@ header input, header select {
 header input:focus, header select:focus { border-color: var(--accent); }
 label.auto { color: var(--dim); display: flex; align-items: center; gap: 4px; white-space: nowrap; }
 label.auto input { accent-color: var(--accent); }
-.status { color: var(--dim); margin-left: auto; white-space: nowrap; font-size: 12.5px; }
+/* On a wide screen #controls is display:contents, so its children are laid out by the
+   header: order keeps the status where it has always been — at the end — even though it
+   now sits earlier in the markup (it belongs with the list, not with the buttons). */
+#controls { display: contents; }
+.status { color: var(--dim); margin-left: auto; white-space: nowrap; font-size: 12.5px; order: 1; }
 
 main {
   flex: 1 1 auto; min-height: 0;
@@ -181,6 +185,7 @@ body.hide-list .list, body.hide-side .side { display: none; }
   main { display: block; overflow: hidden; }
 
   .panes {
+    order: 2;
     display: flex; gap: 4px; flex: 0 0 auto;
     padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--line);
   }
@@ -210,19 +215,30 @@ body.hide-list .list, body.hide-side .side { display: none; }
     box-shadow: none; padding-bottom: 12px;
   }
 
-  /* The header carries a lot for one small screen: five rows of it is a third of the
-     viewport before any content appears. Reordered into three — title with its actions,
-     the search on its own full-width row, then the filters sharing a row with the status
-     line — which is about half the height it was. */
+  /* On a phone the header keeps only the title and its buttons — one row. The search and
+     the list filters move out of it entirely: they sit below the pane switcher and show
+     only while the Sessions pane is up, because none of them do anything to a
+     conversation. That is about two thirds of the height they took before, and the
+     conversation now starts right under the switcher. */
+  #app > header { order: 1; }
+  #app > main { order: 4; }
   header { padding: 8px 10px; gap: 6px; }
-  header .brand { order: 1; }
   header h1 { font-size: 15px; }
-  #refresh, #logout { order: 2; padding: 4px 10px; font-size: 12px; }
+  #refresh, #logout { padding: 4px 10px; font-size: 12px; }
   #logout { margin-left: auto; }
-  #search { order: 3; flex: 1 1 100%; min-width: 0; padding: 8px 11px; }
-  #source-filter, #grouping { order: 4; flex: 1 1 40%; min-width: 0; }
-  .auto { order: 5; font-size: 12px; }
-  #status { order: 6; flex: 1 1 100%; font-size: 11.5px; }
+
+  #controls {
+    order: 3;
+    display: none;
+    flex-wrap: wrap; gap: 6px;
+    padding: 8px 10px 10px;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  body[data-pane="list"] #controls { display: flex; }
+  #controls #search { flex: 1 1 100%; min-width: 0; padding: 8px 11px; }
+  #controls #source-filter, #controls #grouping { flex: 1 1 40%; min-width: 0; }
+  #controls .auto { font-size: 12px; }
+  #controls #status { flex: 1 1 100%; font-size: 11.5px; margin-left: 0; order: 0; }
 
   /* Touch targets rather than mouse-sized ones */
   .seg-btn, .item, .toc-item { min-height: 34px; }

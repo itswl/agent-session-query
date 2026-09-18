@@ -104,7 +104,9 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   the stream. It covers the loaded window and says so when the session is longer
 
 On a phone the three panes become one screen at a time with a **Sessions / Conversation /
-Details** switcher, so the conversation is not pushed below a list you have to scroll past;
+Details** switcher, and the search box and list filters belong to Sessions — they do
+nothing to a conversation or a details pane, so neither has to open with five rows of
+controls it cannot use;
 picking a session jumps straight to it. It refreshes every 10 seconds without disturbing
 what you are reading (expanded blocks and scroll position are preserved), your view
 controls — grouping, source filter, order, filters, folded groups — survive a reload, and

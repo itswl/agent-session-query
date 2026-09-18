@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -406,9 +407,9 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			if format == "" {
 				format = exportFormatMarkdown
 			}
-			if format != exportFormatMarkdown && format != exportFormatJSONL {
+			if !slices.Contains(exportFormats, format) {
 				writeJSON(w, http.StatusBadRequest, map[string]any{
-					"error": "format must be " + exportFormatMarkdown + " or " + exportFormatJSONL,
+					"error": "format must be one of: " + strings.Join(exportFormats, ", "),
 				})
 				return http.StatusBadRequest
 			}

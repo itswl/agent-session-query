@@ -1099,3 +1099,77 @@ func TestExportJSONL(t *testing.T) {
 		t.Errorf("format=xml = %d, want 400", resp.StatusCode)
 	}
 }
+
+// TestExportEveryFormat: the same session as a document, as data, and as a page. Each is a
+// different answer to "give me this session", and each has to arrive with a type and a
+// filename a client can act on.
+func TestExportEveryFormat(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_all.jsonl"),
+		`{"type":"session","id":"s-all","cwd":"/w"}`,
+		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"a <script>alert(1)</script> question"}]}}`,
+		`{"type":"message","id":"m2","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"an answer"},{"type":"thinking","thinking":"a thought"},{"type":"toolCall","name":"bash","arguments":{"command":"ls"}}]}}`,
+	)
+	sources := []SessionSource{newPiSource(root)}
+	srv := httptest.NewServer(newAPIServer(serverOptions{
+		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 0), maxConnections: 50,
+	}))
+	t.Cleanup(srv.Close)
+
+	wantType := map[string]string{
+		"md":    "text/markdown",
+		"jsonl": "application/x-ndjson",
+		"json":  "application/json",
+		"html":  "text/html",
+	}
+	for format, contentType := range wantType {
+		resp, body := func() (*http.Response, string) {
+			r, err := http.Get(srv.URL + "/sessions/s-all/export?format=" + format)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return r, readBody(t, r)
+		}()
+		if resp.StatusCode != 200 {
+			t.Fatalf("format=%s = %d", format, resp.StatusCode)
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, contentType) {
+			t.Errorf("format=%s Content-Type = %q, want %q", format, ct, contentType)
+		}
+		if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, "."+format) {
+			t.Errorf("format=%s filename does not carry the extension: %q", format, cd)
+		}
+		if !strings.Contains(body, "an answer") {
+			t.Errorf("format=%s does not contain the session", format)
+		}
+		// Whatever the format, a session's own text must not become markup. A session file
+		// holds whatever its writer put there, and the HTML export is opened from disk.
+		if format == "html" && strings.Contains(body, "<script>alert(1)</script>") {
+			t.Errorf("the html export did not escape session content")
+		}
+	}
+
+	// The json document carries the same header the jsonl does
+	_, body := func() (*http.Response, string) {
+		r, err := http.Get(srv.URL + "/sessions/s-all/export?format=json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r, readBody(t, r)
+	}()
+	var doc struct {
+		Session  map[string]any   `json:"session"`
+		Messages []map[string]any `json:"messages"`
+		Final    map[string]any   `json:"final"`
+		Complete bool             `json:"complete"`
+	}
+	if err := json.Unmarshal([]byte(body), &doc); err != nil {
+		t.Fatalf("the json export does not parse: %v", err)
+	}
+	if len(doc.Messages) != 2 || doc.Session["sessionId"] != "s-all" || doc.Final == nil {
+		t.Errorf("json export = %d messages, session %v", len(doc.Messages), doc.Session["sessionId"])
+	}
+	if doc.Session["coverage"] != "all 2 messages" {
+		t.Errorf("json header coverage = %v", doc.Session["coverage"])
+	}
+}

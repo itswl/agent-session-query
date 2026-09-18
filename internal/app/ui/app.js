@@ -39,6 +39,7 @@ const state = {
   contentTimer: null,
   contentAbort: null,  // AbortController for the search still in flight
   detail: null,        // { sessionId, signature, messages, final }
+  collapsedGroups: new Set(), // project names folded away in By project grouping
   openBlocks: new Set(),
   timer: null,
   searchTimer: null,
@@ -235,10 +236,14 @@ function listRows() {
     }
     rows = [];
     for (const [name, items] of groups) {
+      // A collapsed group keeps its header (with the full count, so it stays
+      // informative and can be unfolded) and drops its session rows
+      const collapsed = state.collapsedGroups.has(name);
       rows.push({
         kind: 'group', id: 'group:' + name, name,
-        count: items.length, active: items.some((s) => s.isActive),
+        count: items.length, active: items.some((s) => s.isActive), collapsed,
       });
+      if (collapsed) continue;
       for (const s of items) rows.push({ kind: 'session', id: s.sessionId, session: s });
     }
   }
@@ -264,18 +269,39 @@ function contentRows(shown) {
 function buildGroup(id) {
   const node = el('div', 'group');
   node.dataset.id = id;
+  node.tabIndex = 0;
+  node.setAttribute('role', 'button');
+  node.appendChild(el('span', 'caret'));
   node.appendChild(el('span', 'group-name'));
   node.appendChild(el('span', 'group-count'));
+  // The name is the key into collapsedGroups; the row id carries it with a prefix
+  node.addEventListener('click', () => toggleGroup(node.dataset.id));
+  node.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      toggleGroup(node.dataset.id);
+    }
+  });
   return node;
 }
 
+function toggleGroup(rowId) {
+  const name = rowId.replace(/^group:/, '');
+  if (state.collapsedGroups.has(name)) state.collapsedGroups.delete(name);
+  else state.collapsedGroups.add(name);
+  renderList();
+}
+
 function fillGroup(node, row) {
-  const [name, count] = node.children;
+  const [caret, name, count] = node.children;
   // Show only the last segment of the project path; the full path goes in the title
   const short = String(row.name).split(/[\\/]/).filter(Boolean).pop() || row.name;
+  setText(caret, row.collapsed ? '\u25b8' : '\u25be');
   setText(name, short);
-  node.title = row.name;
+  node.title = row.name + ' — click to ' + (row.collapsed ? 'expand' : 'collapse');
   setText(count, row.count);
+  node.classList.toggle('collapsed', !!row.collapsed);
+  node.setAttribute('aria-expanded', row.collapsed ? 'false' : 'true');
   node.classList.toggle('live', !!row.active);
 }
 

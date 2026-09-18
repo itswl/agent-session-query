@@ -57,7 +57,14 @@ them can skip call confirmations for what is a read-only query service.
 
 `search_sessions`, `list_sessions` and `get_messages` paginate: when a page is not the
 last, the result carries `nextCursor`; pass it back as the `cursor` argument to continue.
-A cursor is only meaningful for the same tool and the same other arguments.
+A cursor is only meaningful for the same tool and the same other arguments. Pages never
+overlap, and a past-the-end cursor yields an empty page.
+
+One caveat on `get_messages`: without `role`, the server reads only as deep into the
+session as the page needs (window + one probe message), so `total` there is the window
+size, not the session's full message count. With `role` set the whole session is read and
+`total` counts the filtered messages exactly. `list_sessions` and `search_sessions`
+report the true totals — `matched` / `total` cover everything before pagination.
 
 ### Time bounds
 

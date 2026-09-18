@@ -455,3 +455,72 @@ func TestMCPRoleFilter(t *testing.T) {
 		t.Fatal("role=system must be a tool error")
 	}
 }
+
+// TestMCPGetMessagesPagination: the earlier implementation decided "another page?" from
+// len(messages) after the source had already truncated to limit — always false, and
+// nextCursor never appeared. This is the case that regression slipped through.
+func TestMCPGetMessagesPagination(t *testing.T) {
+	s := newMCPWindowServer(t)
+	call := func(args map[string]any) map[string]any {
+		t.Helper()
+		resp := mcpRoundTrip(t, s, map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+			"params": map[string]any{"name": "get_messages", "arguments": args},
+		})
+		text, isErr := toolText(t, resp[0])
+		if isErr {
+			t.Fatalf("tool error: %s", text)
+		}
+		var out map[string]any
+		if err := json.Unmarshal([]byte(text), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	// Ascending pages: 1 and 2 must be disjoint, consecutive, and a third must not exist
+	p1 := call(map[string]any{"pattern": "w-new", "limit": 1, "order": "asc"})
+	if len(p1["messages"].([]any)) != 1 {
+		t.Fatalf("page 1 size = %d", len(p1["messages"].([]any)))
+	}
+	cur, ok := p1["nextCursor"].(string)
+	if !ok || cur == "" {
+		t.Fatal("a full page must carry nextCursor — this is the regression")
+	}
+	p2 := call(map[string]any{"pattern": "w-new", "limit": 1, "order": "asc", "cursor": cur})
+	m1 := p1["messages"].([]any)[0].(map[string]any)
+	m2 := p2["messages"].([]any)[0].(map[string]any)
+	if m1["id"] == m2["id"] {
+		t.Fatalf("pages overlap at %v", m1["id"])
+	}
+	if m1["timestamp"].(string) > m2["timestamp"].(string) {
+		t.Fatalf("ascending pages must move forward: %v then %v", m1["timestamp"], m2["timestamp"])
+	}
+	if _, has := p2["nextCursor"]; has {
+		t.Fatalf("the last page must carry no nextCursor, got %v", p2["nextCursor"])
+	}
+
+	// Descending: page 1 is the newest message, page 2 the one before it
+	d1 := call(map[string]any{"pattern": "w-new", "limit": 1, "order": "desc"})
+	d2 := call(map[string]any{"pattern": "w-new", "limit": 1, "order": "desc", "cursor": d1["nextCursor"].(string)})
+	dm1 := d1["messages"].([]any)[0].(map[string]any)
+	dm2 := d2["messages"].([]any)[0].(map[string]any)
+	if dm1["role"] != "assistant" {
+		t.Fatalf("desc page 1 must be the newest (assistant) message, got %v", dm1["role"])
+	}
+	if dm2["role"] != "user" {
+		t.Fatalf("desc page 2 must be the one before it, got %v", dm2["role"])
+	}
+	if _, has := d2["nextCursor"]; has {
+		t.Fatalf("the last desc page must carry no nextCursor")
+	}
+
+	// list_sessions must reject an unknown source the same way get_session does
+	resp := mcpRoundTrip(t, s, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "list_sessions", "arguments": map[string]any{"source": "nope"}},
+	})
+	if text, isErr := toolText(t, resp[0]); !isErr || !strings.Contains(text, "choose from") {
+		t.Fatalf("list_sessions with a bad source must fail with the valid list, got %q", text)
+	}
+}

@@ -183,7 +183,9 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 
 	case "list_sessions":
 		sessions, _ := s.api.listSessions()
-		if want := strings.TrimSpace(argString(args, "source")); want != "" {
+		if want, err := wantedSource(args); err != nil {
+			return nil, err
+		} else if want != "" {
 			filtered := sessions[:0:0]
 			for _, item := range sessions {
 				if toStr(item["source"]) == want {
@@ -270,6 +272,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if err != nil {
 			return nil, err
 		}
+		offset := decodeCursor(argString(args, "cursor"))
 		q := messageQuery{
 			limit:   limit,
 			fromEnd: strings.EqualFold(argString(args, "order"), "desc"),
@@ -281,8 +284,13 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if role != "" && role != "user" && role != "assistant" {
 			return nil, fmt.Errorf("role must be user or assistant, got %q", role)
 		}
-		if role != "" {
-			q.limit = s.maxLimit
+		// Without a role the source layer only hands back q.limit messages, so every
+		// page fetches one more than it shows: the extra message is the only way to
+		// know another page follows. (The earlier version decided "more pages?" from
+		// len(messages) after the source had already truncated to limit — always
+		// false, and nextCursor never appeared.)
+		if role == "" {
+			q.limit = min(offset+limit+1, s.maxLimit)
 		}
 		messages, ok := s.api.getMessages(pattern, sourceWanted, q)
 		if !ok {
@@ -297,27 +305,49 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			}
 			messages = filtered
 		}
+		// total is what the fetch produced, not the session's true message count: the
+		// source caps at q.limit. It still tells the client whether this page is full
+		// (more may follow) and stays honest about what was actually read.
 		total := len(messages)
-		offset := decodeCursor(argString(args, "cursor"))
-		if offset > total {
-			offset = total
-		}
-		messages = messages[offset:]
-		if len(messages) > limit {
-			messages = messages[:limit]
-		}
+		messages = pageMessages(messages, offset, limit, q.fromEnd)
 		out := map[string]any{"messages": messages, "total": total, "order": orderName(q.fromEnd)}
 		if role != "" {
 			out["role"] = role
 		}
-		if offset+len(messages) < total {
-			out["nextCursor"] = encodeCursor(offset + len(messages))
+		more := len(messages) == limit && offset+limit < total
+		if more {
+			out["nextCursor"] = encodeCursor(offset + limit)
 		}
 		return out, nil
 
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
+}
+
+// pageMessages slices one page out of the fetched window. With fromEnd the fetch holds
+// the newest q.limit messages in chronological order, so page k counts back from the end;
+// ascending pages count forward from the start.
+func pageMessages(fetched []map[string]any, offset, limit int, fromEnd bool) []map[string]any {
+	if fromEnd {
+		end := len(fetched) - offset
+		if end < 0 {
+			end = 0
+		}
+		start := end - limit
+		if start < 0 {
+			start = 0
+		}
+		return fetched[start:end]
+	}
+	if offset > len(fetched) {
+		offset = len(fetched)
+	}
+	out := fetched[offset:]
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }
 
 // wantedSource reads the optional source argument and rejects values that name no

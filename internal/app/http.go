@@ -402,12 +402,22 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			if _, given := r.URL.Query()["limit"]; !given {
 				exportQuery.limit = exportMaxMessages
 			}
-			body, filename, ok := s.api.exportMarkdown(pattern, exportQuery)
+			format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+			if format == "" {
+				format = exportFormatMarkdown
+			}
+			if format != exportFormatMarkdown && format != exportFormatJSONL {
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"error": "format must be " + exportFormatMarkdown + " or " + exportFormatJSONL,
+				})
+				return http.StatusBadRequest
+			}
+			body, filename, contentType, ok := s.api.exportSession(pattern, exportQuery, format)
 			if !ok {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "Session not found"})
 				return http.StatusNotFound
 			}
-			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+			w.Header().Set("Content-Type", contentType)
 			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 			w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(filename))
 			w.WriteHeader(http.StatusOK)

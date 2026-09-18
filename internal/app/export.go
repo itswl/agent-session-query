@@ -12,12 +12,20 @@ import (
 // otherwise means copying it out block by block. The output reuses the Messages / Final
 // block structures rather than introducing a second way to parse a session.
 
-// exportMarkdown renders one session as Markdown, returning the body and a suggested
-// filename.
-func (a *SessionQueryAPI) exportMarkdown(pattern string, q messageQuery) (body string, filename string, ok bool) {
+// Export formats. Markdown is the document you read or paste somewhere; JSONL is one
+// JSON object per line, with a header line naming the session and a final line carrying
+// the result — the shape a program (or a model writing a program) queries with jq or a
+// dozen lines of Python, rather than reading.
+const (
+	exportFormatMarkdown = "md"
+	exportFormatJSONL    = "jsonl"
+)
+
+// exportSession resolves one session and renders it in the requested format.
+func (a *SessionQueryAPI) exportSession(pattern string, q messageQuery, format string) (body, filename, contentType string, ok bool) {
 	source, item, found := a.findSession(pattern, "")
 	if !found {
-		return "", "", false
+		return "", "", "", false
 	}
 	messages := safeParse(source.Mode(), "messages", func() []map[string]any {
 		return source.Messages(item, q)
@@ -26,17 +34,29 @@ func (a *SessionQueryAPI) exportMarkdown(pattern string, q messageQuery) (body s
 		return source.Final(item)
 	})
 
-	which := "earliest"
-	if q.fromEnd {
-		which = "latest"
+	name := strOr(item.get("shortKey"), item.str("sessionId"))
+	stem := sanitizeFilename(name)
+
+	if format == exportFormatJSONL {
+		return renderExportJSONL(item, messages, final, q),
+			stem + ".jsonl", "application/x-ndjson; charset=utf-8", true
 	}
-	// How much of the session this file holds. An export that quietly carried a twelfth of
-	// it read exactly like an export of the whole thing, which is how it was taken.
-	//
-	// The record's count comes from the background pass and may not have arrived yet; the
-	// final result carries a true count of its own, computed by the scan that produced it.
-	// Falling back to that means the file can always state its coverage — and it costs
-	// nothing, since Final has already run two lines above.
+	return renderExportMarkdown(item, messages, final, q),
+		stem + ".md", "text/markdown; charset=utf-8", true
+}
+
+// exportCoverage says how much of the session a document holds.
+//
+// The record's count comes from the background pass and may not have arrived yet; the
+// final result carries a true count of its own, computed by the scan that produced it.
+// Falling back to that means the document can always state its coverage, and it costs
+// nothing since Final has already run.
+//
+// Completeness is only claimed when the count written matches the count reported. If they
+// disagree — a source that counts a message differently from the way it lists one — the
+// document says how many it holds and no more, rather than announcing a total it cannot
+// back.
+func exportCoverage(item record, final map[string]any, written int, which string) (coverage string, complete bool) {
 	total := int64(0)
 	if n, ok := toFloat(item.get("messageCount")); ok && n > 0 {
 		total = int64(n)
@@ -45,18 +65,23 @@ func (a *SessionQueryAPI) exportMarkdown(pattern string, q messageQuery) (body s
 			total = int64(n)
 		}
 	}
-	// Only claim completeness when the count written matches the count reported. If they
-	// disagree — a source that counts a message differently from the way it lists one — the
-	// file says how many it holds and no more, rather than announcing a total it cannot
-	// back.
-	coverage := fmt.Sprintf("%d messages", len(messages))
 	switch {
-	case total > 0 && int64(len(messages)) < total:
-		coverage = fmt.Sprintf("%d of %d messages (the %s %d; the rest is not in this file)",
-			len(messages), total, which, len(messages))
-	case total > 0 && int64(len(messages)) == total:
-		coverage = fmt.Sprintf("all %d messages", total)
+	case total > 0 && int64(written) < total:
+		return fmt.Sprintf("%d of %d messages (the %s %d; the rest is not in this document)",
+			written, total, which, written), false
+	case total > 0 && int64(written) == total:
+		return fmt.Sprintf("all %d messages", total), true
 	}
+	return fmt.Sprintf("%d messages", written), false
+}
+
+// renderExportMarkdown is the document form: something to read, or to paste into an issue.
+func renderExportMarkdown(item record, messages []map[string]any, final map[string]any, q messageQuery) string {
+	which := "earliest"
+	if q.fromEnd {
+		which = "latest"
+	}
+	coverage, _ := exportCoverage(item, final, len(messages), which)
 
 	var b strings.Builder
 	name := strOr(item.get("shortKey"), item.str("sessionId"))
@@ -102,8 +127,63 @@ func (a *SessionQueryAPI) exportMarkdown(pattern string, q messageQuery) (body s
 		b.WriteString("\n\n")
 		writeBlocks(&b, message["content"])
 	}
+	return b.String()
+}
 
-	return b.String(), sanitizeFilename(name) + ".md", true
+// renderExportJSONL is the data form: one object per line, each tagged with a type, so a
+// query is a filter rather than a parse.
+//
+//	{"type":"session", ...}   the session, and how much of it this file holds
+//	{"type":"message", ...}   one message, in the shape /messages returns
+//	{"type":"final",   ...}   the session's final result
+func renderExportJSONL(item record, messages []map[string]any, final map[string]any, q messageQuery) string {
+	which := "earliest"
+	if q.fromEnd {
+		which = "latest"
+	}
+	coverage, complete := exportCoverage(item, final, len(messages), which)
+
+	var b strings.Builder
+	writeJSONLine(&b, map[string]any{
+		"type":      "session",
+		"source":    item.str("source"),
+		"sessionId": item.str("sessionId"),
+		"title":     item.str("shortKey"),
+		"cwd":       item.str("cwd"),
+		"model":     item.str("model"),
+		"updatedAt": item.str("updatedAt"),
+		"order":     which,
+		"exported":  len(messages),
+		"coverage":  coverage,
+		"complete":  complete,
+	})
+	for _, message := range messages {
+		line := map[string]any{"type": "message"}
+		for k, v := range message {
+			line[k] = v
+		}
+		writeJSONLine(&b, line)
+	}
+	if final != nil {
+		line := map[string]any{"type": "final"}
+		for k, v := range final {
+			line[k] = v
+		}
+		writeJSONLine(&b, line)
+	}
+	return b.String()
+}
+
+// writeJSONLine emits one JSONL record. A value that cannot be marshalled — a session file
+// holds whatever its writer put there — becomes an error record rather than a half-written
+// line, so the file stays parseable.
+func writeJSONLine(b *strings.Builder, record map[string]any) {
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		encoded, _ = json.Marshal(map[string]any{"type": "error", "error": err.Error()})
+	}
+	b.Write(encoded)
+	b.WriteByte('\n')
 }
 
 // writeBlocks renders a message's block array as Markdown

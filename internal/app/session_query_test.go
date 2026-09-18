@@ -1011,3 +1011,91 @@ func firstLines(s string, n int) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// TestExportJSONL: the same session as data rather than as a document. One JSON object per
+// line, each tagged, so a query is a filter — `select(.type=="message" and .role=="user")`
+// — rather than a parse. This is the form something that intends to analyse a session with
+// code wants, and the form the HTTP export offers alongside the Markdown one.
+func TestExportJSONL(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_jsonl.jsonl"),
+		`{"type":"session","id":"s-jsonl","cwd":"/w"}`,
+		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"first"}]}}`,
+		`{"type":"message","id":"m2","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"second"}]}}`,
+	)
+	sources := []SessionSource{newPiSource(root)}
+	srv := httptest.NewServer(newAPIServer(serverOptions{
+		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 0), maxConnections: 50,
+	}))
+	t.Cleanup(srv.Close)
+
+	fetch := func(query string) (*http.Response, string) {
+		t.Helper()
+		resp, err := http.Get(srv.URL + "/sessions/s-jsonl/export" + query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp, readBody(t, resp)
+	}
+
+	resp, body := fetch("?format=jsonl")
+	if resp.StatusCode != 200 {
+		t.Fatalf("jsonl export = %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/x-ndjson; charset=utf-8" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, ".jsonl") {
+		t.Errorf("Content-Disposition = %q", cd)
+	}
+
+	// Every line has to stand alone: the point of the format is that a reader can take
+	// one line at a time without parsing the file
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	if len(lines) != 4 { // session + 2 messages + final
+		t.Fatalf("got %d lines, want 4:\n%s", len(lines), body)
+	}
+	kinds := []string{}
+	for i, line := range lines {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("line %d is not JSON: %v (%q)", i+1, err, line)
+		}
+		kind, _ := record["type"].(string)
+		kinds = append(kinds, kind)
+		if i == 0 {
+			// The header says what the file holds, the same promise the Markdown makes
+			if record["coverage"] != "all 2 messages" || record["complete"] != true {
+				t.Errorf("header = %v", record)
+			}
+			if record["sessionId"] != "s-jsonl" {
+				t.Errorf("header sessionId = %v", record["sessionId"])
+			}
+		}
+		if i == 1 && record["role"] != "user" {
+			t.Errorf("first message record = %v", record)
+		}
+	}
+	if kinds[0] != "session" || kinds[len(kinds)-1] != "final" {
+		t.Errorf("record types = %v", kinds)
+	}
+
+	// A truncated export says so in the header, where a program will look
+	_, body = fetch("?format=jsonl&limit=1")
+	var header map[string]any
+	if err := json.Unmarshal([]byte(strings.Split(body, "\n")[0]), &header); err != nil {
+		t.Fatal(err)
+	}
+	if header["complete"] != false || !strings.Contains(header["coverage"].(string), "1 of 2") {
+		t.Errorf("a truncated jsonl export does not announce itself: %v", header)
+	}
+
+	// Markdown stays the default, and an unknown format is refused rather than guessed
+	resp, _ = fetch("")
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/markdown") {
+		t.Errorf("the default export is not Markdown: %q", ct)
+	}
+	if resp, _ := fetch("?format=xml"); resp.StatusCode != 400 {
+		t.Errorf("format=xml = %d, want 400", resp.StatusCode)
+	}
+}

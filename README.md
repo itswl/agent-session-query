@@ -88,8 +88,9 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   ones under a "N more in message bodies" divider, carrying the matching snippet, so one
   query covers both without a mode to switch. <kbd>Enter</kbd> only skips the wait. The list
   can be grouped by time or by project — project headers fold away when clicked — and a
-  session being written gets a pulsing green dot. Rows carry the message count where the
-  source knows it (the SQLite-backed ones) or once the session has been opened
+  session being written gets a pulsing green dot. Rows carry the session's message count
+  — counted from the file in the background the first time it is listed, so the count
+  appears a moment after the page does rather than being paid for on the request path
 - **Middle**: the message timeline (text / thinking / toolCall / toolResult blocks). It opens
   on the latest 200 and **loads the previous page when you scroll to the top** (or the next
   one at the bottom, when reading from the earliest) — the count in the header says how far
@@ -103,8 +104,9 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   **conversation table of contents**: the user's turns, numbered, click to jump to one in
   the stream. It covers the loaded window and says so when the session is longer
 
-On a phone the three panes become one screen at a time with a **Sessions / Conversation /
-Details** switcher, and the search box and list filters belong to Sessions — they do
+On a phone the title row and the pane switcher slide away as you scroll down and come back
+as you scroll up, and the three panes become one screen at a time with a **Sessions /
+Conversation / Details** switcher, and the search box and list filters belong to Sessions — they do
 nothing to a conversation or a details pane, so neither has to open with five rows of
 controls it cannot use;
 picking a session jumps straight to it. It refreshes every 10 seconds without disturbing

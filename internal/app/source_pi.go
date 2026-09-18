@@ -13,7 +13,7 @@ type PiSource struct {
 }
 
 func newPiSource(root string) *PiSource {
-	return &PiSource{root: root, cache: newFileRecordCache()}
+	return &PiSource{root: root, cache: newFileRecordCache(piCountMessages)}
 }
 
 func (s *PiSource) Mode() string     { return "pi" }

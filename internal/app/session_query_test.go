@@ -227,7 +227,7 @@ func TestFileRecordCacheReusesUnchanged(t *testing.T) {
 	path := filepath.Join(root, "p", "a.jsonl")
 	write(t, path, `{"type":"session","id":"cached"}`)
 
-	cache := newFileRecordCache()
+	cache := newFileRecordCache(nil) // no counter: this test is about record reuse
 	builds := 0
 	build := func(p, modISO string) record {
 		builds++

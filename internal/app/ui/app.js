@@ -893,11 +893,11 @@ function renderMessages() {
 
   if (!sameView) {
     // Just opened: stick to the bottom when viewing the latest, start at the top for the earliest
-    pane.scrollTop = state.order === 'desc' ? pane.scrollHeight : 0;
+    scrollTo(pane, state.order === 'desc' ? pane.scrollHeight : 0);
   } else if (wasAtBottom) {
-    pane.scrollTop = pane.scrollHeight;
+    scrollTo(pane, pane.scrollHeight);
   } else {
-    pane.scrollTop = prevScroll;
+    scrollTo(pane, prevScroll);
   }
 }
 
@@ -1145,6 +1145,7 @@ function gotoMessage(index) {
 // instant instead of at the end — how a search hit becomes somewhere you can land.
 function selectSession(sessionId, focusAt) {
   if (!sessionId) return;
+  setChromeHidden(false);
   if (sessionId === state.selectedId && (focusAt || '') === state.focusAt) return;
   state.focusAt = focusAt || '';
   state.selectedId = sessionId;
@@ -1245,7 +1246,7 @@ async function loadMore(edge) {
   renderSide(record);
   if (edge === 'older') {
     // Prepending pushes everything down; hold the reader's place on the same message
-    pane.scrollTop = beforeTop + (pane.scrollHeight - beforeHeight);
+    scrollTo(pane, beforeTop + (pane.scrollHeight - beforeHeight));
   }
 }
 
@@ -1377,7 +1378,7 @@ function moveSelection(delta) {
 
 function scrollMessages(toBottom) {
   const pane = $('messages');
-  pane.scrollTop = toBottom ? pane.scrollHeight : 0;
+  scrollTo(pane, toBottom ? pane.scrollHeight : 0);
 }
 
 function clearSearch() {
@@ -1496,6 +1497,7 @@ $('source-filter').addEventListener('change', (event) => {
 // Reading on: fetch the next page when the reader reaches the edge that has one
 $('messages').addEventListener('scroll', () => {
   const pane = $('messages');
+  slideChrome(pane.scrollTop);
   if (state.loadingMore) return;
   const nearTop = pane.scrollTop < SCROLL_LOAD_PX;
   const nearBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < SCROLL_LOAD_PX;
@@ -1600,11 +1602,57 @@ function applyPaneFolds() {
   }
 }
 
+// On a phone the title row and the pane switcher together are a tenth of the screen, and
+// while you are reading downwards neither is doing anything. Scrolling down slides them
+// away, scrolling up brings them back, and the top of the conversation always shows them
+// — the standard phone behaviour, and it costs nothing on a wide screen where the media
+// query never matches.
+const CHROME_HIDE_AFTER_PX = 40;
+const CHROME_JITTER_PX = 8;
+let chromeHidden = false;
+let chromeLastY = 0;
+let scrollQuietUntil = 0;
+
+// The page scrolls itself — opening a session jumps to the newest message, prepending a
+// page holds the reader's place, the table of contents scrolls to its target. Those are
+// not the reader moving, and treating the jump to the bottom on open as "scrolled down"
+// hid the header the moment a session appeared.
+function scrollTo(pane, y) {
+  scrollQuietUntil = performance.now() + 250;
+  pane.scrollTop = y;
+}
+
+function slideChrome(y) {
+  if (performance.now() < scrollQuietUntil) {
+    chromeLastY = y;
+    return;
+  }
+  if (!window.matchMedia('(max-width: 860px)').matches) {
+    if (chromeHidden) setChromeHidden(false);
+    return;
+  }
+  if (y < CHROME_HIDE_AFTER_PX) {
+    setChromeHidden(false);
+  } else if (y > chromeLastY + CHROME_JITTER_PX) {
+    setChromeHidden(true); // moving down the conversation
+  } else if (y < chromeLastY - CHROME_JITTER_PX) {
+    setChromeHidden(false); // coming back up
+  }
+  chromeLastY = y;
+}
+
+function setChromeHidden(hidden) {
+  if (hidden === chromeHidden) return;
+  chromeHidden = hidden;
+  document.body.classList.toggle('chrome-hidden', hidden);
+}
+
 // showPane switches the phone layout. On a wide screen the attribute is inert: the CSS
 // only consults it below the phone breakpoint.
 function showPane(name) {
   state.pane = name;
   document.body.dataset.pane = name;
+  setChromeHidden(false); // a pane change is not a scroll: show the chrome again
   const nav = $('panes');
   if (nav) {
     for (const button of nav.children) {

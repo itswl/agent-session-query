@@ -86,7 +86,8 @@ func (s *OpenClawSource) listOne(dbPath string) []record {
 		SELECT session_id, status, model_provider, model, display_name,
 		       COALESCE(transcript_updated_at, updated_at),
 		       (SELECT COUNT(*) FROM transcript_events te
-		         WHERE te.session_id = session_windows.session_id),
+		         WHERE te.session_id = session_windows.session_id
+		           AND json_extract(te.event_json, '$.type') = 'message'),
 		       (SELECT json_extract(te.event_json, '$.cwd')
 		          FROM transcript_events te
 		         WHERE te.session_id = session_windows.session_id
@@ -258,6 +259,24 @@ func (s *OpenClawSource) Final(r record) map[string]any {
 	if sessionID == "" {
 		return nil
 	}
+	// The count runs first and on its own connection: opened while the message query's
+	// rows are still live it came back empty, and the error that said so was being
+	// discarded, so the session reported a messageCount of 0 next to a full transcript.
+	count := 0
+	if countRows, closeCount, err := s.querySession(context.Background(), r,
+		`SELECT COUNT(*) FROM transcript_events
+		 WHERE session_id = ? AND json_extract(event_json, '$.type') = 'message'`, sessionID); err == nil {
+		// Next() before Scan(): a *sql.Rows has to be advanced to its first row, and
+		// scanning without that fails — which the discarded error had been hiding, so the
+		// session reported 0 messages beside a full transcript.
+		if countRows.Next() {
+			if err := countRows.Scan(&count); err != nil {
+				count = 0
+			}
+		}
+		closeCount()
+	}
+
 	rows, close, err := s.querySession(context.Background(), r, `
 		SELECT event_json FROM transcript_events
 		WHERE session_id = ?
@@ -268,13 +287,6 @@ func (s *OpenClawSource) Final(r record) map[string]any {
 		return nil
 	}
 	defer close()
-
-	count := 0
-	if countRows, closeCount, err := s.querySession(context.Background(), r,
-		`SELECT COUNT(*) FROM transcript_events WHERE session_id = ? AND json_extract(event_json, '$.type') = 'message'`, sessionID); err == nil {
-		_ = countRows.Scan(&count)
-		closeCount()
-	}
 
 	for rows.Next() {
 		var eventJSON string

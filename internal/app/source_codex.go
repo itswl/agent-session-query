@@ -13,7 +13,7 @@ type CodexSource struct {
 }
 
 func newCodexSource(root string) *CodexSource {
-	return &CodexSource{root: root, cache: newFileRecordCache()}
+	return &CodexSource{root: root, cache: newFileRecordCache(codexCountMessages)}
 }
 
 func (s *CodexSource) Mode() string     { return "codex" }

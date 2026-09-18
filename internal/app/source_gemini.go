@@ -14,7 +14,7 @@ type GeminiSource struct {
 }
 
 func newGeminiSource(root string) *GeminiSource {
-	return &GeminiSource{root: root, cache: newFileRecordCache()}
+	return &GeminiSource{root: root, cache: newFileRecordCache(geminiCountMessages)}
 }
 
 func (s *GeminiSource) Mode() string     { return "gemini" }
@@ -232,6 +232,13 @@ func mergeGeminiRecord(a, b record) record {
 	}
 	fields["files"] = files
 	fields["file"] = files[0]
+	// A continuation file's messages belong to the same session, so the counts add —
+	// otherwise the list would report one file's worth while the session reports both
+	if aCount, ok := toFloat(fields["messageCount"]); ok {
+		if bCount, ok := toFloat(b.fields["messageCount"]); ok {
+			fields["messageCount"] = int(aCount) + int(bCount)
+		}
+	}
 	if toStr(fields["shortKey"]) == "" {
 		fields["shortKey"] = b.str("shortKey")
 	}

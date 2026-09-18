@@ -13,7 +13,7 @@ type ClaudeCodeSource struct {
 }
 
 func newClaudeSource(root string) *ClaudeCodeSource {
-	return &ClaudeCodeSource{root: root, cache: newFileRecordCache()}
+	return &ClaudeCodeSource{root: root, cache: newFileRecordCache(claudeCountMessages)}
 }
 
 func (s *ClaudeCodeSource) Mode() string     { return "claude" }

@@ -245,6 +245,16 @@ body.hide-list .list, body.hide-side .side { display: none; }
   .toc { max-height: none; }
 
   .keyhint { display: none; }
+
+  /* Scrolling down slides the title row and the pane switcher away; see slideChrome. */
+  #app > header, .panes {
+    overflow: hidden;
+    transition: max-height .22s ease, padding .22s ease, opacity .18s ease;
+  }
+  #app > header { max-height: 80px; }
+  .panes { max-height: 60px; }
+  body.chrome-hidden #app > header { max-height: 0; padding-top: 0; padding-bottom: 0; opacity: 0; }
+  body.chrome-hidden .panes { max-height: 0; padding-top: 0; padding-bottom: 0; opacity: 0; }
 }
 
 /* ---- Left pane: session list ---- */

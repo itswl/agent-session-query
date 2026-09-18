@@ -8,7 +8,7 @@ MCP server**。它不会修改任何会话数据。
 单个二进制（不依赖 cgo，没有常驻运行时）—— `scp` 到任意同架构的机器上直接跑。唯一的外部依赖是
 一个纯 Go 的 SQLite 驱动（用于读取 Hermes 的 `state.db`），所以交叉编译照常可用。
 
-支持六个数据源；存在哪个就查哪个，也可以在一次查询里合并：
+支持七个数据源；存在哪个就查哪个，也可以在一次查询里合并：
 
 | 数据源 | 会话存放位置 | 会话 ID |
 |--------|--------------|---------|
@@ -18,6 +18,7 @@ MCP server**。它不会修改任何会话数据。
 | Claude Code | `~/.claude/projects/<project>/*.jsonl` | 文件名（一个 uuid）/ `sessionId` 字段 |
 | Codex | `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl` | 元数据行上的 `payload.session_id` |
 | Gemini CLI | `~/.gemini/tmp/<project>/chats/session-*.jsonl` | 首行的 `sessionId` |
+| OpenCode | `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db`（SQLite；Windows 为 `%LOCALAPPDATA%\opencode`） | `session` 表的 `id` |
 
 表中的 `~` 指向运行用户的家目录：Linux 和 macOS 上是 `$HOME`，Windows 上是 `%USERPROFILE%`
 （也就是 `C:\Users\<you>\.claude\projects` 之类）。各数据源的解析细节见
@@ -125,7 +126,7 @@ go build -o agent-session-query ./cmd/agent-session-query
 |------|--------|------|
 | `--host` | `127.0.0.1` | 绑定地址；对外暴露用 `0.0.0.0`（同时务必设 `--hook_token`） |
 | `--port` | `8080` | 监听端口 |
-| `--mode` | `auto` | `auto`（存在哪个启用哪个）/ `all`（六个全启用）/ `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` |
+| `--mode` | `auto` | `auto`（存在哪个启用哪个）/ `all`（七个全启用）/ `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` / `opencode` |
 | `--hook_token` | 无 | Bearer token；不设则 API 不鉴权 |
 | `--max-connections` | `50` | 最大并发连接数，超出的排队 |
 | `--accept-queue` | `0`（自动） | 满载时的排队位；`0` 表示 `2 × max-connections`，且不低于 32。队列满则立即返回 503 |

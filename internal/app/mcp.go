@@ -275,7 +275,7 @@ func mcpTools() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"source":  strSchema("restrict to one source: hermes / openclaw / pi / claude / codex / gemini"),
+					"source":  strSchema("restrict to one source: " + strings.Join(knownModes, " / ")),
 					"project": strSchema("filter by project path (cwd), substring match"),
 					"limit":   intSchema("how many to return at most, default 20"),
 				},

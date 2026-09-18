@@ -85,7 +85,7 @@ func (s *messageSink) result() []map[string]any {
 }
 
 // Supported sources (the values --mode accepts); auto enables whichever exist
-var knownModes = []string{"hermes", "openclaw", "pi", "claude", "codex", "gemini"}
+var knownModes = []string{"hermes", "openclaw", "pi", "claude", "codex", "gemini", "opencode"}
 
 // fileExists reports whether a path exists
 func fileExists(path string) bool {
@@ -117,6 +117,7 @@ func buildSources(mode string) ([]SessionSource, error) {
 		"claude":   func() SessionSource { return newClaudeSource(filepath.Join(home, ".claude", "projects")) },
 		"codex":    func() SessionSource { return newCodexSource(filepath.Join(home, ".codex", "sessions")) },
 		"gemini":   func() SessionSource { return newGeminiSource(filepath.Join(home, ".gemini", "tmp")) },
+		"opencode": func() SessionSource { return newOpenCodeSource(filepath.Join(openCodeDataDir(home), "opencode.db")) },
 	}
 
 	if mode != "auto" && mode != "all" {

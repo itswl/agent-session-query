@@ -49,6 +49,20 @@ and deployment see the [README](../README.md).
   as a `functionResponse` entry in a later user row's `content` array (becoming a `toolResult`
   block). `thoughts` becomes thinking whether it is a string or a `[{subject, description}]`
   array (each entry's description is taken)
+- **OpenCode**: everything lives in one SQLite database at
+  `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` — there is no jsonl, so it is the
+  second all-SQLite source after newer Hermes and implements `searchableSource` (a `LIKE`
+  over the `part` table). Sessions whose `time_archived` is set are skipped, matching what
+  opencode itself shows. `session.directory` is the cwd, `session.title` becomes the display
+  name, and the model column's JSON (`{"id":...,"providerID":...}`) becomes
+  `provider/model`. Messages are `message` rows joined to their `part` rows: `text` /
+  `reasoning` map to text / thinking, and a `tool` part — which carries the call and its
+  result together (`state.input` / `state.output` / `state.error`) — becomes a `toolCall`
+  block followed by a `toolResult` block once its state is `completed` or `error`.
+  `step-start` / `step-finish` are boundaries, not content, and are dropped. The final
+  result is the newest assistant message carrying a `finish` field; timestamps are unix
+  milliseconds throughout (opened read-only — verified that reads work through the live
+  write-ahead log, so sessions still being written are visible)
 
 ### A session's update time: read the tail, do not trust mtime
 

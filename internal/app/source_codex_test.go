@@ -13,7 +13,9 @@ func TestCodexSource(t *testing.T) {
 		`{"type":"response_item","timestamp":"t0","payload":{"type":"message","role":"developer","content":[{"text":"system"}]}}`,
 		`{"type":"response_item","timestamp":"t1","payload":{"type":"message","role":"user","id":"c1","content":[{"text":"question"}]}}`,
 		`{"type":"response_item","timestamp":"t2","payload":{"type":"message","role":"assistant","id":"c2","stop_reason":"stop","content":[{"text":"answer"}]}}`,
-		`{"type":"token_usage_record","payload":{"usage":{"input_tokens":7}}}`,
+		// Two turns of usage: the card reports the session total, not the last turn's
+		`{"type":"token_usage_record","payload":{"usage":{"input_tokens":7,"output_tokens":2}}}`,
+		`{"type":"token_usage_record","payload":{"usage":{"input_tokens":30,"output_tokens":5,"cached_input_tokens":100}}}`,
 	)
 
 	s := newCodexSource(root)
@@ -30,8 +32,15 @@ func TestCodexSource(t *testing.T) {
 	if final["text"] != "answer" || final["isFinal"] != true {
 		t.Fatalf("final = %v", final)
 	}
-	if usage := final["usage"].(map[string]any); usage["input_tokens"] != float64(7) {
-		t.Fatalf("usage = %v", usage)
+	// Normalised to the shared shape, and summed across both records: 7+30 in, 2+5 out,
+	// 100 cached read
+	usage := final["usage"].(map[string]any)
+	for field, want := range map[string]int64{
+		"inputTokens": 37, "outputTokens": 7, "cacheReadTokens": 100,
+	} {
+		if got := usage[field]; got != want {
+			t.Errorf("%s = %v, want %d (usage = %v)", field, got, want, usage)
+		}
 	}
 }
 

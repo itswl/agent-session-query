@@ -172,10 +172,18 @@ func (s *ClaudeCodeSource) Final(r record) map[string]any {
 	// assistant message, which is the only one fully decoded
 	var rawLast []byte
 	count := 0
+	// Usage is summed over the whole session rather than taken from the last message: the
+	// last message answers "what did the final answer cost", which is not what a Usage
+	// card is read as. The scan already walks every line, so this costs one small decode
+	// per assistant message.
+	var totals usageTotals
 	eachJSONLLine(path, func(line []byte) bool {
 		var probe struct {
 			Type        string `json:"type"`
 			IsSidechain bool   `json:"isSidechain"`
+			Message     struct {
+				Usage json.RawMessage `json:"usage"`
+			} `json:"message"`
 		}
 		if json.Unmarshal(line, &probe) != nil {
 			return true
@@ -189,6 +197,12 @@ func (s *ClaudeCodeSource) Final(r record) map[string]any {
 		count++
 		if probe.Type == "assistant" {
 			rawLast = append(rawLast[:0], line...)
+			if len(probe.Message.Usage) > 0 {
+				var u map[string]any
+				if json.Unmarshal(probe.Message.Usage, &u) == nil {
+					totals.add(u)
+				}
+			}
 		}
 		return true
 	})
@@ -245,6 +259,6 @@ func (s *ClaudeCodeSource) Final(r record) map[string]any {
 		"text":         strings.Join(texts, "\n"),
 		"thinking":     strings.Join(thoughts, "\n"),
 		"toolCalls":    toolCalls,
-		"usage":        getOr(msg, "usage", map[string]any{}),
+		"usage":        totals.result(),
 	}
 }

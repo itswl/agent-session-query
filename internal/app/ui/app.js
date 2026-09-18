@@ -871,9 +871,15 @@ const USAGE_LABELS = {
   inputTokens: 'in', outputTokens: 'out',
   input_tokens: 'in', output_tokens: 'out',
   cacheReadTokens: 'cache read', cacheWriteTokens: 'cache write',
-  reasoningTokens: 'reasoning', estimatedCostUsd: 'cost $',
+  reasoningTokens: 'reasoning', totalTokens: 'total', estimatedCostUsd: 'cost $',
 };
 const USAGE_DECIMALS = { estimatedCostUsd: 4 };
+
+// Token counts run to nine digits on a long session; unseparated they read as noise
+function groupDigits(v) {
+  if (typeof v !== 'number' || !isFinite(v)) return String(v);
+  return v.toLocaleString('en-US');
+}
 
 function finalCard(final) {
   const done = final.isFinal === true;
@@ -913,12 +919,14 @@ function usageCard(usage) {
     .sort((a, b) => (USAGE_LABELS[a[0]] ? 0 : 1) - (USAGE_LABELS[b[0]] ? 0 : 1))
     .map(([k, v]) => {
       const digits = USAGE_DECIMALS[k];
-      const text = digits !== undefined ? Number(v).toFixed(digits) : String(v);
+      const text = digits !== undefined ? Number(v).toFixed(digits) : groupDigits(v);
       return [USAGE_LABELS[k] || k, text];
     });
   if (pairs.length === 0) return null;
   const card = el('section', 'card');
-  card.appendChild(el('h3', '', 'Usage'));
+  // The heading says which question this answers: the totals cover every turn of the
+  // session, which is a different number from the one the final message carries
+  card.appendChild(el('h3', '', 'Usage \u00b7 whole session'));
   card.appendChild(kv(pairs));
   return card;
 }

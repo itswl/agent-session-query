@@ -148,8 +148,10 @@ func (s *CodexSource) Final(r record) map[string]any {
 	}
 	// Only type / payload.type / payload.role matter (plus the small usage object)
 	var rawLast []byte
-	usage := map[string]any{}
 	count := 0
+	// Every token_usage_record is a turn's usage; summing them gives the session total,
+	// where keeping only the last gave the final turn's (see source_claude)
+	var totals usageTotals
 	eachJSONLLine(path, func(line []byte) bool {
 		var probe struct {
 			Type    string `json:"type"`
@@ -166,7 +168,7 @@ func (s *CodexSource) Final(r record) map[string]any {
 			if len(probe.Payload.Usage) > 0 {
 				var u map[string]any
 				if json.Unmarshal(probe.Payload.Usage, &u) == nil && len(u) > 0 {
-					usage = u
+					totals.add(u)
 				}
 			}
 			return true
@@ -220,6 +222,6 @@ func (s *CodexSource) Final(r record) map[string]any {
 		"text":         strings.Join(texts, "\n"),
 		"thinking":     "",
 		"toolCalls":    []any{},
-		"usage":        usage,
+		"usage":        totals.result(),
 	}
 }

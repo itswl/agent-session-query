@@ -296,6 +296,8 @@ func (s *GeminiSource) Final(r record) map[string]any {
 	}
 	var lastGemini map[string]any
 	count := 0
+	// Usage is summed over the session, not read off the last row (see source_claude)
+	var totals usageTotals
 	// Files are chronological, so the last gemini row of the last file is the final
 	// answer, while the count covers the whole session
 	for _, path := range geminiFilesOf(r) {
@@ -306,6 +308,9 @@ func (s *GeminiSource) Final(r record) map[string]any {
 			count++
 			if m["type"] == "gemini" {
 				lastGemini = m
+				if tokens, ok := m["tokens"].(map[string]any); ok {
+					totals.add(tokens)
+				}
 			}
 			return true
 		})
@@ -351,6 +356,6 @@ func (s *GeminiSource) Final(r record) map[string]any {
 		"text":         strings.Join(texts, "\n"),
 		"thinking":     thinking,
 		"toolCalls":    toolCalls,
-		"usage":        getOr(lastGemini, "tokens", map[string]any{}),
+		"usage":        totals.result(),
 	}
 }

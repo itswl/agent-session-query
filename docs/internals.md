@@ -84,6 +84,24 @@ and deployment see the [README](../README.md).
   milliseconds throughout (opened read-only — verified that reads work through the live
   write-ahead log, so sessions still being written are visible)
 
+### Usage: one shape, and a session total
+
+Each provider names the same quantities differently — claude's `cache_read_input_tokens`,
+codex's `cached_input_tokens`, pi's `cacheRead`, gemini's `cached` — and bundles fields
+the card has no use for (`service_tier`, `speed`, `iterations`). `normalizeUsage` folds
+all seven onto one set of names, matching keys case- and separator-insensitively, so the
+card labels one shape rather than knowing about four.
+
+They also disagree about scope: hermes and opencode store session totals, while the
+file-backed sources could only offer the last message's usage. That is what made the
+numbers look wrong — claude's final message reads `in 312 / out 1201`, which is that
+turn's cost, not the session's. Every source now sums across the session. The Final scan
+already walks every message for the last one, so a small extra decode per message is the
+whole cost; measured on a 16 561-message session the endpoint still answers in ~0.4 s.
+
+The sums are large and should be: a long session re-reads its cached context every turn,
+so 5.6 G cache-read tokens over 11 200 turns is arithmetic, not a bug.
+
 ### Session titles
 
 opencode writes a real title for every session (`session.title`), and that is what its

@@ -165,11 +165,14 @@ func (s *PiSource) Final(r record) map[string]any {
 	// measured over 3x faster than decoding everything
 	var rawLast []byte
 	count := 0
+	// Usage is summed over the session, not read off the last message (see source_claude)
+	var totals usageTotals
 	eachJSONLLine(path, func(line []byte) bool {
 		var probe struct {
 			Type    string `json:"type"`
 			Message struct {
-				Role string `json:"role"`
+				Role  string          `json:"role"`
+				Usage json.RawMessage `json:"usage"`
 			} `json:"message"`
 		}
 		if json.Unmarshal(line, &probe) != nil {
@@ -182,6 +185,12 @@ func (s *PiSource) Final(r record) map[string]any {
 		if probe.Message.Role == "assistant" {
 			// the buffer is reused; copy anything kept
 			rawLast = append(rawLast[:0], line...)
+		}
+		if len(probe.Message.Usage) > 0 {
+			var u map[string]any
+			if json.Unmarshal(probe.Message.Usage, &u) == nil {
+				totals.add(u)
+			}
 		}
 		return true
 	})
@@ -238,7 +247,7 @@ func (s *PiSource) Final(r record) map[string]any {
 		"text":         strings.Join(nonEmpty(textParts), "\n"),
 		"thinking":     strings.Join(nonEmpty(thinkParts), "\n"),
 		"toolCalls":    []any{},
-		"usage":        getOr(msg, "usage", map[string]any{}),
+		"usage":        totals.result(),
 	}
 }
 

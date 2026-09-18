@@ -44,6 +44,8 @@ const state = {
   order: 'desc',       // desc = the latest N (the end of a session is the interesting part)
   grouping: 'time',    // time = by update time; project = grouped by project (cwd)
   pane: 'stream',      // phones only: which of the three panes is on screen
+  hideList: false,     // wide screens: fold the session list away
+  hideSide: false,     // wide screens: fold the details pane away
   content: null,       // content search for the current keyword:
                        //   { query, searching, results, matched, truncated, tookMs }
   contentTimer: null,
@@ -1449,6 +1451,17 @@ $('messages').addEventListener('scroll', () => {
   }
 }, { passive: true });
 
+$('toggle-list').addEventListener('click', () => {
+  state.hideList = !state.hideList;
+  applyPaneFolds();
+  saveViewPrefs();
+});
+$('toggle-side').addEventListener('click', () => {
+  state.hideSide = !state.hideSide;
+  applyPaneFolds();
+  saveViewPrefs();
+});
+
 $('refresh').addEventListener('click', refresh);
 
 if ($('panes')) {
@@ -1483,6 +1496,8 @@ function saveViewPrefs() {
       role: state.role,
       auto: $('auto').checked,
       pane: state.pane,
+      hideList: state.hideList,
+      hideSide: state.hideSide,
       collapsed: [...state.collapsedGroups],
     }));
   } catch (e) {
@@ -1507,7 +1522,25 @@ function applyViewPrefs() {
   if (typeof prefs.auto === 'boolean') $('auto').checked = prefs.auto;
   // Names of projects folded away; a name that no longer exists simply never matches
   if (['list', 'stream', 'side'].indexOf(prefs.pane) >= 0) state.pane = prefs.pane;
+  if (typeof prefs.hideList === 'boolean') state.hideList = prefs.hideList;
+  if (typeof prefs.hideSide === 'boolean') state.hideSide = prefs.hideSide;
   if (Array.isArray(prefs.collapsed)) state.collapsedGroups = new Set(prefs.collapsed);
+}
+
+// applyPaneFolds folds the two side panes away on a wide screen, leaving the conversation
+// the full width. The toggles say which way they will go next.
+function applyPaneFolds() {
+  document.body.classList.toggle('hide-list', state.hideList);
+  document.body.classList.toggle('hide-side', state.hideSide);
+  const list = $('toggle-list'), side = $('toggle-side');
+  if (list) {
+    list.textContent = state.hideList ? '\u203a' : '\u2039';
+    list.title = (state.hideList ? 'Show' : 'Hide') + ' the session list';
+  }
+  if (side) {
+    side.textContent = state.hideSide ? '\u2039' : '\u203a';
+    side.title = (state.hideSide ? 'Show' : 'Hide') + ' the details pane';
+  }
 }
 
 // showPane switches the phone layout. On a wide screen the attribute is inert: the CSS
@@ -1527,6 +1560,7 @@ function showPane(name) {
 async function start() {
   applyViewPrefs();
   showPane(state.pane);
+  applyPaneFolds();
   const hashId = decodeURIComponent(location.hash.replace(/^#/, ''));
   if (hashId) state.selectedId = hashId;
   await refresh();

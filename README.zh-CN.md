@@ -99,6 +99,8 @@ go build -o agent-session-query ./cmd/agent-session-query
 正在看的内容（展开的块和滚动位置都会保留）；你的视图设置（分组方式、源过滤、排序、过滤条件、
 折叠的分组）刷新后仍然保留。`/ui#<sessionId>` 可作为深链接，明暗主题跟随系统。
 
+左右两栏可以用头部的 ‹ / › 按钮折起来，把整个宽度让给会话内容；折叠状态会被记住。
+
 快捷键：<kbd>j</kbd> <kbd>k</kbd> 切换会话（元数据命中与正文命中一并遍历）·
 <kbd>/</kbd> 聚焦搜索框 · <kbd>Enter</kbd> 立刻搜正文而不等待 ·
 <kbd>g</kbd> <kbd>G</kbd> 跳到消息流首尾 · <kbd>r</kbd> 刷新 · <kbd>Esc</kbd> 清空搜索。

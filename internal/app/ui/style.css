@@ -122,9 +122,23 @@ label.auto input { accent-color: var(--accent); }
 main {
   flex: 1 1 auto; min-height: 0;
   display: grid;
-  grid-template-columns: minmax(250px, 330px) minmax(0, 1fr) minmax(290px, 350px);
+  /* The side columns are variables so folding one away is a 0 here rather than a second
+     set of grid rules for every combination — and the middle pane keeps its 1fr, so the
+     conversation is what grows. */
+  grid-template-columns:
+    var(--col-list, minmax(250px, 330px))
+    minmax(0, 1fr)
+    var(--col-side, minmax(290px, 350px));
   grid-template-areas: "list stream side";
 }
+body.hide-list { --col-list: 0px; }
+body.hide-side { --col-side: 0px; }
+body.hide-list .list, body.hide-side .side { display: none; }
+
+/* The fold toggles read as part of the header, and are only useful where the panes are
+   side by side — on a phone the pane switcher already does this job */
+.pane-toggle { font-size: 13px; line-height: 1; padding: 4px 8px; }
+@media (max-width: 860px) { .pane-toggle { display: none; } }
 
 .keyhint {
   flex: 0 0 auto;
@@ -140,10 +154,13 @@ main {
 /* Narrower: move the final-result pane below the stream rather than hiding it */
 @media (max-width: 1240px) {
   main {
-    grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+    grid-template-columns: var(--col-list, minmax(230px, 300px)) minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) auto;
     grid-template-areas: "list stream" "list side";
   }
+  /* Folded, the middle pane takes the whole width: the areas stop naming a list column */
+  body.hide-list main { grid-template-columns: minmax(0, 1fr); grid-template-areas: "stream" "side"; }
+  body.hide-side { --col-side: 0px; }
   /* Once it sits below the stream the boundary has to read clearly, or it looks like an
      overlay */
   .side {

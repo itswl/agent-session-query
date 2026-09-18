@@ -110,6 +110,9 @@ what you are reading (expanded blocks and scroll position are preserved), your v
 controls — grouping, source filter, order, filters, folded groups — survive a reload, and
 `/ui#<sessionId>` works as a deep link. Light and dark follow the system.
 
+The two side panes fold away with the ‹ and › buttons in the header, giving the
+conversation the whole width; both remember what you chose.
+
 Shortcuts: <kbd>j</kbd> <kbd>k</kbd> move between sessions (metadata matches and body
 matches alike) · <kbd>/</kbd> focus search · <kbd>Enter</kbd> search the bodies now instead
 of waiting · <kbd>g</kbd> <kbd>G</kbd> jump to the start/end of the stream · <kbd>r</kbd>

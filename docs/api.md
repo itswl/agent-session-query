@@ -8,6 +8,7 @@ no alias.
 |----------|------|--------------|
 | `/` `/health` `/stats` | no | Service info and health check (with connection stats and `authRequired`) |
 | `/sessions` | yes | List every session (merged across sources, newest first) |
+| `/export?project=&since=&until=&source=&mode=index` | yes | **Export several sessions as one document.** Oldest first, because a pack answers "how did this get here" where the list answers "what am I doing". `mode=index` (the default) gives one block per session — when, where, what was asked, what it concluded, and the id to check it against; `mode=full` inlines the transcripts. `format=md` (default) or `jsonl`. `limit` defaults to 20 sessions of the matching set, and the header always states how many of that set it holds |
 | `/sessions/<pattern>` | yes | One session's metadata |
 | `/sessions/<pattern>/messages?limit=50&order=asc` | yes | A session's messages; `order=asc` (the default) takes the earliest N, `order=desc` the latest N, and `at=<time>` anchors the window at that instant instead of at an end. Capped by `--max-limit` |
 | `/sessions/<pattern>/final` | yes | A session's final result |

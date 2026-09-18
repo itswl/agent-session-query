@@ -124,6 +124,7 @@ go build -o agent-session-query ./cmd/agent-session-query
 | `/sessions/<pattern>` | 是 | 单个会话；可接 `/messages`（支持 `order` / `limit` / `at`）、`/final` 或 `/export`（不带 `limit` 即全文，文件标明覆盖范围；`format=jsonl` 取结构化形式）|
 | `/search?q=` | 是 | 跨全部数据源的**全文搜索**；`pattern` 限定在单个会话内，`role` 只看 user / assistant 的命中 |
 | `/projects` | 是 | 按项目（cwd）分组的会话数 |
+| `/export?project=&since=` | 是 | **把多个会话导出成一份文档**——每个会话问了什么、得出了什么，按时间从旧到新。`mode=full` 则把正文一并内联 |
 | `/mcp` | 是 | MCP 的 Streamable HTTP 传输（`POST`） |
 
 完整参数、`<pattern>` 的匹配规则和每个响应字段见 **[docs/api.md](docs/api.md)**。

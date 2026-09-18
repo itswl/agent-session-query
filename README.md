@@ -141,6 +141,7 @@ marked "yes" require `Authorization: Bearer <token>`.
 | `/sessions/<pattern>` | yes | One session; add `/messages` (with `order` / `limit` / `at`), `/final`, or `/export` (no `limit` means the whole session; `format=jsonl` for the data form) |
 | `/search?q=` | yes | **Full-text search** across every source; `pattern` scopes it to one session, `role` to `user` or `assistant` hits |
 | `/projects` | yes | Session counts grouped by project (cwd) |
+| `/export?project=&since=` | yes | **A pack of several sessions as one document** — what was asked and what each concluded, oldest first. `mode=full` inlines the transcripts |
 | `/mcp` | yes | MCP's Streamable HTTP transport (`POST`) |
 
 Full parameters, the `<pattern>` matching rules and every response field are in

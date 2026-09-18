@@ -20,7 +20,11 @@ const SEARCH_DEBOUNCE_MS = 150;
 // so it waits for a real pause in typing and ignores queries too short to narrow anything.
 const CONTENT_DEBOUNCE_MS = 300;
 const CONTENT_MIN_CHARS = 2;
-const BIG_BLOCK_CHARS = 600;
+// Blocks fold past a threshold so one tool dump does not drown the conversation. The
+// threshold depends on what the block is: the messages themselves are what you read
+// (a high bar), while tool output and thinking are supporting material you consult
+// (a low bar). Both shared 600 before, which left whole screens of shell output open.
+const FOLD_AT = { text: 600, thinking: 300, toolResult: 200, toolCall: 400 };
 const STICK_TO_BOTTOM_PX = 48;
 
 const state = {
@@ -639,6 +643,29 @@ function renderStreamHead(record) {
   head.replaceChildren(box);
 }
 
+// Tool categories, and what each one is for: reading, changing, running, searching,
+// reaching the network, delegating. Colouring by category rather than by tool name keeps
+// the palette small and meaningful — a transcript is scanned for "where did it run
+// something" far more often than for "where did it run grep specifically".
+// Order matters: the first match wins.
+const TOOL_KINDS = [
+  ['exec', /^(bash|shell|terminal|exec|sh$|run|command|process|container|docker)/i],
+  ['write', /(write|edit|patch|replace|create|delete|remove|move|rename|apply|notebook_edit)/i],
+  ['read', /^(read|view|cat|open|head|tail|notebook_read)/i],
+  ['search', /(grep|glob|search|find|list|scan|ls$|^ls)/i],
+  ['net', /(fetch|http|curl|web|url|download|browser)/i],
+  ['agent', /(task|agent|dispatch|delegate|subagent)/i],
+];
+
+function toolKind(name) {
+  const n = String(name == null ? '' : name);
+  if (!n) return 'other';
+  for (const [kind, pattern] of TOOL_KINDS) {
+    if (pattern.test(n)) return kind;
+  }
+  return 'other';
+}
+
 function blockNode(block) {
   switch (block.type || 'unknown') {
     case 'text':
@@ -647,13 +674,15 @@ function blockNode(block) {
       return el('div', 'block thinking', block.content);
     case 'toolCall': {
       // Tool name as the heading, arguments indented below, so one glance says what ran
-      const wrap = el('div', 'block toolCall');
+      const kind = toolKind(block.name);
+      const wrap = el('div', 'block toolCall tool-' + kind);
       wrap.appendChild(el('div', 'tool-name', '⚙ ' + (block.name || '(unnamed tool)')));
       wrap.appendChild(el('pre', '', JSON.stringify(block.arguments || {}, null, 2)));
       return wrap;
     }
     case 'toolResult': {
-      const wrap = el('div', 'block toolResult');
+      const kind = toolKind(block.toolName);
+      const wrap = el('div', 'block toolResult tool-' + kind);
       wrap.appendChild(el('div', 'tool-label', '↳ ' + (block.toolName || 'result')));
       wrap.appendChild(el('pre', '', block.content));
       return wrap;
@@ -661,6 +690,18 @@ function blockNode(block) {
     default:
       return el('div', 'block', JSON.stringify(block));
   }
+}
+
+// hasWords reports whether a message carries any text of its own
+function hasWords(message) {
+  return (message.content || []).some(
+    (b) => b.type === 'text' && String(b.content || '').trim() !== '');
+}
+
+// roleLabel names the speaker as the reader sees it, not as the file stores it
+function roleLabel(message) {
+  if (message.role === 'user' && !hasWords(message)) return 'tool';
+  return message.role || '?';
 }
 
 function messageNode(message, index) {
@@ -673,31 +714,41 @@ function messageNode(message, index) {
 
   const node = el('div', 'msg ' + (message.role || '') + (blocks.length === 0 ? ' is-empty' : ''));
   node.dataset.index = index;
+  // A user-role row with no words of its own is a tool result (Claude's shape), not a
+  // question: label and colour it as tooling so the two speakers stay distinguishable
+  if (message.role === 'user' && !hasWords(message)) node.classList.add('is-tool');
   const head = el('div', 'head');
-  head.appendChild(el('span', 'role', message.role || '?'));
+  head.appendChild(el('span', 'role', roleLabel(message)));
   // A message with nothing displayable is worth one line of explanation, not a whole block
   if (blocks.length === 0) head.appendChild(el('span', 'empty-hint', 'nothing to display'));
   if (message.id) head.title = 'id: ' + message.id;
   if (message.timestamp) head.appendChild(el('span', 'time', String(message.timestamp)));
   node.appendChild(head);
 
-  blocks.forEach(({ position, node: rendered }) => {
+  blocks.forEach(({ position, node: rendered, block }) => {
     const plain = rendered.textContent || '';
-    if (plain.length <= BIG_BLOCK_CHARS) {
+    const limit = FOLD_AT[block.type] || 600;
+    if (plain.length <= limit) {
       node.appendChild(rendered);
       return;
     }
-    // Fold very long blocks away so one tool output does not drown the page.
-    // The key has to be stable: after a refresh rebuild we still need to recognise which
-    // ones the user had expanded
+    // The key has to be stable: after a refresh rebuild we still need to recognise
+    // which ones the user had expanded
     const key = (message.id || 'i' + index) + ':' + position;
+    // A one-line preview rides along with the summary, so a folded block still says
+    // what it is instead of only how big it is
+    const preview = plain.replace(/\s+/g, ' ').trim().slice(0, 80);
     const details = el('details');
     details.open = state.openBlocks.has(key);
     details.addEventListener('toggle', () => {
       if (details.open) state.openBlocks.add(key);
       else state.openBlocks.delete(key);
     });
-    details.appendChild(el('summary', '', 'Expand ' + plain.length + ' characters'));
+    const summary = el('summary');
+    summary.appendChild(el('span', 'fold-kind', block.type));
+    summary.appendChild(el('span', 'fold-preview', preview));
+    summary.appendChild(el('span', 'fold-size', plain.length + ' chars'));
+    details.appendChild(summary);
     details.appendChild(rendered);
     node.appendChild(details);
   });
@@ -838,17 +889,19 @@ async function downloadExport(record, node) {
 }
 
 function sessionCard(record, final) {
-  const card = el('section', 'card');
-  card.appendChild(el('h3', '', 'Session'));
-
-  const idRow = el('div', 'idrow');
-  idRow.appendChild(el('code', '', record.sessionId));
-  idRow.appendChild(copyButton(record.sessionId));
-  idRow.appendChild(button('ghost tiny', 'Export md',
+  // The metadata is reference material, not something to read every time: keep the
+  // sessionId and the two actions on the surface and fold the table away.
+  const card = el('section', 'card foldable');
+  const head = el('div', 'card-head');
+  head.appendChild(el('h3', '', 'Session'));
+  head.appendChild(copyButton(record.sessionId));
+  head.appendChild(button('ghost tiny', 'Export md',
     (event) => downloadExport(record, event.currentTarget)));
-  card.appendChild(idRow);
+  card.appendChild(head);
 
-  card.appendChild(kv([
+  const body = el('details');
+  body.appendChild(el('summary', '', 'Details'));
+  body.appendChild(kv([
     ['Source', record.source],
     ['Messages', final && final.messageCount],
     ['Updated', record.updatedAt],
@@ -863,8 +916,9 @@ function sessionCard(record, final) {
   if (record.file) {
     const path = el('p', 'sub', record.file);
     path.title = record.file;
-    card.appendChild(path);
+    body.appendChild(path);
   }
+  card.appendChild(body);
   return card;
 }
 

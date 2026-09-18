@@ -358,11 +358,18 @@ main {
 
 /* ---- Message timeline ---- */
 .msg {
-  border-left: 2px solid var(--line); padding: 2px 0 2px 14px; margin: 0 0 14px;
+  border-left: 2px solid var(--line); border-radius: 0 var(--radius) var(--radius) 0;
+  padding: 6px 11px; margin: 0 0 8px;
   position: relative;
 }
-.msg.user { border-color: var(--accent); }
-.msg.assistant { border-color: rgba(158, 206, 106, 0.55); }
+/* Two speakers, two looks: yours are blue bubbles, the model's are neutral panels.
+   A border colour alone made a long session read as one undifferentiated column. */
+.msg.user { border-color: var(--accent); background: var(--accent-soft); }
+.msg.assistant { border-color: rgba(158, 206, 106, 0.55); background: var(--panel); }
+/* Claude returns tool results as user-role messages; they are not the human speaking,
+   so they wear a neutral panel and a neutral label */
+.msg.user.is-tool { border-color: var(--line); background: var(--panel-2); }
+.msg.user.is-tool .role { color: var(--dim); }
 .msg .head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 2px; }
 .msg .head .time { margin-left: auto; }
 .msg .role {
@@ -384,6 +391,20 @@ main {
 .block.toolCall { background: var(--panel); border: 1px solid var(--line); }
 .block.toolResult { background: var(--panel-2); color: var(--fg-mid); }
 .block.toolCall .tool-name { padding: 5px 11px; font-weight: 650; color: var(--accent); background: var(--accent-soft); }
+
+/* Tool blocks are coloured by category — what the step was for, not which tool ran it.
+   The left border carries the colour so a long transcript can be scanned by shape. */
+.block.tool-exec { border-left: 3px solid var(--warn); }
+.block.tool-read { border-left: 3px solid var(--accent); }
+.block.tool-write { border-left: 3px solid var(--err); }
+.block.tool-search { border-left: 3px solid var(--ok); }
+.block.tool-net { border-left: 3px solid #bb9af7; }
+.block.tool-agent { border-left: 3px solid #7dcfff; }
+.block.tool-other { border-left: 3px solid var(--line); }
+.block.tool-exec .tool-name { color: var(--warn); background: var(--warn-soft); }
+.block.tool-write .tool-name { color: var(--err); background: rgba(247, 118, 142, 0.12); }
+.block.tool-search .tool-name { color: var(--ok); background: var(--ok-soft); }
+.block.tool-read .tool-name { color: var(--accent); background: var(--accent-soft); }
 .block.toolCall pre, .block.toolResult pre {
   margin: 0; padding: 6px 11px; white-space: pre-wrap; word-break: break-word;
   font-family: var(--mono); font-size: 12px; line-height: 1.55;
@@ -397,7 +418,23 @@ main {
 .msg.is-empty .head { margin-bottom: 0; }
 
 /* Collapsible blocks */
-details { margin-top: 7px; }
+details { margin-top: 6px; }
+/* A folded block should still say what it holds, not only how big it is */
+details > summary { display: flex; align-items: baseline; gap: 8px; }
+details > summary .fold-kind {
+  flex: none; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--fg-mid);
+}
+details > summary .fold-preview {
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono); font-size: 11.5px;
+}
+details > summary .fold-size { flex: none; font-size: 11px; }
+
+/* The session card's action row, beside its heading */
+.card-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.card-head h3 { margin: 0; flex: none; }
+.card-head > :last-child { margin-left: auto; }
 details summary {
   cursor: pointer; color: var(--dim); font-size: 12.5px; user-select: none;
   padding: 2px 0;

@@ -78,6 +78,11 @@ func TestHermesSQLiteFinal(t *testing.T) {
 	if result["text"] != "the final answer" || result["thinking"] != "reasoning two" {
 		t.Fatalf("this is not the last active=1 assistant message: %v", result)
 	}
+	// The timestamp column is a REAL epoch; it used to reach the client as a stringified
+	// float ("1.789705937728841e+09") rather than a date
+	if ts, _ := result["timestamp"].(string); !strings.HasPrefix(ts, "2026-") {
+		t.Errorf("timestamp = %v, want a formatted date", result["timestamp"])
+	}
 	if result["isFinal"] != true || result["isProcessing"] != false || result["messageCount"] != int64(12) {
 		t.Fatalf("the terminal-state fields are wrong: %v", result)
 	}

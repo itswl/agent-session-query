@@ -59,7 +59,42 @@ func serveUIAssets(w http.ResponseWriter, r *http.Request, path string) {
 		return
 	}
 
-	http.StripPrefix("/ui/", http.FileServer(http.FS(sub))).ServeHTTP(w, r)
+	// Assets are embedded, so they change only when the binary does. http.FileServer
+	// sends no cache signal for them (go:embed carries no mtime), which leaves browsers
+	// on heuristic caching — after an upgrade the page kept loading the previous app.js.
+	// The build version is the natural validator: a new binary invalidates the copy, an
+	// unchanged one still answers 304 without re-sending 50 KB.
+	name := strings.TrimPrefix(path, "/ui/")
+	data, err := fs.ReadFile(sub, name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	etag := `"` + buildVersion + ":" + name + `"`
+	w.Header().Set("Content-Type", assetContentType(name))
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("ETag", etag)
+	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	_, _ = w.Write(data)
+}
+
+// assetContentType names the type explicitly: the set is small and fixed, and
+// http.FileServer's extension lookup is no longer in the path.
+func assetContentType(name string) string {
+	switch {
+	case strings.HasSuffix(name, ".js"):
+		return "text/javascript; charset=utf-8"
+	case strings.HasSuffix(name, ".css"):
+		return "text/css; charset=utf-8"
+	case strings.HasSuffix(name, ".html"):
+		return "text/html; charset=utf-8"
+	case strings.HasSuffix(name, ".svg"):
+		return "image/svg+xml"
+	}
+	return "application/octet-stream"
 }
 
 func isUIPath(path string) bool {

@@ -119,7 +119,7 @@ func hermesSQLiteFinal(dbPath, mode, sessionID, status string) map[string]any {
 		"messageCount": count,
 		"source":       mode,
 		"id":           nullStringOrNil(id),
-		"timestamp":    nullStringOrNil(timestamp),
+		"timestamp":    sqliteTimeString(timestamp.String),
 		"stopReason":   strOr(finishReason.String, "stop"),
 		"text":         content.String,
 		"thinking":     reasoning.String,

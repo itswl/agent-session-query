@@ -134,3 +134,57 @@ func TestFaviconRoute(t *testing.T) {
 		t.Fatal("the ICO contains no images at all")
 	}
 }
+
+// TestUIAssetCaching: app.js and style.css are embedded, so they change only when the
+// binary does. http.FileServer sent no cache signal for them, and browsers fell back to
+// heuristic caching — after an upgrade the page kept loading the previous app.js. The
+// build version is the validator now.
+func TestUIAssetCaching(t *testing.T) {
+	srv, _ := newTestServer(t, "secret")
+	for _, asset := range []string{"/ui/app.js", "/ui/style.css"} {
+		resp, err := http.Get(srv.URL + asset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("%s = %d", asset, resp.StatusCode)
+		}
+		if cc := resp.Header.Get("Cache-Control"); cc != "no-cache" {
+			t.Errorf("%s Cache-Control = %q, want no-cache", asset, cc)
+		}
+		etag := resp.Header.Get("ETag")
+		if etag == "" {
+			t.Fatalf("%s has no ETag: a new binary would not invalidate the browser's copy", asset)
+		}
+		if ct := resp.Header.Get("Content-Type"); ct == "" {
+			t.Errorf("%s has no Content-Type", asset)
+		}
+
+		// An unchanged asset must answer 304 rather than re-sending the body
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+asset, nil)
+		req.Header.Set("If-None-Match", etag)
+		again, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		again.Body.Close()
+		if again.StatusCode != http.StatusNotModified {
+			t.Errorf("a matching ETag should be 304, got %d", again.StatusCode)
+		}
+	}
+}
+
+// TestUIAssetUnknownIs404: dropping http.FileServer must not turn a missing asset into an
+// empty 200
+func TestUIAssetUnknownIs404(t *testing.T) {
+	srv, _ := newTestServer(t, "secret")
+	resp, err := http.Get(srv.URL + "/ui/nope.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("a missing asset = %d, want 404", resp.StatusCode)
+	}
+}

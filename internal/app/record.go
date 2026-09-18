@@ -81,8 +81,8 @@ func (r record) public() map[string]any {
 	return out
 }
 
-// project is the session's owning project: cwd first (claude / codex / pi), then
-// gemini's own project field. hermes / openclaw have no such dimension, so they get "" .
+// project is the session's owning project: cwd first (every source but Hermes's jsonl
+// era carries one), then gemini's own project field.
 func (r record) project() string {
 	if cwd := r.str("cwd"); cwd != "" {
 		return cwd

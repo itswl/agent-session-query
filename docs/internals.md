@@ -11,7 +11,13 @@ and deployment see the [README](../README.md).
   writes neither `sessions.json` nor a jsonl — everything lands in `~/.hermes/state.db`**: the
   source is enabled as soon as the database exists, and listing and messages query the
   `sessions` / `messages` tables directly (timestamps are epoch seconds, formatted as UTC; an
-  assistant's `reasoning` becomes thinking; `platform` comes from `sessions.source`). When
+  assistant's `reasoning` becomes thinking; `platform` comes from `sessions.source`).
+  Verified against the 2026.9 schema: `sessions.title` is the display name (Hermes generates
+  one per session; `display_name` is the older field), `sessions.cwd` carries the working
+  directory, `hidden = 1` rows (Bot Mode) are skipped the way Hermes itself filters, an
+  assistant's `tool_calls` column (OpenAI-shaped JSON with the arguments as a string)
+  becomes `toolCall` blocks, and a `role = 'tool'` row — the result, with `tool_name` —
+  becomes one `toolResult` block. When
   both exist, sessions are deduplicated by sessionId with the jsonl winning. A session with
   no jsonl also falls back to `state.db` for `final` (opened read-only, taking the last
   `active=1` assistant message with `finish_reason=stop`, and falling back to the real count

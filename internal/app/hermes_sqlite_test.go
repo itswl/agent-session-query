@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -33,12 +34,14 @@ CREATE TABLE sessions (
 	cache_read_tokens INTEGER, cache_write_tokens INTEGER,
 	reasoning_tokens INTEGER, estimated_cost_usd REAL,
 	session_key TEXT, display_name TEXT, source TEXT, model TEXT,
-	started_at REAL, ended_at REAL
+	started_at REAL, ended_at REAL,
+	title TEXT, cwd TEXT, hidden INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE messages (
 	id TEXT, session_id TEXT, role TEXT, content TEXT,
 	finish_reason TEXT, reasoning TEXT, timestamp REAL,
-	active INTEGER DEFAULT 1
+	active INTEGER DEFAULT 1,
+	tool_calls TEXT, tool_name TEXT
 );`
 
 func newHermesFixture(t *testing.T) string {
@@ -232,5 +235,81 @@ func TestHermesSQLiteOnlySource(t *testing.T) {
 	final := source.Final(r)
 	if final["isFinal"] != true || final["text"] != "I am Hermes" || final["thinking"] != "let me think" {
 		t.Fatalf("final = %v", final)
+	}
+}
+
+func TestHermesSQLiteListAndToolMessages(t *testing.T) {
+	dbPath := newHermesFixture(t)
+	makeHermesDB(t, dbPath, hermesSchema, []string{
+		// title wins over display_name; cwd is the new column
+		`INSERT INTO sessions (id, session_key, title, display_name, cwd, model,
+		                       started_at, ended_at, estimated_cost_usd)
+		 VALUES ('h-live', '', '排查接口 502', '', '/w/proj', 'deepseek-chat',
+		         1789705755.0, 1789705770.0, 0.0012)`,
+		// hidden: Bot Mode sessions must not be listed (Hermes itself filters them)
+		`INSERT INTO sessions (id, session_key, display_name, hidden, started_at, ended_at)
+		 VALUES ('h-hidden', 'k-hidden', 'bot session', 1, 1789705755.0, 1789705770.0)`,
+		// display_name only (the older field, pre-title Hermes)
+		`INSERT INTO sessions (id, session_key, display_name, started_at, ended_at)
+		 VALUES ('h-named', 'k-named', 'older session', 1789600000.0, 1789600100.0)`,
+
+		`INSERT INTO messages (id, session_id, role, content, timestamp)
+		 VALUES ('n1', 'h-live', 'user', 'why is the API returning 502', 1789705756.0)`,
+		// an assistant turn that stops to run tools: reasoning + tool_calls
+		`INSERT INTO messages (id, session_id, role, reasoning, tool_calls, finish_reason, timestamp)
+		 VALUES ('n2', 'h-live', 'assistant', 'check the gateway logs first',
+		         '[{"id":"c1","type":"function","function":{"name":"terminal","arguments":"{\"command\":\"kubectl logs\",\"timeout\":10}"}}]',
+		         'tool_calls', 1789705757.0)`,
+		// the tool result: role=tool with tool_name and a structured content
+		`INSERT INTO messages (id, session_id, role, content, tool_name, timestamp)
+		 VALUES ('n3', 'h-live', 'tool', '{"output": "upstream timeout x3"}', 'terminal', 1789705758.0)`,
+		`INSERT INTO messages (id, session_id, role, content, finish_reason, timestamp)
+		 VALUES ('n4', 'h-live', 'assistant', 'the upstream is timing out', 'stop', 1789705759.0)`,
+	})
+
+	records := hermesSQLiteList(dbPath, "hermes", nil)
+	if len(records) != 2 {
+		t.Fatalf("the hidden session must be skipped: %d records", len(records))
+	}
+	live := records[0] // newest first
+	if live.str("shortKey") != "排查接口 502" {
+		t.Errorf("title must be the display name: %q", live.str("shortKey"))
+	}
+	if live.str("cwd") != "/w/proj" {
+		t.Errorf("cwd = %q", live.str("cwd"))
+	}
+	named := records[1]
+	if named.str("shortKey") != "older session" {
+		t.Errorf("display_name is the fallback: %q", named.str("shortKey"))
+	}
+
+	msgs := hermesSQLiteMessages(dbPath, "h-live", messageQuery{limit: 10})
+	if len(msgs) != 4 {
+		t.Fatalf("4 messages expected, got %d", len(msgs))
+	}
+	// n2: reasoning becomes thinking, tool_calls becomes a toolCall block with the
+	// arguments string parsed into an object
+	n2 := msgs[1]["content"].([]map[string]any)
+	if n2[0]["type"] != "thinking" {
+		t.Errorf("first block of n2 = %v", n2[0])
+	}
+	call := n2[1]
+	if call["type"] != "toolCall" || call["name"] != "terminal" {
+		t.Errorf("toolCall = %v", call)
+	}
+	if args := call["arguments"].(map[string]any); args["command"] != "kubectl logs" {
+		t.Errorf("arguments = %v (must be the parsed JSON string)", args)
+	}
+	// n3: a tool row is the result, tool_name rides along
+	n3 := msgs[2]
+	if n3["role"] != "tool" {
+		t.Errorf("third message role = %v", n3["role"])
+	}
+	block := n3["content"].([]map[string]any)[0]
+	if block["type"] != "toolResult" || block["toolName"] != "terminal" {
+		t.Errorf("toolResult = %v", block)
+	}
+	if !strings.Contains(block["content"].(string), "upstream timeout") {
+		t.Errorf("tool output = %v", block["content"])
 	}
 }

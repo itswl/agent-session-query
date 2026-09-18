@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -175,12 +176,14 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) []record {
 
 	rows, err := db.Query(`
 		SELECT s.id, COALESCE(NULLIF(s.session_key, ''), s.id),
-		       s.display_name, s.source, s.model,
-		       s.input_tokens, s.output_tokens, s.estimated_cost_usd,
+		       COALESCE(NULLIF(s.title, ''), NULLIF(s.display_name, ''), ''),
+		       s.source, s.model, s.cwd,
+		       s.input_tokens, s.output_tokens, s.reasoning_tokens, s.estimated_cost_usd,
 		       s.started_at, s.ended_at,
 		       (SELECT MAX(m.timestamp) FROM messages m
 		         WHERE m.session_id = s.id AND COALESCE(m.active, 1) = 1)
-		FROM sessions s`)
+		FROM sessions s
+		WHERE s.hidden = 0`)
 	if err != nil {
 		warnHermesSQLite("list", err)
 		return nil
@@ -189,12 +192,12 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) []record {
 
 	out := []record{}
 	for rows.Next() {
-		var sid, key, displayName, platform, model sql.NullString
-		var inputTokens, outputTokens sql.NullInt64
+		var sid, key, displayName, platform, model, cwd sql.NullString
+		var inputTokens, outputTokens, reasoningTokens sql.NullInt64
 		var cost sql.NullFloat64
 		var startedAt, endedAt, lastMsg sql.NullFloat64
-		if err := rows.Scan(&sid, &key, &displayName, &platform, &model,
-			&inputTokens, &outputTokens, &cost, &startedAt, &endedAt, &lastMsg); err != nil {
+		if err := rows.Scan(&sid, &key, &displayName, &platform, &model, &cwd,
+			&inputTokens, &outputTokens, &reasoningTokens, &cost, &startedAt, &endedAt, &lastMsg); err != nil {
 			warnHermesSQLite("list", err)
 			return out
 		}
@@ -226,13 +229,16 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) []record {
 
 		keyStr := key.String
 		out = append(out, newRecord(map[string]any{
-			"source":           mode,
-			"key":              keyStr,
-			"shortKey":         keyStr,
+			"source": mode,
+			"key":    keyStr,
+			// Hermes writes a real title (title_source marks who made it); the display
+			// name is the older field, and the key is the last resort
+			"shortKey":         firstNonEmpty(displayName.String, keyStr),
 			"sessionId":        sid.String,
 			"file":             nil,
 			"hasFile":          false,
 			"status":           "done",
+			"cwd":              cwd.String,
 			"updatedAt":        updatedAt,
 			"createdAt":        createdAt,
 			"displayName":      displayName.String,
@@ -245,9 +251,10 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) []record {
 	return out
 }
 
-// hermesSQLiteMessages reads messages for sessions that have no jsonl (the user/assistant
-// rows in state.db, shaped exactly like the jsonl path: an assistant's reasoning becomes
-// thinking, and epoch-second timestamps become UTC ISO).
+// hermesSQLiteMessages reads messages for sessions that have no jsonl (the user/assistant/
+// tool rows in state.db, shaped exactly like the jsonl path: an assistant's reasoning
+// becomes thinking, its tool_calls column becomes toolCall blocks, a role=tool row is the
+// result and becomes a toolResult block, and epoch-second timestamps become UTC ISO).
 // For the latest N, let SQL walk backwards and reverse the result rather than reading the
 // whole conversation.
 func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string]any {
@@ -267,11 +274,11 @@ func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string
 		order = "DESC"
 	}
 	rows, err := db.Query(`
-		SELECT id, role, content, reasoning, timestamp
+		SELECT id, role, content, reasoning, tool_calls, tool_name, timestamp
 		FROM messages
 		WHERE session_id = ?
 		  AND COALESCE(active, 1) = 1
-		  AND role IN ('user', 'assistant')
+		  AND role IN ('user', 'assistant', 'tool')
 		ORDER BY timestamp `+order+`, id `+order+`
 		LIMIT ?`, sessionID, q.limit)
 	if err != nil {
@@ -281,21 +288,34 @@ func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string
 	defer rows.Close()
 
 	for rows.Next() {
-		var id, role, content, reasoning, timestamp any
-		if err := rows.Scan(&id, &role, &content, &reasoning, &timestamp); err != nil {
+		var id, role, content, reasoning, toolCalls, toolName, timestamp any
+		if err := rows.Scan(&id, &role, &content, &reasoning, &toolCalls, &toolName, &timestamp); err != nil {
 			warnHermesSQLite(sessionID, err)
 			return out
 		}
 		parts := []map[string]any{}
-		if r, ok := reasoning.(string); ok && r != "" {
-			parts = append(parts, map[string]any{"type": "thinking", "content": truncate(r, 1000, "...[truncated]")})
-		}
-		if c, ok := content.(string); ok && c != "" {
-			parts = append(parts, map[string]any{"type": "text", "content": c})
+		roleStr := sqliteValueString(role)
+		switch roleStr {
+		case "tool":
+			// One tool row is one result; the content is the tool's structured output
+			// (kept as-is, truncated), and tool_name says which tool ran
+			parts = append(parts, map[string]any{
+				"type":     "toolResult",
+				"toolName": sqliteValueString(toolName),
+				"content":  truncate(sqliteValueString(content), 500, "...[truncated]"),
+			})
+		default:
+			if r, ok := reasoning.(string); ok && r != "" {
+				parts = append(parts, map[string]any{"type": "thinking", "content": truncate(r, 1000, "...[truncated]")})
+			}
+			parts = append(parts, hermesToolCallBlocks(toolCalls)...)
+			if c, ok := content.(string); ok && c != "" {
+				parts = append(parts, map[string]any{"type": "text", "content": c})
+			}
 		}
 		out = append(out, map[string]any{
 			"id":        sqliteValueString(id),
-			"role":      sqliteValueString(role),
+			"role":      roleStr,
 			"timestamp": sqliteTimeString(timestamp),
 			"content":   parts,
 		})
@@ -306,6 +326,35 @@ func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string
 		}
 	}
 	return out
+}
+
+// hermesToolCallBlocks turns the tool_calls column (an OpenAI-shaped JSON array of
+// {function: {name, arguments-as-string}}) into toolCall blocks.
+func hermesToolCallBlocks(raw any) []map[string]any {
+	text, ok := raw.(string)
+	if !ok || text == "" {
+		return nil
+	}
+	var calls []struct {
+		Function struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"function"`
+	}
+	if err := json.Unmarshal([]byte(text), &calls); err != nil || len(calls) == 0 {
+		return nil
+	}
+	blocks := []map[string]any{}
+	for _, call := range calls {
+		args := map[string]any{}
+		if call.Function.Arguments != "" {
+			_ = json.Unmarshal([]byte(call.Function.Arguments), &args)
+		}
+		blocks = append(blocks, map[string]any{
+			"type": "toolCall", "name": call.Function.Name, "arguments": args,
+		})
+	}
+	return blocks
 }
 
 // hermesSQLiteSearch searches one session's body inside state.db.

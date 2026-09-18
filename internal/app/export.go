@@ -26,6 +26,38 @@ func (a *SessionQueryAPI) exportMarkdown(pattern string, q messageQuery) (body s
 		return source.Final(item)
 	})
 
+	which := "earliest"
+	if q.fromEnd {
+		which = "latest"
+	}
+	// How much of the session this file holds. An export that quietly carried a twelfth of
+	// it read exactly like an export of the whole thing, which is how it was taken.
+	//
+	// The record's count comes from the background pass and may not have arrived yet; the
+	// final result carries a true count of its own, computed by the scan that produced it.
+	// Falling back to that means the file can always state its coverage — and it costs
+	// nothing, since Final has already run two lines above.
+	total := int64(0)
+	if n, ok := toFloat(item.get("messageCount")); ok && n > 0 {
+		total = int64(n)
+	} else if final != nil {
+		if n, ok := toFloat(final["messageCount"]); ok && n > 0 {
+			total = int64(n)
+		}
+	}
+	// Only claim completeness when the count written matches the count reported. If they
+	// disagree — a source that counts a message differently from the way it lists one — the
+	// file says how many it holds and no more, rather than announcing a total it cannot
+	// back.
+	coverage := fmt.Sprintf("%d messages", len(messages))
+	switch {
+	case total > 0 && int64(len(messages)) < total:
+		coverage = fmt.Sprintf("%d of %d messages (the %s %d; the rest is not in this file)",
+			len(messages), total, which, len(messages))
+	case total > 0 && int64(len(messages)) == total:
+		coverage = fmt.Sprintf("all %d messages", total)
+	}
+
 	var b strings.Builder
 	name := strOr(item.get("shortKey"), item.str("sessionId"))
 	fmt.Fprintf(&b, "# %s\n\n", name)
@@ -38,6 +70,7 @@ func (a *SessionQueryAPI) exportMarkdown(pattern string, q messageQuery) (body s
 		{"cwd", item.str("cwd")},
 		{"Model", item.str("model")},
 		{"File", item.str("file")},
+		{"Messages", coverage},
 	} {
 		if kv[1] != "" {
 			fmt.Fprintf(&b, "- **%s**: %s\n", kv[0], kv[1])
@@ -60,10 +93,6 @@ func (a *SessionQueryAPI) exportMarkdown(pattern string, q messageQuery) (body s
 		}
 	}
 
-	which := "earliest"
-	if q.fromEnd {
-		which = "latest"
-	}
 	fmt.Fprintf(&b, "\n## Messages (%s %d)\n", which, len(messages))
 	for _, message := range messages {
 		fmt.Fprintf(&b, "\n### %s", strOr(message["role"], "unknown"))

@@ -978,8 +978,11 @@ async function downloadExport(record, node) {
   const original = node.textContent;
   setText(node, 'Exporting\u2026');
   try {
+    // No limit: an export is the whole session. MESSAGE_LIMIT is the message stream's page
+    // size and had no business here — it made the button export the latest 200 messages of
+    // a session that might have sixteen thousand, with nothing in the file to say so.
     const path = '/sessions/' + encodeURIComponent(record.sessionId) +
-      '/export?limit=' + MESSAGE_LIMIT + '&order=' + state.order;
+      '/export?order=' + state.order;
     const headers = {};
     if (state.token) headers.Authorization = 'Bearer ' + state.token;
     const res = await fetch(path, { headers });

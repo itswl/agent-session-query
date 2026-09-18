@@ -372,7 +372,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 
 		case len(parts) == 2 && parts[0] != "" && parts[1] == "messages":
 			pattern := unescapePattern(parts[0])
-			query, err := s.parseMessageQuery(r)
+			query, err := s.parseMessageQuery(r, s.maxLimit)
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 				return http.StatusBadRequest
@@ -391,10 +391,16 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 
 		case len(parts) == 2 && parts[0] != "" && parts[1] == "export":
 			pattern := unescapePattern(parts[0])
-			exportQuery, err := s.parseMessageQuery(r)
+			exportQuery, err := s.parseMessageQuery(r, exportMaxMessages)
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 				return http.StatusBadRequest
+			}
+			// No ?limit= means the whole session. The page-default of 200 is a page size;
+			// an export is a document, and one that silently held a twelfth of the session
+			// was taken for the whole thing.
+			if _, given := r.URL.Query()["limit"]; !given {
+				exportQuery.limit = exportMaxMessages
 			}
 			body, filename, ok := s.api.exportMarkdown(pattern, exportQuery)
 			if !ok {
@@ -454,7 +460,16 @@ func unescapePattern(segment string) string {
 // Without the clamp, ?limit=99999999 spreads a 99 MB session into a 14 MB response in
 // memory (measured: RSS 11 MB to 145 MB), and a handful of concurrent requests is enough
 // to take the process down.
-func (s *apiServer) parseLimit(r *http.Request) int {
+// exportMaxMessages bounds one export. It sits well above the list's --max-limit on
+// purpose: a list is a page, but an export is a document the caller asked for in full, and
+// it goes to a file rather than into anything that has to hold it all at once. The bound
+// is still there so a pathological session cannot build an unbounded string in memory.
+const exportMaxMessages = 20000
+
+// parseLimit reads ?limit= against one ceiling. The ceiling is a parameter because the
+// two callers want different things: a list is a page and --max-limit bounds it, while an
+// export is a document and the caller asked for the whole of it.
+func (s *apiServer) parseLimit(r *http.Request, ceiling int) int {
 	limit := defaultLimit
 	if values, ok := r.URL.Query()["limit"]; ok && len(values) == 1 {
 		if parsed, err := strconv.Atoi(strings.TrimSpace(values[0])); err == nil {
@@ -464,17 +479,17 @@ func (s *apiServer) parseLimit(r *http.Request) int {
 	if limit < 0 {
 		return 0
 	}
-	if limit > s.maxLimit {
-		return s.maxLimit
+	if limit > ceiling {
+		return ceiling
 	}
 	return limit
 }
 
 // parseMessageQuery reads ?limit= and ?order= (desc asks for the latest N)
-func (s *apiServer) parseMessageQuery(r *http.Request) (messageQuery, error) {
+func (s *apiServer) parseMessageQuery(r *http.Request, ceiling int) (messageQuery, error) {
 	order := strings.TrimSpace(r.URL.Query().Get("order"))
 	q := messageQuery{
-		limit:   s.parseLimit(r),
+		limit:   s.parseLimit(r, ceiling),
 		fromEnd: strings.EqualFold(order, "desc"),
 	}
 	// ?at= positions the window at a point in time rather than at one end, which is how a

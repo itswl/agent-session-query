@@ -948,3 +948,66 @@ func TestFindSessionScopedBySource(t *testing.T) {
 		t.Fatal("a scoped lookup into another source must not fall through")
 	}
 }
+
+// TestExportCoversTheWholeSession: Export means the document, not a page of it. It used to
+// inherit the message stream's 200-message page size, so exporting a 16 000-message session
+// produced its last 200 with nothing in the file to say so — it read exactly like an export
+// of the whole thing.
+func TestExportCoversTheWholeSession(t *testing.T) {
+	root := t.TempDir()
+	lines := []string{
+		`{"type":"session","id":"s-export","cwd":"/w"}`,
+		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"first"}]}}`,
+	}
+	for i := 2; i <= 250; i++ {
+		lines = append(lines, fmt.Sprintf(
+			`{"type":"message","id":"m%d","message":{"role":"assistant","content":[{"type":"text","text":"line %d"}]}}`,
+			i, i))
+	}
+	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_export.jsonl"), lines...)
+
+	sources := []SessionSource{newPiSource(root)}
+	srv := httptest.NewServer(newAPIServer(serverOptions{
+		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 0), maxConnections: 50,
+	}))
+	t.Cleanup(srv.Close)
+
+	fetch := func(query string) string {
+		t.Helper()
+		resp, err := http.Get(srv.URL + "/sessions/s-export/export" + query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("export%s = %d", query, resp.StatusCode)
+		}
+		return readBody(t, resp)
+	}
+
+	// No limit: the whole session, and the file says so
+	full := fetch("")
+	if n := strings.Count(full, "\n### "); n != 250 {
+		t.Fatalf("an unqualified export holds %d messages, want all 250", n)
+	}
+	if !strings.Contains(full, "**Messages**: all 250 messages") {
+		t.Errorf("the export does not state its coverage:\n%s", firstLines(full, 12))
+	}
+
+	// A limit is honoured — and announced, which is the point
+	head := fetch("?limit=10")
+	if n := strings.Count(head, "\n### "); n != 10 {
+		t.Fatalf("limit=10 produced %d messages", n)
+	}
+	if !strings.Contains(head, "10 of 250 messages") || !strings.Contains(head, "not in this file") {
+		t.Errorf("a truncated export does not say it is truncated:\n%s", firstLines(head, 12))
+	}
+}
+
+// firstLines is the head of an export, for a failure message that can be read
+func firstLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return strings.Join(lines, "\n")
+}

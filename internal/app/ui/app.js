@@ -13,6 +13,9 @@
 'use strict';
 
 const TOKEN_KEY = 'agent-session-query-token';
+// How you like to look at the list, as opposed to what you are looking at (that lives in
+// the URL hash). Losing the grouping on every reload was the complaint that added this.
+const VIEW_KEY = 'agent-session-query-view';
 const MESSAGE_LIMIT = 200;
 const REFRESH_MS = 10000;
 const SEARCH_DEBOUNCE_MS = 150;
@@ -294,6 +297,7 @@ function toggleGroup(rowId) {
   const name = rowId.replace(/^group:/, '');
   if (state.collapsedGroups.has(name)) state.collapsedGroups.delete(name);
   else state.collapsedGroups.add(name);
+  saveViewPrefs();
   renderList();
 }
 
@@ -566,7 +570,9 @@ function renderSources() {
   if (select.dataset.sig === signature) return;
   select.dataset.sig = signature;
 
-  const current = select.value;
+  // state.source is the restored preference on the first render and the select's own
+  // value afterwards; without this a restored filter was dropped on the first refresh
+  const current = state.source || select.value;
   const all = el('option', '', 'All sources');
   all.value = '';
   const options = [all];
@@ -614,6 +620,7 @@ function renderStreamHead(record) {
     (value) => {
       if (value === state.order) return;
       state.order = value;
+      saveViewPrefs();
       syncDetail({ force: true });
     },
   ));
@@ -623,6 +630,7 @@ function renderStreamHead(record) {
     (value) => {
       if (value === state.role) return;
       state.role = value;
+      saveViewPrefs();
       renderMessages();
       renderStreamHead(record); // only to move the highlight onto the other button
     },
@@ -1261,6 +1269,7 @@ $('gate-form').addEventListener('submit', (event) => {
 
 $('logout').addEventListener('click', () => {
   localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(VIEW_KEY);
   state.token = '';
   state.sessions = [];
   state.byId = new Map();
@@ -1300,17 +1309,20 @@ $('search').addEventListener('keydown', (event) => {
 // List grouping: by time / by project
 $('grouping').addEventListener('change', (event) => {
   state.grouping = event.target.value;
+  saveViewPrefs();
   renderList();
 });
 
 $('source-filter').addEventListener('change', (event) => {
   state.source = event.target.value;
+  saveViewPrefs();
   renderList();
 });
 
 $('refresh').addEventListener('click', refresh);
 
 $('auto').addEventListener('change', (event) => {
+  saveViewPrefs();
   if (event.target.checked) {
     startAutoRefresh();
   } else if (state.timer) {
@@ -1324,7 +1336,44 @@ window.addEventListener('hashchange', () => {
   if (id && id !== state.selectedId && state.byId.has(id)) selectSession(id);
 });
 
+// saveViewPrefs records the view controls. Called from each control's own handler, so
+// there is no single "settings changed" funnel to forget.
+function saveViewPrefs() {
+  try {
+    localStorage.setItem(VIEW_KEY, JSON.stringify({
+      grouping: state.grouping,
+      source: state.source,
+      order: state.order,
+      role: state.role,
+      auto: $('auto').checked,
+      collapsed: [...state.collapsedGroups],
+    }));
+  } catch (e) {
+    // private mode, or storage full: the page works, the preference just does not stick
+  }
+}
+
+function applyViewPrefs() {
+  let prefs;
+  try {
+    prefs = JSON.parse(localStorage.getItem(VIEW_KEY) || '{}');
+  } catch (e) {
+    return; // a corrupt entry is not worth failing the page over
+  }
+  if (prefs.grouping === 'project' || prefs.grouping === 'time') {
+    state.grouping = prefs.grouping;
+    $('grouping').value = prefs.grouping;
+  }
+  if (typeof prefs.source === 'string') state.source = prefs.source;
+  if (prefs.order === 'asc' || prefs.order === 'desc') state.order = prefs.order;
+  if (['', 'user', 'assistant', 'tools'].indexOf(prefs.role) >= 0) state.role = prefs.role;
+  if (typeof prefs.auto === 'boolean') $('auto').checked = prefs.auto;
+  // Names of projects folded away; a name that no longer exists simply never matches
+  if (Array.isArray(prefs.collapsed)) state.collapsedGroups = new Set(prefs.collapsed);
+}
+
 async function start() {
+  applyViewPrefs();
   const hashId = decodeURIComponent(location.hash.replace(/^#/, ''));
   if (hashId) state.selectedId = hashId;
   await refresh();

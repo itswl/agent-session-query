@@ -307,6 +307,37 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 		return http.StatusUnauthorized
 	}
 
+	if path == "/export" {
+		pack, err := s.parsePackQuery(r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return http.StatusBadRequest
+		}
+		entries, matching := s.api.packEntries(pack)
+		if len(entries) == 0 {
+			writeJSON(w, http.StatusNotFound, map[string]any{
+				"error": "no sessions match that selection",
+			})
+			return http.StatusNotFound
+		}
+		summary := summarizePack(entries, matching, pack.mode)
+
+		var body, filename, contentType string
+		if pack.format == exportFormatJSONL {
+			body = renderPackJSONL(entries, summary)
+			filename, contentType = "session-pack.jsonl", exportContentType(exportFormatJSONL)
+		} else {
+			body = renderPackMarkdown(s.api, entries, summary)
+			filename, contentType = "session-pack.md", exportContentType(exportFormatMarkdown)
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(filename))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+		return http.StatusOK
+	}
+
 	if path == "/sessions" {
 		sessions, etag := s.api.listSessions()
 		// The page polls every 10 seconds and the list has usually not changed; with an

@@ -44,7 +44,7 @@ current MCP specification (2025-06-18):
 
 | Tool | What it does |
 |------|--------------|
-| `search_sessions` | Full-text search over message bodies (ids and timestamps are not searched as text); takes `query` / `limit` / `per_session` / `since` / `until` |
+| `search_sessions` | Full-text search over message bodies (ids and timestamps are not searched as text); takes `query` / `limit` / `per_session` / `since` / `until`, plus `pattern` to search one session and `role` to keep only `user` or `assistant` hits |
 | `list_sessions` | List sessions newest first, optionally filtered by `source` / `project` / `since` / `until` |
 | `list_projects` | Group by project to see which agents were used on a given repository |
 | `get_session` | One session's metadata and final result; optional `source` disambiguates when ids collide |

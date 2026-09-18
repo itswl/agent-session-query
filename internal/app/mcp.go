@@ -163,6 +163,12 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			}
 			q.until = until
 		}
+		q.pattern = strings.TrimSpace(argString(args, "pattern"))
+		role := strings.TrimSpace(argString(args, "role"))
+		if role != "" && role != "user" && role != "assistant" {
+			return nil, fmt.Errorf("role must be user or assistant, got %q", role)
+		}
+		q.role = role
 		found := s.api.search(ctx, q)
 		offset := decodeCursor(argString(args, "cursor"))
 		if offset > len(found.results) {
@@ -483,6 +489,8 @@ func mcpTools() []map[string]any {
 					"per_session": intSchema("how many hits per session at most, default 3"),
 					"since":       strSchema("only search sessions updated after this, e.g. 30d / 12h / 2026-09-01; narrows the scan when history is large"),
 					"until":       strSchema("only search sessions updated before this, e.g. 7d (a week ago) / 2026-09-01"),
+					"pattern":     strSchema("limit the search to one session: a sessionId, a fragment of one, or a file path fragment — the way to ask \"where in this session did we discuss X\" without paging through it"),
+					"role":        strSchema("keep only hits from this role: user or assistant"),
 					"cursor":      cursorSchema(),
 				},
 				"required": []string{"query"},

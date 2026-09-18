@@ -325,3 +325,74 @@ func TestMessagesAnchoredAt(t *testing.T) {
 		t.Fatalf("a bad anchor should be 400, got %d", code)
 	}
 }
+
+// TestSearchScopedAndByRole: two things a search client could not ask for. Scoping to one
+// session turns "where in this session did we discuss X" from 332 paged requests into
+// one; the role filter is applied while collecting rather than after, so per_session
+// counts hits that match instead of hits that merely came first.
+func TestSearchScopedAndByRole(t *testing.T) {
+	root := t.TempDir()
+	// The target session: three assistant hits, then a user hit. With per_session=1 and
+	// role=user, a filter applied after collection would find nothing.
+	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_target.jsonl"),
+		`{"type":"session","id":"s-target","cwd":"/w/target"}`,
+		`{"type":"message","id":"a1","timestamp":"2026-09-01T10:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"nginx one"}]}}`,
+		`{"type":"message","id":"a2","timestamp":"2026-09-01T10:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"nginx two"}]}}`,
+		`{"type":"message","id":"a3","timestamp":"2026-09-01T10:02:00Z","message":{"role":"assistant","content":[{"type":"text","text":"nginx three"}]}}`,
+		`{"type":"message","id":"u1","timestamp":"2026-09-01T10:03:00Z","message":{"role":"user","content":[{"type":"text","text":"did you set up the nginx proxy yet"}]}}`,
+	)
+	// Another session with the same term, which must not appear in a scoped search
+	write(t, filepath.Join(root, "p", "2026-01-01T00-00-01_other.jsonl"),
+		`{"type":"session","id":"s-other","cwd":"/w/other"}`,
+		`{"type":"message","id":"b1","timestamp":"2026-09-02T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"nginx elsewhere"}]}}`,
+	)
+
+	sources := []SessionSource{newPiSource(root)}
+	api := newSessionQueryAPI(sources, 0)
+	base := searchQuery{needle: "nginx", lowered: []byte("nginx"), limit: 10, perSession: 10}
+
+	// Global: both sessions
+	if out := api.search(context.Background(), base); out.matched != 2 {
+		t.Fatalf("unscoped search matched %d sessions, want 2", out.matched)
+	}
+
+	// Scoped: one session, and only it is scanned
+	scoped := base
+	scoped.pattern = "s-target"
+	out := api.search(context.Background(), scoped)
+	if out.matched != 1 || out.scanned != 1 {
+		t.Fatalf("scoped search matched %d / scanned %d, want 1/1", out.matched, out.scanned)
+	}
+	if got := out.results[0]["sessionId"]; got != "s-target" {
+		t.Fatalf("scoped search returned %v", got)
+	}
+
+	// A pattern that names nothing searches nothing, rather than falling back to everything
+	missing := base
+	missing.pattern = "no-such-session"
+	if out := api.search(context.Background(), missing); out.matched != 0 || out.scanned != 0 {
+		t.Fatalf("an unmatched pattern scanned %d and matched %d", out.scanned, out.matched)
+	}
+
+	// Role, with a per_session small enough that filtering afterwards would miss the
+	// user hit behind three assistant ones
+	byRole := base
+	byRole.pattern = "s-target"
+	byRole.perSession = 1
+	byRole.role = "assistant"
+	if out := api.search(context.Background(), byRole); len(out.results) != 1 {
+		t.Fatalf("role=assistant found %d sessions", len(out.results))
+	} else if hit := out.results[0]["matches"].([]map[string]any)[0]; hit["role"] != "assistant" {
+		t.Fatalf("role=assistant returned a %v hit", hit["role"])
+	}
+
+	byRole.role = "user"
+	out = api.search(context.Background(), byRole)
+	if len(out.results) != 1 {
+		t.Fatalf("role=user found %d sessions; the filter is cutting after per_session", len(out.results))
+	}
+	hit := out.results[0]["matches"].([]map[string]any)[0]
+	if hit["role"] != "user" || !strings.Contains(hit["snippet"].(string), "nginx proxy") {
+		t.Fatalf("role=user returned %v", hit)
+	}
+}

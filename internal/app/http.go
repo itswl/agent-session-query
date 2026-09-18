@@ -520,6 +520,7 @@ func (s *apiServer) parseSearchQuery(r *http.Request) (searchQuery, error) {
 	q := searchQuery{
 		needle:     needle,
 		lowered:    appendLowerASCII(nil, []byte(needle)),
+		pattern:    strings.TrimSpace(values.Get("pattern")),
 		limit:      defaultSearchLimit,
 		perSession: defaultSearchPerSession,
 	}
@@ -543,11 +544,32 @@ func (s *apiServer) parseSearchQuery(r *http.Request) (searchQuery, error) {
 		}
 		q.since = since
 	}
+	if raw := strings.TrimSpace(values.Get("until")); raw != "" {
+		until, err := parseSince(raw)
+		if err != nil {
+			return searchQuery{}, err
+		}
+		q.until = until
+	}
+	role, err := parseSearchRole(values.Get("role"))
+	if err != nil {
+		return searchQuery{}, err
+	}
+	q.role = role
 	return q, nil
 }
 
 // parseSince reads ?since=, accepting relative forms like 30d / 12h / 90m as well as a
 // date such as 2026-09-01.
+// parseSearchRole reads ?role= for /search, matching what get_messages accepts
+func parseSearchRole(raw string) (string, error) {
+	role := strings.TrimSpace(raw)
+	if role == "" || role == "user" || role == "assistant" {
+		return role, nil
+	}
+	return "", fmt.Errorf("role must be user or assistant, got %q", role)
+}
+
 func parseSince(raw string) (time.Time, error) {
 	if len(raw) > 1 {
 		if unit := raw[len(raw)-1]; unit == 'd' || unit == 'D' {

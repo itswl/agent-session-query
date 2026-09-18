@@ -432,12 +432,18 @@ func (s *OpenCodeSource) Search(ctx context.Context, r record, q searchQuery) []
 	defer db.Close()
 
 	like := "%" + escapeLike(string(q.lowered)) + "%"
+	// The role filter goes into the query rather than onto the result: filtering the rows
+	// the LIMIT already returned would keep whichever hits came first.
+	roleClause := ""
+	if q.role != "" {
+		roleClause = "\n\t\t  AND json_extract(m.data, '$.role') = '" + escapeLike(q.role) + "'"
+	}
 	// body text and reasoning are both in part.data.text, so one LIKE covers both
 	rows, err := db.QueryContext(ctx, `
 		SELECT p.data, m.data
 		FROM part p JOIN message m ON m.id = p.message_id
 		WHERE p.session_id = ?
-		  AND p.data LIKE ? ESCAPE '\'
+		  AND p.data LIKE ? ESCAPE '\'`+roleClause+`
 		ORDER BY p.time_created, p.id
 		LIMIT ?`, sessionID, like, q.perSession)
 	if err != nil {

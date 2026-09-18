@@ -375,9 +375,15 @@ func (s *OpenClawSource) Search(ctx context.Context, r record, q searchQuery) []
 	if sessionID == "" || len(q.lowered) == 0 {
 		return nil
 	}
+	// The role filter goes into the query rather than onto the result: filtering the rows
+	// the LIMIT already returned would keep whichever hits came first.
+	roleClause := ""
+	if q.role != "" {
+		roleClause = "\n\t\t  AND json_extract(event_json, '$.message.role') = '" + escapeLike(q.role) + "'"
+	}
 	rows, close, err := s.querySession(ctx, r, `
 		SELECT event_json FROM transcript_events
-		WHERE session_id = ? AND event_json LIKE ? ESCAPE '\'
+		WHERE session_id = ? AND event_json LIKE ? ESCAPE '\'`+roleClause+`
 		ORDER BY seq
 		LIMIT ?`, sessionID, "%"+escapeLike(string(q.lowered))+"%", q.perSession)
 	if err != nil {

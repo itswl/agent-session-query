@@ -50,6 +50,15 @@ type searchQuery struct {
 	perSession int       // how many hits per session at most
 	since      time.Time // only search sessions updated after this; zero means no limit
 	until      time.Time // only search sessions updated before this; zero means no limit
+	// pattern limits the search to the one session it names, found the same way
+	// get_session finds it (a full id, a fragment, a path fragment). Without it a search
+	// spans every session; with it, "where in this session did we discuss X" is one call
+	// instead of paging a 16 000-message session fifty at a time.
+	pattern string
+	// role keeps only hits from messages with that role — the human's words rather than
+	// the answer that repeats them. Applied while collecting, not after, so per_session
+	// counts hits that match rather than hits that happen to come first.
+	role string
 }
 
 // searchableSource lets a source implement content search itself.
@@ -77,15 +86,22 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 	}
 
 	all := []candidate{}
-	for _, source := range a.sources {
-		for _, rec := range a.recordsOf(source) {
-			if !q.since.IsZero() && (rec.sortAt.IsZero() || rec.sortAt.Before(q.since)) {
-				continue
-			}
-			if !q.until.IsZero() && (rec.sortAt.IsZero() || rec.sortAt.After(q.until)) {
-				continue
-			}
+	if q.pattern != "" {
+		// Scoped: the pattern names one session, and only that one is searched
+		if source, rec, ok := a.findSession(q.pattern, ""); ok {
 			all = append(all, candidate{source: source, rec: rec})
+		}
+	} else {
+		for _, source := range a.sources {
+			for _, rec := range a.recordsOf(source) {
+				if !q.since.IsZero() && (rec.sortAt.IsZero() || rec.sortAt.Before(q.since)) {
+					continue
+				}
+				if !q.until.IsZero() && (rec.sortAt.IsZero() || rec.sortAt.After(q.until)) {
+					continue
+				}
+				all = append(all, candidate{source: source, rec: rec})
+			}
 		}
 	}
 	// Newest first, so truncating at limit keeps the most recent
@@ -170,7 +186,12 @@ func searchFile(ctx context.Context, path string, q searchQuery) []map[string]an
 			return true
 		}
 		if hit := buildHit(line, q); hit != nil {
-			hits = append(hits, hit)
+			// The role filter lives here rather than after the fact: filtering a
+			// per_session-sized slice would keep whichever hits came first in the file
+			// and could miss the one being asked for entirely.
+			if q.role == "" || strOr(hit["role"], "") == q.role {
+				hits = append(hits, hit)
+			}
 		}
 		return len(hits) < q.perSession
 	})

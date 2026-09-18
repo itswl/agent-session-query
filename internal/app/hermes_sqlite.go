@@ -394,14 +394,23 @@ func hermesSQLiteSearch(ctx context.Context, dbPath, sessionID string, q searchQ
 	defer db.Close()
 
 	like := "%" + escapeLike(string(q.lowered)) + "%"
+	// The role filter goes into the query rather than onto the result: filtering the rows
+	// the LIMIT already returned would keep whichever hits came first in the table.
+	roleClause := ""
+	args := []any{sessionID}
+	if q.role != "" {
+		roleClause = "\n\t\t  AND role = ?"
+		args = append(args, q.role)
+	}
+	args = append(args, like, like, q.perSession)
 	rows, err := db.QueryContext(ctx, `
 		SELECT role, content, reasoning, timestamp
 		FROM messages
 		WHERE session_id = ?
-		  AND COALESCE(active, 1) = 1
+		  AND COALESCE(active, 1) = 1`+roleClause+`
 		  AND (content LIKE ? ESCAPE '\' OR reasoning LIKE ? ESCAPE '\')
 		ORDER BY timestamp ASC, id ASC
-		LIMIT ?`, sessionID, like, like, q.perSession)
+		LIMIT ?`, args...)
 	if err != nil {
 		warnHermesSQLite(sessionID, err)
 		return nil

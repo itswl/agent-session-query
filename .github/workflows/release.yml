@@ -81,7 +81,11 @@ jobs:
             echo "$GITHUB_REF_NAME" > release-notes.md
           fi
 
-      - uses: softprops/action-gh-release@v3
+      # A forced tag update (retagging to fix a note, say) fires this workflow again,
+      # and the action then leaves behind a duplicate draft release. github.event.created
+      # is true only when the tag is newly created, which is the only case worth publishing.
+      - if: ${{ github.event.created }}
+        uses: softprops/action-gh-release@v3
         with:
           body_path: release-notes.md
           files: |

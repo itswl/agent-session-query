@@ -322,6 +322,39 @@ func mcpCallTool(t *testing.T, s *mcpServer, args map[string]any) map[string]any
 	return out
 }
 
+// TestMCPEveryArgumentIsAdvertised: an argument the code reads but the schema does not
+// name is invisible to a client — it cannot pass what it cannot see. This caught `at` on
+// get_messages, which worked but nobody could discover.
+func TestMCPEveryArgumentIsAdvertised(t *testing.T) {
+	s := newMCPServer(t)
+	responses := mcpRoundTrip(t, s, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+	declared := map[string]map[string]bool{}
+	for _, raw := range responses[0].Result.(map[string]any)["tools"].([]any) {
+		tool := raw.(map[string]any)
+		props := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+		names := map[string]bool{}
+		for name := range props {
+			names[name] = true
+		}
+		declared[tool["name"].(string)] = names
+	}
+
+	// The arguments each tool's implementation reads out of args
+	read := map[string][]string{
+		"search_sessions": {"query", "limit", "per_session", "since", "until", "cursor"},
+		"list_sessions":   {"source", "project", "since", "until", "limit", "cursor"},
+		"get_session":     {"pattern", "source"},
+		"get_messages":    {"pattern", "source", "limit", "order", "role", "at", "cursor"},
+	}
+	for tool, args := range read {
+		for _, arg := range args {
+			if !declared[tool][arg] {
+				t.Errorf("%s reads %q but does not declare it: a client cannot pass what it cannot see", tool, arg)
+			}
+		}
+	}
+}
+
 func TestMCPAnnotations(t *testing.T) {
 	s := newMCPServer(t)
 	responses := mcpRoundTrip(t, s, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})

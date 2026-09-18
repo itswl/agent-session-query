@@ -469,8 +469,10 @@ func mcpTools() []map[string]any {
 	return []map[string]any{
 		{
 			"name": "search_sessions",
+			// The source list is derived, not written out: it had already drifted once,
+			// still naming six sources after the seventh was added.
 			"description": "Full-text search across the session history of every agent CLI on this " +
-				"machine (Claude Code, Codex, Gemini CLI, Pi, Hermes, OpenClaw). Answers " +
+				"machine (" + strings.Join(knownModes, ", ") + "). Answers " +
 				"\"which session did I deal with X in?\". Case-insensitive.",
 			"annotations": readOnlyAnnotations("Search sessions"),
 			"inputSchema": map[string]any{
@@ -533,6 +535,7 @@ func mcpTools() []map[string]any {
 					"limit":   intSchema("how many to return at most, default 50"),
 					"order":   strSchema("asc for the earliest N (default), desc for the latest N"),
 					"role":    strSchema("keep only this role: user or assistant"),
+					"at":      strSchema("anchor the window at this time instead of at an end — pass a hit's timestamp from search_sessions to land on it: asc starts there, desc ends there"),
 					"cursor":  cursorSchema(),
 				},
 				"required": []string{"pattern"},

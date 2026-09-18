@@ -29,6 +29,8 @@ const CONTENT_MIN_CHARS = 2;
 // (a low bar). Both shared 600 before, which left whole screens of shell output open.
 const FOLD_AT = { text: 600, thinking: 300, toolResult: 200, toolCall: 400 };
 const STICK_TO_BOTTOM_PX = 48;
+// How close to an edge the reader has to get before the next page is fetched
+const SCROLL_LOAD_PX = 320;
 
 const state = {
   token: '',
@@ -48,6 +50,8 @@ const state = {
   contentAbort: null,  // AbortController for the search still in flight
   detail: null,        // { sessionId, signature, messages, final }
   focusAt: '',         // when set, the stream window is anchored at this time (a search hit)
+  loadingMore: false,  // a page is in flight
+  noMore: { older: false, newer: false }, // an edge that came back empty
   collapsedGroups: new Set(), // project names folded away in By project grouping
   msgCounts: new Map(),       // sessionId → message count, learned as sessions are opened
   openBlocks: new Set(),
@@ -651,7 +655,13 @@ function renderStreamHead(record) {
     // An anchored window is neither the start nor the end of the session, and saying
     // "latest 200" there would be a lie — so it says what it is, with a way out
     let label;
-    if (state.focusAt) {
+    if (state.loadingMore) {
+      label = 'Loading more\u2026';
+    } else if (shown > MESSAGE_LIMIT) {
+      // The window has grown past one page, so it is no longer "the latest N" — say how
+      // far into the session this is instead
+      label = shown + ' of ' + total + ' messages';
+    } else if (state.focusAt) {
       label = total > shown
         ? total + ' messages · ' + shown + ' from the match'
         : shown + ' messages';
@@ -1111,6 +1121,70 @@ function clearDetail(message) {
 // syncDetail only refetches when the selected session has genuinely changed.
 // Rebuilding blindly on every refresh would collapse expanded blocks, throw the scroll
 // position back to the top, and clear whatever text was selected.
+// loadMore extends the window one page at a time.
+//
+// The window is pinned to one end of the session, and that end has nothing more to give —
+// so it grows in the direction the reader is moving away from: with the latest page
+// loaded, scrolling up fetches older messages and prepends them; with the earliest page
+// loaded, scrolling down appends newer ones. The anchor from the search work is the
+// cursor: a page descends to the oldest message on screen, or ascends from the newest.
+async function loadMore(edge) {
+  const detail = state.detail;
+  if (!detail || state.loadingMore || state.noMore[edge]) return;
+  const msgs = (detail.messages && detail.messages.messages) || [];
+  if (!msgs.length) return;
+
+  const anchor = edge === 'older' ? msgs[0] : msgs[msgs.length - 1];
+  const at = anchor && anchor.timestamp;
+  if (!at) {
+    state.noMore[edge] = true; // no anchor, so no way to ask for the neighbouring page
+    return;
+  }
+
+  state.loadingMore = true;
+  const pane = $('messages');
+  const beforeHeight = pane.scrollHeight;
+  const beforeTop = pane.scrollTop;
+
+  let fresh = null;
+  try {
+    const id = encodeURIComponent(detail.sessionId);
+    const order = edge === 'older' ? 'desc' : 'asc';
+    const data = await api('/sessions/' + id + '/messages?limit=' + MESSAGE_LIMIT +
+      '&order=' + order + '&at=' + encodeURIComponent(at));
+    // The session may have changed while this was in flight
+    if (state.detail === detail) {
+      const got = (data.messages || []);
+      // The anchored page includes the message it was anchored on: drop the overlap
+      fresh = edge === 'older' ? got.slice(0, -1) : got.slice(1);
+    }
+  } catch (err) {
+    handleError(err);
+  } finally {
+    // Always, whichever way this left: an early return that skipped this would leave the
+    // "Loading more…" label on screen and the guard blocking every later page
+    state.loadingMore = false;
+  }
+
+  if (!fresh || !fresh.length) {
+    if (fresh) state.noMore[edge] = true; // a short page means that edge is the end
+    renderStreamHead(state.byId.get(state.selectedId));
+    return;
+  }
+
+  detail.messages = Object.assign({}, detail.messages, {
+    messages: edge === 'older' ? fresh.concat(msgs) : msgs.concat(fresh),
+  });
+  renderMessages();
+  const record = state.byId.get(state.selectedId);
+  renderStreamHead(record);
+  renderSide(record);
+  if (edge === 'older') {
+    // Prepending pushes everything down; hold the reader's place on the same message
+    pane.scrollTop = beforeTop + (pane.scrollHeight - beforeHeight);
+  }
+}
+
 async function syncDetail(options) {
   const force = options && options.force;
   const record = state.byId.get(state.selectedId);
@@ -1119,11 +1193,20 @@ async function syncDetail(options) {
     return;
   }
 
+  const switched = !state.detail || state.detail.sessionId !== record.sessionId;
+
+  // Someone who has paged back is reading history. A background refresh refetches the
+  // latest page and would replace everything they loaded — on an active session, every
+  // ten seconds, which made paging feel like it kept snapping to the newest message.
+  // The left pane still updates; only the stream holds still. Refresh (r) still refetches.
+  const paged = !switched && (state.detail.messages.messages || []).length > MESSAGE_LIMIT;
+  if (!force && paged) return;
+
   const signature = [record.sessionId, record.updatedAt, record.status, state.order].join('|');
   if (!force && state.detail && state.detail.signature === signature) return;
   if (state.busy) return;
 
-  const switched = !state.detail || state.detail.sessionId !== record.sessionId;
+  if (switched) state.noMore = { older: false, newer: false };
   if (switched) {
     // Only clear when switching sessions; a plain refresh of the same session keeps the
     // old content on screen and avoids a flash
@@ -1344,6 +1427,19 @@ $('source-filter').addEventListener('change', (event) => {
   saveViewPrefs();
   renderList();
 });
+
+// Reading on: fetch the next page when the reader reaches the edge that has one
+$('messages').addEventListener('scroll', () => {
+  const pane = $('messages');
+  if (state.loadingMore) return;
+  const nearTop = pane.scrollTop < SCROLL_LOAD_PX;
+  const nearBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < SCROLL_LOAD_PX;
+  if (state.order === 'desc') {
+    if (nearTop) loadMore('older');
+  } else if (nearBottom) {
+    loadMore('newer');
+  }
+}, { passive: true });
 
 $('refresh').addEventListener('click', refresh);
 

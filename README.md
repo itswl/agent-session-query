@@ -90,8 +90,10 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   can be grouped by time or by project — project headers fold away when clicked — and a
   session being written gets a pulsing green dot. Rows carry the message count where the
   source knows it (the SQLite-backed ones) or once the session has been opened
-- **Middle**: the message timeline (text / thinking / toolCall / toolResult blocks). You can
-  switch between the earliest and latest 200 messages, and filter to **user** (the human's
+- **Middle**: the message timeline (text / thinking / toolCall / toolResult blocks). It opens
+  on the latest 200 and **loads the previous page when you scroll to the top** (or the next
+  one at the bottom, when reading from the earliest) — the count in the header says how far
+  into the session you are. You can switch ends outright, and filter to **user** (the human's
   words), **assistant** (the model's) or **tools** (tool calls and their results) — three
   distinct categories rather than a role-field test, so tool traffic no longer shows up
   under either speaker. Tool blocks are coloured by category (run / read / write / search

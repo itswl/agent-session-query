@@ -282,10 +282,15 @@ The speed comes from ordering, not from the algorithm:
    core — measured at 20 ms → 384 ms per search with five in flight
 
 There is a trap in extracting snippets: JSON is full of strings, and a match can land in a field
-name. So `findMatchingText` only accepts body fields (`text` / `content` / `thinking` /
-`reasoning`, ...) and — because Go map iteration is randomised, and results have to be stable —
-looks through those keys in a fixed order before falling back to the remaining keys sorted by
-name.
+name — or worse, in a field's *value*: a short or numeric needle matches inside timestamps
+and uuids constantly (measured: "502" matched a timestamp's `.502Z` millisecond part and a
+uuid's tail often enough to dominate the first page). So `findMatchingText` only accepts
+body fields (`text` / `content` / `thinking` / `reasoning`, ...) in a fixed order (Go map
+iteration is randomised and results must be stable), and skips metadata keys when falling
+back to the rest: timestamps and ordinals by list, and anything id-shaped by rule — a key
+that ends in `id` after folding camelCase and snake_case together (`turnId`,
+`root_turn_id`, `callID`, ...) names an identifier, never body text. A match that lands
+nowhere else produces no hit at all: the row matched, but it had nothing to say.
 
 Newer Hermes sessions live entirely in SQLite with no jsonl, so `JsonMapSource` implements the
 optional `searchableSource` interface and uses `LIKE` (SQLite's LIKE is already

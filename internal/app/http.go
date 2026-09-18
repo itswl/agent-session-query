@@ -362,7 +362,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 		switch {
 		case len(parts) == 1 && parts[0] != "":
 			pattern := unescapePattern(parts[0])
-			session, ok := s.api.getSession(pattern)
+			session, ok := s.api.getSession(pattern, "")
 			if !ok {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "Session not found"})
 				return http.StatusNotFound
@@ -373,7 +373,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 		case len(parts) == 2 && parts[0] != "" && parts[1] == "messages":
 			pattern := unescapePattern(parts[0])
 			query := s.parseMessageQuery(r)
-			messages, ok := s.api.getMessages(pattern, query)
+			messages, ok := s.api.getMessages(pattern, "", query)
 			if !ok {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "Session not found"})
 				return http.StatusNotFound
@@ -401,7 +401,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 
 		case len(parts) == 2 && parts[0] != "" && parts[1] == "final":
 			pattern := unescapePattern(parts[0])
-			result, ok := s.api.getFinalMessage(pattern)
+			result, ok := s.api.getFinalMessage(pattern, "")
 			if !ok {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "Session not found"})
 				return http.StatusNotFound

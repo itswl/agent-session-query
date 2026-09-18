@@ -119,7 +119,10 @@ func listVersion(records []record) string {
 
 // findSession picks the best match across every enabled source (exact hits win, and no
 // source shadows another)
-func (a *SessionQueryAPI) findSession(pattern string) (SessionSource, record, bool) {
+// findSession locates the one session a pattern names. sourceWanted, when not empty,
+// restricts the search to that source — an MCP client can hold a sessionId from
+// list_sessions and the mode name, and ids alone are not unique across sources.
+func (a *SessionQueryAPI) findSession(pattern, sourceWanted string) (SessionSource, record, bool) {
 	pattern = strings.TrimSpace(pattern)
 	if strings.HasPrefix(pattern, "Run: ") {
 		pattern = pattern[len("Run: "):]
@@ -136,6 +139,9 @@ func (a *SessionQueryAPI) findSession(pattern string) (SessionSource, record, bo
 	var bestRecord record
 	bestRank := -1
 	for _, source := range a.sources {
+		if sourceWanted != "" && source.Mode() != sourceWanted {
+			continue
+		}
 		for _, item := range a.recordsOf(source) {
 			rank := item.matchRank(patternLower)
 			if rank == -1 {
@@ -152,8 +158,8 @@ func (a *SessionQueryAPI) findSession(pattern string) (SessionSource, record, bo
 	return bestSource, bestRecord, true
 }
 
-func (a *SessionQueryAPI) getSession(pattern string) (map[string]any, bool) {
-	_, item, ok := a.findSession(pattern)
+func (a *SessionQueryAPI) getSession(pattern, sourceWanted string) (map[string]any, bool) {
+	_, item, ok := a.findSession(pattern, sourceWanted)
 	if !ok {
 		return nil, false
 	}
@@ -175,8 +181,8 @@ func safeParse[T any](mode, what string, parse func() T) (out T) {
 	return parse()
 }
 
-func (a *SessionQueryAPI) getMessages(pattern string, q messageQuery) ([]map[string]any, bool) {
-	source, item, ok := a.findSession(pattern)
+func (a *SessionQueryAPI) getMessages(pattern, sourceWanted string, q messageQuery) ([]map[string]any, bool) {
+	source, item, ok := a.findSession(pattern, sourceWanted)
 	if !ok {
 		return nil, false
 	}
@@ -189,8 +195,8 @@ func (a *SessionQueryAPI) getMessages(pattern string, q messageQuery) ([]map[str
 	return messages, true
 }
 
-func (a *SessionQueryAPI) getFinalMessage(pattern string) (map[string]any, bool) {
-	source, item, ok := a.findSession(pattern)
+func (a *SessionQueryAPI) getFinalMessage(pattern, sourceWanted string) (map[string]any, bool) {
+	source, item, ok := a.findSession(pattern, sourceWanted)
 	if !ok {
 		return nil, false
 	}

@@ -154,7 +154,7 @@ func TestFindSessionPrecedence(t *testing.T) {
 	}, 2)
 
 	// When both sources match the same sessionId exactly, the earlier source wins
-	source, rec, ok := api.findSession("shared-id")
+	source, rec, ok := api.findSession("shared-id", "")
 	if !ok || source.Mode() != "pi" || rec.str("sessionId") != "shared-id" {
 		t.Fatalf("find = %v %v %v", source, rec.fields, ok)
 	}
@@ -163,16 +163,16 @@ func TestFindSessionPrecedence(t *testing.T) {
 	write(t, filepath.Join(claudeRoot, "c", "session-y.jsonl"),
 		`{"type":"user","uuid":"u","sessionId":"deadbeef-shared-id-x","timestamp":"t","message":{"role":"user","content":"hi"}}`,
 	)
-	source, rec, _ = api.findSession("shared-id")
+	source, rec, _ = api.findSession("shared-id", "")
 	if source.Mode() != "pi" {
 		t.Fatalf("the exact hit should win, got %s %v", source.Mode(), rec.fields)
 	}
 
 	// The "Session: " prefix is stripped
-	if _, _, ok := api.findSession("Session: shared-id"); !ok {
+	if _, _, ok := api.findSession("Session: shared-id", ""); !ok {
 		t.Fatal("the Session: prefix had no effect")
 	}
-	if _, _, ok := api.findSession("   "); ok {
+	if _, _, ok := api.findSession("   ", ""); ok {
 		t.Fatal("an empty pattern should match nothing")
 	}
 }
@@ -928,5 +928,23 @@ func TestUpdatedAtFallsBackToMtime(t *testing.T) {
 	}
 	if _, ok := parseTimestamp(updated); !ok {
 		t.Fatalf("the mtime fallback does not parse: %q", updated)
+	}
+}
+
+// TestFindSessionScopedBySource: the same pattern resolves differently per source, and an
+// unknown source name is the caller's error to make (here, simply no match).
+func TestFindSessionScopedBySource(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "w", "2026-01-01T00-00-00_s.jsonl"),
+		`{"type":"session","id":"dup-id","cwd":"/w"}`,
+		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}`,
+	)
+	api := newSessionQueryAPI([]SessionSource{newPiSource(root)}, 2)
+
+	if _, _, ok := api.findSession("dup-id", "pi"); !ok {
+		t.Fatal("the scoped lookup must find its own source")
+	}
+	if _, _, ok := api.findSession("dup-id", "claude"); ok {
+		t.Fatal("a scoped lookup into another source must not fall through")
 	}
 }

@@ -249,11 +249,15 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if pattern == "" {
 			return nil, errors.New("missing argument: pattern")
 		}
-		session, ok := s.api.getSession(pattern)
+		sourceWanted, err := wantedSource(args)
+		if err != nil {
+			return nil, err
+		}
+		session, ok := s.api.getSession(pattern, sourceWanted)
 		if !ok {
 			return nil, fmt.Errorf("no session matches %q", pattern)
 		}
-		final, _ := s.api.getFinalMessage(pattern)
+		final, _ := s.api.getFinalMessage(pattern, sourceWanted)
 		return map[string]any{"session": session, "final": final}, nil
 
 	case "get_messages":
@@ -262,6 +266,10 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			return nil, errors.New("missing argument: pattern")
 		}
 		limit := argInt(args, "limit", 50, s.maxLimit)
+		sourceWanted, err := wantedSource(args)
+		if err != nil {
+			return nil, err
+		}
 		q := messageQuery{
 			limit:   limit,
 			fromEnd: strings.EqualFold(argString(args, "order"), "desc"),
@@ -276,7 +284,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if role != "" {
 			q.limit = s.maxLimit
 		}
-		messages, ok := s.api.getMessages(pattern, q)
+		messages, ok := s.api.getMessages(pattern, sourceWanted, q)
 		if !ok {
 			return nil, fmt.Errorf("no session matches %q", pattern)
 		}
@@ -310,6 +318,21 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
+}
+
+// wantedSource reads the optional source argument and rejects values that name no
+// configured source — a typo should fail loudly, not silently match nothing.
+func wantedSource(args map[string]any) (string, error) {
+	want := strings.TrimSpace(argString(args, "source"))
+	if want == "" {
+		return "", nil
+	}
+	for _, source := range knownModes {
+		if source == want {
+			return want, nil
+		}
+	}
+	return "", fmt.Errorf("unknown source %q (choose from: %s)", want, strings.Join(knownModes, " / "))
 }
 
 // parseTimeWindow reads the since/until pair off a tool call. Both use the same relative
@@ -451,9 +474,12 @@ func mcpTools() []map[string]any {
 			"description": "Fetch one session's metadata and final result. pattern may be a full sessionId, a fragment of one, or a fragment of the file path.",
 			"annotations": readOnlyAnnotations("Get session"),
 			"inputSchema": map[string]any{
-				"type":       "object",
-				"properties": map[string]any{"pattern": strSchema("a sessionId, a fragment of one, or a file path fragment")},
-				"required":   []string{"pattern"},
+				"type": "object",
+				"properties": map[string]any{
+					"pattern": strSchema("a sessionId, a fragment of one, or a file path fragment"),
+					"source":  strSchema("restrict the match to one source (ids are not unique across sources): " + strings.Join(knownModes, " / ")),
+				},
+				"required": []string{"pattern"},
 			},
 		},
 		{
@@ -464,6 +490,7 @@ func mcpTools() []map[string]any {
 				"type": "object",
 				"properties": map[string]any{
 					"pattern": strSchema("a sessionId, a fragment of one, or a file path fragment"),
+					"source":  strSchema("restrict the match to one source (ids are not unique across sources): " + strings.Join(knownModes, " / ")),
 					"limit":   intSchema("how many to return at most, default 50"),
 					"order":   strSchema("asc for the earliest N (default), desc for the latest N"),
 					"role":    strSchema("keep only this role: user or assistant"),

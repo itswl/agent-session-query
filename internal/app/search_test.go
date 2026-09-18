@@ -232,3 +232,31 @@ func TestSearchFileStopsMidFile(t *testing.T) {
 		t.Fatalf("a cancelled scan should stop within one sample window, got %d hits", len(stopped))
 	}
 }
+
+// TestSearchSkipsMetadataFields: a needle that lands only in an id or a timestamp is not
+// a body hit — measured locally, "502" matched a timestamp's millisecond part and a
+// uuid's tail often enough to dominate the first results page.
+func TestSearchSkipsMetadataFields(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_meta.jsonl"),
+		`{"type":"session","id":"s-meta","cwd":"/w"}`,
+		// the hit is only in the uuid and the timestamp
+		`{"type":"message","uuid":"abc-95020faa-xyz","timestamp":"2026-09-17T02:09:43.502Z","message":{"role":"user","content":[{"type":"text","text":"completely unrelated words"}]}}`,
+		// the same needle in body text is a hit
+		`{"type":"message","uuid":"u2","message":{"role":"assistant","content":[{"type":"text","text":"the server returned 502 Bad Gateway"}]}}`,
+		// codex nests ids under payload
+		`{"type":"response_item","payload":{"turn_id":"01a0b047-d043-7502-8","type":"message","role":"user","content":[{"type":"input_text","text":"another unrelated line"}]}}`,
+	)
+	sources := []SessionSource{newPiSource(root)}
+	api := newSessionQueryAPI(sources, 2)
+	q := searchQuery{needle: "502", lowered: []byte("502"), limit: 10, perSession: 5}
+
+	out := api.search(context.Background(), q)
+	if len(out.results) != 1 {
+		t.Fatalf("only the body hit should survive, got %d: %+v", len(out.results), out.results)
+	}
+	hit := out.results[0]["matches"].([]map[string]any)[0]
+	if !strings.Contains(hit["snippet"].(string), "502 Bad Gateway") {
+		t.Errorf("snippet = %q, want the body text", hit["snippet"])
+	}
+}

@@ -44,10 +44,10 @@ current MCP specification (2025-06-18):
 
 | Tool | What it does |
 |------|--------------|
-| `search_sessions` | Full-text search over message bodies; takes `query` / `limit` / `per_session` / `since` / `until` |
+| `search_sessions` | Full-text search over message bodies (ids and timestamps are not searched as text); takes `query` / `limit` / `per_session` / `since` / `until` |
 | `list_sessions` | List sessions newest first, optionally filtered by `source` / `project` / `since` / `until` |
 | `list_projects` | Group by project to see which agents were used on a given repository |
-| `get_session` | One session's metadata and final result |
+| `get_session` | One session's metadata and final result; optional `source` disambiguates when ids collide |
 
 
 Every tool declares `readOnlyHint` / `idempotentHint` annotations, so clients that honour

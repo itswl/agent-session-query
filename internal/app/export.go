@@ -15,7 +15,7 @@ import (
 // exportMarkdown renders one session as Markdown, returning the body and a suggested
 // filename.
 func (a *SessionQueryAPI) exportMarkdown(pattern string, q messageQuery) (body string, filename string, ok bool) {
-	source, item, found := a.findSession(pattern)
+	source, item, found := a.findSession(pattern, "")
 	if !found {
 		return "", "", false
 	}

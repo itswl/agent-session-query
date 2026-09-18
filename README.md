@@ -138,7 +138,7 @@ marked "yes" require `Authorization: Bearer <token>`.
 | `/ui` `/favicon.ico` | no | The embedded page (which holds no data) |
 | `/sessions` | yes | List every session (merged across sources, newest first) |
 | `/sessions/<pattern>` | yes | One session; add `/messages` (with `order` / `limit` / `at`), `/final` or `/export` |
-| `/search?q=` | yes | **Full-text search** across every source |
+| `/search?q=` | yes | **Full-text search** across every source; `pattern` scopes it to one session, `role` to `user` or `assistant` hits |
 | `/projects` | yes | Session counts grouped by project (cwd) |
 | `/mcp` | yes | MCP's Streamable HTTP transport (`POST`) |
 

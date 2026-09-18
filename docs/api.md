@@ -32,8 +32,11 @@ source (the search on `/sessions` only matches metadata). It is case-insensitive
 no index — measured locally, a cold scan of 470 MB across 174 sessions takes 1.1 s and a
 warm one 60 ms. In the response, `matched` is how many sessions matched, `total` how many
 were returned, and `scanned` how many were examined; with a lot of history, narrow the scan
-with `since=30d` (which also accepts `12h` or `2026-09-01`). Each session contributes at
-most `per_session` snippets.
+with `since=30d` (which also accepts `12h` or `2026-09-01`), `until` for the other end of
+that window, `pattern` to search inside one session instead of all of them, and `role`
+(`user` or `assistant`) to keep only hits from those messages. Each session contributes at
+most `per_session` snippets — with `role` set, that counts hits matching the role rather
+than whichever hits happened to come first in the file.
 
 **`<pattern>` matching rules** (first rank to hit wins; every source takes part in every
 round, so a fuzzy hit never shadows an exact hit in another source): ① exact `sessionId`

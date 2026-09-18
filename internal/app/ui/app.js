@@ -41,6 +41,7 @@ const state = {
   role: '',            // '' / 'user' / 'assistant'
   order: 'desc',       // desc = the latest N (the end of a session is the interesting part)
   grouping: 'time',    // time = by update time; project = grouped by project (cwd)
+  pane: 'stream',      // phones only: which of the three panes is on screen
   content: null,       // content search for the current keyword:
                        //   { query, searching, results, matched, truncated, tookMs }
   contentTimer: null,
@@ -1071,6 +1072,9 @@ function gotoMessage(index) {
 function selectSession(sessionId) {
   if (!sessionId || sessionId === state.selectedId) return;
   state.selectedId = sessionId;
+  // On a phone the list and the conversation are different screens: picking a session
+  // there means you want to read it
+  if ($('panes') && getComputedStyle($('panes')).display !== 'none') showPane('stream');
   const encoded = encodeURIComponent(sessionId);
   if (location.hash.replace(/^#/, '') !== encoded) location.hash = encoded;
   renderList();
@@ -1321,6 +1325,12 @@ $('source-filter').addEventListener('change', (event) => {
 
 $('refresh').addEventListener('click', refresh);
 
+if ($('panes')) {
+  for (const button of $('panes').children) {
+    button.addEventListener('click', () => showPane(button.dataset.pane));
+  }
+}
+
 $('auto').addEventListener('change', (event) => {
   saveViewPrefs();
   if (event.target.checked) {
@@ -1346,6 +1356,7 @@ function saveViewPrefs() {
       order: state.order,
       role: state.role,
       auto: $('auto').checked,
+      pane: state.pane,
       collapsed: [...state.collapsedGroups],
     }));
   } catch (e) {
@@ -1369,11 +1380,27 @@ function applyViewPrefs() {
   if (['', 'user', 'assistant', 'tools'].indexOf(prefs.role) >= 0) state.role = prefs.role;
   if (typeof prefs.auto === 'boolean') $('auto').checked = prefs.auto;
   // Names of projects folded away; a name that no longer exists simply never matches
+  if (['list', 'stream', 'side'].indexOf(prefs.pane) >= 0) state.pane = prefs.pane;
   if (Array.isArray(prefs.collapsed)) state.collapsedGroups = new Set(prefs.collapsed);
+}
+
+// showPane switches the phone layout. On a wide screen the attribute is inert: the CSS
+// only consults it below the phone breakpoint.
+function showPane(name) {
+  state.pane = name;
+  document.body.dataset.pane = name;
+  const nav = $('panes');
+  if (nav) {
+    for (const button of nav.children) {
+      button.classList.toggle('on', button.dataset.pane === name);
+    }
+  }
+  saveViewPrefs();
 }
 
 async function start() {
   applyViewPrefs();
+  showPane(state.pane);
   const hashId = decodeURIComponent(location.hash.replace(/^#/, ''));
   if (hashId) state.selectedId = hashId;
   await refresh();

@@ -35,6 +35,14 @@
     <span id="status" class="status"></span>
   </header>
 
+  <!-- Phones get one pane at a time; this picks which. Hidden from 861px up, where all
+       three fit side by side and a switcher would only take space. -->
+  <nav class="panes" id="panes" aria-label="Pane">
+    <button type="button" data-pane="list">Sessions</button>
+    <button type="button" data-pane="stream">Conversation</button>
+    <button type="button" data-pane="side">Details</button>
+  </nav>
+
   <main>
     <aside id="list" class="list" role="listbox" aria-label="Session list" tabindex="0"></aside>
 

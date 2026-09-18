@@ -101,9 +101,12 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   **conversation table of contents**: the user's turns, numbered, click to jump to one in
   the stream. It covers the loaded window and says so when the session is longer
 
-It refreshes every 10 seconds without disturbing what you are reading (expanded blocks and
-scroll position are preserved). `/ui#<sessionId>` works as a deep link, light and dark follow
-the system, and narrow windows collapse to two panes and then one.
+On a phone the three panes become one screen at a time with a **Sessions / Conversation /
+Details** switcher, so the conversation is not pushed below a list you have to scroll past;
+picking a session jumps straight to it. It refreshes every 10 seconds without disturbing
+what you are reading (expanded blocks and scroll position are preserved), your view
+controls — grouping, source filter, order, filters, folded groups — survive a reload, and
+`/ui#<sessionId>` works as a deep link. Light and dark follow the system.
 
 Shortcuts: <kbd>j</kbd> <kbd>k</kbd> move between sessions (metadata matches and body
 matches alike) · <kbd>/</kbd> focus search · <kbd>Enter</kbd> search the bodies now instead

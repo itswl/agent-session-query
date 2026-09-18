@@ -151,13 +151,66 @@ main {
     box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.16);
   }
 }
-/* Phones: stack into one column */
+/* The pane switcher is a phone affordance only */
+.panes { display: none; }
+
+/* Phones: one pane at a time.
+   Stacking all three made for a very long page in which the conversation — the thing you
+   opened the page for — started below the fold, under a 40vh list. Now the switcher picks
+   a pane and the other two are out of the way, which also gives the stream the full
+   height instead of 70vh of it. */
 @media (max-width: 860px) {
-  #app { height: auto; }
-  main { grid-template-columns: 1fr; grid-template-rows: auto auto auto; grid-template-areas: "list" "stream" "side"; }
-  .list { max-height: 40vh; border-right: none; border-bottom: 1px solid var(--line); }
-  .stream { height: 70vh; }
-  .side { max-height: none; }
+  #app { height: 100dvh; }
+  main { display: block; overflow: hidden; }
+
+  .panes {
+    display: flex; gap: 4px; flex: 0 0 auto;
+    padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  .panes button {
+    flex: 1; padding: 8px 6px; font-size: 13px; font-family: inherit;
+    background: transparent; color: var(--fg-mid);
+    border: 1px solid transparent; border-radius: 8px; cursor: pointer;
+  }
+  .panes button.on {
+    background: var(--accent-soft); color: var(--accent);
+    border-color: rgba(122, 162, 247, 0.35); font-weight: 650;
+  }
+
+  /* body[data-pane] keeps these ahead of the base .list/.stream/.side rules, which are
+     defined further down the file and would otherwise win on document order */
+  body[data-pane] .list, body[data-pane] .stream, body[data-pane] .side { display: none; }
+  /* Each pane is restored to its own base display, not a blanket flex: .stream is a flex
+     column by design, while .list and .side are plain blocks. Forcing flex on those two
+     laid the session rows out in a row. */
+  body[data-pane="list"] .list, body[data-pane="side"] .side { display: block; }
+  body[data-pane="stream"] .stream { display: flex; }
+
+  .list { max-height: none; height: 100%; border-right: none; }
+  .stream { height: 100%; }
+  .side {
+    max-height: none; height: 100%; border-left: none; border-top: none;
+    box-shadow: none; padding-bottom: 12px;
+  }
+
+  /* The header carries a lot for one small screen: five rows of it is a third of the
+     viewport before any content appears. Reordered into three — title with its actions,
+     the search on its own full-width row, then the filters sharing a row with the status
+     line — which is about half the height it was. */
+  header { padding: 8px 10px; gap: 6px; }
+  header .brand { order: 1; }
+  header h1 { font-size: 15px; }
+  #refresh, #logout { order: 2; padding: 4px 10px; font-size: 12px; }
+  #logout { margin-left: auto; }
+  #search { order: 3; flex: 1 1 100%; min-width: 0; padding: 8px 11px; }
+  #source-filter, #grouping { order: 4; flex: 1 1 40%; min-width: 0; }
+  .auto { order: 5; font-size: 12px; }
+  #status { order: 6; flex: 1 1 100%; font-size: 11.5px; }
+
+  /* Touch targets rather than mouse-sized ones */
+  .seg-btn, .item, .toc-item { min-height: 34px; }
+  .toc { max-height: none; }
+
   .keyhint { display: none; }
 }
 

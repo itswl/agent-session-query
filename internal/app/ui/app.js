@@ -1004,9 +1004,7 @@ async function downloadExport(record, node) {
 }
 
 function sessionCard(record, final) {
-  // The metadata is reference material, not something to read every time: keep the
-  // sessionId and the two actions on the surface and fold the table away.
-  const card = el('section', 'card foldable');
+  const card = el('section', 'card');
   const head = el('div', 'card-head');
   head.appendChild(el('h3', '', 'Session'));
   head.appendChild(copyButton(record.sessionId));
@@ -1014,8 +1012,9 @@ function sessionCard(record, final) {
     (event) => downloadExport(record, event.currentTarget)));
   card.appendChild(head);
 
-  const body = el('details');
-  body.appendChild(el('summary', '', 'Details'));
+  // Laid out plainly rather than behind a fold: it is a short table, and the file path
+  // under it is what you copy when a session needs looking at
+  const body = el('div');
   body.appendChild(kv([
     ['Source', record.source],
     ['Messages', final && final.messageCount],
@@ -1176,6 +1175,16 @@ function clearDetail(message) {
 // loaded, scrolling up fetches older messages and prepends them; with the earliest page
 // loaded, scrolling down appends newer ones. The anchor from the search work is the
 // cursor: a page descends to the oldest message on screen, or ascends from the newest.
+// messageKey identifies a message across pages. Ids are the reliable case; a session
+// whose messages carry none falls back to the fields that make it that message. The
+// timestamp alone is not enough — several messages can share one.
+function messageKey(message) {
+  if (message.id) return 'id:' + message.id;
+  const first = (message.content || [])[0] || {};
+  return 'k:' + (message.timestamp || '') + '|' + (message.role || '') + '|' +
+    String(first.content == null ? '' : first.content).slice(0, 120);
+}
+
 async function loadMore(edge) {
   const detail = state.detail;
   if (!detail || state.loadingMore || state.noMore[edge]) return;
@@ -1203,8 +1212,15 @@ async function loadMore(edge) {
     // The session may have changed while this was in flight
     if (state.detail === detail) {
       const got = (data.messages || []);
-      // The anchored page includes the message it was anchored on: drop the overlap
-      fresh = edge === 'older' ? got.slice(0, -1) : got.slice(1);
+      // Keep only what is not already on screen. The page overlaps the window by its
+      // anchor message, but the overlap is not always exactly one: timestamps repeat
+      // within a session (a batch of messages can share one), and the anchored query
+      // then returns the same block every time. Slicing one element off assumed an
+      // overlap that a repeated timestamp does not give, so the same page was appended
+      // over and over. Identity decides it instead, and a page that adds nothing ends
+      // the edge.
+      const seen = new Set(msgs.map(messageKey));
+      fresh = got.filter((m) => !seen.has(messageKey(m)));
     }
   } catch (err) {
     handleError(err);

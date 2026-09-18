@@ -618,7 +618,7 @@ function renderStreamHead(record) {
     },
   ));
   bar.appendChild(segmented(
-    [['', 'all'], ['user', 'user'], ['assistant', 'assistant']],
+    [['', 'all'], ['user', 'user'], ['assistant', 'assistant'], ['tools', 'tools']],
     state.role,
     (value) => {
       if (value === state.role) return;
@@ -704,6 +704,30 @@ function roleLabel(message) {
   return message.role || '?';
 }
 
+// isToolMessage: anything that carried a tool call or its result. The tools filter works
+// on this rather than on role, because a tool call rides inside an assistant message
+// (the call and the prose share one turn) while a result is its own message with role
+// tool, or a user-role row for Claude. Role alone would miss half of it.
+function isToolMessage(message) {
+  return (message.content || []).some(
+    (b) => b.type === 'toolCall' || b.type === 'toolResult');
+}
+
+// matchesRole is the one place the stream filter is decided, shared by the renderer and
+// the table of contents
+function matchesRole(message) {
+  if (!state.role) return true;
+  if (state.role === 'tools') return isToolMessage(message);
+  return message.role === state.role;
+}
+
+// emptyStreamNote names what the current filter left empty
+function emptyStreamNote() {
+  if (!state.role) return 'This session has no messages';
+  if (state.role === 'tools') return 'No tool activity in this window';
+  return 'No ' + state.role + ' messages';
+}
+
 function messageNode(message, index) {
   // A block with no content renders as an empty box (the dashed thinking box especially
   // stands out), so drop it. These blocks genuinely occur: a Claude thinking block may
@@ -773,12 +797,12 @@ function renderMessages() {
   const all = detail.messages.messages || [];
   const shown = [];
   all.forEach((message, index) => {
-    if (!state.role || message.role === state.role) shown.push({ message, index });
+    if (matchesRole(message)) shown.push({ message, index });
   });
 
   const box = document.createDocumentFragment();
   if (shown.length === 0) {
-    box.appendChild(el('p', 'empty', state.role ? 'No ' + state.role + ' messages' : 'This session has no messages'));
+    box.appendChild(el('p', 'empty', emptyStreamNote()));
   }
   shown.forEach(({ message, index }) => box.appendChild(messageNode(message, index)));
   pane.replaceChildren(box);
@@ -1016,8 +1040,9 @@ function gotoMessage(index) {
 
   let node = find();
   if (!node && state.role) {
-    state.role = '';
+    state.role = '';  // the table of contents lists questions, whatever the filter is
     renderMessages();
+    renderStreamHead(state.byId.get(state.selectedId));
     node = find();
   }
   if (!node) return;

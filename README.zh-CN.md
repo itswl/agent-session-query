@@ -86,7 +86,8 @@ go build -o agent-session-query ./cmd/agent-session-query
   正在写入的会话会有一个呼吸的绿点；项目分组标题可点击折叠。行上显示消息数——SQLite 源在列表里
   就有，文件源在打开该会话后补上
 - **中栏**：消息时间线（text / thinking / toolCall / toolResult 各类块）。可以在最早和最新的
-  200 条之间切换，也可以只看 user 或 assistant
+  200 条之间切换，也可以只看 user、assistant 或 **tools**——最后一项只显示带工具调用或结果的
+  轮次，翻看「到底跑了什么」时最有用。工具块按类别着色（执行 / 读取 / 写入 / 搜索 / 网络 / 委派）
 - **右栏**：最终结果常驻——stopReason、答案、思考过程、用量与成本、会话元数据
   （一键复制 sessionId，一键导出 Markdown），以及**对话目录**：用户的每一轮提问按序号排列，
   点击即可跳到消息流中的对应位置。目录覆盖当前加载的窗口，会话更长时会明确标注

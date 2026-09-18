@@ -1,11 +1,14 @@
 package app
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"io/fs"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // The page is baked into the binary with go:embed: no npm, no build step, still a
@@ -70,7 +73,7 @@ func serveUIAssets(w http.ResponseWriter, r *http.Request, path string) {
 		http.NotFound(w, r)
 		return
 	}
-	etag := `"` + buildVersion + ":" + name + `"`
+	etag := assetETag(name, data)
 	w.Header().Set("Content-Type", assetContentType(name))
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("ETag", etag)
@@ -80,6 +83,25 @@ func serveUIAssets(w http.ResponseWriter, r *http.Request, path string) {
 	}
 	_, _ = w.Write(data)
 }
+
+// assetETag identifies one embedded asset by its content.
+//
+// Deriving it from the build version alone looked right and was not: a local build has
+// the constant version "dev", so rebuilding changed the bytes while the ETag stayed the
+// same and the browser kept serving its old copy. Hashing the bytes is correct in both
+// cases — a release changes the tag, a working copy changes the content, and neither
+// changes without a new ETag.
+func assetETag(name string, data []byte) string {
+	if cached, ok := assetETags.Load(name); ok {
+		return cached.(string)
+	}
+	sum := sha256.Sum256(data)
+	etag := `"` + buildVersion + "-" + hex.EncodeToString(sum[:8]) + `"`
+	assetETags.Store(name, etag)
+	return etag
+}
+
+var assetETags sync.Map // name → etag, filled on first request
 
 // assetContentType names the type explicitly: the set is small and fixed, and
 // http.FileServer's extension lookup is no longer in the path.

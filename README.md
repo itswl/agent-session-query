@@ -154,7 +154,8 @@ its own history** — Claude Code can go looking for the same problem you solved
 last week. Five tools: `search_sessions` / `list_sessions` / `list_projects` / `get_session` /
 `get_messages`.
 
-Client configuration and the security notes are in **[docs/mcp.md](docs/mcp.md)**.
+Client configuration, the security notes, and the Claude Code skill that ships with the
+repository are in **[docs/mcp.md](docs/mcp.md)**.
 
 ## Configuration
 

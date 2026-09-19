@@ -21,6 +21,17 @@ first place).
 }
 ```
 
+A Claude Code skill ships with the repository at
+[`.claude/skills/agent-sessions/SKILL.md`](../.claude/skills/agent-sessions/SKILL.md). It
+carries the part a tool schema cannot: which tool answers which question, how to land on a
+search hit instead of paging towards it, when the answer is a file rather than context, and
+what to warn about when handing a pack to another agent. Install it by pointing the skills
+directory at it:
+
+```bash
+ln -s "$PWD/.claude/skills/agent-sessions" ~/.claude/skills/agent-sessions
+```
+
 ## Streamable HTTP
 
 In HTTP mode there is also `POST /mcp`, implementing the Streamable HTTP transport from the

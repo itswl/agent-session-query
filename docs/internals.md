@@ -71,7 +71,18 @@ and deployment see the [README](../README.md).
   against a real rollout, the row types are complementary: `turn_context` carries only `cwd`,
   `token_usage_record` only `session_id`.
   **Salvaging never touches a bare `id`**: a message row (`response_item`) payload carries
-  `id = "msg_..."`, and picking that up would report a message ID as the session ID
+  `id = "msg_..."`, and picking that up would report a message ID as the session ID.
+
+  The session id does come from a bare `id` on one row, though: a subagent's rollout is a
+  fork, and its first `session_meta` says which session it was forked from — `session_id`
+  there is the *parent's* id and the file's own is in `id`. Verified across every rollout on
+  a real install: on the seven subagent files `id` equals the UUID in the filename and
+  `session_id` equals the parent's, while a normal rollout carries the same value in both.
+  Reading `session_id` first listed each subagent as its parent, so several rows shared one
+  sessionId — and everything that keys sessions by id (the reader, `/sessions/<id>`, the
+  page's row reuse) could not tell them apart. `codexSessionID` therefore prefers the
+  session_meta `id`, falls back to the filename when a forked meta has none, and only uses a
+  salvaged `session_id` when there is no session_meta at all
 - **Gemini CLI**: the file is an append log — a metadata first line (`sessionId` /
   `startTime`), `{"$set": {...}}` patch rows, and message rows. Messages are the `type=user` /
   `type=gemini` rows, where `content` may be an array (user) or a string (gemini). Tool-driven

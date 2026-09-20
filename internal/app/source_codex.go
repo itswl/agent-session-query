@@ -70,11 +70,13 @@ func (s *CodexSource) List() []record {
 		// is the authoritative and complete row, so stop as soon as it appears; only when
 		// it never does fall back to salvaging recognisable fields from later rows.
 		payload := map[string]any{}
+		hasMeta := false
 		seen := 0
 		eachJSONL(path, func(obj map[string]any) bool {
 			row := getMap(obj, "payload")
 			if obj["type"] == "session_meta" {
 				payload = row
+				hasMeta = true
 				return false
 			}
 			for _, key := range codexSalvageKeys {
@@ -92,7 +94,7 @@ func (s *CodexSource) List() []record {
 			"source":     "codex",
 			"key":        path,
 			"shortKey":   firstNonEmpty(codexUserTitle(path), stem),
-			"sessionId":  strOr(payload["session_id"], strOr(payload["id"], stem)),
+			"sessionId":  codexSessionID(payload, hasMeta, stem),
 			"file":       path,
 			"hasFile":    true,
 			"status":     "done",
@@ -101,6 +103,37 @@ func (s *CodexSource) List() []record {
 			"updatedAt":  updated,
 		}, updated)
 	})
+}
+
+// codexSessionID is the id of the session a rollout file holds.
+//
+// A forked — subagent — rollout's first session_meta says which session it was forked
+// from: `session_id` there is the *parent's* id, and the file's own is in `id`. Verified
+// against every rollout on a real install: `id` equals the UUID in the filename and
+// `session_id` equals the parent's, on all seven subagent files, while a normal rollout
+// carries the same value in both. Reading `session_id` first therefore listed every
+// subagent as its parent, which is what put several rows sharing one sessionId in the
+// list — the UI keys sessions by id, so those rows could not be told apart, and the
+// duplicates outlived every filter that should have dropped them.
+//
+// Only a session_meta id counts. A message payload carries `id` as well and that one is a
+// message id (see codexSalvageKeys), which is what hasMeta gates. With no session_meta at
+// all there is nothing authoritative to read, so a salvaged session_id, or the filename,
+// has to do.
+func codexSessionID(payload map[string]any, hasMeta bool, stem string) string {
+	salvaged := strOr(payload["session_id"], stem)
+	if !hasMeta {
+		return salvaged
+	}
+	if own := strOr(payload["id"], ""); own != "" {
+		return own
+	}
+	// Forked with no id of its own: session_id names the parent here, so the filename is
+	// the only thing left that belongs to this file
+	if truthy(payload["forked_from_id"]) || truthy(payload["parent_thread_id"]) {
+		return stem
+	}
+	return salvaged
 }
 
 func (s *CodexSource) Messages(r record, q messageQuery) []map[string]any {

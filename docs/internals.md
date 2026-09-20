@@ -298,7 +298,10 @@ reading**:
 
 - The list is **patched incrementally** by sessionId — a matched node has its text updated in
   place (`setText` only writes to the DOM when the content really changed, or it would clear the
-  user's selection), and reordering moves nodes with `insertBefore` instead of rebuilding them
+  user's selection), and reordering moves nodes with `insertBefore` instead of rebuilding them.
+  That patch keys rows by id and can hold one node per id, so a repeated id has to drop the
+  earlier node on sight: it is in no later render's row list, and the sweep at the end only
+  reaches what the map holds — the row would outlive every filter that should have removed it
 - The detail pane is only refetched when the selected session's `updatedAt` / `status` / chosen
   direction really changed; refreshing the same session leaves the old content on screen and
   does not flash

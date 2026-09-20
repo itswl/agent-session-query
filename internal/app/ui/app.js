@@ -423,11 +423,16 @@ function renderList() {
   }
 
   // Index the existing nodes by id: reusable ones just get their text updated, and only
-  // the rest are created
+  // the rest are created. A repeated id drops the earlier node: the map can hold one
+  // per id, so the others would never be reached again — not by this render nor by the
+  // stale sweep at its end — and would sit in the list through every filter that should
+  // have removed them. (Two rows do share an id when a source reports one sessionId for
+  // two sessions; the server no longer does, and this is what kept it visible.)
   const existing = new Map();
   for (const node of Array.from(list.children)) {
-    if (node.dataset && node.dataset.id) existing.set(node.dataset.id, node);
-    else node.remove(); // a leftover empty-state message
+    const id = node.dataset && node.dataset.id;
+    if (!id || existing.has(id)) node.remove();
+    else existing.set(id, node);
   }
 
   rows.forEach((row, index) => {

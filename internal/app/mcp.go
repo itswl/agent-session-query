@@ -252,6 +252,62 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		projects, ungrouped := s.api.listProjects()
 		return map[string]any{"projects": projects, "total": len(projects), "ungrouped": ungrouped}, nil
 
+	case "recent_project_activity":
+		project := strings.TrimSpace(argString(args, "project"))
+		if project == "" {
+			return nil, errors.New("missing argument: project")
+		}
+		sessions, _ := s.api.listSessions()
+		limit := argInt(args, "limit", mcpDefaultLimit, s.maxLimit)
+		activity := make([]map[string]any, 0, limit)
+		for _, item := range sessions {
+			if !strings.Contains(toStr(item["project"]), project) {
+				continue
+			}
+			activity = append(activity, item)
+			if len(activity) >= limit {
+				break
+			}
+		}
+		return map[string]any{"project": project, "activity": activity, "returned": len(activity)}, nil
+
+	case "find_decisions", "find_similar_question":
+		query := strings.TrimSpace(argString(args, "query"))
+		if query == "" {
+			return nil, errors.New("missing argument: query")
+		}
+		limit := argInt(args, "limit", mcpDefaultLimit, s.maxLimit)
+		// Search each term independently and merge by session. This gives an Agent useful
+		// recall without pretending that a lexical match is a generated memory or decision.
+		terms := strings.FieldsFunc(query, func(r rune) bool { return r == ',' || r == '|' })
+		merged := map[string]map[string]any{}
+		order := []string{}
+		for _, raw := range terms {
+			term := strings.TrimSpace(raw)
+			if term == "" {
+				continue
+			}
+			q := searchQuery{needle: term, lowered: appendLowerASCII(nil, []byte(term)), limit: limit, perSession: 5, role: "assistant"}
+			found := s.api.search(ctx, q)
+			for _, item := range found.results {
+				key := toStr(item["source"]) + "\x00" + toStr(item["sessionId"])
+				if _, exists := merged[key]; !exists {
+					merged[key] = item
+					order = append(order, key)
+				} else {
+					merged[key]["matchCount"] = toFloatDefault(merged[key]["matchCount"], 0) + toFloatDefault(item["matchCount"], 0)
+				}
+			}
+		}
+		results := make([]map[string]any, 0, min(limit, len(order)))
+		for _, key := range order {
+			if len(results) >= limit {
+				break
+			}
+			results = append(results, merged[key])
+		}
+		return map[string]any{"query": query, "results": results, "matched": len(order), "note": "lexical cross-session matches; inspect excerpts before treating them as authoritative memory"}, nil
+
 	case "get_session":
 		pattern := strings.TrimSpace(argString(args, "pattern"))
 		if pattern == "" {
@@ -338,6 +394,13 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
+}
+
+func toFloatDefault(value any, fallback float64) float64 {
+	if n, ok := toFloat(value); ok {
+		return n
+	}
+	return fallback
 }
 
 // pageMessages slices one page out of the fetched window. With fromEnd the fetch holds
@@ -517,6 +580,30 @@ func mcpTools() []map[string]any {
 			"description": "Group sessions by project (cwd) to see which agents were used on a given repository, and how many sessions each has.",
 			"annotations": readOnlyAnnotations("List projects"),
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+		},
+		{
+			"name":        "recent_project_activity",
+			"description": "Read-only project timeline: list the most recently updated sessions for a project across agent sources.",
+			"annotations": readOnlyAnnotations("Recent project activity"),
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+				"project": strSchema("project path or substring of cwd"), "limit": intSchema("maximum sessions, default 20"),
+			}, "required": []string{"project"}},
+		},
+		{
+			"name":        "find_decisions",
+			"description": "Find likely decision and conclusion excerpts across sessions. This is lexical, not an AI-generated summary.",
+			"annotations": readOnlyAnnotations("Find decisions"),
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+				"query": strSchema("terms to search, separated by comma or |"), "limit": intSchema("maximum sessions, default 20"),
+			}},
+		},
+		{
+			"name":        "find_similar_question",
+			"description": "Find prior assistant answers matching the supplied question terms, for read-only agent memory recall.",
+			"annotations": readOnlyAnnotations("Find similar question"),
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+				"query": strSchema("question or distinctive terms"), "limit": intSchema("maximum sessions, default 20"),
+			}, "required": []string{"query"}},
 		},
 		{
 			"name":        "get_session",

@@ -2,6 +2,7 @@ package app
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -96,5 +97,70 @@ func TestCodexMessageIDNeverBecomesSessionID(t *testing.T) {
 	r := newCodexSource(root).List()[0]
 	if got := r.str("sessionId"); got != "rollout-only-msgs" {
 		t.Fatalf("sessionId = %q; should fall back to the filename", got)
+	}
+}
+
+// TestCodexSubagentRolloutKeepsItsOwnID: a subagent's rollout is forked from another
+// session, and its first session_meta names that session — `session_id` is the parent's
+// id there, `id` is the file's own. Reading session_id first (as this did) listed every
+// subagent as its parent: several rows shared one sessionId, and everything that keys
+// sessions by id — the reader, /sessions/<id>, the page's own row reuse — could no longer
+// tell them apart.
+//
+// The shapes are a real rollout's, reduced.
+func TestCodexSubagentRolloutKeepsItsOwnID(t *testing.T) {
+	const parent = "01a0a010-4923-7150-b331-03960a5c4acb"
+	const child = "01a0a010-9b19-7ff0-9919-8ef807f17454"
+
+	root := t.TempDir()
+	write(t, filepath.Join(root, "2026", "09", "14", "rollout-2026-09-14T21-16-57-"+parent+".jsonl"),
+		`{"type":"session_meta","payload":{"session_id":"`+parent+`","id":"`+parent+`",`+
+			`"cwd":"/w/main","cli_version":"0.153.4"}}`,
+		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"the parent session"}]}}`,
+	)
+	write(t, filepath.Join(root, "2026", "09", "14", "rollout-2026-09-14T21-17-18-"+child+".jsonl"),
+		`{"type":"session_meta","payload":{"session_id":"`+parent+`","id":"`+child+`",`+
+			`"forked_from_id":"`+parent+`","parent_thread_id":"`+parent+`","thread_source":"subagent",`+
+			`"agent_nickname":"Carson","cwd":"/w/sub","cli_version":"0.153.4"}}`,
+		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"review the architecture"}]}}`,
+	)
+
+	list := newCodexSource(root).List()
+	if len(list) != 2 {
+		t.Fatalf("list = %v", list)
+	}
+	byID := map[string]string{}
+	for _, r := range list {
+		byID[r.str("sessionId")] = filepath.Base(r.str("file"))
+	}
+	if file, ok := byID[child]; !ok {
+		t.Fatalf("the subagent must be listed under its own id %s, got %v", child, byID)
+	} else if !strings.Contains(file, child) {
+		t.Fatalf("the parent's id was reported for %s", file)
+	}
+	if file, ok := byID[parent]; !ok || !strings.Contains(file, parent) {
+		t.Fatalf("the parent session must keep its id, got %v", byID)
+	}
+
+	// cwd and cliVersion still come from the fork's own metadata row
+	for _, r := range list {
+		if r.str("sessionId") == child && r.str("cwd") != "/w/sub" {
+			t.Fatalf("cwd = %q", r.str("cwd"))
+		}
+	}
+}
+
+// TestCodexForkedMetaWithoutOwnID: an older CLI that writes a fork without `id` leaves
+// session_id naming the parent, so the filename is the only thing that belongs to this
+// file — reporting the parent's id here would merge the two again.
+func TestCodexForkedMetaWithoutOwnID(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "2026", "09", "14", "rollout-2026-09-14T21-17-18-forked.jsonl"),
+		`{"type":"session_meta","payload":{"session_id":"the-parent","forked_from_id":"the-parent",`+
+			`"cwd":"/w/sub","cli_version":"0.9"}}`,
+	)
+	r := newCodexSource(root).List()[0]
+	if got := r.str("sessionId"); got != "rollout-2026-09-14T21-17-18-forked" {
+		t.Fatalf("sessionId = %q; must not be the parent's", got)
 	}
 }

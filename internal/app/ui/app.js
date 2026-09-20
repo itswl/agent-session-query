@@ -976,16 +976,25 @@ function usageCard(usage) {
 // label rather than the bare extension: "jsonl" alone does not say what it is for.
 const EXPORT_FORMATS = [
   ['md', 'Markdown'],
-  ['jsonl', 'JSONL (one per line)'],
-  ['json', 'JSON (one document)'],
-  ['html', 'HTML (standalone)'],
+  ['jsonl', 'JSONL'],
+  ['json', 'JSON'],
+  ['html', 'HTML'],
 ];
 
-// exportFormatLabel names the format the button will produce, so the picker beside it
-// needs no explanation of its own
-function exportFormatLabel() {
-  const found = EXPORT_FORMATS.find(([value]) => value === state.exportFormat);
-  return found ? found[1] : EXPORT_FORMATS[0][1];
+// What each format is for — a select cannot show this, and the option labels have to stay
+// short enough to read in a narrow side pane. The formats are documented in docs/api.md.
+const EXPORT_HINTS = {
+  md: 'Markdown — for reading or pasting',
+  jsonl: 'JSONL — one JSON object per line, for jq',
+  json: 'JSON — the same data in one document',
+  html: 'HTML — a standalone page, no scripts',
+};
+
+// safeFilename mirrors the server's sanitizeFilename: the characters a filesystem will
+// not take become dashes, so the two never disagree about what a download is called.
+function safeFilename(name) {
+  const cleaned = String(name || '').replace(/[\\/:*?"<>|]/g, '-').replace(/[\x00-\x1f]/g, '-');
+  return cleaned.replace(/^[. ]+|[. ]+$/g, '') || 'session';
 }
 
 // downloadExport exports the session in the chosen format.
@@ -1009,7 +1018,12 @@ async function downloadExport(record, node) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = (record.shortKey || record.sessionId) + '.md';
+    // The server sends the right filename in Content-Disposition, but this builds the
+    // download from a blob and sets the name itself — which it did with '.md' hardcoded,
+    // so every format arrived as Markdown. The extension is the format, and the name is
+    // cleaned the way the server cleans its own, so a title containing a slash does not
+    // become a path.
+    link.download = safeFilename(record.shortKey || record.sessionId) + '.' + state.exportFormat;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -1044,8 +1058,12 @@ function sessionCard(record, final) {
     renderSide(record); // the button names the format it will produce
   });
   head.appendChild(picker);
-  head.appendChild(button('ghost tiny', 'Export ' + exportFormatLabel().split(' ')[0].toLowerCase(),
-    (event) => downloadExport(record, event.currentTarget)));
+  // The picker beside it already names the format; repeating it in the button made the
+  // row too wide for the pane and pushed the button past the card's edge
+  const exportButton = button('ghost tiny', 'Export',
+    (event) => downloadExport(record, event.currentTarget));
+  exportButton.title = EXPORT_HINTS[state.exportFormat] || 'Export';
+  head.appendChild(exportButton);
   card.appendChild(head);
 
   // Laid out plainly rather than behind a fold: it is a short table, and the file path

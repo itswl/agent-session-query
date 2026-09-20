@@ -566,11 +566,13 @@ details > summary .fold-preview {
 details > summary .fold-size { flex: none; font-size: 11px; }
 
 /* The session card's action row, beside its heading */
-.card-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+/* wraps rather than overflowing: the pane can be 290px wide, and the picker plus a button
+   is close to that on its own */
+.card-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
 /* The export format picker sits with the session's actions; kept narrow so the label of
    the button beside it is what carries the meaning */
 .card-head select.fmt {
-  margin-left: auto; max-width: 132px; padding: 2px 4px; font-size: 11.5px;
+  margin-left: auto; max-width: 108px; padding: 2px 4px; font-size: 11.5px;
   font-family: inherit; color: var(--fg-mid);
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px;
 }

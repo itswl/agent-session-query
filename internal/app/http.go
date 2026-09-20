@@ -276,7 +276,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 
 	// Health check: unauthenticated, so monitoring can probe it
 	if path == "/health" {
-		writeJSON(w, http.StatusOK, map[string]any{
+		body := map[string]any{
 			"status":  "ok",
 			"version": buildVersion,
 			"mode":    s.mode,
@@ -285,7 +285,14 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			// configured there is no reason to make anyone invent one
 			"authRequired": s.token != "",
 			"stats":        s.stats(),
-		})
+		}
+		// The health check is unauthenticated, so it cannot scan the sources to find out —
+		// it reports the failure the last scan hit (see listWarnings). Without it the one
+		// failure worth knowing about looks like perfect health: an empty session list.
+		if warnings := s.api.listWarnings(); len(warnings) > 0 {
+			body["warnings"] = warnings
+		}
+		writeJSON(w, http.StatusOK, body)
 		return http.StatusOK
 	}
 
@@ -389,7 +396,13 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			w.WriteHeader(http.StatusNotModified)
 			return http.StatusNotModified
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions, "total": len(sessions)})
+		body := map[string]any{"sessions": sessions, "total": len(sessions)}
+		// A source that could not be read answers with the same empty list as a source with
+		// nothing in it; this is where the two are told apart
+		if warnings := s.api.listWarnings(); len(warnings) > 0 {
+			body["warnings"] = warnings
+		}
+		writeJSON(w, http.StatusOK, body)
 		return http.StatusOK
 	}
 

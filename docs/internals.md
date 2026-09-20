@@ -14,14 +14,25 @@ and deployment see the [README](../README.md).
   assistant's `reasoning` becomes thinking; `platform` comes from `sessions.source`).
   Verified against the 2026.9 schema: `sessions.title` is the display name (Hermes generates
   one per session; `display_name` is the older field), `sessions.cwd` carries the working
-  directory, `hidden = 1` rows (Bot Mode) are skipped the way Hermes itself filters, an
+  directory, rows Hermes itself hides are skipped (see below), an
   assistant's `tool_calls` column (OpenAI-shaped JSON with the arguments as a string)
   becomes `toolCall` blocks, and a `role = 'tool'` row — the result, with `tool_name` —
   becomes one `toolResult` block. When
   both exist, sessions are deduplicated by sessionId with the jsonl winning. A session with
   no jsonl also falls back to `state.db` for `final` (opened read-only, taking the last
   `active=1` assistant message with `finish_reason=stop`, and falling back to the real count
-  when `message_count` is missing)
+  when `message_count` is missing).
+
+  The visibility column is read from the database rather than assumed, because it has not
+  stayed the same: Bot Mode sessions were marked in `hidden`, and current Hermes (schema 25)
+  marks them in `archived`, which is also what Hermes filters on itself
+  (`COALESCE(archived, 0)`). SQLite rejects an unknown column outright, so naming the wrong
+  one does not degrade the query, it fails it — and the failure looks exactly like a Hermes
+  with no sessions in it. `hermesVisibilityClause` reads `pragma_table_info` and builds the
+  filter from whichever column is there, and leaves it off when neither is: listing one
+  session Hermes would have hidden beats reporting a full database as an empty one. A list
+  that fails for any other reason (a renamed column, a schema mid-migration) comes back as an
+  error rather than as zero records, and the API says so — see below
 - **OpenClaw 2026.9+**: one SQLite database per agent at
   `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite` — `session_windows` is the
   session list (status, model, display_name, unix-millisecond times) and
@@ -83,6 +94,25 @@ and deployment see the [README](../README.md).
   result is the newest assistant message carrying a `finish` field; timestamps are unix
   milliseconds throughout (opened read-only — verified that reads work through the live
   write-ahead log, so sessions still being written are visible)
+
+### When a source cannot be read
+
+A source that returns no records and no error is empty; a source that could not be read at
+all says so, through `listErrorReporter` in `source.go`. Everything else follows from keeping
+those two apart, because they answer a caller identically: an empty list.
+
+`JsonMapSource` is the one that can fail this way today (both its Hermes databases are other
+programs' schemas), so it keeps the failure its last `List()` hit, and the API reads it
+rather than being handed it. `/sessions`, `/health` and the MCP `list_sessions` tool carry it
+as `warnings: [{source, error}]`, present only when there is something to say.
+
+`/health` is unauthenticated and reports what the last scan hit instead of starting one: an
+anonymous request must not be able to set off a walk over every session directory on the
+machine, so it has nothing to report until something has listed.
+
+The list ETag folds the warnings in. A source going from readable-and-empty to unreadable
+changes no record at all, so without that the validator would not move and a client polling
+with `If-None-Match` would keep its 304 — hiding the one thing that did change.
 
 ### Usage: one shape, and a session total
 

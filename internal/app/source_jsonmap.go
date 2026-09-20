@@ -6,16 +6,39 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // JsonMapSource: OpenClaw / Hermes — one sessions.json index plus one jsonl per session.
 type JsonMapSource struct {
 	def jsonMapDef
+
+	// listErr is the failure the last List() hit, kept so that a source which could not be
+	// read is not reported as a source with nothing in it (see listErrorReporter). The lock
+	// is for the whole-list-is-empty case: a scan can be running on one request's goroutine
+	// while /health reads this from another.
+	mu      sync.Mutex
+	listErr error
 }
 
 func newJsonMapSource(def jsonMapDef) *JsonMapSource { return &JsonMapSource{def: def} }
 
 func (s *JsonMapSource) Mode() string { return s.def.mode }
+
+// setListError records how the last list went; nil means it went fine, so this also clears
+// a failure the way the next successful scan should.
+func (s *JsonMapSource) setListError(err error) {
+	s.mu.Lock()
+	s.listErr = err
+	s.mu.Unlock()
+}
+
+// ListError implements listErrorReporter
+func (s *JsonMapSource) ListError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listErr
+}
 
 // Location returns whichever index actually exists (sessions.json wins; newer Hermes
 // has only state.db)
@@ -87,6 +110,7 @@ func (s *JsonMapSource) List() []record {
 	entries := s.load()
 	isOpenClaw := s.def.mode == "openclaw"
 	out := []record{}
+	listErr := error(nil) // this scan's verdict, recorded on the way out (see ListError)
 
 	for _, entry := range entries {
 		info, ok := entry.Val.(map[string]any)
@@ -167,8 +191,13 @@ func (s *JsonMapSource) List() []record {
 				seen[sid] = true
 			}
 		}
-		out = append(out, hermesSQLiteList(s.def.stateDB, s.def.mode, seen)...)
+		var records []record
+		records, listErr = hermesSQLiteList(s.def.stateDB, s.def.mode, seen)
+		out = append(out, records...)
 	}
+	// Every scan replaces the last one's verdict, including when the database it used to
+	// fail on is simply gone now
+	s.setListError(listErr)
 	return out
 }
 

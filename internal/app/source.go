@@ -20,6 +20,17 @@ type SessionSource interface {
 	Final(r record) map[string]any
 }
 
+// listErrorReporter lets a source say that its last List() failed rather than came back
+// empty.
+//
+// That distinction is the whole point of it: a source with nothing to show and a source
+// whose data could not be read at all both answer with zero records, so without this a
+// schema that moved under us reads as "you have no sessions". Only the sources that can
+// fail this way implement it, and the API reports what they last hit (see listWarnings).
+type listErrorReporter interface {
+	ListError() error
+}
+
 // messageQuery describes one message query: how many, and from which end.
 //
 // fromEnd corresponds to ?order=desc. The interesting part of a session is usually its

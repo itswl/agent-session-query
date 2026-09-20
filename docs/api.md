@@ -73,6 +73,12 @@ pattern containing a colon needs URL encoding (`%3A`).
   (the HTTP status is still 200)
 - Errors: 401 / 404 / 500 return `{"error": "..."}`; a 503 from the connection cap is plain
   text
+- `warnings`: `[{source, error}]`, present on `/sessions`, `/health` and MCP
+  `list_sessions` only when a source could not be read. Without it "no sessions" reads the
+  same whether you have none or the source broke — the list is empty either way, and the
+  status is still 200. A source that is merely empty reports nothing. `/health` cannot scan
+  (it answers without a token), so it shows the failure the last list hit; a server that has
+  not listed yet has nothing to report
 
 ## See also
 

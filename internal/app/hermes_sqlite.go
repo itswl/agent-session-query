@@ -166,11 +166,15 @@ func openHermesDB(dbPath string) (*sql.DB, error) {
 // Newer Hermes no longer writes sessions.json or a jsonl per session; everything lives
 // in SQLite. Session IDs registered in skip (those already in sessions.json) are passed
 // over so nothing is listed twice.
-func hermesSQLiteList(dbPath, mode string, skip map[string]bool) []record {
+//
+// The error is returned alongside the records rather than only logged: a database this
+// cannot read is not an empty database, and a caller that cannot tell the two apart reports
+// the first as the second.
+func hermesSQLiteList(dbPath, mode string, skip map[string]bool) ([]record, error) {
 	db, err := openHermesDB(dbPath)
 	if err != nil {
 		warnHermesSQLite("list", err)
-		return nil
+		return nil, err
 	}
 	defer db.Close()
 
@@ -183,11 +187,10 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) []record {
 		       (SELECT MAX(m.timestamp) FROM messages m
 		         WHERE m.session_id = s.id AND COALESCE(m.active, 1) = 1),
 		       s.message_count
-		FROM sessions s
-		WHERE s.hidden = 0`)
+		FROM sessions s` + hermesVisibilityClause(db))
 	if err != nil {
 		warnHermesSQLite("list", err)
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -202,7 +205,7 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) []record {
 			&inputTokens, &outputTokens, &reasoningTokens, &cost, &startedAt, &endedAt, &lastMsg,
 			&messageCount); err != nil {
 			warnHermesSQLite("list", err)
-			return out
+			return out, err
 		}
 		if !sid.Valid || sid.String == "" || skip[sid.String] {
 			continue
@@ -254,7 +257,59 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) []record {
 			"messageCount": nullIntOrZero(messageCount),
 		}, updatedAt))
 	}
-	return out
+	// The rows loop ends on an error too (a truncated read, a database replaced under us),
+	// and the partial list that came back must not be handed up as the whole one
+	if err := rows.Err(); err != nil {
+		warnHermesSQLite("list", err)
+		return out, err
+	}
+	return out, nil
+}
+
+// hermesVisibilityClause returns the WHERE fragment that leaves out the sessions Hermes
+// itself hides, or "" when this state.db has no column for them.
+//
+// Which column marks them is not the same in every Hermes: Bot Mode sessions were marked in
+// `hidden`, and current Hermes (schema 25) marks them in `archived` instead. An unknown
+// column does not degrade a query, it takes the whole statement down — so the columns are
+// read off the database instead of assumed, the way Hermes itself filters on
+// COALESCE(archived, 0).
+//
+// With neither column present the list runs unfiltered, which is the safer failure: showing
+// one session Hermes would have hidden beats reporting a database full of sessions as empty.
+func hermesVisibilityClause(db *sql.DB) string {
+	columns, err := tableColumns(db, "sessions")
+	if err != nil {
+		warnHermesSQLite("list", err)
+		return ""
+	}
+	switch {
+	case columns["hidden"]:
+		return "\n\t\tWHERE COALESCE(s.hidden, 0) = 0"
+	case columns["archived"]:
+		return "\n\t\tWHERE COALESCE(s.archived, 0) = 0"
+	}
+	return ""
+}
+
+// tableColumns reads one table's column names out of the schema: a schema read, so no rows
+// are touched and no data is read
+func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out[name] = true
+	}
+	return out, rows.Err()
 }
 
 // hermesSQLiteMessages reads messages for sessions that have no jsonl (the user/assistant/

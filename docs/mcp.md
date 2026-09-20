@@ -64,6 +64,11 @@ current MCP specification (2025-06-18):
 Every tool declares `readOnlyHint` / `idempotentHint` annotations, so clients that honour
 them can skip call confirmations for what is a read-only query service.
 
+`list_sessions` carries a `warnings: [{source, error}]` field when a source could not be
+read. An empty `sessions` array means an empty source only when there is no warning: without
+it, "this machine has no Hermes sessions" and "the Hermes database could not be read" arrive
+as the same answer, which is worth checking before concluding the history is not there.
+
 ## How the tools fit together
 
 Three questions, in the order they usually get asked. Knowing the shape saves a client from

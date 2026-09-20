@@ -100,18 +100,51 @@ func (a *SessionQueryAPI) listSessions() ([]map[string]any, string) {
 	for _, item := range all {
 		out = append(out, item.public())
 	}
-	return out, listVersion(all)
+	return out, listVersion(all, a.listWarnings())
+}
+
+// listWarnings names the sources whose last list failed, as {source, error}.
+//
+// It reads what the last scan hit instead of starting one: /health answers this without
+// authentication, and an anonymous request should not be able to set off a walk over every
+// session directory on the machine. A caller that wants a fresh answer lists first (which
+// /sessions and the MCP tools do).
+func (a *SessionQueryAPI) listWarnings() []map[string]any {
+	out := []map[string]any{}
+	for _, source := range a.sources {
+		reporter, ok := source.(listErrorReporter)
+		if !ok {
+			continue
+		}
+		if err := reporter.ListError(); err != nil {
+			out = append(out, map[string]any{
+				"source": source.Mode(),
+				"error":  err.Error(),
+			})
+		}
+	}
+	return out
 }
 
 // listVersion is the list's weak validator: membership, update time or status changing
 // all change it.
-func listVersion(records []record) string {
+//
+// The warnings go in as well. A source that stops being readable changes none of the
+// records — it just stops contributing any — and a 304 would then hide the one thing that
+// did change.
+func listVersion(records []record, warnings []map[string]any) string {
 	h := fnv.New64a()
 	for _, r := range records {
 		for _, field := range []string{"source", "key", "updatedAt", "status"} {
 			_, _ = h.Write([]byte(r.str(field)))
 			_, _ = h.Write([]byte{0})
 		}
+		_, _ = h.Write([]byte{0x1e})
+	}
+	for _, w := range warnings {
+		_, _ = h.Write([]byte(toStr(w["source"])))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(toStr(w["error"])))
 		_, _ = h.Write([]byte{0x1e})
 	}
 	return `W/"` + strconv.FormatUint(h.Sum64(), 16) + `"`

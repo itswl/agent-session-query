@@ -153,19 +153,6 @@ function segmented(options, current, onPick) {
   return wrap;
 }
 
-function copyButton(text) {
-  return button('ghost tiny', 'Copy', async (event) => {
-    const node = event.currentTarget;
-    try {
-      await navigator.clipboard.writeText(text);
-      setText(node, 'Copied');
-      setTimeout(() => setText(node, 'Copy'), 1200);
-    } catch (e) {
-      setStatus('Copy failed — select the text manually');
-    }
-  });
-}
-
 // Relative time. updatedAt is spelled differently by each source (with or without T / Z /
 // milliseconds), so normalise to UTC before parsing. Anything uncertain is returned as-is,
 // which merely degrades the list to showing the raw string.
@@ -1041,7 +1028,6 @@ function sessionCard(record, final) {
   const card = el('section', 'card');
   const head = el('div', 'card-head');
   head.appendChild(el('h3', '', 'Session'));
-  head.appendChild(copyButton(record.sessionId));
   // Four formats, one control. The format is a preference and is remembered with the
   // others; a per-session choice would be surprising the next time you exported.
   const picker = el('select', 'fmt');

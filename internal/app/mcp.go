@@ -259,7 +259,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		}
 		sessions, _ := s.api.listSessions()
 		limit := argInt(args, "limit", mcpDefaultLimit, s.maxLimit)
-		activity := make([]map[string]any, 0, limit)
+		activity := make([]map[string]any, 0)
 		for _, item := range sessions {
 			if !strings.Contains(toStr(item["project"]), project) {
 				continue
@@ -299,7 +299,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 				}
 			}
 		}
-		results := make([]map[string]any, 0, min(limit, len(order)))
+		results := make([]map[string]any, 0)
 		for _, key := range order {
 			if len(results) >= limit {
 				break

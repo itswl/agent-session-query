@@ -1076,6 +1076,36 @@ function sessionCard(record, final) {
   return card;
 }
 
+function projectTimeline(record) {
+  const project = record && (record.project || record.cwd);
+  if (!project) return null;
+  const items = state.sessions
+    .filter((item) => (item.project || item.cwd) === project)
+    .slice(0, 12);
+  const card = el('section', 'card timeline-card');
+  const head = el('div', 'card-head');
+  head.appendChild(el('h3', '', 'Project timeline'));
+  head.appendChild(el('span', 'count', items.length + (items.length === 12 ? '+' : '')));
+  card.appendChild(head);
+  card.appendChild(el('p', 'sub', project));
+  const list = el('div', 'timeline');
+  for (const item of items) {
+    const row = el('button', 'timeline-item' + (item.sessionId === state.selectedId ? ' active' : ''));
+    row.type = 'button';
+    row.title = item.sessionId || '';
+    const top = el('span', 'timeline-top');
+    top.appendChild(sourceTag(item.source));
+    if (item.status) top.appendChild(statusTag(item.status));
+    top.appendChild(el('span', 'time', relTime(item.updatedAt)));
+    row.appendChild(top);
+    row.appendChild(el('span', 'timeline-title', item.shortKey || item.sessionId));
+    row.addEventListener('click', () => selectSession(item.sessionId));
+    list.appendChild(row);
+  }
+  card.appendChild(list);
+  return card;
+}
+
 function renderSide(record) {
   const side = $('side');
   const detail = state.detail;
@@ -1088,6 +1118,8 @@ function renderSide(record) {
   const usage = usageCard((detail.final && detail.final.usage) || {});
   if (usage) box.appendChild(usage);
   box.appendChild(sessionCard(record, detail.final));
+  const timeline = projectTimeline(record);
+  if (timeline) box.appendChild(timeline);
   box.appendChild(tocCard());
   side.replaceChildren(box);
 }

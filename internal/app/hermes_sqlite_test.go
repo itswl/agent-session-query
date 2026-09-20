@@ -3,6 +3,7 @@ package app
 import (
 	"database/sql"
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,7 +36,8 @@ CREATE TABLE sessions (
 	reasoning_tokens INTEGER, estimated_cost_usd REAL,
 	session_key TEXT, display_name TEXT, source TEXT, model TEXT,
 	started_at REAL, ended_at REAL,
-	title TEXT, cwd TEXT, hidden INTEGER NOT NULL DEFAULT 0
+	title TEXT, cwd TEXT, archived INTEGER NOT NULL DEFAULT 0,
+	pinned INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE messages (
 	id TEXT, session_id TEXT, role TEXT, content TEXT,
@@ -206,6 +208,9 @@ func TestHermesSQLiteOnlySource(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("list = %v", list)
 	}
+	if err := source.ListError(); err != nil {
+		t.Fatalf("a list that worked must not leave a failure behind: %v", err)
+	}
 	r := list[0]
 	if r.str("sessionId") != "20260814_002606_1a7908" || r.str("key") != "20260814_002606_1a7908" {
 		t.Fatalf("record = %v", r.fields)
@@ -251,9 +256,9 @@ func TestHermesSQLiteListAndToolMessages(t *testing.T) {
 		                       started_at, ended_at, estimated_cost_usd, message_count)
 		 VALUES ('h-live', '', '排查接口 502', '', '/w/proj', 'deepseek-chat',
 		         1789705755.0, 1789705770.0, 0.0012, 7)`,
-		// hidden: Bot Mode sessions must not be listed (Hermes itself filters them)
-		`INSERT INTO sessions (id, session_key, display_name, hidden, started_at, ended_at)
-		 VALUES ('h-hidden', 'k-hidden', 'bot session', 1, 1789705755.0, 1789705770.0)`,
+		// archived: sessions Hermes hides from its own list must not be listed here either
+		`INSERT INTO sessions (id, session_key, display_name, archived, started_at, ended_at)
+		 VALUES ('h-archived', 'k-archived', 'bot session', 1, 1789705755.0, 1789705770.0)`,
 		// display_name only (the older field, pre-title Hermes)
 		`INSERT INTO sessions (id, session_key, display_name, started_at, ended_at)
 		 VALUES ('h-named', 'k-named', 'older session', 1789600000.0, 1789600100.0)`,
@@ -272,11 +277,14 @@ func TestHermesSQLiteListAndToolMessages(t *testing.T) {
 		 VALUES ('n4', 'h-live', 'assistant', 'the upstream is timing out', 'stop', 1789705759.0)`,
 	})
 
-	records := hermesSQLiteList(dbPath, "hermes", nil)
+	records, err := hermesSQLiteList(dbPath, "hermes", nil)
+	if err != nil {
+		t.Fatalf("listing failed: %v", err)
+	}
 	if len(records) != 2 {
-		// A column/scan mismatch returns an empty list rather than an error, so this
-		// count also guards the SELECT list staying in step with the Scan
-		t.Fatalf("the hidden session must be skipped: %d records", len(records))
+		// A column/scan mismatch returns no records, so this count also guards the SELECT
+		// list staying in step with the Scan
+		t.Fatalf("the archived session must be skipped: %d records", len(records))
 	}
 	if n := records[0].get("messageCount"); n != int64(7) {
 		t.Errorf("messageCount = %v, want 7 (sessions.message_count)", n)
@@ -321,5 +329,137 @@ func TestHermesSQLiteListAndToolMessages(t *testing.T) {
 	}
 	if !strings.Contains(block["content"].(string), "upstream timeout") {
 		t.Errorf("tool output = %v", block["content"])
+	}
+}
+
+// hermesSessionsSchema builds a state.db whose sessions table carries the columns the list
+// query reads plus the given visibility column ("" for a Hermes whose table has none).
+// Which column marks the sessions Hermes hides is the one thing that differs between
+// versions, so each variant is named in the test that needs it.
+func hermesSessionsSchema(visibility string) string {
+	tail := ""
+	if visibility != "" {
+		tail = ",\n\t" + visibility + " INTEGER NOT NULL DEFAULT 0"
+	}
+	return `
+CREATE TABLE sessions (
+	id TEXT PRIMARY KEY, session_key TEXT, title TEXT, display_name TEXT,
+	source TEXT, model TEXT, cwd TEXT,
+	input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER,
+	estimated_cost_usd REAL, started_at REAL, ended_at REAL, message_count INTEGER` + tail + `
+);
+CREATE TABLE messages (
+	id TEXT, session_id TEXT, role TEXT, content TEXT, timestamp REAL,
+	active INTEGER DEFAULT 1
+);`
+}
+
+// TestHermesSQLiteListLegacyHiddenColumn: Hermes before the rename marked the sessions it
+// hides in `hidden`. The filter is chosen from the schema, so those installs keep hiding
+// them — and, more to the point, an install whose table has no `hidden` no longer fails its
+// entire list over a column that is not there.
+func TestHermesSQLiteListLegacyHiddenColumn(t *testing.T) {
+	dbPath := newHermesFixture(t)
+	makeHermesDB(t, dbPath, hermesSessionsSchema("hidden"), []string{
+		`INSERT INTO sessions (id, session_key, display_name, started_at, ended_at)
+		 VALUES ('h-visible', 'k-visible', 'a normal session', 1789705755.0, 1789705770.0)`,
+		`INSERT INTO sessions (id, session_key, display_name, hidden, started_at, ended_at)
+		 VALUES ('h-hidden', 'k-hidden', 'bot session', 1, 1789705755.0, 1789705770.0)`,
+	})
+
+	records, err := hermesSQLiteList(dbPath, "hermes", nil)
+	if err != nil {
+		t.Fatalf("listing failed: %v", err)
+	}
+	if len(records) != 1 || records[0].str("sessionId") != "h-visible" {
+		t.Fatalf("the hidden session must be skipped: %v", records)
+	}
+}
+
+// TestHermesSQLiteListWithoutVisibilityColumn: with no visibility column at all the list
+// runs unfiltered. That is the safer failure of the two — showing a session Hermes would
+// have hidden beats answering a database full of sessions with an empty list.
+func TestHermesSQLiteListWithoutVisibilityColumn(t *testing.T) {
+	dbPath := newHermesFixture(t)
+	makeHermesDB(t, dbPath, hermesSessionsSchema(""), []string{
+		`INSERT INTO sessions (id, session_key, display_name, started_at, ended_at)
+		 VALUES ('h-one', 'k-one', 'the only session', 1789705755.0, 1789705770.0)`,
+	})
+
+	records, err := hermesSQLiteList(dbPath, "hermes", nil)
+	if err != nil {
+		t.Fatalf("listing failed: %v", err)
+	}
+	if len(records) != 1 || records[0].str("sessionId") != "h-one" {
+		t.Fatalf("an unfiltered list must still return the session: %v", records)
+	}
+}
+
+// TestHermesListFailureIsReported: a state.db this cannot read must not come back as a
+// source with nothing in it. Both the session list and the health check have to say so,
+// because otherwise the answer to "why is hermes empty" is indistinguishable from "you have
+// no hermes sessions" — which is exactly how a schema that moved under this went unnoticed.
+func TestHermesListFailureIsReported(t *testing.T) {
+	dbPath := newHermesFixture(t)
+	// A sessions table missing the columns the list reads (title here): the statement fails
+	// outright, the way a renamed or dropped column does
+	makeHermesDB(t, dbPath, `
+CREATE TABLE sessions (
+	id TEXT PRIMARY KEY, session_key TEXT, display_name TEXT, archived INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE messages (
+	id TEXT, session_id TEXT, role TEXT, content TEXT, timestamp REAL,
+	active INTEGER DEFAULT 1
+);`, nil)
+
+	source := newJsonMapSource(hermesDef(defaultHome()))
+	sources := []SessionSource{source}
+	srv := httptest.NewServer(newAPIServer(serverOptions{
+		mode: "hermes", sources: sources, api: newSessionQueryAPI(sources, 0), maxConnections: 10,
+	}))
+	t.Cleanup(srv.Close)
+
+	// /health is unauthenticated, so it reports what the last scan hit rather than scanning
+	// for itself: with nothing scanned yet it has nothing to report
+	if _, body := get(t, srv.URL+"/health", ""); body["warnings"] != nil {
+		t.Fatalf("/health must not scan the sources to answer: %v", body["warnings"])
+	}
+	if err := source.ListError(); err != nil {
+		t.Fatalf("nothing has listed anything yet: %v", err)
+	}
+
+	if code, body := get(t, srv.URL+"/sessions", ""); code != 200 {
+		t.Fatalf("/sessions = %d %v", code, body)
+	} else if warnings, ok := body["warnings"].([]any); !ok || len(warnings) != 1 {
+		t.Fatalf("/sessions must carry the source failure: %v", body)
+	} else if first := warnings[0].(map[string]any); first["source"] != "hermes" ||
+		!strings.Contains(toStr(first["error"]), "no such column") {
+		t.Fatalf("warning = %v", first)
+	}
+
+	// The failure is on record now, so the source reports it even outside the response
+	err := source.ListError()
+	if err == nil {
+		t.Fatal("the failure must be reported, not returned as an empty source")
+	}
+	if !strings.Contains(err.Error(), "no such column") {
+		t.Fatalf("the underlying error should reach the caller: %v", err)
+	}
+
+	// And the health check, which cannot scan, reports it from what was recorded
+	_, health := get(t, srv.URL+"/health", "")
+	warnings, ok := health["warnings"].([]any)
+	if !ok || len(warnings) != 1 || warnings[0].(map[string]any)["source"] != "hermes" {
+		t.Fatalf("/health after a failed list = %v", health)
+	}
+
+	// Every scan replaces the last one's verdict: with the database it used to fail on gone,
+	// the failure must go with it rather than sit there being reported forever
+	if err := os.Remove(dbPath); err != nil {
+		t.Fatal(err)
+	}
+	source.List()
+	if err := source.ListError(); err != nil {
+		t.Fatalf("a scan that no longer touches the database still reports its old failure: %v", err)
 	}
 }

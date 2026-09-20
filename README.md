@@ -204,7 +204,9 @@ long-running.
    Hermes needs `sessions.json` **or** `state.db`, either is enough. In a container, confirm
    the directory was actually mounted.
 2. **The list is empty**: check `/health` for which sources are enabled, and that the process
-   can read those directories.
+   can read those directories. A `warnings` entry there names the source that could not be
+   read and why — a source that broke and a source with nothing in it both answer with an
+   empty list, and only one of them is a problem.
 3. **401**: check that `Authorization: Bearer <token>` matches the `--hook_token` the server
    started with.
 4. **Port already in use**: pick another `--port`.

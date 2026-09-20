@@ -246,6 +246,11 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if offset+len(sessions) < total {
 			out["nextCursor"] = encodeCursor(offset + len(sessions))
 		}
+		// An agent reading "no sessions" has to be able to tell a source it cannot see from
+		// one that could not be read at all — the answer is the same empty list either way
+		if warnings := s.api.listWarnings(); len(warnings) > 0 {
+			out["warnings"] = warnings
+		}
 		return out, nil
 
 	case "list_projects":

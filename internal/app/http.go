@@ -225,6 +225,51 @@ func (s *apiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // never sent on the wire (there is nobody left to send it to) and only reaches the log.
 const statusClientClosed = 499
 
+// rootEndpoint is one line of the endpoint list GET / answers with. It is data rather than a
+// literal buried in the handler so a test can hold it against the paths this package
+// actually routes — see TestRootListsEveryRoute.
+type rootEndpoint struct {
+	Method string
+	Path   string
+	Public bool // reachable without a token
+	Desc   string
+}
+
+// rootEndpoints is what GET / advertises. A caller that has no MCP client — a shell script,
+// or an agent that found the port and nothing else — reads this to learn what the service
+// can do, and for a long time it did not say: the list named six routes while fourteen were
+// served, so /ui, /search, /projects, /export and /mcp were invisible to it.
+var rootEndpoints = []rootEndpoint{
+	{"GET", "/health", true, "health check"},
+	{"GET", "/stats", true, "server stats"},
+	{"GET", "/ui", true, "the web page"},
+	{"GET", "/sessions", false, "list every session"},
+	{"GET", "/sessions/<pattern>", false, "one session"},
+	{"GET", "/sessions/<pattern>/messages?limit=50", false, "its messages, newest first by default"},
+	{"GET", "/sessions/<pattern>/final", false, "its final result"},
+	{"GET", "/sessions/<pattern>/export?format=", false, "one session as a document: md, jsonl, json or html"},
+	{"GET", "/search?q=", false, "full-text search across every source"},
+	{"GET", "/projects", false, "session counts grouped by project"},
+	{"GET", "/export?project=", false, "a pack: what was asked and concluded across sessions, oldest first"},
+	{"GET", "/api/<path>", false, "the same authenticated routes, under an /api prefix"},
+	{"POST", "/mcp", false, "MCP over Streamable HTTP"},
+}
+
+// rootEndpointLines renders the table for GET /. The public routes are the ones marked: with
+// a token configured there are three of them against ten that need one, so marking the
+// exceptions is the shorter sentence for whoever reads this in a terminal.
+func rootEndpointLines() []string {
+	lines := make([]string, 0, len(rootEndpoints))
+	for _, e := range rootEndpoints {
+		line := e.Method + " " + e.Path + " - " + e.Desc
+		if e.Public {
+			line += " (no token)"
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
 func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 	// Split on EscapedPath so %2F is not treated as a separator
 	path := r.URL.EscapedPath()
@@ -250,14 +295,10 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			"name":    "Agent Session API",
 			"mode":    s.mode,
 			"sources": sourceModes(s.sources),
-			"endpoints": []string{
-				"GET /sessions - list every session",
-				"GET /sessions/<pattern> - one session",
-				"GET /sessions/<pattern>/messages?limit=50 - its messages",
-				"GET /sessions/<pattern>/final - its final result",
-				"GET /health - health check",
-				"GET /stats - server stats",
-			},
+			// /health carries the same fact as a bare boolean; here it is worth the sentence
+			// because it says which of the lines below it applies to
+			"auth":      "Authorization: Bearer <token> is required, except where a line says (no token)",
+			"endpoints": rootEndpointLines(),
 		})
 		return http.StatusOK
 	}

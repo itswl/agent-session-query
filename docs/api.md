@@ -6,7 +6,7 @@ no alias.
 
 | Endpoint | Auth | What it does |
 |----------|------|--------------|
-| `/` `/health` `/stats` | no | Service info and health check (with connection stats and `authRequired`) |
+| `/` `/health` `/stats` | no | Service info and health check. `/` is the one to read first: it lists every endpoint below and says which of them need a token. `/health` adds the enabled sources, the version, `authRequired` and connection stats |
 | `/sessions` | yes | List every session (merged across sources, newest first) |
 | `/export?project=&since=&until=&source=&mode=index` | yes | **Export several sessions as one document.** Oldest first, because a pack answers "how did this get here" where the list answers "what am I doing". `mode=index` (the default) gives one block per session — when, where, what was asked, what it concluded, and the id to check it against; `mode=full` inlines the transcripts. `format=md` (default) or `jsonl`. `limit` defaults to 20 sessions of the matching set, and the header always states how many of that set it holds |
 | `/sessions/<pattern>` | yes | One session's metadata |

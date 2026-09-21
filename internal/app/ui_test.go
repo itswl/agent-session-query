@@ -21,7 +21,7 @@ func TestUIRoutes(t *testing.T) {
 	if resp.StatusCode != 200 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
 		t.Fatalf("/ui = %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
-	if !strings.Contains(body, "/ui/app.js") || !strings.Contains(body, "/ui/style.css") {
+	if !strings.Contains(body, "/ui/app.js") || !strings.Contains(body, "/ui/style.css") || !strings.Contains(body, "/ui/theme.js") {
 		t.Fatalf("/ui does not reference its static assets: %s", body[:min(200, len(body))])
 	}
 
@@ -35,7 +35,13 @@ func TestUIRoutes(t *testing.T) {
 	// Static assets and their Content-Type
 	for _, asset := range []struct{ path, wantType, wantText string }{
 		{"/ui/app.js", "javascript", "textContent"},
+		{"/ui/theme.js", "javascript", "agent-session-query-theme"},
 		{"/ui/style.css", "text/css", "--bg"},
+		// The typeface is embedded rather than fetched: the CSP allows no other origin.
+		// "wOF2" is the WOFF2 magic number, so this also catches a file that is not a font.
+		{"/ui/fonts/Geist-Variable.woff2", "font/woff2", "wOF2"},
+		{"/ui/fonts/GeistMono-Variable.woff2", "font/woff2", "wOF2"},
+		{"/ui/fonts/OFL.txt", "text/plain", "SIL Open Font License"},
 	} {
 		resp, err := http.Get(srv.URL + asset.path)
 		if err != nil {
@@ -74,7 +80,7 @@ func TestUIRendersWithoutHTMLInjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	forbidden := []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("}
-	for _, name := range []string{"index.html", "app.js", "style.css"} {
+	for _, name := range []string{"index.html", "app.js", "theme.js", "style.css"} {
 		content, err := fs.ReadFile(sub, name)
 		if err != nil {
 			t.Fatal(err)
@@ -142,7 +148,7 @@ func TestFaviconRoute(t *testing.T) {
 // build version is the validator now.
 func TestUIAssetCaching(t *testing.T) {
 	srv, _ := newTestServer(t, "secret")
-	for _, asset := range []string{"/ui/app.js", "/ui/style.css"} {
+	for _, asset := range []string{"/ui/app.js", "/ui/theme.js", "/ui/style.css"} {
 		resp, err := http.Get(srv.URL + asset)
 		if err != nil {
 			t.Fatal(err)

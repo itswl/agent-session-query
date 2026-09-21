@@ -119,10 +119,14 @@ controls it cannot use;
 picking a session jumps straight to it. It refreshes every 10 seconds without disturbing
 what you are reading (expanded blocks and scroll position are preserved), your view
 controls — grouping, source filter, order, filters, folded groups — survive a reload, and
-`/ui#<sessionId>` works as a deep link. Light and dark follow the system.
+`/ui#<sessionId>` works as a deep link. Light and dark follow the system; the half-disc
+button in the header switches, and switching back to what the system shows hands control
+back to the system.
 
-The two side panes fold away with the ‹ and › buttons in the header, giving the
-conversation the whole width; both remember what you chose.
+Each side pane has a bar of its own — its name, and the controls that act on it: "Collapse
+all" over the project groups, and a chevron at the edge that folds the pane away, giving the
+conversation the whole width. A folded pane keeps a slim rail with the chevron pointing back,
+and both remember what you chose.
 
 Shortcuts: <kbd>j</kbd> <kbd>k</kbd> move between sessions (metadata matches and body
 matches alike) · <kbd>/</kbd> focus search · <kbd>Enter</kbd> search the bodies now instead

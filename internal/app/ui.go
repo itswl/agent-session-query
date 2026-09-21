@@ -93,7 +93,7 @@ func serveUIAssets(w http.ResponseWriter, r *http.Request, path string) {
 // itself no-cache, so the new URL is what the browser sees next.
 func versionedAssetRefs(index []byte, fsys fs.FS) []byte {
 	page := string(index)
-	for _, name := range []string{"app.js", "style.css"} {
+	for _, name := range []string{"app.js", "style.css", "theme.js"} {
 		data, err := fs.ReadFile(fsys, name)
 		if err != nil {
 			continue
@@ -140,6 +140,10 @@ func assetContentType(name string) string {
 		return "image/png"
 	case strings.HasSuffix(name, ".webmanifest"):
 		return "application/manifest+json"
+	case strings.HasSuffix(name, ".woff2"):
+		return "font/woff2"
+	case strings.HasSuffix(name, ".txt"):
+		return "text/plain; charset=utf-8"
 	}
 	return "application/octet-stream"
 }

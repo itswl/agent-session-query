@@ -289,6 +289,11 @@ still a single-file distribution. A few hard constraints:
   `insertAdjacentHTML` / `document.write` / `eval(` anywhere in those three files. A
   `Content-Security-Policy` (same-origin scripts and styles only, nothing inline, no framing)
   backs that up
+- **The typeface is embedded, not fetched.** `ui/fonts/` holds Geist and Geist Mono as
+  variable WOFF2 files (SIL Open Font License, the licence text alongside them), served from
+  `/ui/fonts/` with the other assets. A font CDN would be the one request the page made to
+  another origin, and the CSP would block it anyway. CJK text falls through to the system
+  fonts named after them in the stack
 - **The page itself needs no authentication** (it holds no data), while the data still requires
   an `Authorization` header. With no token configured the page goes straight in — that is what
   `authRequired` on `/health` is for

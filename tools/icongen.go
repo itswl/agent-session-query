@@ -25,12 +25,14 @@ import (
 
 const super = 4 // supersampling factor: drawn big, averaged down
 
-// Brand colours, matching the page's --accent and its panel background
+// Brand colours: the launch palette's blue-to-violet bars on the near-black surface ramp.
+// The header draws the same mark from --accent; the icon keeps the gradient it has always
+// had.
 var (
-	bgTop    = color.RGBA{0x1b, 0x20, 0x2b, 0xff}
-	bgBottom = color.RGBA{0x12, 0x15, 0x1c, 0xff}
+	bgTop    = color.RGBA{0x1f, 0x1f, 0x1f, 0xff} // --panel-3
+	bgBottom = color.RGBA{0x0a, 0x0a, 0x0a, 0xff} // --panel
 	barFrom  = color.RGBA{0x7a, 0xa2, 0xf7, 0xff} // --accent
-	barTo    = color.RGBA{0xbb, 0x9a, 0xf7, 0xff} // violet, as the logo dot ends
+	barTo    = color.RGBA{0xbb, 0x9a, 0xf7, 0xff} // violet, as the mark ends
 )
 
 type canvas struct {

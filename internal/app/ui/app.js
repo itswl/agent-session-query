@@ -16,6 +16,9 @@ const TOKEN_KEY = 'agent-session-query-token';
 // How you like to look at the list, as opposed to what you are looking at (that lives in
 // the URL hash). Losing the grouping on every reload was the complaint that added this.
 const VIEW_KEY = 'agent-session-query-view';
+// Light or dark, when you have said so; absent, the page follows the system. theme.js
+// reads the same key before the first paint, so keep the two spellings identical.
+const THEME_KEY = 'agent-session-query-theme';
 const MESSAGE_LIMIT = 200;
 const REFRESH_MS = 10000;
 const SEARCH_DEBOUNCE_MS = 150;
@@ -176,7 +179,7 @@ function relTime(iso) {
 
 // Source / status tags. className only ever uses whitelisted values; source is a
 // server-side enum but is still never concatenated in directly
-const SOURCE_CLASSES = ['claude', 'codex', 'gemini', 'hermes', 'openclaw', 'pi'];
+const SOURCE_CLASSES = ['claude', 'codex', 'gemini', 'hermes', 'openclaw', 'opencode', 'pi'];
 function sourceClass(source) {
   return 'tag' + (SOURCE_CLASSES.includes(source) ? ' ' + source : '');
 }
@@ -186,6 +189,57 @@ function sourceTag(source) {
 function statusTag(status) {
   const cls = status === 'done' ? ' done' : status === 'running' ? ' running' : '';
   return el('span', 'tag' + cls, status);
+}
+
+// ---------------------------------------------------------------------------
+// Theme. The stylesheet follows the system until <html> carries data-theme; this sets it,
+// remembers it, and — the one piece of thought in here — drops it again the moment your
+// choice coincides with the system's, so a preference never outlives its reason: switch
+// away from what the system shows and the page holds it; switch back and it follows the
+// system again, including the next time the system changes.
+// ---------------------------------------------------------------------------
+
+const systemLight = matchMedia('(prefers-color-scheme: light)');
+
+function systemTheme() {
+  return systemLight.matches ? 'light' : 'dark';
+}
+
+// shownTheme is what is on screen: the pinned theme, or the system's
+function shownTheme() {
+  return document.documentElement.dataset.theme || systemTheme();
+}
+
+// applyTheme pins a theme ('light' / 'dark') or, given '', follows the system again. It
+// also keeps the button's words and the browser chrome colour in step.
+function applyTheme(theme) {
+  if (theme) document.documentElement.dataset.theme = theme;
+  else delete document.documentElement.dataset.theme;
+  const shown = shownTheme();
+  const button = $('theme');
+  if (button) {
+    const next = shown === 'dark' ? 'light' : 'dark';
+    button.title = 'Switch to the ' + next + ' theme' + (theme ? '' : ' (following the system)');
+    button.setAttribute('aria-label', 'Switch to the ' + next + ' theme');
+  }
+  // Both theme-color tags say the same thing while a theme is pinned; following the
+  // system they are set to the system's colour, which is what their media queries would
+  // have picked anyway
+  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
+    meta.content = shown === 'dark' ? '#0a0a0a' : '#fafafa';
+  }
+}
+
+function toggleTheme() {
+  const next = shownTheme() === 'dark' ? 'light' : 'dark';
+  const pinned = next === systemTheme() ? '' : next;
+  try {
+    if (pinned) localStorage.setItem(THEME_KEY, pinned);
+    else localStorage.removeItem(THEME_KEY);
+  } catch (e) {
+    // private mode, or storage full: the theme changes, it just does not stick
+  }
+  applyTheme(pinned);
 }
 
 // ---------------------------------------------------------------------------
@@ -743,7 +797,7 @@ function blockNode(block) {
       // Tool name as the heading, arguments indented below, so one glance says what ran
       const kind = toolKind(block.name);
       const wrap = el('div', 'block toolCall tool-' + kind);
-      wrap.appendChild(el('div', 'tool-name', '⚙ ' + (block.name || '(unnamed tool)')));
+      wrap.appendChild(el('div', 'tool-name', block.name || '(unnamed tool)'));
       wrap.appendChild(el('pre', '', JSON.stringify(block.arguments || {}, null, 2)));
       return wrap;
     }
@@ -883,6 +937,12 @@ function renderMessages() {
   shown.forEach(({ message, index }) => box.appendChild(messageNode(message, index)));
   pane.replaceChildren(box);
   pane.dataset.view = view;
+  // A session just opened eases its messages in. A refresh of the same view rebuilds
+  // in place and must not: the reader is in the middle of it.
+  if (!sameView) {
+    pane.classList.add('fresh');
+    setTimeout(() => pane.classList.remove('fresh'), 300);
+  }
 
   if (!sameView) {
     // Just opened: stick to the bottom when viewing the latest, start at the top for the earliest
@@ -1235,6 +1295,17 @@ function selectSession(sessionId, focusAt) {
   syncDetail({ force: true });
 }
 
+// loadingNodes is the shape of a conversation while one loads: a few blocks the size of
+// messages. The stylesheet holds them back for a moment, so the usual fast answer from
+// a local server never shows them at all.
+function loadingNodes() {
+  const box = el('div', 'skeleton');
+  box.setAttribute('role', 'status');
+  box.setAttribute('aria-label', 'Loading');
+  for (let i = 0; i < 4; i++) box.appendChild(el('div', 'sk'));
+  return box;
+}
+
 function clearDetail(message) {
   state.detail = null;
   renderStreamHead(null);
@@ -1331,7 +1402,7 @@ async function syncDetail(options) {
   const force = options && options.force;
   const record = state.byId.get(state.selectedId);
   if (!record) {
-    clearDetail('\u2190 Pick a session on the left');
+    clearDetail('Pick a session to read it');
     return;
   }
 
@@ -1353,7 +1424,7 @@ async function syncDetail(options) {
     // Only clear when switching sessions; a plain refresh of the same session keeps the
     // old content on screen and avoids a flash
     state.openBlocks.clear();
-    $('messages').replaceChildren(el('p', 'empty', 'Loading\u2026'));
+    $('messages').replaceChildren(loadingNodes());
     $('messages').dataset.view = '';
     $('side').replaceChildren();
   }
@@ -1615,6 +1686,12 @@ $('toggle-side').addEventListener('click', () => {
 });
 
 $('refresh').addEventListener('click', refresh);
+$('theme').addEventListener('click', toggleTheme);
+// Following the system, a change of system theme changes the page; only the button's
+// words and the chrome colour need telling
+systemLight.addEventListener('change', () => {
+  if (!document.documentElement.dataset.theme) applyTheme('');
+});
 
 if ($('panes')) {
   for (const button of $('panes').children) {
@@ -1686,14 +1763,16 @@ function applyViewPrefs() {
 function applyPaneFolds() {
   document.body.classList.toggle('hide-list', state.hideList);
   document.body.classList.toggle('hide-side', state.hideSide);
+  // The chevron is markup, turned by the stylesheet on the body class; here only the
+  // words change
   const list = $('toggle-list'), side = $('toggle-side');
   if (list) {
-    list.textContent = state.hideList ? '\u203a' : '\u2039';
     list.title = (state.hideList ? 'Show' : 'Hide') + ' the session list';
+    list.setAttribute('aria-expanded', state.hideList ? 'false' : 'true');
   }
   if (side) {
-    side.textContent = state.hideSide ? '\u2039' : '\u203a';
     side.title = (state.hideSide ? 'Show' : 'Hide') + ' the details pane';
+    side.setAttribute('aria-expanded', state.hideSide ? 'false' : 'true');
   }
 }
 
@@ -1803,6 +1882,8 @@ async function start() {
 }
 
 (async function boot() {
+  // theme.js has already pinned a stored theme; this fills in the button's words
+  applyTheme(document.documentElement.dataset.theme || '');
   // With no token configured there is no reason to make anyone invent one; /health says
   // outright whether authentication is required
   try {

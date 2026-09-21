@@ -533,8 +533,9 @@ body.hide-list #list, body.hide-side #side { display: none; }
 .tag.pi       { --tag: var(--pi); }
 .tag.opencode { --tag: var(--agent); }
 .tag.claude::before, .tag.codex::before, .tag.gemini::before, .tag.hermes::before,
-.tag.openclaw::before, .tag.pi::before, .tag.opencode::before, .tag.running::before {
-  content: ""; width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--tag);
+.tag.openclaw::before, .tag.pi::before, .tag.opencode::before, .tag.running::before,
+.tag.tagged::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--tag, var(--dim));
 }
 /* Almost every session is done: that is not news, so it says so quietly. Running is. */
 .tag.done    { color: var(--dim); font-weight: 400; }

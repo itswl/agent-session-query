@@ -528,29 +528,29 @@ func TestBuildSourcesModes(t *testing.T) {
 	// With no source detected, fall back to OpenClaw (the same for all and auto)
 	home := t.TempDir()
 	setHome(t, home)
-	if sources, err := buildSources("auto"); err != nil || len(sources) != 1 || sources[0].Mode() != "openclaw" {
+	if sources, err := buildSources("auto", nil); err != nil || len(sources) != 1 || sources[0].Mode() != "openclaw" {
 		t.Fatalf("auto fallback = %v %v", sources, err)
 	}
-	if sources, err := buildSources("all"); err != nil || len(sources) != 1 || sources[0].Mode() != "openclaw" {
+	if sources, err := buildSources("all", nil); err != nil || len(sources) != 1 || sources[0].Mode() != "openclaw" {
 		t.Fatalf("all fallback = %v %v", sources, err)
 	}
 
 	// Create the pi and claude sources: auto enables only those that exist, and so does all
 	write(t, filepath.Join(home, ".pi", "agent", "sessions", "p", "x.jsonl"), `{"type":"session","id":"x"}`)
 	write(t, filepath.Join(home, ".claude", "projects", "p", "y.jsonl"), `{"type":"user","uuid":"u","message":{"role":"user","content":"hi"}}`)
-	if sources, err := buildSources("auto"); err != nil || len(sources) != 2 ||
+	if sources, err := buildSources("auto", nil); err != nil || len(sources) != 2 ||
 		sources[0].Mode() != "pi" || sources[1].Mode() != "claude" {
 		t.Fatalf("auto = %v %v", sources, err)
 	}
-	if sources, err := buildSources("all"); err != nil || len(sources) != 2 {
+	if sources, err := buildSources("all", nil); err != nil || len(sources) != 2 {
 		t.Fatalf("all = %v %v", sources, err)
 	}
 
 	// A single named mode enables it whether or not the directory exists
-	if sources, err := buildSources("pi"); err != nil || len(sources) != 1 || sources[0].Mode() != "pi" {
+	if sources, err := buildSources("pi", nil); err != nil || len(sources) != 1 || sources[0].Mode() != "pi" {
 		t.Fatalf("pi = %v %v", sources, err)
 	}
-	if _, err := buildSources("nope"); err == nil {
+	if _, err := buildSources("nope", nil); err == nil {
 		t.Fatal("an unknown mode should error")
 	}
 }

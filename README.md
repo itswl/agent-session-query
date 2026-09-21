@@ -169,6 +169,7 @@ repository are in **[docs/mcp.md](docs/mcp.md)**.
 | `--host` | `127.0.0.1` | Bind address; use `0.0.0.0` to expose it (and set `--hook_token`) |
 | `--port` | `8080` | Listen port |
 | `--mode` | `auto` | `auto` (enable whatever exists) / `all` (enable all seven) / `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` / `opencode` |
+| `--path` | none | Relocate or duplicate a file-backed source (`pi`, `claude`, `codex`, `gemini`): `--path claude=/mnt/disk/.claude/projects` points the source elsewhere; `--path claude:box2=/mnt/box2/.claude/projects` adds a second instance named `claude:box2` in the source list, the page's source filter and project grouping. Repeatable |
 | `--hook_token` | none | Bearer token; without it the API is unauthenticated |
 | `--max-connections` | `50` | Maximum concurrent connections; anything past it queues |
 | `--accept-queue` | `0` (auto) | Queue slots when at capacity; `0` means `2 × max-connections`, never below 32. A full queue returns 503 immediately |

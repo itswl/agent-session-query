@@ -172,7 +172,7 @@ func (a *SessionQueryAPI) findSession(pattern, sourceWanted string) (SessionSour
 	var bestRecord record
 	bestRank := -1
 	for _, source := range a.sources {
-		if sourceWanted != "" && source.Mode() != sourceWanted {
+		if !sourceMatchesWanted(source.Mode(), sourceWanted) {
 			continue
 		}
 		for _, item := range a.recordsOf(source) {
@@ -323,4 +323,12 @@ func sourceModes(sources []SessionSource) []string {
 		out = append(out, s.Mode())
 	}
 	return out
+}
+
+// sourceMatchesWanted reports whether a source answers a source argument from the MCP
+// tools. The exact instance name matches, and the bare mode name matches every labeled
+// instance of it: an MCP client holding "claude" from an earlier listing still finds a
+// session that now lives in claude:probe-watch.
+func sourceMatchesWanted(mode, wanted string) bool {
+	return wanted == "" || mode == wanted || strings.HasPrefix(mode, wanted+":")
 }

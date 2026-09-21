@@ -107,6 +107,27 @@ Inside the container, source paths derive from `$HOME` (the mount points sit und
 companions alongside it. The image's `CMD` passes `--host 0.0.0.0` explicitly (otherwise the
 port mapping cannot reach it), so a container deployment **must** set `HOOK_TOKEN`.
 
+## Sessions outside the default home
+
+Sources derive from `$HOME`, so sessions that live somewhere else — an external disk, a
+backup, agent containers whose sessions land on a bind mount — are invisible by default.
+`--path` reads one anyway, and can read several directories as labelled instances of the
+same source:
+
+```
+./agent-session-query \
+  --path claude:build-box=/mnt/containers/build-box/home/.claude/projects \
+  --path claude:scratch=/mnt/containers/scratch/home/.claude/projects
+```
+
+The label names the instance everywhere the source appears — the startup banner, the
+`source` field, the page's source filter — and is prefixed onto each session's project
+and cwd, so sessions from different machines that share one working directory stay
+separate projects. A `--path` without a label simply relocates the source
+(`--path claude=/mnt/disk/.claude/projects`). This works for the file-backed sources
+(`pi`, `claude`, `codex`, `gemini`); the SQLite and sessions.json sources keep their
+layout across several files and cannot be relocated this way.
+
 ## Applies to all of them
 
 - **Keep the token in the environment**: `HOOK_TOKEN` is read automatically. Command-line

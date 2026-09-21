@@ -181,7 +181,10 @@ function relTime(iso) {
 // server-side enum but is still never concatenated in directly
 const SOURCE_CLASSES = ['claude', 'codex', 'gemini', 'hermes', 'openclaw', 'opencode', 'pi'];
 function sourceClass(source) {
-  return 'tag' + (SOURCE_CLASSES.includes(source) ? ' ' + source : '');
+  if (SOURCE_CLASSES.includes(source)) return 'tag ' + source;
+  // A labeled instance (claude:box-2) is not one of the known CLIs; it still gets the
+  // neutral dot so a source tag never reads as a status
+  return 'tag tagged';
 }
 function sourceTag(source) {
   return el('span', sourceClass(source), source);

@@ -51,6 +51,8 @@ func Run(args []string) int {
 	host := fs.String("host", "127.0.0.1", "bind address (default: 127.0.0.1, local only; use 0.0.0.0 to expose it)")
 	port := fs.Int("port", 8080, "listen port (default: 8080)")
 	mode := fs.String("mode", "auto", "mode: auto to detect, all to enable everything, or one of "+joinModes())
+	var paths pathFlag
+	fs.Var(&paths, "path", "relocate or duplicate a file-backed source, mode[:label]=dir; repeatable, e.g. --path claude:box2=/mnt/box2/.claude/projects (supports pi, claude, codex, gemini)")
 	hookToken := fs.String("hook_token", "", "Bearer token; once set, every /sessions endpoint requires it")
 	maxConnections := fs.Int("max-connections", 50, "maximum concurrent connections (default: 50)")
 	cacheTTL := fs.Float64("cache-ttl", 2.0, "seconds to cache the session list (default: 2; 0 rescans every time)")
@@ -93,7 +95,7 @@ func Run(args []string) int {
 		*hookToken = os.Getenv("HOOK_TOKEN")
 	}
 
-	sources, err := buildSources(*mode)
+	sources, err := buildSources(*mode, paths)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[FATAL] %v\n", err)
 		return 1

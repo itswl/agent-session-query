@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -131,15 +132,143 @@ func defaultHome() string {
 	return "/root"
 }
 
-// buildSources wires up data sources according to the run mode.
+// sourcePath is one --path value: a file-backed source whose directory moved, with an
+// optional instance label.
+type sourcePath struct {
+	mode  string
+	label string // empty: relocate the source; set: add a labeled instance beside it
+	dir   string
+}
+
+// pathFlag collects repeatable --path flags.
+type pathFlag []sourcePath
+
+func (p *pathFlag) String() string {
+	parts := make([]string, 0, len(*p))
+	for _, sp := range *p {
+		if sp.label == "" {
+			parts = append(parts, sp.mode+"="+sp.dir)
+		} else {
+			parts = append(parts, sp.mode+":"+sp.label+"="+sp.dir)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func (p *pathFlag) Set(value string) error {
+	spec := value
+	dir := ""
+	if i := strings.IndexByte(spec, '='); i >= 0 {
+		dir, spec = spec[i+1:], spec[:i]
+	} else {
+		return fmt.Errorf("--path %q: want mode[:label]=directory", value)
+	}
+	mode, label := spec, ""
+	hasColon := false
+	if i := strings.IndexByte(spec, ':'); i >= 0 {
+		mode, label, hasColon = spec[:i], spec[i+1:], true
+	}
+	if dir == "" {
+		return fmt.Errorf("--path %q: the directory is empty", value)
+	}
+	// A colon promises a label, so an empty one is a typo; no colon at all is the plain
+	// relocation form and carries no label to validate
+	if hasColon && !validSourceLabel(label) {
+		return fmt.Errorf("--path %q: the label may be lowercase letters, digits and dashes only", value)
+	}
+	if !validMode(mode) || mode == "auto" || mode == "all" {
+		return fmt.Errorf("--path %q: unknown source %q (choose from: %s)", value, mode, joinModes())
+	}
+	// The directory-shaped sources can point anywhere; the json-map and SQLite ones keep
+	// their layout across several files, which one directory cannot stand in for
+	if _, ok := map[string]bool{"pi": true, "claude": true, "codex": true, "gemini": true}[mode]; !ok {
+		return fmt.Errorf("--path: %s cannot be relocated this way (supported: pi, claude, codex, gemini)", mode)
+	}
+	*p = append(*p, sourcePath{mode: mode, label: label, dir: dir})
+	return nil
+}
+
+// validSourceLabel: what may follow the colon in --path mode:label
+func validSourceLabel(label string) bool {
+	if label == "" {
+		return false
+	}
+	for _, r := range label {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// labeledSource renames one instance of a file-backed source so several of the same CLI
+// can be told apart: Mode() returns "claude:probe-watch", the records it lists carry that
+// name in their source field, and the label is prefixed onto the project and cwd so
+// grouping and the page's filters do not melt the instances into one. Everything else —
+// messages, the final result, searching — is the wrapped source's own.
+type labeledSource struct {
+	SessionSource
+	mode string
+}
+
+func (s labeledSource) Mode() string { return s.mode }
+
+func (s labeledSource) List() []record {
+	recs := s.SessionSource.List()
+	label := s.mode[strings.IndexByte(s.mode, ':')+1:] + ":"
+	for i := range recs {
+		// The wrapped source caches its records across scans, so they are shared; prefix
+		// a copy instead of writing through to what the cache hands out next time
+		fields := make(map[string]any, len(recs[i].fields)+1)
+		for k, v := range recs[i].fields {
+			fields[k] = v
+		}
+		fields["source"] = s.mode
+		if cwd := toStr(fields["cwd"]); cwd != "" {
+			fields["cwd"] = label + cwd
+		}
+		if project := toStr(fields["project"]); project != "" {
+			fields["project"] = label + project
+		}
+		recs[i].fields = fields
+	}
+	return recs
+}
+
+func (s labeledSource) Final(r record) map[string]any {
+	out := s.SessionSource.Final(r)
+	if out != nil {
+		out["source"] = s.mode
+	}
+	return out
+}
+
+// buildSources wires up data sources according to the run mode and any --path overrides.
 //
 //   - a single named mode: enable only that one
-//   - all: enable all six (missing ones warn)
+//   - all: enable everything (missing ones warn)
 //   - auto: enable whichever exist (the two json-map sources look for sessions.json,
 //     the rest for their directory)
-func buildSources(mode string) ([]SessionSource, error) {
+//
+// A --path without a label relocates that source: the default instance scans the given
+// directory instead of the one under home, keeping the usual exists-or-skip behaviour.
+// A --path with a label — claude:probe-watch=… — adds an instance beside whatever else is
+// enabled, in every mode: asking for it by name is the explicit act, so it is enabled
+// even when the directory does not exist (with a warning) and even when --mode names
+// another source.
+func buildSources(mode string, paths []sourcePath) ([]SessionSource, error) {
 	home := defaultHome()
 
+	// The four file-backed sources scan one directory, so that directory can move; the
+	// json-map and SQLite ones keep their layout across several files and stay at home
+	movable := map[string]func(dir string) SessionSource{
+		"pi":     func(dir string) SessionSource { return newPiSource(dir) },
+		"claude": func(dir string) SessionSource { return newClaudeSource(dir) },
+		"codex":  func(dir string) SessionSource { return newCodexSource(dir) },
+		"gemini": func(dir string) SessionSource { return newGeminiSource(dir) },
+	}
 	factories := map[string]func() SessionSource{
 		"hermes": func() SessionSource { return newJsonMapSource(hermesDef(home)) },
 		"openclaw": func() SessionSource {
@@ -150,30 +279,56 @@ func buildSources(mode string) ([]SessionSource, error) {
 			}
 			return newJsonMapSource(openclawDef(home))
 		},
+		"opencode": func() SessionSource { return newOpenCodeSource(filepath.Join(openCodeDataDir(home), "opencode.db")) },
 		"pi":       func() SessionSource { return newPiSource(filepath.Join(home, ".pi", "agent", "sessions")) },
 		"claude":   func() SessionSource { return newClaudeSource(filepath.Join(home, ".claude", "projects")) },
 		"codex":    func() SessionSource { return newCodexSource(filepath.Join(home, ".codex", "sessions")) },
 		"gemini":   func() SessionSource { return newGeminiSource(filepath.Join(home, ".gemini", "tmp")) },
-		"opencode": func() SessionSource { return newOpenCodeSource(filepath.Join(openCodeDataDir(home), "opencode.db")) },
+	}
+
+	replacements := map[string]string{}
+	extra := make([]SessionSource, 0, len(paths))
+	seen := map[string]bool{}
+	for _, p := range paths {
+		if p.label == "" {
+			replacements[p.mode] = p.dir
+			continue
+		}
+		if seen[p.mode+":"+p.label] {
+			return nil, fmt.Errorf("--path: %s:%s given twice", p.mode, p.label)
+		}
+		seen[p.mode+":"+p.label] = true
+		source := movable[p.mode](p.dir)
+		if !source.Exists() {
+			fmt.Fprintf(os.Stderr, "[WARN] --path directory not found, enabled anyway: %s:%s (%s)\n", p.mode, p.label, p.dir)
+		}
+		extra = append(extra, labeledSource{SessionSource: source, mode: p.mode + ":" + p.label})
+	}
+	// A source's directory, relocated when --path said so
+	at := func(name string) SessionSource {
+		if repl, moved := replacements[name]; moved {
+			return movable[name](repl)
+		}
+		return factories[name]()
 	}
 
 	if mode != "auto" && mode != "all" {
-		factory, ok := factories[mode]
-		if !ok {
+		if _, ok := factories[mode]; !ok {
 			return nil, fmt.Errorf("unknown mode %q (choose from: auto, all, %s)", mode, joinModes())
 		}
-		return []SessionSource{factory()}, nil
+		return append([]SessionSource{at(mode)}, extra...), nil
 	}
 
 	enabled := []SessionSource{}
 	for _, name := range knownModes {
-		source := factories[name]()
+		source := at(name)
 		if source.Exists() {
 			enabled = append(enabled, source)
 		} else if mode == "all" {
 			fmt.Fprintf(os.Stderr, "[WARN] data source not found, skipped: %s (%s)\n", name, source.Location())
 		}
 	}
+	enabled = append(enabled, extra...)
 	if len(enabled) > 0 {
 		return enabled, nil
 	}

@@ -244,3 +244,50 @@ func TestSessionBriefSourceDisambiguation(t *testing.T) {
 		}
 	}
 }
+
+// TestBriefReadsTheTailNotTheHead: the scan is capped, and the cap must read the
+// session's tail — a handoff brief cares about where things ended. With distinct early
+// and latest asks and a shrunk cap, the earliest ask falls outside the scan entirely
+// and the default brief is the latest round the tail contains.
+func TestBriefReadsTheTailNotTheHead(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "proj", "tail.jsonl"),
+		`{"type":"user","sessionId":"tail","cwd":"/w","timestamp":"2026-09-21T07:00:00Z","message":{"role":"user","content":"first topic ask"}}`,
+		`{"type":"assistant","timestamp":"2026-09-21T07:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"first topic done"}]}}`,
+		`{"type":"user","sessionId":"tail","cwd":"/w","timestamp":"2026-09-21T08:00:00Z","message":{"role":"user","content":"second topic ask"}}`,
+		`{"type":"assistant","timestamp":"2026-09-21T08:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"second topic done"}]}}`,
+		`{"type":"user","sessionId":"tail","cwd":"/w","timestamp":"2026-09-21T09:00:00Z","message":{"role":"user","content":"third topic ask"}}`,
+	)
+	previous := briefScanCap
+	briefScanCap = 4
+	defer func() { briefScanCap = previous }()
+
+	api := newSessionQueryAPI([]SessionSource{newClaudeSource(root)}, 0)
+	out, err := api.sessionRounds("tail", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["partial"] != true || out["messagesScanned"] != 4 || out["messagesTotal"] != 5 {
+		t.Fatalf("scan bounds = %v / %v / %v", out["partial"], out["messagesScanned"], out["messagesTotal"])
+	}
+
+	brief, err := api.sessionBrief("tail", "", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "first topic" survives exactly once — as the session's title, which is metadata
+	// from the file's head and true under any window. Any other mention means the scan
+	// read rounds from the head.
+	if n := strings.Count(brief, "first topic"); n != 1 {
+		t.Errorf("the earliest round should be outside the scan (title mention only), found %d", n)
+	}
+	if !strings.Contains(brief, "third topic ask") || !strings.Contains(brief, "Round 2 — interrupted") {
+		t.Errorf("the tail was not read as the tail:\n%s", brief)
+	}
+
+	// An at older than the tail states the bounds instead of pretending
+	_, err = api.sessionBrief("tail", "", 0, "2026-09-21T07:00:00Z")
+	if err == nil || !strings.Contains(err.Error(), "latest") {
+		t.Fatalf("at older than the tail = %v", err)
+	}
+}

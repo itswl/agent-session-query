@@ -60,7 +60,7 @@ current MCP specification (2025-06-18):
 | `list_projects` | Group sessions by project (cwd) — which agents were used on a given repository, and how many sessions each |
 | `get_session` | One session's metadata and final result; `source` disambiguates when an id collides |
 | `get_messages` | A session's messages; `order` picks the end, `role` narrows to `user` or `assistant`, `at` anchors the window at an instant, `cursor` pages |
-| `session_brief` | A compact handoff brief of one round — the ask, files touched, tools by category, how it ended. Sessions are segmented into rounds at each real user message; the default is the latest round, `round` picks one, `at` briefs the round a timestamp (e.g. a search hit) falls in |
+| `session_brief` | A compact handoff brief of one round — the ask, files touched, tools by category, how it ended. Sessions are segmented into rounds at each real user message; the default is the latest round, `round` picks one, `at` briefs the round a timestamp (e.g. a search hit) falls in. The scan covers a session's latest messages; round numbering runs over that tail |
 
 Every tool declares `readOnlyHint` / `idempotentHint` annotations, so clients that honour
 them can skip call confirmations for what is a read-only query service.

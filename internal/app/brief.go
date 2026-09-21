@@ -268,16 +268,21 @@ type sessionRoundsRead struct {
 	total   int
 }
 
-// roundsOf fetches a whole session and segments it. The read is capped at
-// exportMaxMessages like an export; when the final result knows the session ran longer,
-// total exceeds scanned and everything downstream says partial.
+// briefScanCap bounds the rounds/brief read; a var so tests can shrink it
+var briefScanCap = exportMaxMessages
+
+// roundsOf reads a session's tail and segments it. The tail, deliberately: a handoff
+// brief cares about where things ended, not how they started, so the read is fromEnd
+// and round numbering runs over the scanned tail. When the final result knows the
+// session ran longer than the cap, total exceeds scanned and everything downstream says
+// partial; an at= older than the tail then falls in no round, and says so.
 func (a *SessionQueryAPI) roundsOf(pattern, sourceWanted string) (sessionRoundsRead, error) {
 	source, item, found := a.findSession(pattern, sourceWanted)
 	if !found {
 		return sessionRoundsRead{}, errNoSession
 	}
 	messages := safeParse(source.Mode(), "messages", func() []map[string]any {
-		return source.Messages(item, messageQuery{limit: exportMaxMessages})
+		return source.Messages(item, messageQuery{limit: briefScanCap, fromEnd: true})
 	})
 	final := safeParse(source.Mode(), "the final result", func() map[string]any {
 		return source.Final(item)
@@ -361,7 +366,7 @@ func (a *SessionQueryAPI) sessionBrief(pattern, sourceWanted string, roundNo int
 			}
 		}
 		if selected == 0 {
-			return "", fmt.Errorf("at %q falls in no round of this session", atParam)
+			return "", fmt.Errorf("at %q falls in no round of this session (the scan covers the latest %d of %d messages)", atParam, sr.scanned, sr.total)
 		}
 	case roundNo != 0:
 		if roundNo < 1 || roundNo > len(rounds) {

@@ -223,6 +223,7 @@ long-running.
 | [docs/api.md](docs/api.md) | The full HTTP API: parameters, matching rules, response fields |
 | [docs/mcp.md](docs/mcp.md) | MCP: both transports, client configuration, the tool table |
 | [docs/deploy.md](docs/deploy.md) | Supervised deployment: systemd / launchd / Windows scheduled task / Docker |
+| [docs/sources.md](docs/sources.md) | Data sources, and `--path` for sessions outside the default home |
 | [docs/development.md](docs/development.md) | Layout, tests, releasing, adding a source |
 | [docs/internals.md](docs/internals.md) | Implementation: per-source parsing, performance, search, cross-platform |
 

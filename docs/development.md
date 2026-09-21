@@ -14,6 +14,7 @@
 │                              #   console_{windows,other}.go (Windows console code page).
 │                              #   Tests sit alongside their source (source_*_test.go, ...)
 ├── docs/internals.md          # parsing details and performance
+├── docs/sources.md            # data sources and --path overrides
 ├── .github/workflows/test.yml     # push / PR: tests on three platforms, gofmt/vet, and a
 │                                  #   cross-compile check over all six release targets
 ├── .github/workflows/release.yml  # on a tag: tests on three platforms, then cross-compile

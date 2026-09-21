@@ -479,7 +479,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 
 		case len(parts) == 2 && parts[0] != "" && parts[1] == "rounds":
 			pattern := unescapePattern(parts[0])
-			rounds, err := s.api.sessionRounds(pattern, "")
+			rounds, err := s.api.sessionRounds(pattern, r.URL.Query().Get("source"))
 			if err != nil {
 				status, payload := briefHTTPError(err)
 				writeJSON(w, status, payload)
@@ -499,7 +499,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 				}
 				roundNo = n
 			}
-			brief, err := s.api.sessionBrief(pattern, "", roundNo, r.URL.Query().Get("at"))
+			brief, err := s.api.sessionBrief(pattern, r.URL.Query().Get("source"), roundNo, r.URL.Query().Get("at"))
 			if err != nil {
 				status, payload := briefHTTPError(err)
 				writeJSON(w, status, payload)

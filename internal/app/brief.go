@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Rounds and briefs.
@@ -174,47 +175,76 @@ func splitRounds(messages []map[string]any) []round {
 	return rounds
 }
 
-// capText shortens s to about n characters, cutting at a space and marking the cut
+// capText shortens s to about n characters — runes, not bytes: asks are often CJK and
+// a byte cut would split one — preferring a space inside the cut, and marking it
 func capText(s string, n int) string {
 	s = strings.TrimSpace(s)
-	if len(s) <= n {
+	runes := []rune(s)
+	if n <= 0 || len(runes) <= n {
 		return s
 	}
-	cut := s[:n]
-	if i := strings.LastIndexByte(cut, ' '); i > n/2 {
-		cut = cut[:i]
-	}
-	return cut + " …"
-}
-
-func hasAnyWord(n string, words ...string) bool {
-	for _, w := range words {
-		if strings.Contains(n, w) {
-			return true
+	cut := runes[:n]
+	for i := len(cut) - 1; i > n/2; i-- {
+		if cut[i] == ' ' {
+			cut = cut[:i]
+			break
 		}
 	}
-	return false
+	return string(cut) + " …"
 }
 
 // toolKindOf sorts a tool by what it is for — the same categories the page colours tool
-// blocks by, kept coarse because a brief reads categories, not names
+// blocks by. Matching is whole-token, so publish does not read as run and runbook does
+// not read as sh: a brief's tool counts should survive a skeptical reader.
 func toolKindOf(name string) string {
-	n := strings.ToLower(name)
-	switch {
-	case hasAnyWord(n, "bash", "shell", "terminal", "exec", "sh", "run", "command", "process", "container", "docker"):
-		return "exec"
-	case hasAnyWord(n, "write", "edit", "patch", "replace", "create", "delete", "remove", "move", "rename", "apply", "notebook"):
-		return "write"
-	case hasAnyWord(n, "read", "view", "cat", "open", "head", "tail"):
-		return "read"
-	case hasAnyWord(n, "grep", "glob", "search", "find", "list", "scan"):
-		return "search"
-	case hasAnyWord(n, "fetch", "http", "curl", "web", "url", "download", "browser"):
-		return "net"
-	case hasAnyWord(n, "task", "agent", "dispatch", "delegate", "subagent"):
-		return "agent"
+	tokens := toolNameTokens(name)
+	for _, kind := range []string{"exec", "write", "read", "search", "net", "agent"} {
+		for _, token := range tokens {
+			if toolKindWords[kind][token] {
+				return kind
+			}
+		}
 	}
 	return "other"
+}
+
+var toolKindWords = map[string]map[string]bool{
+	"exec":   setOf("bash", "sh", "zsh", "shell", "terminal", "exec", "run", "cmd", "command", "process", "container", "docker"),
+	"write":  setOf("write", "edit", "patch", "replace", "create", "delete", "remove", "move", "rename", "apply", "save", "notebook"),
+	"read":   setOf("read", "view", "cat", "open", "show"),
+	"search": setOf("grep", "glob", "search", "find", "list", "scan", "ls"),
+	"net":    setOf("fetch", "web", "url", "download", "browser", "http", "curl"),
+	"agent":  setOf("task", "agent", "dispatch", "delegate", "subagent"),
+}
+
+func setOf(words ...string) map[string]bool {
+	out := make(map[string]bool, len(words))
+	for _, w := range words {
+		out[w] = true
+	}
+	return out
+}
+
+// toolNameTokens splits a tool name into lowercase word tokens: on separators, and on
+// camelCase boundaries — NotebookEdit → [notebook edit], WebFetch → [web fetch].
+// CamelCase is split before lowercasing, or the boundary is gone.
+func toolNameTokens(name string) []string {
+	fields := strings.FieldsFunc(name, func(r rune) bool {
+		return r == '_' || r == '-' || r == '.' || r == ':' || r == ' ' || (r >= '0' && r <= '9')
+	})
+	out := []string{}
+	for _, field := range fields {
+		rs := []rune(field)
+		start := 0
+		for i := 1; i < len(rs); i++ {
+			if unicode.IsLower(rs[i-1]) && unicode.IsUpper(rs[i]) {
+				out = append(out, strings.ToLower(string(rs[start:i])))
+				start = i
+			}
+		}
+		out = append(out, strings.ToLower(string(rs[start:])))
+	}
+	return out
 }
 
 func shortTime(ts string) string {
@@ -227,25 +257,60 @@ func shortTime(ts string) string {
 	return ts
 }
 
-// roundsOf fetches a whole session and segments it. Chronological and complete: the
-// export path's whole-session read, not the page's 200-message window.
-func (a *SessionQueryAPI) roundsOf(pattern, sourceWanted string) (SessionSource, record, []round, error) {
+// sessionRoundsRead carries what a whole-session read produced. scanned and total differ
+// when the final result knows the session ran longer than the export cap: the caller
+// says so (partial / messagesScanned) instead of quietly claiming completeness.
+type sessionRoundsRead struct {
+	source  SessionSource
+	item    record
+	rounds  []round
+	scanned int
+	total   int
+}
+
+// roundsOf fetches a whole session and segments it. The read is capped at
+// exportMaxMessages like an export; when the final result knows the session ran longer,
+// total exceeds scanned and everything downstream says partial.
+func (a *SessionQueryAPI) roundsOf(pattern, sourceWanted string) (sessionRoundsRead, error) {
 	source, item, found := a.findSession(pattern, sourceWanted)
 	if !found {
-		return nil, record{}, nil, errNoSession
+		return sessionRoundsRead{}, errNoSession
 	}
 	messages := safeParse(source.Mode(), "messages", func() []map[string]any {
 		return source.Messages(item, messageQuery{limit: exportMaxMessages})
 	})
-	return source, item, splitRounds(messages), nil
+	final := safeParse(source.Mode(), "the final result", func() map[string]any {
+		return source.Final(item)
+	})
+	scanned, total := len(messages), len(messages)
+	if final != nil {
+		if n, ok := asCount(final["messageCount"]); ok && n > scanned {
+			total = n
+		}
+	}
+	return sessionRoundsRead{source, item, splitRounds(messages), scanned, total}, nil
+}
+
+// asCount reads a message count without assuming which integer shape a source used
+func asCount(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case float64:
+		return int(n), true
+	}
+	return 0, false
 }
 
 // sessionRounds is the rounds index as JSON: one row per exchange.
 func (a *SessionQueryAPI) sessionRounds(pattern, sourceWanted string) (map[string]any, error) {
-	_, item, rounds, err := a.roundsOf(pattern, sourceWanted)
+	sr, err := a.roundsOf(pattern, sourceWanted)
 	if err != nil {
 		return nil, err
 	}
+	item, rounds := sr.item, sr.rounds
 	list := make([]map[string]any, 0, len(rounds))
 	for _, r := range rounds {
 		list = append(list, map[string]any{
@@ -261,10 +326,13 @@ func (a *SessionQueryAPI) sessionRounds(pattern, sourceWanted string) (map[strin
 		})
 	}
 	return map[string]any{
-		"sessionId": item.str("sessionId"),
-		"source":    item.str("source"),
-		"total":     len(rounds),
-		"rounds":    list,
+		"sessionId":       item.str("sessionId"),
+		"source":          item.str("source"),
+		"total":           len(rounds),
+		"rounds":          list,
+		"messagesScanned": sr.scanned,
+		"messagesTotal":   sr.total,
+		"partial":         sr.total > sr.scanned,
 	}, nil
 }
 
@@ -272,10 +340,11 @@ func (a *SessionQueryAPI) sessionRounds(pattern, sourceWanted string) (map[strin
 // latest round; atParam, when given, selects the round the timestamp falls in — how a
 // search hit becomes the thing being briefed.
 func (a *SessionQueryAPI) sessionBrief(pattern, sourceWanted string, roundNo int, atParam string) (string, error) {
-	_, item, rounds, err := a.roundsOf(pattern, sourceWanted)
+	sr, err := a.roundsOf(pattern, sourceWanted)
 	if err != nil {
 		return "", err
 	}
+	item, rounds := sr.item, sr.rounds
 	selected := 0
 	switch {
 	case atParam != "":
@@ -302,12 +371,12 @@ func (a *SessionQueryAPI) sessionBrief(pattern, sourceWanted string, roundNo int
 	case len(rounds) > 0:
 		selected = rounds[len(rounds)-1].index
 	}
-	return renderBrief(item, rounds, selected), nil
+	return renderBrief(item, rounds, selected, sr.scanned, sr.total), nil
 }
 
 // renderBrief lays the brief out in fixed sections: the headers are the interface the
 // receiving side prompts around, not decoration.
-func renderBrief(item record, rounds []round, selected int) string {
+func renderBrief(item record, rounds []round, selected, scanned, total int) string {
 	var b strings.Builder
 	name := item.str("shortKey")
 	if name == "" {
@@ -325,6 +394,9 @@ func renderBrief(item record, rounds []round, selected int) string {
 			span = rounds[0].startAt
 		}
 		fmt.Fprintf(&b, "- %d rounds · %s → %s\n", len(rounds), shortTime(rounds[0].startAt), shortTime(span))
+	}
+	if total > scanned {
+		fmt.Fprintf(&b, "- scanned the latest %d of %d messages (partial)\n", scanned, total)
 	}
 
 	if len(rounds) > 1 {
@@ -349,11 +421,11 @@ func renderBrief(item record, rounds []round, selected int) string {
 		if r.index != selected {
 			continue
 		}
-		b.WriteString("\n## Round " + strconv.Itoa(r.index))
+		header := "\n## Round " + strconv.Itoa(r.index)
 		if r.interrupted {
-			b.WriteString(" — interrupted")
+			header += " — interrupted"
 		}
-		b.WriteString("\n\n")
+		b.WriteString(header + "\n\n")
 		fmt.Fprintf(&b, "- Asked: %s\n", capText(r.asked, 300))
 		if len(r.files) > 0 {
 			files, more := r.files, ""

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // briefFixture writes a deliberately mixed session: a command-plumbing row before
@@ -28,10 +29,11 @@ func briefFixture(t *testing.T) *SessionQueryAPI {
 
 func TestSplitRounds(t *testing.T) {
 	api := briefFixture(t)
-	_, _, rounds, err := api.roundsOf("rrrr", "")
+	sr, err := api.roundsOf("rrrr", "")
 	if err != nil {
 		t.Fatal(err)
 	}
+	rounds := sr.rounds
 	if len(rounds) != 2 {
 		t.Fatalf("rounds = %d, want 2 (the plumbing row starts nothing, the trailing ask is its own round)", len(rounds))
 	}
@@ -140,5 +142,105 @@ func TestBriefHTTPRoutes(t *testing.T) {
 	code, body = get(t, srv.URL+"/sessions/sess-1/brief?round=9", "secret")
 	if code != 400 {
 		t.Fatalf("brief round=9 = %d %v", code, body)
+	}
+}
+
+func TestCapTextIsRuneSafe(t *testing.T) {
+	cjk := capText("帮我把配置文件抽出来重新组织一下结构", 5)
+	if !utf8.ValidString(cjk) {
+		t.Fatalf("capText produced invalid UTF-8: %q", cjk)
+	}
+	if cjk != "帮我把配置 …" {
+		t.Fatalf("cjk cut = %q", cjk)
+	}
+	if short := capText("one two three four", 7); short != "one two …" {
+		t.Fatalf("ascii cut = %q", short)
+	}
+	if short := capText("short", 50); short != "short" {
+		t.Fatalf("short string changed: %q", short)
+	}
+}
+
+func TestToolKindOf(t *testing.T) {
+	cases := map[string]string{
+		"Bash":             "exec",
+		"run_terminal_cmd": "exec",
+		"sh":               "exec",
+		"Write":            "write",
+		"NotebookEdit":     "write",
+		"Edit":             "write",
+		"Read":             "read",
+		"open_file":        "read",
+		"Grep":             "search",
+		"glob_list":        "search",
+		"WebFetch":         "net",
+		"curl_page":        "net",
+		"dispatch_agent":   "agent",
+		"Task":             "agent",
+		"publish":          "other",
+		"runbook":          "other",
+		"flash":            "other",
+	}
+	for name, want := range cases {
+		if got := toolKindOf(name); got != want {
+			t.Errorf("toolKindOf(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// inflatedCountSource lies about the session's length the way a real final result does
+// when the session ran past the scan cap.
+type inflatedCountSource struct {
+	SessionSource
+}
+
+func (s inflatedCountSource) Final(r record) map[string]any {
+	out := s.SessionSource.Final(r)
+	out["messageCount"] = 999999
+	return out
+}
+
+func TestSessionRoundsSurfacesPartialScan(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "proj", "rrrr.jsonl"),
+		`{"type":"user","sessionId":"rrrr","cwd":"/w","message":{"role":"user","content":"ask"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`,
+	)
+	api := newSessionQueryAPI([]SessionSource{inflatedCountSource{newClaudeSource(root)}}, 0)
+	out, err := api.sessionRounds("rrrr", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["partial"] != true || out["messagesTotal"] != 999999 {
+		t.Fatalf("partial = %v, total = %v", out["partial"], out["messagesTotal"])
+	}
+	brief, err := api.sessionBrief("rrrr", "", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(brief, "scanned the latest 2 of 999999 messages (partial)") {
+		t.Error("the brief header does not disclose the partial scan")
+	}
+}
+
+func TestSessionBriefSourceDisambiguation(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	writeClaudeFixture(t, dirA, "proj", "cccc", "/w")
+	writeClaudeFixture(t, dirB, "proj", "cccc", "/w")
+	api := newSessionQueryAPI([]SessionSource{
+		labeledSource{SessionSource: newClaudeSource(dirA), mode: "claude:a"},
+		labeledSource{SessionSource: newClaudeSource(dirB), mode: "claude:b"},
+	}, 0)
+	for _, source := range []string{"claude:a", "claude:b"} {
+		brief, err := api.sessionBrief("cccc", source, 0, "")
+		if err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+		if !strings.Contains(brief, "source "+source) {
+			t.Errorf("%s brief names the wrong source:\n%s", source, brief)
+		}
+		if !strings.Contains(brief, strings.TrimPrefix(source, "claude:")+":/w") {
+			t.Errorf("%s brief lost the label prefix on the project:\n%s", source, brief)
+		}
 	}
 }

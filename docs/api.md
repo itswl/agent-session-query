@@ -12,6 +12,8 @@ no alias.
 | `/sessions/<pattern>` | yes | One session's metadata |
 | `/sessions/<pattern>/messages?limit=50&order=asc` | yes | A session's messages; `order=asc` (the default) takes the earliest N, `order=desc` the latest N, and `at=<time>` anchors the window at that instant instead of at an end. Capped by `--max-limit` |
 | `/sessions/<pattern>/final` | yes | A session's final result |
+| `/sessions/<pattern>/rounds` | yes | The session split into rounds — one per real user message (command plumbing and tool results do not start one): index, times, files touched, and whether the round ended interrupted |
+| `/sessions/<pattern>/brief?round=&at=` | yes | A compact handoff brief (`text/markdown`, deterministic extraction, not a summary): the ask in the user's words, files touched, tools by category, how the round ended, and the state at the end. Defaults to the latest round; `round=N` picks one, `at=<time>` briefs the round a timestamp falls in |
 | `/sessions/<pattern>/export?order=desc&format=md` | yes | Export the session. **No `limit` means the whole session** (up to 20 000 messages); the header states what it covers, and says so when it is partial. Four formats: |
 
 | `format` | Served as | For |

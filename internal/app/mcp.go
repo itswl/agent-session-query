@@ -396,6 +396,21 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		}
 		return out, nil
 
+	case "session_brief":
+		pattern := strings.TrimSpace(argString(args, "pattern"))
+		if pattern == "" {
+			return nil, errors.New("missing argument: pattern")
+		}
+		sourceWanted, err := wantedSource(args)
+		if err != nil {
+			return nil, err
+		}
+		brief, err := s.api.sessionBrief(pattern, sourceWanted, argInt(args, "round", 0, 1<<30), strings.TrimSpace(argString(args, "at")))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"brief": brief}, nil
+
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -637,6 +652,21 @@ func mcpTools() []map[string]any {
 					"role":    strSchema("keep only this role: user or assistant"),
 					"at":      strSchema("anchor the window at this time instead of at an end — pass a hit's timestamp from search_sessions to land on it: asc starts there, desc ends there"),
 					"cursor":  cursorSchema(),
+				},
+				"required": []string{"pattern"},
+			},
+		},
+		{
+			"name":        "session_brief",
+			"description": "A compact handoff brief of one round of a session: the ask in the user's words, files the tools touched, how the exchange ended. Deterministic extraction, not an AI summary. A session is segmented into rounds at each real user message; without round/at the latest round is briefed. Pairs with search_sessions — brief the round a hit falls in via at.",
+			"annotations": readOnlyAnnotations("Brief a session round"),
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"pattern": strSchema("a sessionId, a fragment of one, or a file path fragment"),
+					"source":  strSchema("restrict the match to one source: " + strings.Join(knownModes, " / ")),
+					"round":   intSchema("1-based round number; default the latest"),
+					"at":      strSchema("brief the round this timestamp falls in, e.g. a hit's timestamp from search_sessions"),
 				},
 				"required": []string{"pattern"},
 			},

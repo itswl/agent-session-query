@@ -1052,6 +1052,25 @@ function safeFilename(name) {
   return cleaned.replace(/^[. ]+|[. ]+$/g, '') || 'session';
 }
 
+// copyBrief fetches the session's handoff brief and puts it on the clipboard: the brief
+// exists to be handed to another agent, so clipboard-first beats a download.
+function copyBrief(record) {
+  return async (event) => {
+    const node = event.currentTarget;
+    const original = node.textContent;
+    try {
+      const headers = state.token ? { Authorization: 'Bearer ' + state.token } : {};
+      const res = await fetch('/sessions/' + encodeURIComponent(record.sessionId) + '/brief', { headers });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      await navigator.clipboard.writeText(await res.text());
+      setText(node, 'Copied');
+    } catch (err) {
+      setText(node, 'Failed');
+    }
+    setTimeout(() => setText(node, original), 1500);
+  };
+}
+
 // downloadExport exports the session in the chosen format.
 // The endpoint requires authentication, so a plain <a href> will not do — the request has
 // to carry the Authorization header and the download is built from the response.
@@ -1114,6 +1133,9 @@ function sessionCard(record, final) {
   head.appendChild(picker);
   // The picker beside it already names the format; repeating it in the button made the
   // row too wide for the pane and pushed the button past the card's edge
+  const briefButton = button('ghost tiny', 'Brief', copyBrief(record));
+  briefButton.title = 'A compact handoff brief of the latest round, for handing to another agent';
+  head.appendChild(briefButton);
   const exportButton = button('ghost tiny', 'Export',
     (event) => downloadExport(record, event.currentTarget));
   exportButton.title = EXPORT_HINTS[state.exportFormat] || 'Export';

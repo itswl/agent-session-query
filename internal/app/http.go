@@ -248,6 +248,8 @@ var rootEndpoints = []rootEndpoint{
 	{"GET", "/sessions/<pattern>/messages?limit=50", false, "its messages, newest first by default"},
 	{"GET", "/sessions/<pattern>/final", false, "its final result"},
 	{"GET", "/sessions/<pattern>/export?format=", false, "one session as a document: md, jsonl, json or html"},
+	{"GET", "/sessions/<pattern>/rounds", false, "the session split into rounds — one per real user message"},
+	{"GET", "/sessions/<pattern>/brief?round=", false, "a handoff brief of one round (default the latest); ?at=<ts> picks the round a timestamp falls in"},
 	{"GET", "/search?q=", false, "full-text search across every source"},
 	{"GET", "/projects", false, "session counts grouped by project"},
 	{"GET", "/export?project=", false, "a pack: what was asked and concluded across sessions, oldest first"},
@@ -473,6 +475,40 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 				"total":    len(messages),
 				"order":    orderName(query.fromEnd),
 			})
+			return http.StatusOK
+
+		case len(parts) == 2 && parts[0] != "" && parts[1] == "rounds":
+			pattern := unescapePattern(parts[0])
+			rounds, err := s.api.sessionRounds(pattern, "")
+			if err != nil {
+				status, payload := briefHTTPError(err)
+				writeJSON(w, status, payload)
+				return status
+			}
+			writeJSON(w, http.StatusOK, rounds)
+			return http.StatusOK
+
+		case len(parts) == 2 && parts[0] != "" && parts[1] == "brief":
+			pattern := unescapePattern(parts[0])
+			roundNo := 0
+			if raw := r.URL.Query().Get("round"); raw != "" {
+				n, err := strconv.Atoi(raw)
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"error": "round must be a number"})
+					return http.StatusBadRequest
+				}
+				roundNo = n
+			}
+			brief, err := s.api.sessionBrief(pattern, "", roundNo, r.URL.Query().Get("at"))
+			if err != nil {
+				status, payload := briefHTTPError(err)
+				writeJSON(w, status, payload)
+				return status
+			}
+			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+			w.Header().Set("Content-Length", strconv.Itoa(len(brief)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(brief))
 			return http.StatusOK
 
 		case len(parts) == 2 && parts[0] != "" && parts[1] == "export":

@@ -88,7 +88,8 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   ones under a "N more in message bodies" divider, carrying the matching snippet, so one
   query covers both without a mode to switch. <kbd>Enter</kbd> only skips the wait. The list
   can be grouped by time or by project — project headers fold away when clicked — and a
-  session being written gets a pulsing green dot. Rows carry the session's message count
+  session written within the last couple of minutes gets a pulsing dot (recent activity,
+  not a liveness check — hovering it says how long ago). Rows carry the session's message count
   — counted from the file in the background the first time it is listed, so the count
   appears a moment after the page does rather than being paid for on the request path
 - **Middle**: the message timeline (text / thinking / toolCall / toolResult blocks). It opens

@@ -476,9 +476,9 @@ body.hide-list #list, body.hide-side #side { display: none; }
   width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--ok);
 }
 
-/* Live dot: the file is still being written.
+/* Recent-activity dot: the session's newest message is inside the server's window.
    Scoped to the row it belongs to. As a bare `.live` it also matched `.group.live` — the
-   class a group header carries when a project has a session being written — and handed
+   class a group header carries when a project has a recently active session — and handed
    that header width:6px and flex:0 0 auto, so the one live group in the list collapsed to
    its own padding (28px) and showed a count with no project name. */
 .item .live { width: 6px; height: 6px; border-radius: 50%; background: transparent; flex: 0 0 auto; }

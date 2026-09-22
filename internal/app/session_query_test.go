@@ -1173,3 +1173,30 @@ func TestExportEveryFormat(t *testing.T) {
 		t.Errorf("json header coverage = %v", doc.Session["coverage"])
 	}
 }
+
+// TestIsActiveIsRecencyNotLiveness pins what the dot is allowed to claim: the session's
+// newest message sits inside activeWindow, and nothing about whether a process exists.
+// Both directions are the point — a session that ended moments ago still reports true,
+// and one whose agent has been working for longer than the window reports false — which
+// is why the docs and the page describe recency rather than asserting the session is
+// being written.
+func TestIsActiveIsRecencyNotLiveness(t *testing.T) {
+	activeAgo := func(d time.Duration) bool {
+		ts := time.Now().Add(-d).UTC().Format(time.RFC3339Nano)
+		r := newRecord(map[string]any{"sessionId": "s", "updatedAt": ts}, ts)
+		return truthy(r.public()["isActive"])
+	}
+	if !activeAgo(5 * time.Second) {
+		t.Error("a newest message seconds old should report active")
+	}
+	if !activeAgo(activeWindow - 15*time.Second) {
+		t.Error("just inside the window should report active")
+	}
+	if activeAgo(activeWindow + 15*time.Second) {
+		t.Error("just outside the window must not report active: the window is the whole claim")
+	}
+	// No usable timestamp is not activity — it is the absence of evidence
+	if truthy(newRecord(map[string]any{"sessionId": "s"}, "").public()["isActive"]) {
+		t.Error("a record with no parseable time must not report active")
+	}
+}

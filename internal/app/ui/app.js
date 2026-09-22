@@ -421,7 +421,7 @@ function buildItem(sessionId) {
 
   const row = el('div', 'row1');
   row.appendChild(el('span', 'tag'));   // source
-  row.appendChild(el('span', 'live'));  // live dot (only shown while a session is being written)
+  row.appendChild(el('span', 'live'));  // recent-activity dot (newest message inside activeWindow)
   row.appendChild(el('span', 'msgs'));  // message count (from the source, or learned on open)
   row.appendChild(el('span', 'time'));  // relative time
   item.appendChild(row);
@@ -437,8 +437,10 @@ function fillItem(item, session) {
   setText(tag, session.source);
   // File-backed sources always report status done, so "running" can only be inferred
   // from the update time (the server works this out)
+  // The dot means the newest message is recent, which is all the server can know — so
+  // the tooltip gives that fact rather than asserting the session is being written
   live.classList.toggle('on', !!session.isActive);
-  live.title = session.isActive ? 'being written' : '';
+  live.title = session.isActive ? 'last message ' + relTime(session.updatedAt) : '';
   // The SQLite sources report a true count; the file sources do not count on list (the
   // list never reads file bodies), so their number is learned when the session is opened
   const n = Number(session.messageCount) || state.msgCounts.get(session.sessionId) || 0;
@@ -640,7 +642,7 @@ function fillHit(item, hit) {
   if (tag.className !== cls) tag.className = cls;
   setText(tag, hit.source);
   live.classList.toggle('on', !!hit.isActive);
-  live.title = hit.isActive ? 'being written' : '';
+  live.title = hit.isActive ? 'last message ' + relTime(hit.updatedAt) : '';
   setText(count, hit.matchCount + (hit.matchCount === 1 ? ' hit' : ' hits'));
   setText(time, relTime(hit.updatedAt));
   time.title = hit.updatedAt || '';

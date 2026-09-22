@@ -63,8 +63,11 @@ pattern containing a colon needs URL encoding (`%3A`).
 **Responses**:
 
 - List / single session: `source`, `key`, `shortKey`, `sessionId`, `file`, `hasFile`,
-  `status`, `updatedAt`, `project` (cwd, or gemini's project name) and `isActive` (updated
-  within the last 2 minutes, i.e. currently being written), plus per-source extras such as
+  `status`, `updatedAt`, `project` (cwd, or gemini's project name) and `isActive` (the
+  session's newest message is less than 2 minutes old — recent activity, **not** a check
+  that a process is running: a session that ended a minute ago still reports true, and one
+  whose agent has been working for longer than the window reports false), plus per-source
+  extras such as
   `cwd` / `model` / `totalTokens` / `estimatedCostUsd` / `cliVersion`
 - Search: the list fields plus `matches` (`snippet` + `role` + `timestamp`) and `matchCount`
 - Messages: `content` is an array of blocks typed `text` / `thinking` / `toolCall`

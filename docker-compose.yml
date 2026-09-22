@@ -1,12 +1,18 @@
+# The compose file is for the case the one-line docker run in docs/deploy.md cannot hold:
+# mounting every source directory, reading sessions that live outside the default home
+# (mount the directory and add --path to command below), or building locally.
 services:
   agent-session-query:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        # The base image can be swapped, for example:
-        #   GO_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/golang:1.24-alpine
-        GO_IMAGE: ${GO_IMAGE:-golang:1.24-alpine}
+    # Published on every release tag, linux/amd64 + linux/arm64. Pin a version instead of
+    # latest if you want upgrades to be deliberate.
+    image: ghcr.io/itswl/agent-session-query:latest
+    # To build locally instead — your own change, or a registry mirror — replace the image
+    # line with this block. The base image can be swapped, for example
+    #   GO_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/golang:1.24-alpine
+    # build:
+    #   context: .
+    #   args:
+    #     GO_IMAGE: ${GO_IMAGE:-golang:1.24-alpine}
     container_name: agent-session-query
     ports:
       # Published to host loopback only: this service can read complete session content, so
@@ -14,7 +20,9 @@ services:
       # To share it, change this to "8080:8080" — and set HOOK_TOKEN.
       - "127.0.0.1:8080:8080"
     volumes:
-      # All six source directories can be mounted; sources with no data are skipped.
+      # Mount whichever source directories the host has; a source with nothing mounted is
+      # skipped. Inside the container HOME is /root, so a directory mounts to the same place
+      # under /root/...
       # Note: a directory that does not exist on the host is created by Docker as an empty
       # one owned by root.
       # Mount the whole of ~/.hermes: newer sessions live entirely in state.db (its -wal/-shm
@@ -27,6 +35,10 @@ services:
       - ~/.claude/projects:/root/.claude/projects:ro
       - ~/.codex/sessions:/root/.codex/sessions:ro
       - ~/.gemini/tmp:/root/.gemini/tmp:ro
+      # Sessions outside the default home: mount the directory anywhere and name it with
+      # --path in command below, e.g.
+      #   - /srv/agents/box2/.claude/projects:/mnt/box2:ro
+      # together with "--path" and "claude:box2=/mnt/box2" appended to command
     # The token travels in the environment, not on the command line — arguments show up in
     # ps and docker inspect
     environment:

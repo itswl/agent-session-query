@@ -182,8 +182,10 @@ repository are in **[docs/mcp.md](docs/mcp.md)**.
 | `--mcp` | off | Run as an MCP server on stdio (see above); does not listen on a port |
 | `--version` | — | Print the version and exit |
 
-Docker environment variables: `HOOK_TOKEN`, `SESSION_MODE` (default `auto`), and `GO_IMAGE`
-(a build argument).
+Docker: every release publishes a multi-arch image to GitHub Container Registry, so nothing
+has to be built; `HOOK_TOKEN` and `SESSION_MODE` (default `auto`) are its environment
+variables, and `GO_IMAGE` is a build argument for a local build. See
+[docs/deploy.md](docs/deploy.md).
 
 Without `--hook_token` the `HOOK_TOKEN` environment variable is read instead — **command-line
 arguments show up in `ps`, environment variables do not**, so prefer the latter for anything

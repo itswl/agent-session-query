@@ -156,7 +156,7 @@ go build -o agent-session-query ./cmd/agent-session-query
 | `--mcp` | 关闭 | 以 MCP server 身份跑在 stdio 上（见上），不监听端口 |
 | `--version` | — | 打印版本并退出 |
 
-Docker 环境变量：`HOOK_TOKEN`、`SESSION_MODE`（默认 `auto`），以及 `GO_IMAGE`（构建参数）。
+Docker：每次发版都会把多架构镜像发布到 GitHub Container Registry，不必自己构建；环境变量为 `HOOK_TOKEN` 与 `SESSION_MODE`（默认 `auto`），本地构建时可用 `GO_IMAGE` 构建参数。见 [docs/deploy.md](docs/deploy.md)。
 
 不带 `--hook_token` 时会转而读取 `HOOK_TOKEN` 环境变量——**命令行参数会出现在 `ps` 里，环境变量
 不会**，所以长期运行的场景优先用后者。

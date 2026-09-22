@@ -95,17 +95,33 @@ schtasks /create /tn agent-session-query /sc onlogon `
 That leaves a console window open. To run fully in the background, or to start at boot
 rather than at logon, register it as a service with something like [nssm](https://nssm.cc/).
 
-**Docker** — a single binary is already easy enough, so Docker is not the recommended route;
-the repository keeps `Dockerfile` / `docker-compose.yml` around for those who want it:
+**Docker** — a single binary is already easy enough, so Docker is not the route for a
+machine you sit at. Where it fits is a host you only reach over the network: the box the
+agents run on. Every release tag publishes a multi-arch image (linux/amd64 + linux/arm64)
+to GitHub Container Registry, so nothing has to be built:
 
 ```bash
-HOOK_TOKEN=mysecrettoken docker compose up -d   # see docker-compose.yml for the six mounts
+docker run -d --name agent-session-query -p 127.0.0.1:8080:8080 \
+  -e HOOK_TOKEN=mysecrettoken \
+  -v ~/.claude/projects:/root/.claude/projects:ro \
+  -v ~/.codex/sessions:/root/.codex/sessions:ro \
+  ghcr.io/itswl/agent-session-query:latest
 ```
 
-Inside the container, source paths derive from `$HOME` (the mount points sit under
-`/root/...`). Mount the whole of `~/.hermes` for Hermes — `state.db` needs its `-wal`/`-shm`
+Mount whichever source directories the host has; a source with nothing mounted is skipped.
+Inside the container `$HOME` is `/root`, so a directory mounts to the same place under
+`/root/...`. Mount the whole of `~/.hermes` for Hermes — `state.db` needs its `-wal`/`-shm`
 companions alongside it. The image's `CMD` passes `--host 0.0.0.0` explicitly (otherwise the
 port mapping cannot reach it), so a container deployment **must** set `HOOK_TOKEN`.
+
+Reach for `docker-compose.yml` only when the mounts stop fitting on one line: every source
+directory, sessions that live outside the default home (mount the directory and put
+`--path` in `command:`, see below), or a local build against a registry mirror. The file
+lists every mount with the note each one needs:
+
+```bash
+HOOK_TOKEN=mysecrettoken docker compose up -d
+```
 
 ## Sessions outside the default home
 

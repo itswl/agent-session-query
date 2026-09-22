@@ -3,13 +3,22 @@
 #
 # Two-stage build: compile a static binary, and the runtime image holds nothing but it and
 # the liveness probe — no shell, no package manager.
+#
+# The build stage always runs on the build machine's own platform and cross-compiles for
+# the target: Go does that natively, so a multi-arch build (release.yml publishes
+# linux/amd64 + linux/arm64) never runs a compiler under QEMU emulation, which is several
+# times slower. release.yml pushes the result to GitHub Container Registry on every tag.
 # The base image and module proxy can be overridden, for example:
 #   docker build \
 #     --build-arg GO_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/golang:1.24-alpine \
 #     --build-arg GOPROXY=https://goproxy.cn,direct \
 #     -t agent-session-query .
 ARG GO_IMAGE=golang:1.24-alpine
-FROM ${GO_IMAGE} AS build
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
+
+# buildx fills these in per target platform. Under a plain docker build they are empty,
+# and an empty GOOS / GOARCH means the host — so a single-platform build needs no flags.
+ARG TARGETOS TARGETARCH
 
 ARG VERSION=dev
 ARG GOPROXY=https://proxy.golang.org,direct
@@ -22,8 +31,8 @@ RUN go mod download
 
 COPY internal ./internal
 COPY cmd ./cmd
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/itswl/agent-session-query/internal/app.buildVersion=${VERSION}" -o /out/agent-session-query ./cmd/agent-session-query \
- && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/healthcheck ./cmd/healthcheck
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X github.com/itswl/agent-session-query/internal/app.buildVersion=${VERSION}" -o /out/agent-session-query ./cmd/agent-session-query \
+ && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/healthcheck ./cmd/healthcheck
 
 FROM scratch
 

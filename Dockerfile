@@ -7,7 +7,11 @@
 # The build stage always runs on the build machine's own platform and cross-compiles for
 # the target: Go does that natively, so a multi-arch build (release.yml publishes
 # linux/amd64 + linux/arm64) never runs a compiler under QEMU emulation, which is several
-# times slower. release.yml pushes the result to GitHub Container Registry on every tag.
+# times slower.
+#
+# This is the from-source build, for a change of your own or a registry mirror. The image
+# release.yml publishes is Dockerfile.release: the binaries the release build produced,
+# copied in — the same bytes as the released archives, no compiler involved.
 # The base image and module proxy can be overridden, for example:
 #   docker build \
 #     --build-arg GO_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/golang:1.24-alpine \

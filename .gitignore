@@ -5,3 +5,5 @@
 # Leftovers from the old Python version (the repo is Go-only now)
 __pycache__/
 *.pyc
+# release.yml downloads the build matrix's linux binaries here for Dockerfile.release
+dist-image/

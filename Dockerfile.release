@@ -1,0 +1,26 @@
+# The published image. release.yml builds it from the binaries the release build matrix
+# already produced — downloaded into dist-image/<os>/<arch>/ — so the container carries
+# the same bytes as the released archives and this file never runs a compiler.
+#
+# To build from source instead (a change of your own, a mirror), use Dockerfile.
+#
+# --chmod: artifact upload and download do not keep file modes, so the executable bit
+# is set here rather than trusted from the download.
+FROM scratch
+
+ARG TARGETOS TARGETARCH
+COPY --chmod=755 dist-image/${TARGETOS}/${TARGETARCH}/agent-session-query /agent-session-query
+COPY --chmod=755 dist-image/${TARGETOS}/${TARGETARCH}/healthcheck /healthcheck
+
+# Session data is mounted in; the image creates no directories in advance (an empty
+# directory would otherwise look like an existing data source).
+# Source paths derive from $HOME, pinned to /root to match the mount examples in the docs.
+ENV HOME=/root
+
+EXPOSE 8080
+
+# scratch has no curl and no shell, so the liveness probe is the bundled static binary
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 CMD ["/healthcheck"]
+
+ENTRYPOINT ["/agent-session-query"]
+CMD ["--host", "0.0.0.0", "--port", "8080"]

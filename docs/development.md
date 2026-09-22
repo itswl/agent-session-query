@@ -19,7 +19,8 @@
 │                                  #   cross-compile check over all six release targets
 ├── .github/workflows/release.yml  # on a tag: tests on three platforms, then cross-compile
 │                                  #   six targets and publish the Release
-├── Dockerfile / docker-compose.yml
+├── Dockerfile / docker-compose.yml   # build from source, and compose
+├── Dockerfile.release         # what release.yml publishes: the release binaries copied in
 └── go.mod / go.sum            # one dependency: a pure-Go SQLite driver
 ```
 

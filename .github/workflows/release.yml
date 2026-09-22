@@ -70,6 +70,14 @@ jobs:
           else
             tar czf "agent-session-query-$GOOS-$GOARCH.tar.gz" "$binary"
           fi
+          # The container image is these same bytes, not a second compile: the linux builds
+          # also hand over the raw binary plus the liveness probe (scratch has no shell, so
+          # the probe is a binary too) for the image job to copy in
+          if [ "$GOOS" = linux ]; then
+            mkdir -p "image/$GOOS/$GOARCH"
+            cp "$binary" "image/$GOOS/$GOARCH/agent-session-query"
+            go build -trimpath -ldflags "-s -w" -o "image/$GOOS/$GOARCH/healthcheck" ./cmd/healthcheck
+          fi
       # Each job uploads its own archive; a single publish job collects them all below.
       # Publishing from every build job meant six of them racing to create one release,
       # and gh release create is not atomic: on v0.10.1 two jobs passed the "does it
@@ -81,8 +89,20 @@ jobs:
           path: agent-session-query-${{ matrix.goos }}-${{ matrix.goarch }}.*
           if-no-files-found: error
 
+      # Named outside agent-session-query-*: the publish job downloads by that pattern and
+      # must not see these
+      - if: matrix.goos == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: image/
+          if-no-files-found: error
+
   image:
-    needs: test
+    # The image is the linux binaries the build matrix just produced, copied into scratch
+    # by Dockerfile.release: no compiler in this job, and byte-identical to the released
+    # archives. Dockerfile (from source) stays for local builds.
+    needs: build
     if: ${{ github.event.created }}
     runs-on: ubuntu-latest
     permissions:
@@ -91,7 +111,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: docker/setup-qemu-action@v3
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: image-linux-*
+          path: dist-image
+          merge-multiple: true
+
+      # Multi-platform needs buildx. QEMU does not come into it: nothing runs during this
+      # build, it is COPY and metadata only.
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -117,14 +144,11 @@ jobs:
           DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
+          file: Dockerfile.release
           platforms: linux/amd64,linux/arm64
           push: true
-          build-args: |
-            VERSION=${{ github.ref_name }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
   publish:
     needs: [build, image]

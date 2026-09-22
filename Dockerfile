@@ -11,6 +11,7 @@
 ARG GO_IMAGE=golang:1.24-alpine
 FROM ${GO_IMAGE} AS build
 
+ARG VERSION=dev
 ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY}
 
@@ -21,7 +22,7 @@ RUN go mod download
 
 COPY internal ./internal
 COPY cmd ./cmd
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/agent-session-query ./cmd/agent-session-query \
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/itswl/agent-session-query/internal/app.buildVersion=${VERSION}" -o /out/agent-session-query ./cmd/agent-session-query \
  && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/healthcheck ./cmd/healthcheck
 
 FROM scratch

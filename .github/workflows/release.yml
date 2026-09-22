@@ -111,6 +111,10 @@ jobs:
             type=raw,value=latest
 
       - uses: docker/build-push-action@v6
+        env:
+          # The build record is an artifact nobody reads here, and an extra artifact is one
+          # more thing the publish job's download could trip over
+          DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -136,6 +140,10 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          # Only the build matrix's artifacts. Without a pattern this fetched every artifact of
+          # the run — including the image job's build record — and one failed download of
+          # that blocked the whole release (v0.15.0, first run of the image job).
+          pattern: agent-session-query-*
           path: dist
           merge-multiple: true
 

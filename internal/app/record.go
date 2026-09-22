@@ -61,7 +61,23 @@ func (r record) get(k string) any     { return r.fields[k] }
 func (r record) str(k string) string  { return toStr(r.fields[k]) }
 func (r record) truthy(k string) bool { return truthy(r.fields[k]) }
 
-// activeWindow: an update time inside this window counts as "currently running"
+// activeWindow bounds what isActive reports: the session's newest message carries a
+// timestamp inside this window.
+//
+// That is recency, not liveness. Nothing here checks whether a process exists: a session
+// whose agent exited a minute ago still reports true until the window passes, and one
+// that has been thinking or running a command for longer than the window reports false
+// while very much alive.
+//
+// Reading real liveness was measured across all seven sources and is not available
+// uniformly: Claude Code registers only its background sessions (~/.claude/jobs), Hermes
+// has lease and heartbeat tables that sit empty, Codex takes a writer lock only for the
+// instant of a write, and the rest expose nothing. The processes do not hold their own
+// transcript open either — every CLI appends and closes — so there is no cross-source
+// signal to read. A per-source answer would make one green dot mean "a process is
+// running" for one source and "written recently" for the other six in the same list,
+// which is worse than an approximation that is at least consistent. So the approximation
+// stays, and the wording says what it measures.
 const activeWindow = 2 * time.Minute
 
 // public returns a copy of the public fields. Records are held by the list cache and
@@ -70,7 +86,7 @@ const activeWindow = 2 * time.Minute
 //
 // isActive is computed here rather than at build time because it depends on what time
 // it is now. Freeze it at build time and a record scanned ten minutes ago keeps
-// claiming to be live.
+// reporting recent activity.
 func (r record) public() map[string]any {
 	out := make(map[string]any, len(r.fields)+2)
 	for k, v := range r.fields {
@@ -217,7 +233,7 @@ var tailWindows = []int64{64 << 10, 512 << 10, 4 << 20}
 // conversation happened. Measured over 174 real Claude sessions, 43 of them (25%) differ
 // by more than an hour, the worst by 235 hours — something rewrites session files
 // without appending anything, which floats a conversation that ended six days ago to the
-// top of the list and has isActive report it as "currently being written".
+// top of the list and has isActive report recent activity on it.
 //
 // It does not read the whole file: seeking a small window from the end is enough (the
 // largest session here is 103 MB). If the window holds no complete record the next size

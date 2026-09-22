@@ -172,7 +172,7 @@ two diverge badly:
 - Measured over 174 real local Claude sessions, **43 of them (25%) differed by more than an
   hour**, the worst by **235 hours**. Something rewrites session files without appending
   anything, which floats a conversation that ended six days ago to the top of the list and
-  has `isActive` report it as currently being written
+  has `isActive` report recent activity on it
 - Gemini hides it better: it used the `lastUpdated` on the metadata first line, but that is
   its value at **session start**, updated afterwards by `$set` patch rows. Measured across 33
   sessions, **29 had a stale first-line time**

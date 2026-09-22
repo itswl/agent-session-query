@@ -151,12 +151,15 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
   publish:
+    # Waits for the image so the notes can say whether it exists, but needs only the
+    # binaries: an image job failure must not cost the Release (v0.15.0's was lost to
+    # exactly that). !cancelled() is what lets a job run after one of its needs failed.
     needs: [build, image]
     runs-on: ubuntu-latest
     # A forced tag update (retagging to fix a note) fires this workflow again;
     # github.event.created is true only for a newly created tag, which is the only case
     # worth publishing.
-    if: ${{ github.event.created }}
+    if: ${{ !cancelled() && github.event.created && needs.build.result == 'success' }}
     permissions:
       contents: write
     steps:
@@ -180,11 +183,15 @@ jobs:
           if [ ! -s release-notes.md ]; then
             echo "$GITHUB_REF_NAME" > release-notes.md
           fi
-          version="${GITHUB_REF_NAME#v}"
-          {
-            echo
-            echo "Container image: ghcr.io/${GITHUB_REPOSITORY}:$version (linux/amd64 + linux/arm64)."
-          } >> release-notes.md
+          # Only when the image job pushed one: the notes must not advertise an image that
+          # is not there
+          if [ "${{ needs.image.result }}" = success ]; then
+            version="${GITHUB_REF_NAME#v}"
+            {
+              echo
+              echo "Container image: ghcr.io/${GITHUB_REPOSITORY}:$version (linux/amd64 + linux/arm64)."
+            } >> release-notes.md
+          fi
 
       - name: Publish
         env:

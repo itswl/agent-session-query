@@ -4,11 +4,12 @@ import "strings"
 
 // Usage, folded into one shape.
 //
-// The seven sources report the same quantities under different names — claude's
-// cache_read_input_tokens, codex's cached_input_tokens, pi's cacheRead, gemini's cached —
-// and some bundle fields the card has no use for (service_tier, speed, iterations). The
-// UI used to render whatever came through, which is why one session showed "in / out"
-// beside raw "cache_read_input_tokens" while another showed "cache read".
+// The eight sources report the same quantities under different names — claude's
+// cache_read_input_tokens, codex's cached_input_tokens, pi's cacheRead, gemini's cached,
+// grok's cachedReadTokens — and some bundle fields the card has no use for (service_tier,
+// speed, iterations). The UI used to render whatever came through, which is why one
+// session showed "in / out" beside raw "cache_read_input_tokens" while another showed
+// "cache read".
 //
 // Normalising here also makes the numbers addable, which is what lets a session report a
 // total rather than only its last turn: claude's final message says in 312 / out 1201
@@ -22,8 +23,9 @@ var usageFieldAliases = map[string]string{
 	"outputtokens": "outputTokens", "output": "outputTokens", "completiontokens": "outputTokens",
 	"cachereadinputtokens": "cacheReadTokens", "cachedinputtokens": "cacheReadTokens",
 	"cacheread": "cacheReadTokens", "cached": "cacheReadTokens", "cachedtokens": "cacheReadTokens",
+	"cachedreadtokens":         "cacheReadTokens",
 	"cachecreationinputtokens": "cacheWriteTokens", "cachewriteinputtokens": "cacheWriteTokens",
-	"cachewrite":      "cacheWriteTokens",
+	"cachewrite": "cacheWriteTokens", "cachecreationtokens": "cacheWriteTokens",
 	"reasoningtokens": "reasoningTokens", "reasoningoutputtokens": "reasoningTokens",
 	"reasoning": "reasoningTokens", "thoughts": "reasoningTokens",
 	"totaltokens": "totalTokens", "total": "totalTokens",

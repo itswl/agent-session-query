@@ -8,6 +8,7 @@ The sources read the session directories the agent CLIs write by default:
 | claude | `~/.claude/projects` |
 | codex | `~/.codex/sessions` |
 | gemini | `~/.gemini/tmp` |
+| grok | `~/.grok/sessions` |
 | hermes | `~/.hermes/sessions` (plus `state.db`) |
 | openclaw | `~/.openclaw/agents/*` |
 | opencode | XDG data dir, or `~/Library/Application Support` on macOS |
@@ -35,7 +36,7 @@ disk, a backup, agent containers whose sessions land on a host bind mount:
 - Finding a session by the bare mode name still reaches into labeled instances, so an MCP
   client holding `claude` keeps working
 
-Supported: the directory-shaped sources `pi`, `claude`, `codex` and `gemini`. The JSON-map
+Supported: the directory-shaped sources `pi`, `claude`, `codex`, `gemini` and `grok`. The JSON-map
 and SQLite sources (`hermes`, `openclaw`, `opencode`) keep their layout across several
 files and reject `--path`.
 

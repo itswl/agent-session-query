@@ -105,6 +105,23 @@ and deployment see the [README](../README.md).
   result is the newest assistant message carrying a `finish` field; timestamps are unix
   milliseconds throughout (opened read-only — verified that reads work through the live
   write-ahead log, so sessions still being written are visible)
+- **Grok CLI**: a session is a directory, not a file:
+  `~/.grok/sessions/<url-encoded-cwd>/<session-id>/`. `summary.json` is the index entry the
+  list is built from and is what the file cache is keyed on, because Grok rewrites it on
+  every turn; `updates.jsonl` beside it is the transcript and is what `file`, search and
+  `Final` read. Each transcript line is a JSON-RPC envelope,
+  `{timestamp, method, params}`, with the update under `params.update` and the timestamp in
+  epoch seconds. Two methods share the file: `session/update` carries the Agent Client
+  Protocol stream, and `_x.ai/session/update` carries Grok's own events — hook runs, and the
+  `turn_completed` rows the usage total is summed from. A turn arrives as many small
+  updates, so consecutive updates from one speaker are folded into a single message and
+  consecutive text chunks into a single block: `user_message_chunk` / `agent_message_chunk`
+  become text, `agent_thought_chunk` thinking, `tool_call` a `toolCall` block, and the
+  `tool_call_update` that reports `completed` or `failed` a `toolResult` (a status-less one
+  is the call being re-titled mid-flight and carries no output). The cwd comes from
+  `info.cwd`; the group directory name is that same path URL-encoded, which is the fallback,
+  and above 255 bytes Grok substitutes a slug plus a hash and records the real path in a
+  `.cwd` file beside the sessions
 
 ### When a source cannot be read
 

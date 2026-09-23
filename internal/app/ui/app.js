@@ -179,7 +179,7 @@ function relTime(iso) {
 
 // Source / status tags. className only ever uses whitelisted values; source is a
 // server-side enum but is still never concatenated in directly
-const SOURCE_CLASSES = ['claude', 'codex', 'gemini', 'hermes', 'openclaw', 'opencode', 'pi'];
+const SOURCE_CLASSES = ['claude', 'codex', 'gemini', 'grok', 'hermes', 'openclaw', 'opencode', 'pi'];
 function sourceClass(source) {
   if (SOURCE_CLASSES.includes(source)) return 'tag ' + source;
   // A labeled instance (claude:box-2) is not one of the known CLIs; it still gets the

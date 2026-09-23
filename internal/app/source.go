@@ -116,7 +116,7 @@ func (s *messageSink) result() []map[string]any {
 }
 
 // Supported sources (the values --mode accepts); auto enables whichever exist
-var knownModes = []string{"hermes", "openclaw", "pi", "claude", "codex", "gemini", "opencode"}
+var knownModes = []string{"hermes", "openclaw", "pi", "claude", "codex", "gemini", "opencode", "grok"}
 
 // fileExists reports whether a path exists
 func fileExists(path string) bool {
@@ -181,8 +181,8 @@ func (p *pathFlag) Set(value string) error {
 	}
 	// The directory-shaped sources can point anywhere; the json-map and SQLite ones keep
 	// their layout across several files, which one directory cannot stand in for
-	if _, ok := map[string]bool{"pi": true, "claude": true, "codex": true, "gemini": true}[mode]; !ok {
-		return fmt.Errorf("--path: %s cannot be relocated this way (supported: pi, claude, codex, gemini)", mode)
+	if _, ok := map[string]bool{"pi": true, "claude": true, "codex": true, "gemini": true, "grok": true}[mode]; !ok {
+		return fmt.Errorf("--path: %s cannot be relocated this way (supported: pi, claude, codex, gemini, grok)", mode)
 	}
 	*p = append(*p, sourcePath{mode: mode, label: label, dir: dir})
 	return nil
@@ -261,13 +261,14 @@ func (s labeledSource) Final(r record) map[string]any {
 func buildSources(mode string, paths []sourcePath) ([]SessionSource, error) {
 	home := defaultHome()
 
-	// The four file-backed sources scan one directory, so that directory can move; the
+	// The five file-backed sources scan one directory, so that directory can move; the
 	// json-map and SQLite ones keep their layout across several files and stay at home
 	movable := map[string]func(dir string) SessionSource{
 		"pi":     func(dir string) SessionSource { return newPiSource(dir) },
 		"claude": func(dir string) SessionSource { return newClaudeSource(dir) },
 		"codex":  func(dir string) SessionSource { return newCodexSource(dir) },
 		"gemini": func(dir string) SessionSource { return newGeminiSource(dir) },
+		"grok":   func(dir string) SessionSource { return newGrokSource(dir) },
 	}
 	factories := map[string]func() SessionSource{
 		"hermes": func() SessionSource { return newJsonMapSource(hermesDef(home)) },
@@ -284,6 +285,7 @@ func buildSources(mode string, paths []sourcePath) ([]SessionSource, error) {
 		"claude":   func() SessionSource { return newClaudeSource(filepath.Join(home, ".claude", "projects")) },
 		"codex":    func() SessionSource { return newCodexSource(filepath.Join(home, ".codex", "sessions")) },
 		"gemini":   func() SessionSource { return newGeminiSource(filepath.Join(home, ".gemini", "tmp")) },
+		"grok":     func() SessionSource { return newGrokSource(filepath.Join(home, ".grok", "sessions")) },
 	}
 
 	replacements := map[string]string{}

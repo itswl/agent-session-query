@@ -9,7 +9,7 @@ A single binary (no cgo, no resident runtime) — `scp` it to any machine of the
 architecture and run it. The only external dependency is a pure-Go SQLite driver (for
 reading Hermes's `state.db`), so cross-compilation still works as usual.
 
-Seven sources; whichever exist are queried, and they can be merged in one query:
+Eight sources; whichever exist are queried, and they can be merged in one query:
 
 | Source | Where sessions live | Session ID |
 |--------|---------------------|------------|
@@ -20,6 +20,7 @@ Seven sources; whichever exist are queried, and they can be merged in one query:
 | Codex | `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl` | `payload.session_id` on the metadata row |
 | Gemini CLI | `~/.gemini/tmp/<project>/chats/session-*.jsonl` | `sessionId` on the first line |
 | OpenCode | `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` (SQLite; `%LOCALAPPDATA%\opencode` on Windows) | `id` in the `session` table |
+| Grok CLI | `~/.grok/sessions/<url-encoded-cwd>/<session-id>/` (`summary.json` + `updates.jsonl`) | `info.id` in `summary.json` |
 
 The `~` in that table resolves to the running user's home: `$HOME` on Linux and macOS,
 `%USERPROFILE%` on Windows (so `C:\Users\<you>\.claude\projects` and the like). Per-source
@@ -169,8 +170,8 @@ repository are in **[docs/mcp.md](docs/mcp.md)**.
 |------|---------|--------------|
 | `--host` | `127.0.0.1` | Bind address; use `0.0.0.0` to expose it (and set `--hook_token`) |
 | `--port` | `8080` | Listen port |
-| `--mode` | `auto` | `auto` (enable whatever exists) / `all` (enable all seven) / `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` / `opencode` |
-| `--path` | none | Relocate or duplicate a file-backed source (`pi`, `claude`, `codex`, `gemini`): `--path claude=/mnt/disk/.claude/projects` points the source elsewhere; `--path claude:box2=/mnt/box2/.claude/projects` adds a second instance named `claude:box2` in the source list, the page's source filter and project grouping. Repeatable |
+| `--mode` | `auto` | `auto` (enable whatever exists) / `all` (enable all eight) / `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` / `opencode` / `grok` |
+| `--path` | none | Relocate or duplicate a file-backed source (`pi`, `claude`, `codex`, `gemini`, `grok`): `--path claude=/mnt/disk/.claude/projects` points the source elsewhere; `--path claude:box2=/mnt/box2/.claude/projects` adds a second instance named `claude:box2` in the source list, the page's source filter and project grouping. Repeatable |
 | `--hook_token` | none | Bearer token; without it the API is unauthenticated |
 | `--max-connections` | `50` | Maximum concurrent connections; anything past it queues |
 | `--accept-queue` | `0` (auto) | Queue slots when at capacity; `0` means `2 × max-connections`, never below 32. A full queue returns 503 immediately |
@@ -237,4 +238,4 @@ MIT, see [LICENSE](LICENSE).
 ---
 
 **Note**: this service is read-only. It never modifies the session data of Hermes, OpenClaw,
-Pi, Claude Code, Codex or Gemini.
+Pi, Claude Code, Codex, Gemini or Grok.

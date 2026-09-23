@@ -46,6 +46,7 @@
   --agent: light-dark(#1d7fb8, #7dcfff);        /* its cyan */
   --claude: light-dark(#b85c33, #d98a6c);       /* source dots with no semantic colour to borrow */
   --pi: light-dark(#c2497a, #f4a5bb);
+  --grok: light-dark(#1f8a7a, #73daca);
   --shadow: 0 18px 44px -14px light-dark(rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.85)),
     0 0 0 1px light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.06));
   --rail: 40px;           /* a folded side pane keeps this much: its bar, with the way back */
@@ -528,13 +529,14 @@ body.hide-list #list, body.hide-side #side { display: none; }
 .tag.claude   { --tag: var(--claude); }
 .tag.codex    { --tag: var(--ok); }
 .tag.gemini   { --tag: var(--agent); }
+.tag.grok     { --tag: var(--grok); }
 .tag.hermes   { --tag: var(--net); }
 .tag.openclaw { --tag: var(--warn); }
 .tag.pi       { --tag: var(--pi); }
 .tag.opencode { --tag: var(--agent); }
-.tag.claude::before, .tag.codex::before, .tag.gemini::before, .tag.hermes::before,
-.tag.openclaw::before, .tag.pi::before, .tag.opencode::before, .tag.running::before,
-.tag.tagged::before {
+.tag.claude::before, .tag.codex::before, .tag.gemini::before, .tag.grok::before,
+.tag.hermes::before, .tag.openclaw::before, .tag.pi::before, .tag.opencode::before,
+.tag.running::before, .tag.tagged::before {
   content: ""; width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--tag, var(--dim));
 }
 /* Almost every session is done: that is not news, so it says so quietly. Running is. */

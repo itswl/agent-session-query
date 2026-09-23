@@ -35,6 +35,7 @@ services:
       - ~/.claude/projects:/root/.claude/projects:ro
       - ~/.codex/sessions:/root/.codex/sessions:ro
       - ~/.gemini/tmp:/root/.gemini/tmp:ro
+      - ~/.grok/sessions:/root/.grok/sessions:ro
       # Sessions outside the default home: mount the directory anywhere and name it with
       # --path in command below, e.g.
       #   - /srv/agents/box2/.claude/projects:/mnt/box2:ro

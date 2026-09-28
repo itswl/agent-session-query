@@ -114,12 +114,19 @@ func (r record) project() string {
 // resumeCommands is the command that reopens one of a source's sessions by id, verified
 // against each CLI's own help on a machine that has all eight installed.
 //
-// Two sources are deliberately absent. Gemini CLI's --resume takes "latest" or an index
-// into its own recent list, not a session id, so there is no command to build. OpenClaw's
-// resume takes a "session key", and whether that is the session_id this service reports
-// could not be confirmed, because its CLI refuses to run against the local database until
-// a schema migration is done. A command that looks right and opens the wrong session is
-// worse than no command, so neither gets one.
+// Two sources are deliberately absent, for different reasons.
+//
+// Gemini CLI addresses sessions by position rather than identity: --resume takes "latest"
+// or an index, --list-sessions numbers them, and --delete-session takes that same index.
+// A session id cannot be turned into a command at all.
+//
+// OpenClaw can be resumed by session id, which its help does not say: the query is matched
+// against a list built from derivedTitle, displayName, label, subject, sessionId and key,
+// so a full uuid substring-matches exactly one session. What rules it out is the candidate
+// set. That list is the last 50 sessions still inside the recent-activity window, fetched
+// from a running Gateway, while this list covers every session on disk. The command would
+// work for the newest handful and fail with "no recent session matched" for the rest, and
+// a button that is present and sometimes wrong is worse than one that is absent.
 //
 // The flags differ more than they look: claude and hermes take --resume, codex and
 // openclaw take resume as a subcommand, grok takes -r, and pi and opencode resume by id

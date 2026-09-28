@@ -80,9 +80,11 @@ pattern containing a colon needs URL encoding (`%3A`).
   is how to reopen the session in the CLI that wrote it. Run it in the session's `cwd`:
   the session itself is found from anywhere, but a resumed agent inherits the directory it
   was launched in, so anywhere else it carries on talking about files its tools can no
-  longer reach. It is absent for `gemini`, whose `--resume` takes an index into its own recent list
-  rather than a session id, and for `openclaw`, whose resume key could not be confirmed to
-  be the id reported here. Then per-source extras such as
+  longer reach. It is absent for `gemini`, which
+  addresses sessions by position rather than identity, so a session id cannot be turned
+  into a command at all; and for `openclaw`, which can resume by session id but only over
+  the last 50 sessions still inside its recent-activity window and only with its Gateway
+  running, so the command would work for the newest handful and fail for the rest. Then per-source extras such as
   `cwd` / `model` / `totalTokens` / `estimatedCostUsd` / `cliVersion`
 - Search: the list fields plus `matches` (`snippet` + `role` + `timestamp`) and `matchCount`
 - Messages: `content` is an array of blocks typed `text` / `thinking` / `toolCall`

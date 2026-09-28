@@ -2,9 +2,12 @@
 # compile step; findings appear under the repository's Security → Code scanning tab.
 name: codeql
 
+# Pull requests, main and the weekly schedule. Not every branch push: a CodeQL
+# analysis is several minutes, it ran 32 times on branch pushes in September
+# 2026, and the pull request's own analysis is the one anybody reads.
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
   schedule:
     - cron: '17 3 * * 1'

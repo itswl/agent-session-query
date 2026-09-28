@@ -77,9 +77,10 @@ pattern containing a colon needs URL encoding (`%3A`).
   session's newest message is less than 2 minutes old — recent activity, **not** a check
   that a process is running: a session that ended a minute ago still reports true, and one
   whose agent has been working for longer than the window reports false). `resumeCommand`
-  is how to reopen the session in the CLI that wrote it, to be run in the session's `cwd`
-  because every one of these CLIs looks its sessions up under the directory they started
-  in. It is absent for `gemini`, whose `--resume` takes an index into its own recent list
+  is how to reopen the session in the CLI that wrote it. Run it in the session's `cwd`:
+  the session itself is found from anywhere, but a resumed agent inherits the directory it
+  was launched in, so anywhere else it carries on talking about files its tools can no
+  longer reach. It is absent for `gemini`, whose `--resume` takes an index into its own recent list
   rather than a session id, and for `openclaw`, whose resume key could not be confirmed to
   be the id reported here. Then per-source extras such as
   `cwd` / `model` / `totalTokens` / `estimatedCostUsd` / `cliVersion`

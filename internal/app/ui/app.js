@@ -717,14 +717,23 @@ function renderStreamHead(record) {
   box.appendChild(title);
   if (record.cwd) box.appendChild(el('p', 'sub', record.cwd));
   // How to reopen this session in the CLI that wrote it. The server omits the field for
-  // the two sources that cannot be resumed by id, so the row is absent rather than empty,
-  // and it sits under the cwd because that is the directory it has to be run in.
+  // the two sources that cannot be resumed by id, so the row is absent rather than empty.
+  //
+  // The command is shown bare and copied with a cd in front of it. Measured on Claude Code
+  // and Grok, both resolve a session id from any working directory, so the cd is not what
+  // makes the session findable — it is what makes the resumed agent work in the right
+  // place. Without it the conversation continues while its tools point somewhere else,
+  // which on a coding session is worse than not resuming at all. The button says what it
+  // copies, so the difference between the two is stated rather than hidden.
   if (record.resumeCommand) {
     const resume = el('div', 'resume');
-    const command = el('code', '', record.resumeCommand);
-    command.title = 'Run this in the working directory above';
-    resume.appendChild(command);
-    resume.appendChild(button('ghost tiny', 'Copy', copyText(record.resumeCommand)));
+    resume.appendChild(el('code', '', record.resumeCommand));
+    const full = record.cwd
+      ? 'cd ' + shellArg(record.cwd) + ' && ' + record.resumeCommand
+      : record.resumeCommand;
+    const copy = button('ghost tiny', record.cwd ? 'Copy with cd' : 'Copy', copyText(full));
+    copy.title = record.cwd ? 'Copies: ' + full : 'Copies the command';
+    resume.appendChild(copy);
     box.appendChild(resume);
   }
 
@@ -1084,6 +1093,15 @@ function copyBrief(record) {
     }
     setTimeout(() => setText(node, original), 1500);
   };
+}
+
+// shellArg quotes a path that is not plainly safe to paste into a shell. Almost every
+// working directory passes through untouched; the quoting is there so that one containing
+// a space or a quote cannot turn the copied line into two commands.
+function shellArg(value) {
+  return /^[A-Za-z0-9_@%+=:,.\/-]+$/.test(value)
+    ? value
+    : "'" + String(value).replace(/'/g, "'\\''") + "'";
 }
 
 // copyText puts a string already in hand on the clipboard, reporting back on the button

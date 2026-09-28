@@ -136,9 +136,12 @@ var resumeCommands = map[string]string{
 // resumeCommand is how to reopen this session in the CLI that wrote it, or empty when
 // that source has no by-id resume.
 //
-// It names the session only. Every one of these CLIs looks its sessions up under the
-// working directory they were started in, so the command belongs in the record's cwd,
-// which the record already carries.
+// It names the session only, with no cd in front. The session is found from anywhere:
+// measured on Claude Code and Grok, both resolve a session id across working directories,
+// and Grok even reports which directory the session came from. What the working directory
+// decides is where the resumed agent then works, since it inherits the one it was launched
+// in — so a caller that means to carry on with the same files wants the record's cwd,
+// which the record already carries. The page prefixes the cd for that reason.
 func (r record) resumeCommand() string {
 	mode := r.str("source")
 	if i := strings.IndexByte(mode, ':'); i >= 0 {

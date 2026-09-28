@@ -716,6 +716,17 @@ function renderStreamHead(record) {
   title.title = record.key || '';
   box.appendChild(title);
   if (record.cwd) box.appendChild(el('p', 'sub', record.cwd));
+  // How to reopen this session in the CLI that wrote it. The server omits the field for
+  // the two sources that cannot be resumed by id, so the row is absent rather than empty,
+  // and it sits under the cwd because that is the directory it has to be run in.
+  if (record.resumeCommand) {
+    const resume = el('div', 'resume');
+    const command = el('code', '', record.resumeCommand);
+    command.title = 'Run this in the working directory above';
+    resume.appendChild(command);
+    resume.appendChild(button('ghost tiny', 'Copy', copyText(record.resumeCommand)));
+    box.appendChild(resume);
+  }
 
   const bar = el('div', 'toolbar');
   bar.appendChild(segmented(
@@ -1067,6 +1078,22 @@ function copyBrief(record) {
       const res = await fetch('/sessions/' + encodeURIComponent(record.sessionId) + '/brief', { headers });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       await navigator.clipboard.writeText(await res.text());
+      setText(node, 'Copied');
+    } catch (err) {
+      setText(node, 'Failed');
+    }
+    setTimeout(() => setText(node, original), 1500);
+  };
+}
+
+// copyText puts a string already in hand on the clipboard, reporting back on the button
+// that asked for it. Same shape as copyBrief, which has to fetch first.
+function copyText(value) {
+  return async (event) => {
+    const node = event.currentTarget;
+    const original = node.textContent;
+    try {
+      await navigator.clipboard.writeText(value);
       setText(node, 'Copied');
     } catch (err) {
       setText(node, 'Failed');

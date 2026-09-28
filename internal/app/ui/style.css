@@ -566,6 +566,15 @@ body.chrome-hidden .stream-head { display: none; }
 .stream-head:empty { display: none; }
 /* The title is what the session was about — a question, most of the time — so it is set
    like a heading, not like an identifier */
+/* The command that reopens a session in its own CLI. Shown and copied verbatim: making
+   the button copy something other than what is on screen would be a small lie, and the
+   working directory it needs is the line directly above. */
+.stream-head .resume { display: flex; align-items: center; gap: 8px; margin: 6px 0 0; }
+.stream-head .resume code {
+  font: 12px/1.5 var(--mono); color: var(--fg-mid); background: var(--hover);
+  padding: 2px 7px; border-radius: var(--r-sm); word-break: break-all;
+}
+
 .stream-head h2 {
   font-size: 17px; font-weight: 600; line-height: 1.35; letter-spacing: -0.014em;
   margin: 0 0 3px; word-break: break-word; text-wrap: pretty;

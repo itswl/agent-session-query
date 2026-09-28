@@ -457,7 +457,7 @@ func hermesSQLiteSearch(ctx context.Context, dbPath, sessionID string, q searchQ
 		roleClause = "\n\t\t  AND role = ?"
 		args = append(args, q.role)
 	}
-	args = append(args, like, like, q.perSession)
+	args = append(args, like, like, q.probeLimit())
 	rows, err := db.QueryContext(ctx, `
 		SELECT role, content, reasoning, timestamp
 		FROM messages

@@ -445,7 +445,7 @@ func (s *OpenCodeSource) Search(ctx context.Context, r record, q searchQuery) []
 		WHERE p.session_id = ?
 		  AND p.data LIKE ? ESCAPE '\'`+roleClause+`
 		ORDER BY p.time_created, p.id
-		LIMIT ?`, sessionID, like, q.perSession)
+		LIMIT ?`, sessionID, like, q.probeLimit())
 	if err != nil {
 		return nil
 	}

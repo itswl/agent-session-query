@@ -41,15 +41,22 @@ Tokens are compared in constant time. CORS is off by default, see `--cors-origin
 source (the search on `/sessions` only matches metadata). It is case-insensitive and builds
 no index — measured locally, a cold scan of 562 MB across 143 sessions takes 1.9 s and a
 warm one 43-112 ms. Snippets are stripped of ANSI escape sequences and other control
-characters before they are returned: tool output in a transcript is full of them, and a
+characters before being returned: tool output in a transcript is full of them, and a
 snippet is built for display rather than chosen by the caller. Message bodies from
-`/sessions/<id>/messages` are returned exactly as stored. In the response, `matched` is how many sessions matched, `total` how many
-were returned, and `scanned` how many were examined; with a lot of history, narrow the scan
-with `since=30d` (which also accepts `12h` or `2026-09-01`), `until` for the other end of
-that window, `pattern` to search inside one session instead of all of them, and `role`
-(`user` or `assistant`) to keep only hits from those messages. Each session contributes at
-most `per_session` snippets — with `role` set, that counts hits matching the role rather
-than whichever hits happened to come first in the file.
+`/sessions/<id>/messages` are returned exactly as stored.
+
+In the response, `matched` is how many sessions matched, `total` how many were returned,
+and `scanned` how many were examined. `truncated` carries the reasons results are short as
+two separate booleans rather than one flag, because they are two different knobs:
+`sessions` means more sessions matched than `limit` returned, and `hits` means some session
+had more hits than `per_session` returned.
+
+With a lot of history, narrow the scan with `since=30d` (which also accepts `12h` or
+`2026-09-01`), `until` for the other end of that window, `pattern` to search inside one
+session instead of all of them, and `role` (`user` or `assistant`) to keep only hits from
+those messages. Each session contributes at most `per_session` snippets — with `role` set,
+that counts hits matching the role rather than whichever hits happened to come first in the
+file.
 
 **`<pattern>` matching rules** (first rank to hit wins; every source takes part in every
 round, so a fuzzy hit never shadows an exact hit in another source): ① exact `sessionId`

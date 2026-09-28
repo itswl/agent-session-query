@@ -131,18 +131,30 @@ func TestHTTPSearch(t *testing.T) {
 		t.Fatalf("first hit = %v", first)
 	}
 
-	// per_session caps how many hits each session returns
-	if _, body := get(t, srv.URL+"/search?q=nginx&per_session=1", ""); body["results"].([]any)[0].(map[string]any)["matchCount"] != float64(1) {
+	// per_session caps how many hits each session returns, and says so under its own
+	// reason: the caller that wants the rest turns per_session, not limit
+	_, body = get(t, srv.URL+"/search?q=nginx&per_session=1", "")
+	if body["results"].([]any)[0].(map[string]any)["matchCount"] != float64(1) {
 		t.Fatalf("per_session=1 had no effect: %v", body)
+	}
+	if cut := body["truncated"].(map[string]any); cut["hits"] != true || cut["sessions"] != false {
+		t.Fatalf("per_session=1 cut hits, not sessions: %v", cut)
 	}
 	// limit caps how many sessions come back, but matched still reports the real total
 	code, body = get(t, srv.URL+"/search?q=nginx&limit=0", "")
-	if body["total"] != float64(0) || body["matched"] != float64(1) || body["truncated"] != true {
+	if body["total"] != float64(0) || body["matched"] != float64(1) {
 		t.Fatalf("matched should still be reported after limit truncates: %v", body)
 	}
-	// Nothing found
-	if _, body := get(t, srv.URL+"/search?q=averyunlikelyneedle", ""); body["total"] != float64(0) || body["truncated"] != false {
+	if cut := body["truncated"].(map[string]any); cut["sessions"] != true || cut["hits"] != false {
+		t.Fatalf("limit=0 cut sessions, not hits: %v", cut)
+	}
+	// Nothing found: neither reason is set
+	_, body = get(t, srv.URL+"/search?q=averyunlikelyneedle", "")
+	if body["total"] != float64(0) {
 		t.Fatalf("no match = %v", body)
+	}
+	if cut := body["truncated"].(map[string]any); cut["sessions"] != false || cut["hits"] != false {
+		t.Fatalf("nothing matched, so nothing was cut: %v", cut)
 	}
 	// q is required
 	if code, _ := get(t, srv.URL+"/search", ""); code != 400 {

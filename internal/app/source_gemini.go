@@ -290,7 +290,7 @@ func (s *GeminiSource) Search(ctx context.Context, r record, q searchQuery) []ma
 	var out []map[string]any
 	for _, path := range geminiFilesOf(r) {
 		out = append(out, searchFile(ctx, path, q)...)
-		if len(out) >= q.perSession {
+		if len(out) >= q.probeLimit() {
 			break
 		}
 	}

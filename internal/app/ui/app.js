@@ -50,7 +50,8 @@ const state = {
   hideList: false,     // wide screens: fold the session list away
   hideSide: false,     // wide screens: fold the details pane away
   content: null,       // content search for the current keyword:
-                       //   { query, searching, results, matched, truncated, tookMs }
+                       //   { query, searching, results, matched, tookMs,
+                       //     truncated: { sessions, hits } }
   contentTimer: null,
   contentAbort: null,  // AbortController for the search still in flight
   detail: null,        // { sessionId, signature, messages, final }
@@ -610,7 +611,8 @@ function fillContentHead(node, row) {
     ? row.extra + ' more in message bodies'
     : 'Also in message bodies, all listed above');
   // matched counts every session with a hit, including the ones already listed above
-  setText(note, found.truncated ? '(of ' + found.matched + ', showing the first 50)' : '');
+  // truncated is an object, so it is always truthy — read the reason this note is about
+  setText(note, found.truncated?.sessions ? '(of ' + found.matched + ', showing the first 50)' : '');
 }
 
 function buildHit(rowId, sessionId) {

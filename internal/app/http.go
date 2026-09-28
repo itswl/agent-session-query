@@ -438,7 +438,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			"total":     len(found.results),
 			"matched":   found.matched, // sessions with a hit, possibly more than total
 			"scanned":   found.scanned, // sessions actually scanned
-			"truncated": found.matched > len(found.results),
+			"truncated": map[string]any{"sessions": found.sessionsCut, "hits": found.hitsCut},
 			"tookMs":    time.Since(started).Milliseconds(),
 		})
 		return http.StatusOK

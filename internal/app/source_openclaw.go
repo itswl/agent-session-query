@@ -385,7 +385,7 @@ func (s *OpenClawSource) Search(ctx context.Context, r record, q searchQuery) []
 		SELECT event_json FROM transcript_events
 		WHERE session_id = ? AND event_json LIKE ? ESCAPE '\'`+roleClause+`
 		ORDER BY seq
-		LIMIT ?`, sessionID, "%"+escapeLike(string(q.lowered))+"%", q.perSession)
+		LIMIT ?`, sessionID, "%"+escapeLike(string(q.lowered))+"%", q.probeLimit())
 	if err != nil {
 		return nil
 	}

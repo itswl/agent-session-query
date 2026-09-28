@@ -61,6 +61,21 @@ type searchQuery struct {
 	role string
 }
 
+// probeLimit is what a source actually fetches per session: one hit more than the caller
+// asked for.
+//
+// That extra hit is how "there were more" is known. Without it a source that returns
+// exactly per_session hits is indistinguishable from one that ran out of file at exactly
+// that point, and the alternative — every source reporting a flag of its own — would mean
+// widening searchableSource and touching all five places that cap. The length says it
+// instead, and search() trims before anything leaves.
+func (q searchQuery) probeLimit() int {
+	if q.perSession <= 0 {
+		return 0
+	}
+	return q.perSession + 1
+}
+
 // searchableSource lets a source implement content search itself.
 // Anything that does not falls back to the generic path: scan the session file (nearly
 // every source is one jsonl per session).
@@ -76,6 +91,12 @@ type searchOutcome struct {
 	scanned int  // sessions actually scanned
 	matched int  // sessions with a hit, possibly more than len(results)
 	stopped bool // the search was cancelled part-way; results are incomplete
+	// Why results are short, kept apart rather than as one flag. A caller that sees fewer
+	// hits than it asked for needs to know which knob to turn, and the two answers are
+	// different knobs: sessionsCut is limit, hitsCut is per_session. One boolean covering
+	// both says only "something was cut" and leaves the caller guessing.
+	sessionsCut bool // more sessions matched than limit returned
+	hitsCut     bool // some session had more hits than per_session returned
 }
 
 // search looks through every enabled source, newest session first.
@@ -146,6 +167,12 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 			continue
 		}
 		out.matched++
+		// The extra hit probeLimit asked for is the evidence, and it is dropped here so
+		// no caller ever sees more than it asked for
+		if len(matches) > q.perSession {
+			matches = matches[:q.perSession]
+			out.hitsCut = true
+		}
 		if len(out.results) >= q.limit {
 			continue // keep counting matched so the caller learns how much was cut
 		}
@@ -154,6 +181,7 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 		item["matchCount"] = len(matches)
 		out.results = append(out.results, item)
 	}
+	out.sessionsCut = out.matched > len(out.results)
 	return out
 }
 
@@ -193,7 +221,7 @@ func searchFile(ctx context.Context, path string, q searchQuery) []map[string]an
 				hits = append(hits, hit)
 			}
 		}
-		return len(hits) < q.perSession
+		return len(hits) < q.probeLimit()
 	})
 	return hits
 }

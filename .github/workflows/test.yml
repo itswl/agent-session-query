@@ -1,6 +1,14 @@
-# Runs on every push and PR: tests on three platforms plus format / vet / cross-compile
-# checks. release.yml only fires on a tag, so relying on it alone would surface problems on
+# Runs on every push and PR: tests plus format / vet / cross-compile checks.
+# release.yml only fires on a tag, so relying on it alone would surface problems on
 # release day.
+#
+# Which platforms depends on where the push lands. A push to any other branch
+# tests on Linux only; a pull request and a push to main test on all three. The
+# macOS runner is billed at ten Linux minutes per minute and the Windows one at
+# two, and this workflow ran the full matrix on 107 branch pushes in September
+# 2026 — two thirds of the account's Actions bill, on a Free plan that includes
+# 2,000 Linux minutes. The three-platform answer still arrives before anything
+# merges, which is the moment it is read.
 name: test
 
 on:
@@ -13,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && fromJSON('["ubuntu-latest", "windows-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7

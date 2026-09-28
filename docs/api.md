@@ -76,8 +76,12 @@ pattern containing a colon needs URL encoding (`%3A`).
   `status`, `updatedAt`, `project` (cwd, or gemini's project name) and `isActive` (the
   session's newest message is less than 2 minutes old — recent activity, **not** a check
   that a process is running: a session that ended a minute ago still reports true, and one
-  whose agent has been working for longer than the window reports false), plus per-source
-  extras such as
+  whose agent has been working for longer than the window reports false). `resumeCommand`
+  is how to reopen the session in the CLI that wrote it, to be run in the session's `cwd`
+  because every one of these CLIs looks its sessions up under the directory they started
+  in. It is absent for `gemini`, whose `--resume` takes an index into its own recent list
+  rather than a session id, and for `openclaw`, whose resume key could not be confirmed to
+  be the id reported here. Then per-source extras such as
   `cwd` / `model` / `totalTokens` / `estimatedCostUsd` / `cliVersion`
 - Search: the list fields plus `matches` (`snippet` + `role` + `timestamp`) and `matchCount`
 - Messages: `content` is an array of blocks typed `text` / `thinking` / `toolCall`

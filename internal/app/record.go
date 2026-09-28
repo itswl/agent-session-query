@@ -94,6 +94,11 @@ func (r record) public() map[string]any {
 	}
 	out["isActive"] = !r.sortAt.IsZero() && time.Since(r.sortAt) < activeWindow
 	out["project"] = r.project()
+	if resume := r.resumeCommand(); resume != "" {
+		// Omitted rather than empty for the sources that have none: a key that is
+		// sometimes a command and sometimes "" reads as a command that failed to build
+		out["resumeCommand"] = resume
+	}
 	return out
 }
 
@@ -104,6 +109,72 @@ func (r record) project() string {
 		return cwd
 	}
 	return r.str("project")
+}
+
+// resumeCommands is the command that reopens one of a source's sessions by id, verified
+// against each CLI's own help on a machine that has all eight installed.
+//
+// Two sources are deliberately absent. Gemini CLI's --resume takes "latest" or an index
+// into its own recent list, not a session id, so there is no command to build. OpenClaw's
+// resume takes a "session key", and whether that is the session_id this service reports
+// could not be confirmed, because its CLI refuses to run against the local database until
+// a schema migration is done. A command that looks right and opens the wrong session is
+// worse than no command, so neither gets one.
+//
+// The flags differ more than they look: claude and hermes take --resume, codex and
+// openclaw take resume as a subcommand, grok takes -r, and pi and opencode resume by id
+// through --session while their own --resume is an interactive picker.
+var resumeCommands = map[string]string{
+	"claude":   "claude --resume",
+	"codex":    "codex resume",
+	"grok":     "grok -r",
+	"hermes":   "hermes --resume",
+	"opencode": "opencode --session",
+	"pi":       "pi --session",
+}
+
+// resumeCommand is how to reopen this session in the CLI that wrote it, or empty when
+// that source has no by-id resume.
+//
+// It names the session only. Every one of these CLIs looks its sessions up under the
+// working directory they were started in, so the command belongs in the record's cwd,
+// which the record already carries.
+func (r record) resumeCommand() string {
+	mode := r.str("source")
+	if i := strings.IndexByte(mode, ':'); i >= 0 {
+		mode = mode[:i] // a labeled instance (claude:box2) resumes with its base CLI
+	}
+	command, ok := resumeCommands[mode]
+	if !ok {
+		return ""
+	}
+	sid := r.str("sessionId")
+	if sid == "" {
+		return ""
+	}
+	return command + " " + shellArg(sid)
+}
+
+// shellArg quotes an id that is not plainly safe to paste into a shell. Ids are normally
+// uuids or filename stems and pass through untouched; the quoting is there so that an id
+// carrying a space or a quote cannot turn a copied command into two.
+func shellArg(s string) string {
+	safe := true
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '.', r == '/', r == '=', r == '@', r == '+':
+		default:
+			safe = false
+		}
+		if !safe {
+			break
+		}
+	}
+	if safe && s != "" {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // newerThan drives list ordering: later update time comes first.

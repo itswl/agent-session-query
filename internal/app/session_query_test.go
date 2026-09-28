@@ -1200,3 +1200,57 @@ func TestIsActiveIsRecencyNotLiveness(t *testing.T) {
 		t.Error("a record with no parseable time must not report active")
 	}
 }
+
+// A hit tells you where a session is; resumeCommand tells you how to get back into it.
+// The commands were read off each CLI's own help, and the two sources without one are the
+// point of the test: a wrong command is worse than none.
+func TestResumeCommand(t *testing.T) {
+	for _, c := range []struct{ source, sid, want string }{
+		{"claude", "1e2057c3-4ec4", "claude --resume 1e2057c3-4ec4"},
+		{"codex", "0199f0a1", "codex resume 0199f0a1"},
+		{"grok", "01a0cbfb", "grok -r 01a0cbfb"},
+		{"hermes", "session_42", "hermes --resume session_42"},
+		{"opencode", "ses_abc", "opencode --session ses_abc"},
+		{"pi", "9f8e7d", "pi --session 9f8e7d"},
+		// Gemini resumes by index into its own recent list, not by id
+		{"gemini", "g-1", ""},
+		// OpenClaw's "session key" could not be confirmed to be this id
+		{"openclaw", "oc-1", ""},
+		// A labeled instance is still the same CLI
+		{"claude:box2", "abc", "claude --resume abc"},
+		// Nothing to name
+		{"claude", "", ""},
+		{"nosuchsource", "abc", ""},
+	} {
+		rec := newRecord(map[string]any{"source": c.source, "sessionId": c.sid}, "")
+		if got := rec.resumeCommand(); got != c.want {
+			t.Errorf("%s/%q: got %q, want %q", c.source, c.sid, got, c.want)
+		}
+	}
+}
+
+// An id is normally a uuid and passes through untouched. The quoting exists so that an id
+// carrying a space or a quote cannot turn a pasted command into two commands.
+func TestResumeCommandQuotesUnsafeIds(t *testing.T) {
+	rec := newRecord(map[string]any{"source": "hermes", "sessionId": "a b; rm -rf /"}, "")
+	if got := rec.resumeCommand(); got != `hermes --resume 'a b; rm -rf /'` {
+		t.Errorf("unsafe id = %q", got)
+	}
+	rec = newRecord(map[string]any{"source": "hermes", "sessionId": "it's"}, "")
+	if got := rec.resumeCommand(); got != `hermes --resume 'it'\''s'` {
+		t.Errorf("quoted id = %q", got)
+	}
+}
+
+// Sources without a resume command omit the key rather than sending an empty one: a field
+// that is sometimes a command and sometimes "" reads as a command that failed to build.
+func TestPublicOmitsMissingResumeCommand(t *testing.T) {
+	with := newRecord(map[string]any{"source": "claude", "sessionId": "abc"}, "").public()
+	if with["resumeCommand"] != "claude --resume abc" {
+		t.Errorf("resumeCommand = %v", with["resumeCommand"])
+	}
+	without := newRecord(map[string]any{"source": "gemini", "sessionId": "g-1"}, "").public()
+	if _, present := without["resumeCommand"]; present {
+		t.Errorf("gemini must not carry the key at all: %v", without)
+	}
+}

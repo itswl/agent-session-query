@@ -397,6 +397,21 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		}
 		return out, nil
 
+	case "list_rounds":
+		pattern := strings.TrimSpace(argString(args, "pattern"))
+		if pattern == "" {
+			return nil, errors.New("missing argument: pattern")
+		}
+		sourceWanted, err := wantedSource(args)
+		if err != nil {
+			return nil, err
+		}
+		rounds, err := s.api.sessionRounds(pattern, sourceWanted)
+		if err != nil {
+			return nil, err
+		}
+		return rounds, nil
+
 	case "session_brief":
 		pattern := strings.TrimSpace(argString(args, "pattern"))
 		if pattern == "" {
@@ -653,6 +668,23 @@ func mcpTools() []map[string]any {
 					"role":    strSchema("keep only this role: user or assistant"),
 					"at":      strSchema("anchor the window at this time instead of at an end — pass a hit's timestamp from search_sessions to land on it: asc starts there, desc ends there"),
 					"cursor":  cursorSchema(),
+				},
+				"required": []string{"pattern"},
+			},
+		},
+		{
+			"name": "list_rounds",
+			// session_brief renders one round as markdown, so a caller holding a brief has
+			// no way to learn the round is one of nine, or to walk the other eight. The
+			// only way to ask was to request an out-of-range round and read the bound back
+			// off the error, which is not an interface. This is the enumeration.
+			"description": "List a session's rounds — one per real user message — with each round's number, time span and message count, plus the total. Use it to walk a session round by round with session_brief, which renders one round and cannot say how many there are.",
+			"annotations": readOnlyAnnotations("List session rounds"),
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"pattern": strSchema("a sessionId, a fragment of one, or a file path fragment"),
+					"source":  strSchema("restrict the match to one source: " + strings.Join(knownModes, " / ")),
 				},
 				"required": []string{"pattern"},
 			},

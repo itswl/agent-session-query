@@ -345,6 +345,8 @@ func TestMCPEveryArgumentIsAdvertised(t *testing.T) {
 		"list_sessions":   {"source", "project", "since", "until", "limit", "cursor"},
 		"get_session":     {"pattern", "source"},
 		"get_messages":    {"pattern", "source", "limit", "order", "role", "at", "cursor"},
+		"list_rounds":     {"pattern", "source"},
+		"session_brief":   {"pattern", "source", "round", "at"},
 	}
 	for tool, args := range read {
 		for _, arg := range args {
@@ -555,5 +557,36 @@ func TestMCPGetMessagesPagination(t *testing.T) {
 	})
 	if text, isErr := toolText(t, resp[0]); !isErr || !strings.Contains(text, "choose from") {
 		t.Fatalf("list_sessions with a bad source must fail with the valid list, got %q", text)
+	}
+}
+
+// list_rounds exists because session_brief renders one round as markdown and cannot say
+// how many there are. Without it the only way to learn the count was to ask for an
+// out-of-range round and read the bound off the error message.
+func TestMCPListRounds(t *testing.T) {
+	s := newMCPServer(t)
+	responses := mcpRoundTrip(t, s,
+		map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+	)
+	names := map[string]bool{}
+	for _, raw := range responses[0].Result.(map[string]any)["tools"].([]any) {
+		names[raw.(map[string]any)["name"].(string)] = true
+	}
+	if !names["list_rounds"] {
+		t.Fatalf("list_rounds is not advertised: %v", names)
+	}
+
+	// A missing pattern is the caller's mistake, and like every other tool failure here it
+	// travels as isError so the model can read it and retry, not as a protocol error
+	bad := mcpRoundTrip(t, s, map[string]any{
+		"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+		"params": map[string]any{"name": "list_rounds", "arguments": map[string]any{}},
+	})
+	text, isErr := toolText(t, bad[0])
+	if !isErr || !strings.Contains(text, "pattern") {
+		t.Errorf("list_rounds without a pattern: isError=%v text=%q", isErr, text)
+	}
+	if bad[0].Error != nil {
+		t.Errorf("a tool failure must not become a JSON-RPC error: %v", bad[0].Error)
 	}
 }

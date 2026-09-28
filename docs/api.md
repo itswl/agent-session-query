@@ -39,8 +39,11 @@ Tokens are compared in constant time. CORS is off by default, see `--cors-origin
 
 **Full-text search**: `/search?q=nginx` searches **message bodies** across every enabled
 source (the search on `/sessions` only matches metadata). It is case-insensitive and builds
-no index — measured locally, a cold scan of 470 MB across 174 sessions takes 1.1 s and a
-warm one 60 ms. In the response, `matched` is how many sessions matched, `total` how many
+no index — measured locally, a cold scan of 562 MB across 143 sessions takes 1.9 s and a
+warm one 43-112 ms. Snippets are stripped of ANSI escape sequences and other control
+characters before they are returned: tool output in a transcript is full of them, and a
+snippet is built for display rather than chosen by the caller. Message bodies from
+`/sessions/<id>/messages` are returned exactly as stored. In the response, `matched` is how many sessions matched, `total` how many
 were returned, and `scanned` how many were examined; with a lot of history, narrow the scan
 with `since=30d` (which also accepts `12h` or `2026-09-01`), `until` for the other end of
 that window, `pattern` to search inside one session instead of all of them, and `role`

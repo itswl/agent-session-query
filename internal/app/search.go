@@ -16,8 +16,8 @@ import (
 //
 // No index. An index has to be written somewhere, maintained, and reasoned about when it
 // goes stale, and that costs the "single binary, read-only, scp it anywhere" property.
-// Measured locally, a bare scan over 470 MB / 173 sessions takes under a second, which is
-// enough.
+// Measured locally, a bare scan over 562 MB / 143 sessions costs 1.9 s cold and 43-112 ms
+// warm, and the warm number is the one an interactive page pays.
 //
 // The speed comes from ordering, not cleverness: run a case-insensitive Contains over the
 // raw bytes first and only JSON-decode a line once it matches. That skips decoding for
@@ -346,7 +346,87 @@ func indexFold(s, needleLower string) int {
 
 // snippetAround cuts radius characters either side of the hit, marking each end it had
 // to trim.
+
+// stripTerminalControls removes ANSI escape sequences and other control characters.
+//
+// A transcript records what a tool printed, and tool output is full of colour codes.
+// Measured on this machine: 24 of 157 Claude sessions carry escape sequences, all of them
+// on the rows that hold tool results, and searching a word inside that output returned 5
+// snippets in 111 with a raw ESC still in them.
+//
+// Two things go wrong when that reaches a caller. The mild one is display: the snippet
+// renders as mojibake anywhere that is not a terminal. The other is that a snippet is
+// content the caller never chose to run. An OSC 52 in a tool log drives the clipboard of
+// whoever prints it, and a cursor sequence moves their cursor.
+//
+// Only snippets are cleaned. A message body is returned exactly as stored, because that is
+// the data and what to do with it is the caller's policy; a snippet is ours, cut for
+// display, so it is ours to make safe.
+func stripTerminalControls(s string) string {
+	if strings.IndexFunc(s, isTerminalControl) < 0 {
+		return s // the overwhelmingly common case, and it allocates nothing
+	}
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); {
+		switch c := s[i]; {
+		case c == 0x1b:
+			i += escapeSequenceLen(s[i:])
+		case c < utf8.RuneSelf && isTerminalControl(rune(c)):
+			i++
+		default:
+			_, size := utf8.DecodeRuneInString(s[i:])
+			out = append(out, s[i:i+size]...)
+			i += size
+		}
+	}
+	return string(out)
+}
+
+// isTerminalControl reports whether a rune is a control character worth removing.
+// Tab and newline stay: they are layout inside the text, not instructions to a terminal.
+// Carriage return goes, because on a terminal it rewrites the line already printed.
+func isTerminalControl(r rune) bool {
+	return (r < 0x20 && r != '\t' && r != '\n') || r == 0x7f
+}
+
+// escapeSequenceLen is the length of the escape sequence starting at s[0], which the
+// caller has already established is ESC.
+//
+// An unterminated sequence consumes the rest of the string. That is deliberate: leaving
+// the tail of a half-written CSI behind would put the bytes it is made of back into the
+// output, which is the thing being prevented.
+func escapeSequenceLen(s string) int {
+	if len(s) < 2 {
+		return len(s)
+	}
+	switch s[1] {
+	case '[': // CSI: parameters, intermediates, then one final byte in @ to ~
+		for i := 2; i < len(s); i++ {
+			if c := s[i]; c >= 0x40 && c <= 0x7e {
+				return i + 1
+			}
+		}
+		return len(s)
+	case ']', 'P', 'X', '^', '_': // OSC and friends: run to BEL or to ST (ESC backslash)
+		for i := 2; i < len(s); i++ {
+			if s[i] == 0x07 {
+				return i + 1
+			}
+			if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\' {
+				return i + 2
+			}
+		}
+		return len(s)
+	default: // a two-byte escape
+		return 2
+	}
+}
+
 func snippetAround(text, needleLower string, radius int) string {
+	// Cleaned before the window is cut, not after: an escape sequence counted toward the
+	// radius would spend the snippet's budget on bytes nobody sees, and cutting inside one
+	// would leave its tail behind.
+	text = stripTerminalControls(text)
 	idx := indexFold(text, needleLower)
 	if idx < 0 {
 		return truncate(text, radius*2, "…")

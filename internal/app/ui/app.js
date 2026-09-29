@@ -728,11 +728,16 @@ function renderStreamHead(record) {
   if (record.resumeCommand) {
     const resume = el('div', 'resume');
     resume.appendChild(el('code', '', record.resumeCommand));
-    const full = record.cwd
-      ? 'cd ' + shellArg(record.cwd) + ' && ' + record.resumeCommand
+    // cwd is not always a directory: a labeled --path instance prefixes it with its label
+    // (box2:/srv/proj) so the sessions group separately. Prefixing a cd with that produces
+    // a command that fails, and since the two are joined by && the resume never runs — a
+    // button worse than no button. Only a plainly absolute path earns the cd.
+    const dir = /^(\/|[A-Za-z]:[\\/])/.test(record.cwd || '') ? record.cwd : '';
+    const full = dir
+      ? 'cd ' + shellArg(dir) + ' && ' + record.resumeCommand
       : record.resumeCommand;
-    const copy = button('ghost tiny', record.cwd ? 'Copy with cd' : 'Copy', copyText(full));
-    copy.title = record.cwd ? 'Copies: ' + full : 'Copies the command';
+    const copy = button('ghost tiny', dir ? 'Copy with cd' : 'Copy', copyText(full));
+    copy.title = dir ? 'Copies: ' + full : 'Copies the command';
     resume.appendChild(copy);
     box.appendChild(resume);
   }

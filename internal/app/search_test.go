@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestIndexFold(t *testing.T) {
@@ -423,12 +424,27 @@ func TestStripTerminalControls(t *testing.T) {
 		{"carriage return rewrites the line", "done\rFAKE", "doneFAKE"},
 		{"tab and newline are layout, and stay", "a\tb\nc", "a\tb\nc"},
 		{"unterminated CSI takes the rest", "keep\x1b[38;2;1", "keep"},
+		// The nF class: ESC, one or more intermediates in 0x20..0x2f, then a final byte.
+		// ESC ( B is what tput sgr0 writes, so it rides along in anything ncurses, less,
+		// vim or git coloured. Read as a two-byte escape it leaves a stray "B" behind.
+		{"nF escape, the tput sgr0 reset", "test \x1b[32mok\x1b(B\x1b[m done", "test ok done"},
+		{"nF escape, select UTF-8", "prefix \x1b%G tail", "prefix  tail"},
+		// A second ESC opens a new sequence rather than closing this one
+		{"doubled ESC does not hide the second", "\x1b\x1b[0mvisible", "visible"},
+		// ESC before a multibyte rune must take only itself, or the rune's continuation
+		// bytes are left behind as invalid UTF-8
+		{"ESC before a rune keeps the rune whole", "a\x1b中b", "a中b"},
 		{"no controls is returned unchanged", "plain 文本 text", "plain 文本 text"},
 		{"multibyte survives", "\x1b[31m北京\x1b[0m", "北京"},
 	}
 	for _, c := range cases {
-		if got := stripTerminalControls(c.in); got != c.want {
+		got := stripTerminalControls(c.in)
+		if got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+		// Whatever it removes, what it returns must still be text
+		if utf8.ValidString(c.in) && !utf8.ValidString(got) {
+			t.Errorf("%s: valid input produced invalid UTF-8: %q", c.name, []byte(got))
 		}
 	}
 }

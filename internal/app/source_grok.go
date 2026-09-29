@@ -137,14 +137,24 @@ const grokHeadLines = 50
 
 // grokUserTitle is the first real user message of a session, as a title. It is only
 // reached when Grok has not generated one of its own yet.
+// It cannot use firstUserTitle, which takes the first row that yields text: a Grok prompt
+// arrives in chunks, so that would title the session with however much of the first
+// sentence happened to land in chunk one. The chunks are joined first, the same way the
+// grouper joins them, and only then turned into a title.
 func grokUserTitle(path string) string {
-	return firstUserTitle(path, grokHeadLines, func(obj map[string]any) (string, bool) {
-		update := getMap(getMap(obj, "params"), "update")
-		if toStr(update["sessionUpdate"]) != "user_message_chunk" {
-			return "", false
+	prompt := ""
+	seen := 0
+	eachGrokUpdate(path, func(u grokUpdate) bool {
+		seen++
+		if grokRole(u) == "user" {
+			prompt += contentText(u.body["content"])
+			return seen < grokHeadLines
 		}
-		return contentText(update["content"]), true
+		// The prompt is over once anyone else speaks, and until it starts there is
+		// nothing to add
+		return prompt == "" && seen < grokHeadLines
 	})
+	return titleFromUserText(prompt)
 }
 
 // grokUpdate is one line of updates.jsonl, reduced to the parts a transcript needs.
@@ -204,6 +214,23 @@ func grokRole(u grokUpdate) string {
 		return "assistant"
 	}
 	return ""
+}
+
+// grokHitRole is the speaker of one raw updates.jsonl line.
+//
+// The generic search path scans lines, not the messages the grouper folds them into, so it
+// meets Grok's JSON-RPC envelope rather than a row with a role on it. Without this every
+// hit came back with an empty role, which quietly removed the whole source from any
+// role-filtered search — including find_decisions and find_similar_question, which ask for
+// assistant hits and so could never surface a Grok session at all.
+//
+// It answers through grokRole so the search path and the transcript cannot drift apart.
+func grokHitRole(obj map[string]any) string {
+	body := getMap(getMap(obj, "params"), "update")
+	if len(body) == 0 {
+		return ""
+	}
+	return grokRole(grokUpdate{method: toStr(obj["method"]), kind: toStr(body["sessionUpdate"])})
 }
 
 // grokToolName is the tool's own name. Grok keeps it in its _meta extension; the title
@@ -374,8 +401,14 @@ func (s *GrokSource) Messages(r record, q messageQuery) []map[string]any {
 	return sink.result()
 }
 
-// grokCountMessages counts a session's messages by the same grouping Messages uses, so
-// the list and the opened session never report different numbers.
+// grokCountMessages counts a session's messages by the same grouping Messages uses, so the
+// two cannot disagree about what a message is.
+//
+// They can still disagree about when. The count is cached against summary.json while it
+// reads updates.jsonl, so a transcript that grew without its summary being rewritten keeps
+// the old number until the summary moves. Measured on a live turn the two advance together,
+// which is what makes the key sound in practice; a crash between the two writes, or another
+// tool appending, would leave the list one turn behind until the next write.
 //
 // It is handed the summary.json path because that is what the list is keyed on. Unlike
 // the other counters it cannot pre-filter on raw bytes: grouping is stateful across

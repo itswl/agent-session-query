@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -198,5 +199,60 @@ func TestGrokSessionWithoutTranscript(t *testing.T) {
 	}
 	if msgs := s.Messages(list[0], messageQuery{limit: 10}); len(msgs) != 0 {
 		t.Errorf("messages = %v", msgs)
+	}
+}
+
+// A search hit has to name its speaker, or every role filter quietly excludes the whole
+// source: search_sessions with role=, and find_decisions / find_similar_question, which
+// ask for assistant hits and would never surface a Grok session at all.
+func TestGrokSearchHitsCarryARole(t *testing.T) {
+	root, _ := grokFixture(t)
+	rec := newGrokSource(root).List()[0]
+	ctx := context.Background()
+
+	all := searchFile(ctx, rec.str("file"), searchQuery{
+		needle: "sample.txt", lowered: []byte("sample.txt"), perSession: 10,
+	})
+	if len(all) == 0 {
+		t.Fatal("the fixture should match")
+	}
+	for _, hit := range all {
+		if toStr(hit["role"]) == "" {
+			t.Errorf("a hit with no role is invisible to every role filter: %v", hit)
+		}
+	}
+
+	roles := map[string]int{}
+	for _, want := range []string{"user", "assistant"} {
+		hits := searchFile(ctx, rec.str("file"), searchQuery{
+			needle: "sample.txt", lowered: []byte("sample.txt"), perSession: 10, role: want,
+		})
+		roles[want] = len(hits)
+	}
+	if roles["user"] == 0 || roles["assistant"] == 0 {
+		t.Errorf("both speakers match this needle, got user=%d assistant=%d", roles["user"], roles["assistant"])
+	}
+
+	// Grok writes epoch seconds; a hit reports the time the way every other source does
+	if ts := toStr(all[0]["timestamp"]); ts != "2026-09-23T01:57:36" {
+		t.Errorf("hit timestamp = %q, want the ISO form", ts)
+	}
+}
+
+// A prompt arrives in chunks, so a title taken from the first row that yields text stops
+// wherever chunk one happened to end. Only reached before Grok writes a title of its own,
+// which is exactly the new sessions sitting at the top of the list.
+func TestGrokTitleJoinsChunkedPrompt(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "%2Ftmp%2Fchunked", "sid-chunked")
+	write(t, filepath.Join(dir, "summary.json"), `{"info":{"id":"sid-chunked","cwd":"/tmp/chunked"}}`)
+	write(t, filepath.Join(dir, "updates.jsonl"),
+		`{"timestamp":1790128000,"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"refactor the "}}}}`,
+		`{"timestamp":1790128000,"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"parser to handle OSC"}}}}`,
+		`{"timestamp":1790128009,"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"on it"}}}}`,
+	)
+	rec := newGrokSource(root).List()[0]
+	if got := rec.str("shortKey"); got != "refactor the parser to handle OSC" {
+		t.Errorf("shortKey = %q, want the whole prompt", got)
 	}
 }

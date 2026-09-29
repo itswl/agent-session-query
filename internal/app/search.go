@@ -245,7 +245,7 @@ func buildHit(line []byte, q searchQuery) map[string]any {
 	return map[string]any{
 		"snippet":   snippetAround(text, string(q.lowered), searchSnippetRadius),
 		"role":      hitRole(obj),
-		"timestamp": strOr(obj["timestamp"], ""),
+		"timestamp": hitTimestamp(obj["timestamp"]),
 	}
 }
 
@@ -285,8 +285,13 @@ func findMatchingText(v any, needleLower string, depth int) (string, bool) {
 	}
 	switch t := v.(type) {
 	case string:
-		if indexFold(t, needleLower) >= 0 {
-			return t, true
+		// Cleaned before the test, so a needle that exists only inside an escape sequence
+		// is not a match — it is not in the text a reader would see. Searching "38;2"
+		// otherwise hit every line coloured with a 24-bit sequence and returned a snippet
+		// with no occurrence of the needle in it, inflating matched and matchCount.
+		// Returning the cleaned string also means snippetAround has nothing left to strip.
+		if clean := stripTerminalControls(t); indexFold(clean, needleLower) >= 0 {
+			return clean, true
 		}
 	case []any:
 		for _, item := range t {
@@ -334,7 +339,24 @@ func hitRole(obj map[string]any) string {
 			}
 		}
 	}
+	if role := grokHitRole(obj); role != "" {
+		return role
+	}
 	return strOr(obj["type"], "")
+}
+
+// hitTimestamp renders a hit's time the way a message spells one. Most sources write an
+// ISO string and it passes straight through; Grok writes epoch seconds, and a bare integer
+// in the field every other source fills with text is not something a caller should have to
+// special-case.
+func hitTimestamp(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	if iso := grokTimestamp(v); iso != "" {
+		return iso
+	}
+	return toStr(v)
 }
 
 // appendLowerASCII appends src to dst with A-Z folded to lowercase.
@@ -425,22 +447,41 @@ func isTerminalControl(r rune) bool {
 // escapeSequenceLen is the length of the escape sequence starting at s[0], which the
 // caller has already established is ESC.
 //
-// An unterminated sequence consumes the rest of the string. That is deliberate: leaving
-// the tail of a half-written CSI behind would put the bytes it is made of back into the
-// output, which is the thing being prevented.
+// The shape of what follows the ESC decides the length, and getting this wrong is not
+// cosmetic: returning too few leaves the tail of a sequence in the output as text, and
+// returning too many eats text that was never part of one.
+//
+//	[                 CSI: parameters and intermediates, then one final byte in @..~
+//	] P X ^ _         a string sequence, run to BEL or to ST (ESC backslash)
+//	0x20..0x2f        nF: more intermediates, then one final byte in 0..~
+//	0x30..0x7e        a complete two-byte escape (ESC M, ESC 7, ESC c, ...)
+//	anything else     not a sequence at all
+//
+// The nF row is the one this got wrong at first, and it is not exotic: ESC ( B is what
+// tput sgr0 writes, so it is in anything ncurses, less, vim or git coloured. Treating it
+// as a two-byte escape left its final byte behind as a stray "B".
+//
+// The last row matters as much. A second ESC starts a new sequence rather than ending
+// this one, and a byte at or above 0x80 is the lead byte of a rune. Consuming either
+// along with the ESC would swallow a real sequence, or cut a rune in half and leave its
+// continuation bytes behind as invalid UTF-8. Consuming the ESC alone lets the next pass
+// see the byte whole.
+//
+// An unterminated sequence still takes the rest of the string, since leaving the tail of
+// a half-written CSI behind would put back the bytes this removes.
 func escapeSequenceLen(s string) int {
 	if len(s) < 2 {
 		return len(s)
 	}
-	switch s[1] {
-	case '[': // CSI: parameters, intermediates, then one final byte in @ to ~
+	switch c := s[1]; {
+	case c == '[':
 		for i := 2; i < len(s); i++ {
-			if c := s[i]; c >= 0x40 && c <= 0x7e {
+			if b := s[i]; b >= 0x40 && b <= 0x7e {
 				return i + 1
 			}
 		}
 		return len(s)
-	case ']', 'P', 'X', '^', '_': // OSC and friends: run to BEL or to ST (ESC backslash)
+	case c == ']', c == 'P', c == 'X', c == '^', c == '_':
 		for i := 2; i < len(s); i++ {
 			if s[i] == 0x07 {
 				return i + 1
@@ -450,8 +491,21 @@ func escapeSequenceLen(s string) int {
 			}
 		}
 		return len(s)
-	default: // a two-byte escape
+	case c >= 0x20 && c <= 0x2f:
+		for i := 2; i < len(s); i++ {
+			b := s[i]
+			if b >= 0x30 && b <= 0x7e {
+				return i + 1
+			}
+			if b < 0x20 || b > 0x2f {
+				return i // not a continuation; whatever this is, it is not part of the sequence
+			}
+		}
+		return len(s)
+	case c >= 0x30 && c <= 0x7e:
 		return 2
+	default:
+		return 1
 	}
 }
 

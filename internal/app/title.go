@@ -37,7 +37,12 @@ var titleNoisePrefixes = []string{
 // rejected, the first non-empty line is taken, and the result is rune-safely truncated.
 // An empty return means "nothing usable here, keep looking / fall back".
 func titleFromUserText(text string) string {
-	t := strings.TrimSpace(text)
+	// Cleaned before anything else looks at it. A title is synthesised for display, like a
+	// snippet, so the same rule applies (see stripTerminalControls). Doing it first also
+	// means a noise prefix cannot hide behind an escape sequence, and that the rune cut
+	// below cannot land inside one — a half-written CSI is worse than a whole one, because
+	// a terminal swallows what follows while it waits for the final byte.
+	t := strings.TrimSpace(stripTerminalControls(text))
 	if t == "" {
 		return ""
 	}

@@ -178,7 +178,11 @@ func splitRounds(messages []map[string]any) []round {
 // capText shortens s to about n characters — runes, not bytes: asks are often CJK and
 // a byte cut would split one — preferring a space inside the cut, and marking it
 func capText(s string, n int) string {
-	s = strings.TrimSpace(s)
+	// A brief is assembled for a reader, and it is meant to be handed to another agent or
+	// pasted into a terminal, so the text it quotes is cleaned on the way in rather than
+	// passed through (see stripTerminalControls). Before the cut, so the cut cannot leave
+	// half a sequence behind.
+	s = strings.TrimSpace(stripTerminalControls(s))
 	runes := []rune(s)
 	if n <= 0 || len(runes) <= n {
 		return s
@@ -383,7 +387,9 @@ func (a *SessionQueryAPI) sessionBrief(pattern, sourceWanted string, roundNo int
 // receiving side prompts around, not decoration.
 func renderBrief(item record, rounds []round, selected, scanned, total int) string {
 	var b strings.Builder
-	name := item.str("shortKey")
+	// Most titles arrive through titleFromUserText, which already cleans them, but the
+	// SQLite sources take theirs straight from a column
+	name := stripTerminalControls(item.str("shortKey"))
 	if name == "" {
 		name = item.str("sessionId")
 	}

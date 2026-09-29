@@ -167,14 +167,19 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 			continue
 		}
 		out.matched++
-		// The extra hit probeLimit asked for is the evidence, and it is dropped here so
-		// no caller ever sees more than it asked for
+		if len(out.results) >= q.limit {
+			continue // keep counting matched so the caller learns how much was cut
+		}
+		// The extra hit probeLimit asked for is the evidence, and it is dropped here so no
+		// caller ever sees more than it asked for.
+		//
+		// Counted only for sessions that reach the results. A session limit dropped
+		// entirely is the sessions reason, not this one, and raising hits for it would send
+		// the caller to turn per_session — which changes nothing, because every session it
+		// can actually see came back whole.
 		if len(matches) > q.perSession {
 			matches = matches[:q.perSession]
 			out.hitsCut = true
-		}
-		if len(out.results) >= q.limit {
-			continue // keep counting matched so the caller learns how much was cut
 		}
 		item := all[i].rec.public()
 		item["matches"] = matches

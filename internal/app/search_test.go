@@ -450,3 +450,46 @@ func TestSnippetAroundStripsControls(t *testing.T) {
 		t.Errorf("split needle snippet = %q", s)
 	}
 }
+
+// truncated.hits says per_session cut something the caller can see. A session that limit
+// dropped from the results entirely is the other reason — sessions — and must not raise
+// hits as well, or the caller raises per_session and nothing changes, because every
+// session it can actually see was complete.
+func TestSearchHitsTruncationOnlyCountsReturnedSessions(t *testing.T) {
+	root := t.TempDir()
+	// Newest, and it matches exactly once
+	write(t, filepath.Join(root, "p", "2026-02-02T00-00-00_new.jsonl"),
+		`{"type":"session","id":"s-new","cwd":"/w/new"}`,
+		`{"type":"message","id":"a1","timestamp":"2026-02-02T00:00:01Z","message":{"role":"user","content":[{"type":"text","text":"one kafka here"}]}}`,
+	)
+	// Older, and it matches three times
+	write(t, filepath.Join(root, "p", "2026-02-01T00-00-00_old.jsonl"),
+		`{"type":"session","id":"s-old","cwd":"/w/old"}`,
+		`{"type":"message","id":"b1","timestamp":"2026-02-01T00:00:01Z","message":{"role":"user","content":[{"type":"text","text":"kafka one"}]}}`,
+		`{"type":"message","id":"b2","timestamp":"2026-02-01T00:00:02Z","message":{"role":"user","content":[{"type":"text","text":"kafka two"}]}}`,
+		`{"type":"message","id":"b3","timestamp":"2026-02-01T00:00:03Z","message":{"role":"user","content":[{"type":"text","text":"kafka three"}]}}`,
+	)
+	sources := []SessionSource{newPiSource(root)}
+	srv := httptest.NewServer(newAPIServer(serverOptions{
+		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 2), maxConnections: 50,
+	}))
+	t.Cleanup(srv.Close)
+
+	// limit=1 keeps only the newest session, which has one hit and so is complete;
+	// per_session=2 is never reached by anything the caller receives
+	_, body := get(t, srv.URL+"/search?q=kafka&limit=1&per_session=2", "")
+	results := body["results"].([]any)
+	if len(results) != 1 || results[0].(map[string]any)["sessionId"] != "s-new" {
+		t.Fatalf("expected only the newest session back: %v", body)
+	}
+	if results[0].(map[string]any)["matchCount"] != float64(1) {
+		t.Fatalf("the returned session has one hit, so nothing about it was cut: %v", results[0])
+	}
+	cut := body["truncated"].(map[string]any)
+	if cut["sessions"] != true {
+		t.Errorf("a session was dropped by limit, so sessions must be true: %v", cut)
+	}
+	if cut["hits"] != false {
+		t.Errorf("no returned session lost a hit, so hits must be false: %v", cut)
+	}
+}

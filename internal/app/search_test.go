@@ -509,3 +509,33 @@ func TestSearchHitsTruncationOnlyCountsReturnedSessions(t *testing.T) {
 		t.Errorf("no returned session lost a hit, so hits must be false: %v", cut)
 	}
 }
+
+// A brief is copied and handed to another agent, and it quotes the prompt, so a key pasted
+// into a prompt rides along. Measured on a real brief here before this existed: one live
+// 51-character key, in full. Every value below is invented.
+func TestRedactSecrets(t *testing.T) {
+	for _, c := range []struct{ name, in, want string }{
+		{"provider key", "use sk-Ab3xQ9zK7mN2pR5tV8wY1cE4gH6jL0sD as the token", "use [redacted] as the token"},
+		{"github token", "export GH=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "export GH=[redacted]"},
+		{"aws key id", "AKIAJ7PQ3MZX2WVTKL4A is the id", "[redacted] is the id"},
+		{"jwt", "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.dBjftJeZ4CVPmB92K27u", "Bearer [redacted]"},
+		{"pem header", "-----BEGIN RSA PRIVATE KEY-----\nMIIE", "[redacted]\nMIIE"},
+		// A name that merely starts with a key prefix is words joined by dashes: no digits,
+		// no mixed case, and redacting it would mangle ordinary text
+		{"a kebab name is not a key", "see sk-migration-runner-config for that", "see sk-migration-runner-config for that"},
+		{"ordinary text is untouched", "把数据库迁移脚本跑一遍 then commit a1b2c3d", "把数据库迁移脚本跑一遍 then commit a1b2c3d"},
+		{"a git sha is not a key", "fixed in 9f8e7d6c5b4a3210fedcba9876543210abcdef12", "fixed in 9f8e7d6c5b4a3210fedcba9876543210abcdef12"},
+	} {
+		if got := redactSecrets(c.in); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// Colour codes inside a key would hide it from a pattern, so the escapes come off first
+func TestRedactAfterStripping(t *testing.T) {
+	split := "token \x1b[32msk-Ab3xQ9zK7mN2pR5tV8wY1cE4gH6jL0sD\x1b[0m ok"
+	if got := redactSecrets(stripTerminalControls(split)); got != "token [redacted] ok" {
+		t.Errorf("got %q", got)
+	}
+}

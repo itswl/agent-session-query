@@ -42,8 +42,17 @@ source (the search on `/sessions` only matches metadata). It is case-insensitive
 no index — measured locally, a cold scan of 562 MB across 143 sessions takes 1.9 s and a
 warm one 43-112 ms. Snippets are stripped of ANSI escape sequences and other control
 characters before being returned: tool output in a transcript is full of them, and a
-snippet is built for display rather than chosen by the caller. Message bodies from
-`/sessions/<id>/messages` are returned exactly as stored.
+snippet is built for display rather than chosen by the caller. The same text is scanned for
+secret-shaped runs — a known key prefix followed by a long opaque tail, a JWT, a PEM header
+— and each is replaced with `[redacted]`. That covers snippets, session titles, and the
+`asked` and `outcome` lines of `/rounds` and the brief: everything this service assembles
+for someone to read. It is best effort by construction. It finds what announces itself and
+cannot find a password written in prose, so treat it as one less sharp edge rather than a
+guarantee.
+
+Message bodies from `/sessions/<id>/messages` and the output of `/export` are returned
+exactly as stored, redaction included. Those are the data; what to do with them is the
+caller's policy.
 
 In the response, `matched` is how many sessions matched, `total` how many were returned,
 and `scanned` how many were examined. `truncated` carries the reasons results are short as

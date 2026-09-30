@@ -63,6 +63,13 @@ current MCP specification (2025-06-18):
 | `list_rounds` | A session's rounds — one per real user message — each with its number, time span and message count, plus the total. `session_brief` renders one round and cannot say how many there are, so this is how a caller walks a session round by round |
 | `session_brief` | A compact handoff brief of one round — the ask, files touched, tools by category, how it ended. Sessions are segmented into rounds at each real user message; the default is the latest round, `round` picks one, `at` briefs the round a timestamp (e.g. a search hit) falls in. The scan covers a session's latest messages; round numbering runs over that tail |
 
+Text these tools assemble — search snippets, session titles, and the `asked` / `outcome`
+lines of `list_rounds` and `session_brief` — has secret-shaped runs replaced with
+`[redacted]`: a known key prefix with a long opaque tail, a JWT, a PEM header. A brief is
+meant to be handed to another agent, and a prompt that quoted a key would otherwise carry it
+along. It finds what announces itself and nothing more, so it is one less sharp edge, not a
+guarantee. `get_messages` returns message bodies as stored.
+
 Every tool declares `readOnlyHint` / `idempotentHint` annotations, so clients that honour
 them can skip call confirmations for what is a read-only query service.
 

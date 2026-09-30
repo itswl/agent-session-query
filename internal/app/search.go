@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -444,6 +445,72 @@ func isTerminalControl(r rune) bool {
 	return (r < 0x20 && r != '\t' && r != '\n') || r == 0x7f
 }
 
+// Secrets in text this service assembles.
+//
+// The rule stripTerminalControls follows applies here too: a message body is the data and
+// goes back as stored, but a snippet, a title and a brief are built here for someone to
+// read, and a brief exists to be copied and handed to another agent. Measured on this
+// machine, one real brief carried a live 51-character API key, a private hostname and two
+// home paths, because the user had pasted the key into a prompt and the brief quotes the
+// prompt.
+//
+// This is best effort and is documented as such. It recognises the shapes that announce
+// themselves — a known prefix followed by a long opaque run, a JWT, a PEM header — and
+// nothing else. A password in prose is not detectable and is not claimed to be.
+var secretPatterns = []*regexp.Regexp{
+	// Provider keys: a known prefix and a long tail. The tail is checked for entropy
+	// below, because a kebab-case name can start with sk- too.
+	regexp.MustCompile(`\b[sprk]k-[A-Za-z0-9_-]{16,}`),
+	regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}`),
+	regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{20,}`),
+	regexp.MustCompile(`\bxox[abprs]-[A-Za-z0-9-]{10,}`),
+	regexp.MustCompile(`\bAIza[A-Za-z0-9_-]{30,}`),
+	// AWS key ids are a fixed shape, so they need no entropy check
+	regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`),
+	// A JWT: three base64url runs, the first one starting with the encoded "{"
+	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`),
+	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`),
+}
+
+// redactSecrets replaces the secret-shaped runs in text this service assembled.
+//
+// Run after stripTerminalControls, never before: a key with a colour code in the middle of
+// it is one string only once the escapes are gone.
+func redactSecrets(s string) string {
+	if s == "" {
+		return s
+	}
+	for _, re := range secretPatterns {
+		s = re.ReplaceAllStringFunc(s, func(match string) string {
+			if !secretLike(match) {
+				return match
+			}
+			return "[redacted]"
+		})
+	}
+	return s
+}
+
+// secretLike rejects what a prefix alone would let through. A generated key packs digits
+// and mixed case into one unbroken run; an identifier that happens to start with sk- is
+// words joined by dashes and has neither.
+func secretLike(match string) bool {
+	if !strings.HasPrefix(match, "sk-") && !strings.HasPrefix(match, "pk-") &&
+		!strings.HasPrefix(match, "rk-") && !strings.HasPrefix(match, "kk-") {
+		return true // the other shapes are distinctive enough on their own
+	}
+	digit, upper := false, false
+	for _, r := range match[3:] {
+		switch {
+		case r >= '0' && r <= '9':
+			digit = true
+		case r >= 'A' && r <= 'Z':
+			upper = true
+		}
+	}
+	return digit && upper
+}
+
 // escapeSequenceLen is the length of the escape sequence starting at s[0], which the
 // caller has already established is ESC.
 //
@@ -513,7 +580,7 @@ func snippetAround(text, needleLower string, radius int) string {
 	// Cleaned before the window is cut, not after: an escape sequence counted toward the
 	// radius would spend the snippet's budget on bytes nobody sees, and cutting inside one
 	// would leave its tail behind.
-	text = stripTerminalControls(text)
+	text = redactSecrets(stripTerminalControls(text))
 	idx := indexFold(text, needleLower)
 	if idx < 0 {
 		return truncate(text, radius*2, "…")

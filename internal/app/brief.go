@@ -182,7 +182,7 @@ func capText(s string, n int) string {
 	// pasted into a terminal, so the text it quotes is cleaned on the way in rather than
 	// passed through (see stripTerminalControls). Before the cut, so the cut cannot leave
 	// half a sequence behind.
-	s = strings.TrimSpace(stripTerminalControls(s))
+	s = strings.TrimSpace(redactSecrets(stripTerminalControls(s)))
 	runes := []rune(s)
 	if n <= 0 || len(runes) <= n {
 		return s
@@ -389,7 +389,7 @@ func renderBrief(item record, rounds []round, selected, scanned, total int) stri
 	var b strings.Builder
 	// Most titles arrive through titleFromUserText, which already cleans them, but the
 	// SQLite sources take theirs straight from a column
-	name := stripTerminalControls(item.str("shortKey"))
+	name := redactSecrets(stripTerminalControls(item.str("shortKey")))
 	if name == "" {
 		name = item.str("sessionId")
 	}

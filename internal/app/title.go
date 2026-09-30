@@ -42,7 +42,7 @@ func titleFromUserText(text string) string {
 	// means a noise prefix cannot hide behind an escape sequence, and that the rune cut
 	// below cannot land inside one — a half-written CSI is worse than a whole one, because
 	// a terminal swallows what follows while it waits for the final byte.
-	t := strings.TrimSpace(stripTerminalControls(text))
+	t := strings.TrimSpace(redactSecrets(stripTerminalControls(text)))
 	if t == "" {
 		return ""
 	}

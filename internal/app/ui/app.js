@@ -9,7 +9,8 @@
 //
 // Rendering strategy: auto-refresh must not rip away what you are reading. So the list is
 // patched incrementally by sessionId, the detail pane is only refetched when the selected
-// session really changed, and rebuilds preserve expanded blocks and scroll position.
+// session really changed, and rebuilds preserve expanded blocks, opened rounds and scroll
+// position.
 'use strict';
 
 const TOKEN_KEY = 'agent-session-query-token';
@@ -31,6 +32,8 @@ const CONTENT_MIN_CHARS = 2;
 // (a high bar), while tool output and thinking are supporting material you consult
 // (a low bar). Both shared 600 before, which left whole screens of shell output open.
 const FOLD_AT = { text: 600, thinking: 300, toolResult: 200, toolCall: 400 };
+// A round's final reply is the answer; it stays open unless it runs to pages
+const FOLD_FINAL_AT = 4000;
 const STICK_TO_BOTTOM_PX = 48;
 // How close to an edge the reader has to get before the next page is fetched
 const SCROLL_LOAD_PX = 320;
@@ -43,7 +46,9 @@ const state = {
   selectedId: '',
   keyword: '',
   source: '',
-  role: '',            // '' / 'user' / 'assistant'
+  view: 'all',         // all = rounds with their work / conversation = the words alone / changes = file changes alone
+  expandAll: false,    // every round's work open, rather than folded to one line
+  roundOverrides: new Map(), // round key → open or folded, chosen by hand over expandAll
   order: 'desc',       // desc = the latest N (the end of a session is the interesting part)
   grouping: 'time',    // time = by update time; project = grouped by project (cwd)
   pane: 'stream',      // phones only: which of the three panes is on screen
@@ -691,7 +696,15 @@ function renderSources() {
 }
 
 // ---------------------------------------------------------------------------
-// Middle pane: session identity + toolbar + message stream
+// Middle pane: session identity + toolbar + the conversation, read by rounds
+//
+// A session is read the way it happened: you asked, the agent worked, the agent
+// answered. The loaded messages are grouped into those rounds — by the rule the server's
+// /rounds uses, so the two never disagree about where one ends — and the work in the
+// middle folds into one line: how many steps, how many commands, which files changed,
+// what failed, how long it took. Failures stay in view when the rest is folded;
+// everything else opens on demand. Three views: the whole thing, the conversation
+// alone, or only the changes.
 // ---------------------------------------------------------------------------
 
 function renderStreamHead(record) {
@@ -705,6 +718,8 @@ function renderStreamHead(record) {
   const tagrow = el('div', 'tagrow');
   tagrow.appendChild(sourceTag(record.source));
   if (record.status) tagrow.appendChild(statusTag(record.status));
+  // Grok keeps an archived session in a directory of its own; it is still history
+  if (record.archived) tagrow.appendChild(el('span', 'tag', 'archived'));
   if (record.updatedAt) {
     const time = el('span', 'time', relTime(record.updatedAt));
     time.title = record.updatedAt;
@@ -744,7 +759,7 @@ function renderStreamHead(record) {
 
   const bar = el('div', 'toolbar');
   bar.appendChild(segmented(
-    [['asc', '\u2191 earliest'], ['desc', '\u2193 latest']],
+    [['asc', '↑ earliest'], ['desc', '↓ latest']],
     state.order,
     (value) => {
       if (value === state.order) return;
@@ -754,17 +769,32 @@ function renderStreamHead(record) {
       syncDetail({ force: true });
     },
   ));
+  // Three views of the same rounds: everything, the words alone, the file changes alone
   bar.appendChild(segmented(
-    [['', 'all'], ['user', 'user'], ['assistant', 'assistant'], ['tools', 'tools']],
-    state.role,
+    [['all', 'all'], ['conversation', 'conversation'], ['changes', 'changes']],
+    state.view,
     (value) => {
-      if (value === state.role) return;
-      state.role = value;
+      if (value === state.view) return;
+      state.view = value;
       saveViewPrefs();
       renderMessages();
       renderStreamHead(record); // only to move the highlight onto the other button
     },
   ));
+  // Every round's work at once, when reading the whole thing. A per-round choice made
+  // after this is kept until the switch is thrown again.
+  const expand = button('ghost tiny', state.expandAll ? 'Collapse steps' : 'Expand steps', () => {
+    state.expandAll = !state.expandAll;
+    state.roundOverrides.clear();
+    saveViewPrefs();
+    renderMessages();
+    renderStreamHead(record);
+  });
+  expand.title = state.expandAll
+    ? 'Fold the work of every round back to one line'
+    : 'Open the work of every round';
+  expand.classList.toggle('hidden', state.view !== 'all');
+  bar.appendChild(expand);
 
   const detail = state.detail;
   if (detail) {
@@ -775,7 +805,7 @@ function renderStreamHead(record) {
     // "latest 200" there would be a lie — so it says what it is, with a way out
     let label;
     if (state.loadingMore) {
-      label = 'Loading more\u2026';
+      label = 'Loading more…';
     } else if (shown > MESSAGE_LIMIT) {
       // The window has grown past one page, so it is no longer "the latest N" — say how
       // far into the session this is instead
@@ -793,7 +823,63 @@ function renderStreamHead(record) {
   }
   box.appendChild(bar);
 
+  // What the window amounts to: rounds, tool calls, failures, how long it ran
+  if (detail) {
+    const stats = windowStats(detail);
+    if (stats) box.appendChild(stats);
+  }
+
   head.replaceChildren(box);
+}
+
+// windowStats sums the loaded window. The numbers are the window's, and the row says so
+// when the session is longer: a total would need the whole file, and the header already
+// has the honest count.
+function windowStats(detail) {
+  const all = detail.messages.messages || [];
+  if (!all.length) return null;
+  const { rounds } = roundsOf(all);
+  const tools = rounds.reduce((n, r) => n + r.summary.steps, 0);
+  const failures = rounds.reduce((n, r) => n + r.summary.failures, 0);
+  const row = el('div', 'stats');
+  row.appendChild(el('span', '', rounds.length + (rounds.length === 1 ? ' round' : ' rounds')));
+  row.appendChild(el('span', '', tools + (tools === 1 ? ' tool call' : ' tool calls')));
+  if (failures) row.appendChild(el('span', 'fail', failures + ' failed'));
+  const span = timeSpan(all[0].timestamp, all[all.length - 1].timestamp);
+  if (span > 0) row.appendChild(el('span', '', formatDuration(span)));
+  const total = Number(detail.final && detail.final.messageCount) || 0;
+  if (total > all.length) row.appendChild(el('span', 'dim', 'in the loaded window'));
+  return row;
+}
+
+// parseTime reads a timestamp the way relTime does: each source spells one differently
+function parseTime(iso) {
+  if (!iso) return NaN;
+  let normalized = String(iso).trim().replace(' ', 'T');
+  if (!/[Zz]|[+-]\d{2}:?\d{2}$/.test(normalized)) normalized += 'Z';
+  return Date.parse(normalized);
+}
+
+// timeSpan is the milliseconds between two timestamps, or 0 when either is unreadable or
+// they run backwards (clock skew)
+function timeSpan(from, to) {
+  const start = parseTime(from), end = parseTime(to);
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return 0;
+  return end - start;
+}
+
+// formatDuration: 300ms / 2.4s / 45s / 2m14s / 1h3m — the same grammar the export uses
+function formatDuration(ms) {
+  if (ms < 1000) return Math.round(ms) + 'ms';
+  if (ms < 10000) return (ms / 1000).toFixed(1).replace(/\.0$/, '') + 's';
+  const total = Math.round(ms / 1000);
+  if (total < 60) return total + 's';
+  if (total < 3600) {
+    const m = Math.floor(total / 60), s = total % 60;
+    return s ? m + 'm' + s + 's' : m + 'm';
+  }
+  const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60);
+  return m ? h + 'h' + m + 'm' : h + 'h';
 }
 
 // Tool categories, and what each one is for: reading, changing, running, searching,
@@ -802,7 +888,7 @@ function renderStreamHead(record) {
 // something" far more often than for "where did it run grep specifically".
 // Order matters: the first match wins.
 const TOOL_KINDS = [
-  ['exec', /^(bash|shell|terminal|exec|sh$|run|command|process|container|docker)/i],
+  ['exec', /^(bash|shell|terminal|exec|sh$|run|command|process|container|docker|local_shell)/i],
   ['write', /(write|edit|patch|replace|create|delete|remove|move|rename|apply|notebook_edit)/i],
   ['read', /^(read|view|cat|open|head|tail|notebook_read)/i],
   ['search', /(grep|glob|search|find|list|scan|ls$|^ls)/i],
@@ -819,12 +905,45 @@ function toolKind(name) {
   return 'other';
 }
 
+// What an event between the turns is called on the page
+const EVENT_LABELS = {
+  compaction: 'context compacted',
+  interrupted: 'interrupted',
+  hook_error: 'hook failed',
+  model_change: 'model changed',
+};
+
+function eventLabel(block) {
+  const label = EVENT_LABELS[block.kind] || String(block.kind || 'event');
+  const text = String(block.content || '').trim();
+  return text && text !== label ? label + ': ' + text : label;
+}
+
+// isFailed: a result that reported an error or an interruption. A result without a
+// status is one whose writer did not record the outcome, which is not a failure.
+function isFailed(result) {
+  return !!result && (result.status === 'error' || result.status === 'interrupted');
+}
+
+// outcomeText is the suffix a result carries: how it ended, in the words a reader scans
+// for — " — failed · exit 1 · 2.3s"
+function outcomeText(result) {
+  const parts = [];
+  if (result.status === 'error') parts.push('failed');
+  if (result.status === 'interrupted') parts.push('interrupted');
+  if (typeof result.exitCode === 'number' && (result.exitCode !== 0 || parts.length)) parts.push('exit ' + result.exitCode);
+  if (Number(result.durationMs) > 0) parts.push(formatDuration(Number(result.durationMs)));
+  return parts.length ? ' — ' + parts.join(' · ') : '';
+}
+
 function blockNode(block) {
   switch (block.type || 'unknown') {
     case 'text':
       return el('div', 'block text', block.content);
     case 'thinking':
       return el('div', 'block thinking', block.content);
+    case 'event':
+      return el('div', 'block event', eventLabel(block));
     case 'toolCall': {
       // Tool name as the heading, arguments indented below, so one glance says what ran
       const kind = toolKind(block.name);
@@ -835,8 +954,8 @@ function blockNode(block) {
     }
     case 'toolResult': {
       const kind = toolKind(block.toolName);
-      const wrap = el('div', 'block toolResult tool-' + kind);
-      wrap.appendChild(el('div', 'tool-label', '↳ ' + (block.toolName || 'result')));
+      const wrap = el('div', 'block toolResult tool-' + kind + (isFailed(block) ? ' failed' : ''));
+      wrap.appendChild(el('div', 'tool-label', '↳ ' + (block.toolName || 'result') + outcomeText(block)));
       wrap.appendChild(el('pre', '', block.content));
       return wrap;
     }
@@ -851,60 +970,286 @@ function hasWords(message) {
     (b) => b.type === 'text' && String(b.content || '').trim() !== '');
 }
 
+// messageWords is a message's own text, the blocks joined
+function messageWords(message) {
+  return (message.content || [])
+    .filter((b) => b.type === 'text')
+    .map((b) => String(b.content || ''))
+    .join('\n');
+}
+
 // roleLabel names the speaker as the reader sees it, not as the file stores it
 function roleLabel(message) {
   if (message.role === 'user' && !hasWords(message)) return 'tool';
+  if (message.role === 'toolResult') return 'tool';
   return message.role || '?';
 }
 
-// isToolMessage: anything that carried a tool call or its result. The tools filter works
-// on this rather than on role, because a tool call rides inside an assistant message
-// (the call and the prose share one turn) while a result is its own message with role
-// tool, or a user-role row for Claude. Role alone would miss half of it.
-function isToolMessage(message) {
-  return (message.content || []).some(
-    (b) => b.type === 'toolCall' || b.type === 'toolResult');
+// ---- Rounds ----
+
+// The command-plumbing openings a user row can have without being a question; the same
+// list the server's isRoundStart keeps
+const PLUMBING_PREFIXES = [
+  '<command-name>', '<command-message>', '<command-args>', '<command-contents>',
+  '<local-command-', '<caveat', 'Caveat:',
+];
+
+// isAsk: a user message carrying words of its own, not command plumbing, and not one
+// the CLI assembled (those arrive flagged injected)
+function isAsk(message) {
+  if (message.role !== 'user' || message.injected) return false;
+  const text = messageWords(message).trim();
+  if (!text) return false;
+  return !PLUMBING_PREFIXES.some((prefix) => text.startsWith(prefix));
 }
 
-// matchesRole is the one place the stream filter is decided, shared by the renderer and
-// the table of contents.
-//
-// The three filters are meant to be distinct categories, so user and assistant mean the
-// human's words and the model's words — not "messages whose role field says so". A tool
-// result carries role user in Claude's format and a tool call rides inside an assistant
-// message, so filtering on role alone put tool traffic under both speakers at once.
-// Anything tool-shaped now belongs to tools, and to tools only.
-function matchesRole(message) {
-  if (!state.role) return true;
-  if (state.role === 'tools') return isToolMessage(message);
-  // A turn that both speaks and calls a tool is genuinely both: it stays with its
-  // speaker (its words are why you are reading it) and also appears under tools
-  if (!hasWords(message)) return false;
-  return message.role === state.role;
+// roundsOf groups a window into rounds once per window: the stream, the header's stats
+// and the table of contents all read the same grouping
+let roundsCache = { source: null, value: null };
+function roundsOf(all) {
+  if (roundsCache.source !== all) roundsCache = { source: all, value: buildRounds(all) };
+  return roundsCache.value;
 }
 
-// emptyStreamNote names what the current filter left empty
-function emptyStreamNote() {
-  if (!state.role) return 'This session has no messages';
-  if (state.role === 'tools') return 'No tool activity in this window';
-  return 'No ' + state.role + ' messages';
+function buildRounds(all) {
+  const preface = [];
+  const rounds = [];
+  let current = null;
+  all.forEach((message, index) => {
+    if (isAsk(message)) {
+      current = { no: rounds.length + 1, key: messageKey(message), ask: { message, index }, items: [], last: false };
+      rounds.push(current);
+      return;
+    }
+    if (!current) preface.push({ message, index });
+    else current.items.push({ message, index });
+  });
+  if (rounds.length) rounds[rounds.length - 1].last = true;
+  rounds.forEach(analyseRound);
+  return { preface, rounds };
 }
 
-function messageNode(message, index) {
+// analyseRound turns the messages after an ask into steps — a tool call paired with its
+// result, a thought, an interim note, an event — and picks the final reply: the last
+// assistant message in the round that has words. Everything the agent said before that
+// is a note along the way.
+function analyseRound(round) {
+  const steps = [];
+  const open = new Map(); // call id → the step waiting for its result
+  let finalAt = -1;
+  round.items.forEach((item, i) => {
+    if (item.message.role === 'assistant' && hasWords(item.message)) finalAt = i;
+  });
+  round.final = null;
+  round.items.forEach((item, i) => {
+    const { message, index } = item;
+    (message.content || []).forEach((block, position) => {
+      const key = messageKey(message) + ':' + position;
+      switch (block.type) {
+        case 'toolCall': {
+          const step = { kind: 'tool', key, call: block, result: null, index, message, position };
+          steps.push(step);
+          if (block.id) open.set(block.id, step);
+          break;
+        }
+        case 'toolResult': {
+          // Paired by id when the source gave one. Without ids the result goes to the
+          // oldest call still waiting that it names, or the oldest waiting at all; a
+          // result with an id nobody claims is an orphan and stands alone.
+          let step = null;
+          if (block.callId) {
+            step = open.get(block.callId) || null;
+          } else {
+            step = steps.find((s) => s.kind === 'tool' && s.call && !s.result &&
+              (!block.toolName || s.call.name === block.toolName)) ||
+              steps.find((s) => s.kind === 'tool' && s.call && !s.result) || null;
+          }
+          if (step && !step.result) {
+            step.result = block;
+            step.resultMessage = message;
+            step.resultPosition = position;
+            if (step.call.id) open.delete(step.call.id);
+          } else {
+            steps.push({ kind: 'tool', key, call: null, result: block, index, message, position,
+              resultMessage: message, resultPosition: position });
+          }
+          break;
+        }
+        case 'thinking':
+          // A Claude thinking block may carry only a signature and no words: nothing to show
+          if (!String(block.content || '').trim()) break;
+          steps.push({ kind: 'thinking', key, block, index, message, position });
+          break;
+        case 'event':
+          steps.push({ kind: 'event', key, block, index });
+          break;
+        case 'text':
+          if (message.role === 'assistant' && i === finalAt) break; // the reply, rendered on its own
+          if (!String(block.content || '').trim()) break;
+          if (message.injected) steps.push({ kind: 'injected', key, block, index });
+          else steps.push({ kind: 'note', key, block, index, role: message.role });
+          break;
+        default:
+          break;
+      }
+    });
+    if (i === finalAt) round.final = item;
+  });
+  round.steps = mergeSteps(steps);
+  round.summary = summarizeRound(round);
+}
+
+// mergeSteps folds a run of successful reads and searches into one step: "explored —
+// read 4 files, searched twice" is what a reader wants to know about that stretch.
+// Only runs of two or more, and never a failure: those stay on their own line.
+function mergeSteps(steps) {
+  const out = [];
+  let run = [];
+  const flush = () => {
+    if (run.length >= 2) out.push({ kind: 'merged', key: run[0].key + '+merged', children: run });
+    else out.push(...run);
+    run = [];
+  };
+  for (const step of steps) {
+    const kind = step.kind === 'tool' && step.call ? toolKind(step.call.name) : '';
+    const mergeable = (kind === 'read' || kind === 'search') && !isFailed(step.result);
+    if (mergeable) {
+      run.push(step);
+      continue;
+    }
+    flush();
+    out.push(step);
+  }
+  flush();
+  return out;
+}
+
+// flatToolSteps lists the tool steps of a round, merged ones opened
+function flatToolSteps(steps) {
+  const out = [];
+  for (const step of steps) {
+    if (step.kind === 'merged') out.push(...step.children);
+    else if (step.kind === 'tool') out.push(step);
+  }
+  return out;
+}
+
+function stepName(step) {
+  if (step.call) return step.call.name || '(unnamed tool)';
+  return (step.result && step.result.toolName) || 'tool output';
+}
+
+function isFailedStep(step) {
+  return step.kind === 'tool' && isFailed(step.result);
+}
+
+function isChangeStep(step) {
+  return step.kind === 'tool' && !!step.call && toolKind(step.call.name) === 'write';
+}
+
+// The argument a tool names a file by, across the CLIs
+const FILE_KEYS = ['file_path', 'filePath', 'path', 'notebook_path', 'file', 'target_file'];
+function fileOf(args) {
+  if (!args || typeof args !== 'object') return '';
+  for (const key of FILE_KEYS) {
+    if (typeof args[key] === 'string' && args[key]) return args[key];
+  }
+  return '';
+}
+
+// summarizeRound is the folded line: steps, commands, files changed, failures, time
+function summarizeRound(round) {
+  const tools = flatToolSteps(round.steps);
+  const changed = new Set();
+  let commands = 0, failures = 0;
+  for (const step of tools) {
+    const kind = toolKind(stepName(step));
+    if (kind === 'exec') commands++;
+    const failed = isFailed(step.result);
+    if (failed) failures++;
+    // A change is a write that did not fail; a Read of the same file never was one
+    if (kind === 'write' && !failed && step.call) {
+      const file = fileOf(step.call.arguments);
+      if (file) changed.add(file);
+    }
+  }
+  const items = round.items;
+  const lastAt = items.length ? items[items.length - 1].message.timestamp : round.ask.message.timestamp;
+  let durationMs = timeSpan(round.ask.message.timestamp, lastAt);
+  if (!(durationMs > 0)) {
+    durationMs = tools.reduce((sum, s) => sum + (Number(s.result && s.result.durationMs) || 0), 0);
+  }
+  const interrupted = round.steps.some((s) => s.kind === 'event' && s.block.kind === 'interrupted') ||
+    tools.some((s) => s.result && s.result.status === 'interrupted');
+  return {
+    steps: tools.length,
+    commands,
+    filesChanged: changed.size,
+    failures,
+    durationMs,
+    interrupted,
+    thinking: round.steps.filter((s) => s.kind === 'thinking').length,
+  };
+}
+
+function isRoundExpanded(round) {
+  if (state.roundOverrides.has(round.key)) return state.roundOverrides.get(round.key);
+  return state.expandAll;
+}
+
+// emptyStreamNote names what the current view left empty
+function emptyStreamNote(count) {
+  if (!count) return 'This session has no messages';
+  if (state.view === 'changes') return 'No file changes in this window';
+  if (state.view === 'conversation') return 'No conversation in this window';
+  return 'Nothing to show in this window';
+}
+
+// foldable wraps a long block in a disclosure that still says what it holds. The key has
+// to be stable across rebuilds, so an expanded block stays expanded through a refresh.
+function foldable(rendered, key, kind) {
+  const plain = rendered.textContent || '';
+  const details = el('details');
+  details.open = state.openBlocks.has(key);
+  details.addEventListener('toggle', () => {
+    if (details.open) state.openBlocks.add(key);
+    else state.openBlocks.delete(key);
+  });
+  const summary = el('summary');
+  summary.appendChild(el('span', 'fold-kind', kind));
+  summary.appendChild(el('span', 'fold-preview', plain.replace(/\s+/g, ' ').trim().slice(0, 80)));
+  summary.appendChild(el('span', 'fold-size', plain.length + ' chars'));
+  details.appendChild(summary);
+  details.appendChild(rendered);
+  return details;
+}
+
+// messageNode renders one message as a bubble: the asks, the final replies, and whatever
+// precedes the first ask. options.only keeps blocks of one type (a reply's words, without
+// the calls that rode on the same message), options.label chips a round number onto the
+// head, options.extraClass marks the bubble's part in the round.
+function messageNode(message, index, options) {
+  const opts = options || {};
+  const source = Array.isArray(message.content) ? message.content : [];
   // A block with no content renders as an empty box (the dashed thinking box especially
   // stands out), so drop it. These blocks genuinely occur: a Claude thinking block may
   // carry only a signature with an empty body.
-  const blocks = (Array.isArray(message.content) ? message.content : [])
-    .map((block, position) => ({ block, position, node: blockNode(block) }))
+  const blocks = source
+    .map((block, position) => ({ block, position }))
+    .filter(({ block }) => !opts.only || block.type === opts.only)
+    .map((item) => Object.assign(item, { node: blockNode(item.block) }))
     .filter((item) => (item.node.textContent || '').trim() !== '');
 
-  const node = el('div', 'msg ' + (message.role || '') + (blocks.length === 0 ? ' is-empty' : ''));
+  const node = el('div', 'msg ' + (message.role || '') + (blocks.length === 0 ? ' is-empty' : '') +
+    (opts.extraClass ? ' ' + opts.extraClass : ''));
   node.dataset.index = index;
   // A user-role row with no words of its own is a tool result (Claude's shape), not a
   // question: label and colour it as tooling so the two speakers stay distinguishable
   if (message.role === 'user' && !hasWords(message)) node.classList.add('is-tool');
+  if (message.injected) node.classList.add('is-injected');
   const head = el('div', 'head');
-  head.appendChild(el('span', 'role', roleLabel(message)));
+  if (opts.label) head.appendChild(el('span', 'round-no', opts.label));
+  head.appendChild(el('span', 'role', message.injected ? 'injected context' : roleLabel(message)));
   // A message with nothing displayable is worth one line of explanation, not a whole block
   if (blocks.length === 0) head.appendChild(el('span', 'empty-hint', 'nothing to display'));
   if (message.id) head.title = 'id: ' + message.id;
@@ -913,32 +1258,500 @@ function messageNode(message, index) {
 
   blocks.forEach(({ position, node: rendered, block }) => {
     const plain = rendered.textContent || '';
-    const limit = FOLD_AT[block.type] || 600;
+    // The reply is what you came to read, so it folds only when it is very long; an
+    // injected row is never the human speaking and folds whatever its size
+    const limit = message.injected ? 0 : opts.extraClass === 'final' ? FOLD_FINAL_AT : (FOLD_AT[block.type] || 600);
     if (plain.length <= limit) {
       node.appendChild(rendered);
       return;
     }
-    // The key has to be stable: after a refresh rebuild we still need to recognise
-    // which ones the user had expanded
-    const key = (message.id || 'i' + index) + ':' + position;
-    // A one-line preview rides along with the summary, so a folded block still says
-    // what it is instead of only how big it is
-    const preview = plain.replace(/\s+/g, ' ').trim().slice(0, 80);
-    const details = el('details');
-    details.open = state.openBlocks.has(key);
-    details.addEventListener('toggle', () => {
-      if (details.open) state.openBlocks.add(key);
-      else state.openBlocks.delete(key);
-    });
-    const summary = el('summary');
-    summary.appendChild(el('span', 'fold-kind', block.type));
-    summary.appendChild(el('span', 'fold-preview', preview));
-    summary.appendChild(el('span', 'fold-size', plain.length + ' chars'));
-    details.appendChild(summary);
-    details.appendChild(rendered);
-    node.appendChild(details);
+    node.appendChild(foldable(rendered, messageKey(message) + ':' + position, message.injected ? 'injected' : block.type));
   });
   return node;
+}
+
+// roundNode lays one round out: the ask, the work (folded to a line), the reply
+function roundNode(round) {
+  const record = state.byId.get(state.selectedId);
+  if (state.view === 'changes' && !flatToolSteps(round.steps).some(isChangeStep)) return null;
+  const node = el('section', 'round');
+  node.dataset.round = round.no;
+  node.appendChild(messageNode(round.ask.message, round.ask.index, { label: '#' + round.no }));
+
+  if (state.view === 'changes') {
+    const list = el('div', 'steps changes');
+    for (const step of flatToolSteps(round.steps)) {
+      if (isChangeStep(step)) list.appendChild(toolStepNode(step, round, { open: true }));
+    }
+    node.appendChild(list);
+    return node;
+  }
+  if (state.view === 'all') {
+    const timeline = timelineNode(round);
+    if (timeline) node.appendChild(timeline);
+  } else {
+    // The conversation alone: what the agent said along the way, then its reply
+    for (const step of round.steps) {
+      if (step.kind === 'note' && step.role !== 'user') node.appendChild(noteNode(step));
+    }
+  }
+  if (round.final) {
+    node.appendChild(messageNode(round.final.message, round.final.index, { only: 'text', extraClass: 'final' }));
+  } else if (round.summary.interrupted) {
+    node.appendChild(el('p', 'no-reply', 'interrupted — no reply'));
+  } else if (round.last && record && record.isActive) {
+    node.appendChild(el('p', 'no-reply', 'no reply yet'));
+  } else {
+    node.appendChild(el('p', 'no-reply', 'no reply in this round'));
+  }
+  return node;
+}
+
+// timelineNode is the folded line over a round's work, and the work under it when open.
+// Folded, the failures stay in view — the first five of them, with the start of their
+// output — because they are what a reader scans a session for.
+function timelineNode(round) {
+  if (!round.steps.length) return null;
+  const s = round.summary;
+  const expanded = isRoundExpanded(round);
+  const wrap = el('div', 'timeline' + (expanded ? ' open' : ''));
+  const toggle = el('button', 'timeline-toggle');
+  toggle.type = 'button';
+  toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  toggle.appendChild(el('span', 'caret'));
+  const text = el('span', 'timeline-text');
+  const count = s.steps || round.steps.length;
+  text.appendChild(el('b', '', count + (count === 1 ? ' step' : ' steps')));
+  const parts = [];
+  if (s.commands) parts.push([s.commands + (s.commands === 1 ? ' command' : ' commands'), '']);
+  if (s.filesChanged) parts.push(['changed ' + s.filesChanged + (s.filesChanged === 1 ? ' file' : ' files'), '']);
+  if (s.failures) parts.push([s.failures + ' failed', 'fail']);
+  if (s.durationMs > 0) parts.push([formatDuration(s.durationMs), '']);
+  for (const [label, cls] of parts) {
+    text.appendChild(el('span', 'sep', '·'));
+    text.appendChild(el('span', cls, label));
+  }
+  toggle.appendChild(text);
+  toggle.title = expanded ? 'Fold the work back to one line' : 'Open the work of this round';
+  toggle.addEventListener('click', () => {
+    state.roundOverrides.set(round.key, !expanded);
+    renderMessages();
+  });
+  wrap.appendChild(toggle);
+
+  const list = el('div', 'steps');
+  if (expanded) {
+    for (const step of round.steps) list.appendChild(stepNode(step, round));
+  } else {
+    const failed = flatToolSteps(round.steps).filter(isFailedStep);
+    for (const step of failed.slice(0, 5)) list.appendChild(toolStepNode(step, round, { pinned: true }));
+    if (failed.length > 5) list.appendChild(el('p', 'dim more-failures', '+' + (failed.length - 5) + ' more failed steps'));
+  }
+  if (list.childNodes.length) wrap.appendChild(list);
+  return wrap;
+}
+
+function stepNode(step, round) {
+  switch (step.kind) {
+    case 'tool': return toolStepNode(step, round, {});
+    case 'merged': return mergedStepNode(step, round);
+    case 'thinking': return thinkingStepNode(step);
+    case 'note': return noteNode(step);
+    case 'event': return el('div', 'event', eventLabel(step.block));
+    case 'injected': return injectedNode(step);
+    default: return el('div', 'event', step.kind);
+  }
+}
+
+// stepGlyph says how a step ended at a glance
+function stepGlyph(step, round) {
+  const result = step.result;
+  if (!result) {
+    const record = state.byId.get(state.selectedId);
+    return round && round.last && record && record.isActive ? '…' : '○';
+  }
+  if (result.status === 'error') return '✗';
+  if (result.status === 'interrupted') return '■';
+  return '✓';
+}
+
+// stepTitle is the object of a step on one line: the command, the path, the query
+function stepTitle(step) {
+  const call = step.call;
+  const args = call && call.arguments && typeof call.arguments === 'object' ? call.arguments : {};
+  const name = stepName(step);
+  const kind = toolKind(name);
+  let target = '';
+  if (kind === 'exec') target = commandOf(args);
+  else if (kind === 'read' || kind === 'write' || kind === 'search') {
+    target = fileOf(args) || firstString(args, ['pattern', 'query', 'glob', 'path', 'dir', 'directory']);
+  } else if (kind === 'net') target = firstString(args, ['url', 'query', 'q']);
+  else if (kind === 'agent') target = firstString(args, ['description', 'prompt', 'task']);
+  else target = firstString(args, Object.keys(args));
+  const record = state.byId.get(state.selectedId);
+  return shortenPath(oneLine(target), record && record.cwd);
+}
+
+function oneLine(text) {
+  return String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+}
+
+// shortenPath shows paths under the project as relative ones
+function shortenPath(text, cwd) {
+  if (!text || !cwd || !/^(\/|[A-Za-z]:[\\/])/.test(cwd)) return text;
+  const root = cwd.replace(/[\\/]+$/, '');
+  return text.split(root + '/').join('').split(root + '\\').join('');
+}
+
+// commandOf is the command a shell-like call ran, however the CLI spelled the argument
+function commandOf(args) {
+  for (const key of ['command', 'cmd', 'commands']) {
+    const v = args[key];
+    if (Array.isArray(v)) return v.map(String).join(' ');
+    if (typeof v === 'string' && v) return v;
+  }
+  if (args.action && typeof args.action === 'object') return commandOf(args.action);
+  if (typeof args.input === 'string') return args.input; // Codex exec: a script
+  return firstString(args, ['description', 'script']);
+}
+
+function firstString(args, keys) {
+  for (const key of keys) {
+    if (typeof args[key] === 'string' && args[key].trim()) return args[key];
+  }
+  return '';
+}
+
+// stepMeta: exit code when it says something, duration, and the size of the output
+function stepMeta(step) {
+  const meta = el('span', 'step-meta');
+  const result = step.result;
+  if (!result) return meta;
+  const failed = isFailed(result);
+  if (typeof result.exitCode === 'number' && (result.exitCode !== 0 || failed)) {
+    meta.appendChild(el('span', 'exit', 'exit ' + result.exitCode));
+  }
+  if (Number(result.durationMs) > 0) meta.appendChild(el('span', '', formatDuration(Number(result.durationMs))));
+  const content = String(result.content || '');
+  if (content) {
+    const lines = content.split('\n').length;
+    meta.appendChild(el('span', '', lines + (lines === 1 ? ' line' : ' lines') + (result.truncated ? '+' : '')));
+  }
+  return meta;
+}
+
+function toolStepNode(step, round, options) {
+  const opts = options || {};
+  const name = stepName(step);
+  const kind = toolKind(name);
+  const result = step.result;
+  const row = el('div', 'step tool-' + kind +
+    (isFailed(result) ? ' failed' : '') +
+    (result && result.status === 'interrupted' ? ' interrupted' : '') +
+    (opts.pinned ? ' pinned' : ''));
+  const open = opts.open || state.openBlocks.has(step.key);
+  const head = el('button', 'step-head');
+  head.type = 'button';
+  head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  head.appendChild(el('span', 'glyph', stepGlyph(step, round)));
+  head.appendChild(el('span', 'step-name', name));
+  head.appendChild(el('span', 'step-target', stepTitle(step)));
+  head.appendChild(stepMeta(step));
+  head.title = open ? 'Fold this step' : 'Open this step: arguments and output';
+  head.addEventListener('click', () => {
+    if (open) state.openBlocks.delete(step.key);
+    else state.openBlocks.add(step.key);
+    renderMessages();
+  });
+  row.appendChild(head);
+  if (open) {
+    row.appendChild(stepDetails(step));
+  } else if (opts.pinned && result && result.content) {
+    // A failure folded away still shows how it failed: the first lines of its output
+    const lines = String(result.content).split('\n');
+    const preview = el('pre', 'preview', lines.slice(0, 6).join('\n') + (lines.length > 6 ? '\n…' : ''));
+    row.appendChild(preview);
+  }
+  return row;
+}
+
+// stepDetails is what a step opens into: the arguments (a diff for a change, the command
+// for a shell, JSON for the rest), then the output with how it ended
+function stepDetails(step) {
+  const box = el('div', 'step-details');
+  const call = step.call;
+  if (call) {
+    const kind = toolKind(call.name);
+    const diff = kind === 'write' ? diffOf(call) : null;
+    if (diff && diff.length) {
+      box.appendChild(diffNode(diff));
+    } else if (kind === 'exec' && commandOf(call.arguments || {})) {
+      box.appendChild(el('pre', 'command', commandOf(call.arguments || {})));
+    } else {
+      box.appendChild(el('pre', 'args', JSON.stringify(call.arguments || {}, null, 2)));
+    }
+  }
+  const result = step.result;
+  if (result) {
+    box.appendChild(el('div', 'result-label', '↳ output' + outcomeText(result)));
+    if (result.content) box.appendChild(el('pre', 'output', result.content));
+    else box.appendChild(el('div', 'dim small', '(no output)'));
+    if (result.truncated) {
+      // The server cut the output to a preview; the rest is one request away
+      const more = button('ghost tiny', 'Show full output', (event) => loadFullBlock(step, event.currentTarget));
+      box.appendChild(more);
+    }
+  } else if (call) {
+    box.appendChild(el('div', 'dim small', 'no result recorded'));
+  }
+  return box;
+}
+
+// loadFullBlock fetches the one message a cut output belongs to with full=1 and swaps the
+// whole block into the loaded window, so a rebuild keeps it. The message is found again by
+// its key, which is stable across the two reads.
+async function loadFullBlock(step, node) {
+  const detail = state.detail;
+  const message = step.resultMessage || step.message;
+  const position = step.resultPosition !== undefined ? step.resultPosition : step.position;
+  if (!detail || !message || position === undefined) return;
+  if (!message.timestamp) {
+    setText(node, 'not available');
+    return;
+  }
+  setText(node, 'Loading…');
+  try {
+    const id = encodeURIComponent(detail.sessionId);
+    const data = await api('/sessions/' + id + '/messages?limit=8&order=asc&full=1&at=' +
+      encodeURIComponent(message.timestamp));
+    const want = messageKey(message);
+    const found = (data.messages || []).find((m) => messageKey(m) === want);
+    const block = found && Array.isArray(found.content) ? found.content[position] : null;
+    if (!block) {
+      setText(node, 'not found');
+      return;
+    }
+    message.content[position] = block;
+    roundsCache = { source: null, value: null }; // the steps point at the old block
+    renderMessages();
+  } catch (err) {
+    handleError(err);
+    setText(node, 'failed');
+  }
+}
+
+// ---- Diffs ----
+// A change is read as a diff: what went, what came. The CLIs spell an edit a dozen ways —
+// old_string/new_string, oldText/newText, a list of edits, a whole new file, a patch in
+// Codex's own format, a unified diff — and all of them come out as the same lines here.
+
+function diffOf(call) {
+  const a = call.arguments && typeof call.arguments === 'object' ? call.arguments : {};
+  const name = String(call.name || '').toLowerCase();
+  const path = fileOf(a);
+  const lines = [];
+  const pushPair = (oldText, newText) => {
+    if (oldText != null && oldText !== '') String(oldText).split('\n').forEach((t) => lines.push({ type: 'del', text: t }));
+    if (newText != null && newText !== '') String(newText).split('\n').forEach((t) => lines.push({ type: 'add', text: t }));
+  };
+  if (typeof a.patch === 'string' && a.patch) return parsePatchText(a.patch);
+  if (name === 'apply_patch' && typeof a.input === 'string') return parsePatchText(a.input);
+  if (typeof a.input === 'string' && a.input.startsWith('*** Begin Patch')) return parsePatchText(a.input);
+  if (Array.isArray(a.edits)) {
+    if (path) lines.push({ type: 'file', text: path });
+    a.edits.forEach((edit, i) => {
+      if (!edit || typeof edit !== 'object') return;
+      if (i > 0) lines.push({ type: 'gap', text: '⋮' });
+      pushPair(pick(edit, ['old_string', 'oldString', 'oldText', 'old']), pick(edit, ['new_string', 'newString', 'newText', 'new']));
+    });
+    return lines;
+  }
+  const oldText = pick(a, ['old_string', 'oldString', 'oldText', 'old_str']);
+  const newText = pick(a, ['new_string', 'newString', 'newText', 'new_str']);
+  if (oldText !== undefined || newText !== undefined) {
+    if (path) lines.push({ type: 'file', text: path });
+    pushPair(oldText, newText);
+    return lines;
+  }
+  const content = pick(a, ['content', 'contents', 'text', 'new_source', 'file_text', 'body']);
+  if (typeof content === 'string') {
+    if (path) lines.push({ type: 'file', text: path });
+    content.split('\n').forEach((t) => lines.push({ type: 'add', text: t }));
+    return lines;
+  }
+  if (typeof a.diff === 'string' && a.diff) return parseUnifiedDiff(a.diff);
+  return null;
+}
+
+function pick(obj, keys) {
+  for (const key of keys) {
+    if (obj[key] !== undefined && obj[key] !== null) return obj[key];
+  }
+  return undefined;
+}
+
+// parsePatchText reads Codex's apply_patch format: *** Update File: path, @@ hunks, and
+// lines signed + / - / space
+function parsePatchText(text) {
+  const lines = [];
+  for (const raw of String(text).replace(/\r\n/g, '\n').split('\n')) {
+    if (raw.startsWith('*** Begin Patch') || raw.startsWith('*** End Patch')) continue;
+    const file = /^\*\*\* (?:Update|Add|Delete) File: (.+)$/.exec(raw);
+    if (file) {
+      lines.push({ type: 'file', text: file[1].trim() });
+      continue;
+    }
+    if (raw.startsWith('*** Move to: ')) {
+      lines.push({ type: 'file', text: '→ ' + raw.slice('*** Move to: '.length).trim() });
+      continue;
+    }
+    if (raw.startsWith('@@')) {
+      lines.push({ type: 'gap', text: raw.length > 2 ? raw : '⋮' });
+      continue;
+    }
+    if (raw.startsWith('+')) lines.push({ type: 'add', text: raw.slice(1) });
+    else if (raw.startsWith('-')) lines.push({ type: 'del', text: raw.slice(1) });
+    else lines.push({ type: 'ctx', text: raw.startsWith(' ') ? raw.slice(1) : raw });
+  }
+  return lines;
+}
+
+// parseUnifiedDiff reads git-style output: --- / +++ headers, @@ hunks, signed lines
+function parseUnifiedDiff(text) {
+  const lines = [];
+  const rows = String(text).replace(/\r\n/g, '\n').split('\n');
+  rows.forEach((raw, i) => {
+    if (raw.startsWith('diff --git ') || raw.startsWith('index ') || raw.startsWith('\\ No newline')) return;
+    if (raw.startsWith('--- ') && rows[i + 1] && rows[i + 1].startsWith('+++ ')) return;
+    if (raw.startsWith('+++ ') && i > 0 && rows[i - 1].startsWith('--- ')) {
+      const path = raw.slice(4).replace(/^b\//, '').trim();
+      if (path && path !== '/dev/null') lines.push({ type: 'file', text: path });
+      return;
+    }
+    if (raw.startsWith('@@')) {
+      lines.push({ type: 'gap', text: raw });
+      return;
+    }
+    if (raw.startsWith('+')) lines.push({ type: 'add', text: raw.slice(1) });
+    else if (raw.startsWith('-')) lines.push({ type: 'del', text: raw.slice(1) });
+    else lines.push({ type: 'ctx', text: raw.startsWith(' ') ? raw.slice(1) : raw });
+  });
+  return lines;
+}
+
+const DIFF_MAX_LINES = 400;
+
+function diffNode(lines) {
+  const box = el('div', 'diff');
+  let added = 0, removed = 0;
+  for (const line of lines) {
+    if (line.type === 'add') added++;
+    if (line.type === 'del') removed++;
+  }
+  const shown = lines.slice(0, DIFF_MAX_LINES);
+  for (const line of shown) {
+    const row = el('div', 'diff-line ' + line.type);
+    if (line.type === 'add' || line.type === 'del' || line.type === 'ctx') {
+      row.appendChild(el('span', 'sign', line.type === 'add' ? '+' : line.type === 'del' ? '−' : ' '));
+    }
+    row.appendChild(el('span', 'code', line.text));
+    box.appendChild(row);
+  }
+  if (lines.length > shown.length) {
+    box.appendChild(el('div', 'diff-line gap', '… ' + (lines.length - shown.length) + ' more lines'));
+  }
+  const stats = el('div', 'diff-stats');
+  if (added) stats.appendChild(el('span', 'add', '+' + added));
+  if (removed) stats.appendChild(el('span', 'del', '−' + removed));
+  if (stats.childNodes.length) box.prepend(stats);
+  return box;
+}
+
+// mergedStepNode: a run of reads and searches as one line, the children a click away
+function mergedStepNode(step, round) {
+  const open = state.openBlocks.has(step.key);
+  const files = new Set();
+  let searches = 0;
+  for (const child of step.children) {
+    const kind = toolKind(stepName(child));
+    if (kind === 'read') {
+      const file = fileOf(child.call && child.call.arguments);
+      files.add(file || child.key);
+    } else {
+      searches++;
+    }
+  }
+  const row = el('div', 'step merged tool-read' + (open ? ' open' : ''));
+  const head = el('button', 'step-head');
+  head.type = 'button';
+  head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  head.appendChild(el('span', 'glyph', '✓'));
+  head.appendChild(el('span', 'step-name', 'explored'));
+  const parts = [];
+  if (files.size) parts.push('read ' + files.size + (files.size === 1 ? ' file' : ' files'));
+  if (searches) parts.push('searched ' + (searches === 1 ? 'once' : searches === 2 ? 'twice' : searches + ' times'));
+  head.appendChild(el('span', 'step-target', parts.join(', ')));
+  const meta = el('span', 'step-meta');
+  const total = step.children.reduce((sum, c) => sum + (Number(c.result && c.result.durationMs) || 0), 0);
+  if (total > 0) meta.appendChild(el('span', '', formatDuration(total)));
+  meta.appendChild(el('span', '', step.children.length + ' steps'));
+  head.appendChild(meta);
+  head.title = open ? 'Fold the run' : 'Open the run: every read and search';
+  head.addEventListener('click', () => {
+    if (open) state.openBlocks.delete(step.key);
+    else state.openBlocks.add(step.key);
+    renderMessages();
+  });
+  row.appendChild(head);
+  if (open) {
+    const list = el('div', 'steps nested');
+    for (const child of step.children) list.appendChild(toolStepNode(child, round, {}));
+    row.appendChild(list);
+  }
+  return row;
+}
+
+function thinkingStepNode(step) {
+  const open = state.openBlocks.has(step.key);
+  const text = String(step.block.content || '');
+  const row = el('div', 'step thinking' + (open ? ' open' : ''));
+  const head = el('button', 'step-head');
+  head.type = 'button';
+  head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  head.appendChild(el('span', 'glyph', '∴'));
+  head.appendChild(el('span', 'step-name', 'thinking'));
+  head.appendChild(el('span', 'step-target', open ? '' : oneLine(text).slice(0, 120)));
+  const meta = el('span', 'step-meta');
+  meta.appendChild(el('span', '', text.length + (step.block.truncated ? '+' : '') + ' chars'));
+  head.appendChild(meta);
+  head.addEventListener('click', () => {
+    if (open) state.openBlocks.delete(step.key);
+    else state.openBlocks.add(step.key);
+    renderMessages();
+  });
+  row.appendChild(head);
+  if (open) {
+    const box = el('div', 'step-details');
+    box.appendChild(el('div', 'block thinking', text));
+    if (step.block.truncated) {
+      box.appendChild(button('ghost tiny', 'Show full thinking', (event) => loadFullBlock(step, event.currentTarget)));
+    }
+    row.appendChild(box);
+  }
+  return row;
+}
+
+// noteNode: what the agent said along the way, before its reply
+function noteNode(step) {
+  const rendered = el('div', 'note' + (step.role === 'user' ? ' from-user' : ''), step.block.content);
+  const plain = rendered.textContent || '';
+  if (plain.length <= FOLD_AT.text) return rendered;
+  return foldable(rendered, step.key, 'note');
+}
+
+// injectedNode: context the CLI put in the user's mouth, folded by default
+function injectedNode(step) {
+  return foldable(el('div', 'note injected', step.block.content), step.key, 'injected');
 }
 
 function renderMessages() {
@@ -954,19 +1767,27 @@ function renderMessages() {
   const wasAtBottom = sameView &&
     pane.scrollHeight - pane.scrollTop - pane.clientHeight < STICK_TO_BOTTOM_PX;
 
-  // The index is the position in the full list, not in the filtered one, so the
-  // conversation TOC can address a message regardless of the current role filter
   const all = detail.messages.messages || [];
-  const shown = [];
-  all.forEach((message, index) => {
-    if (matchesRole(message)) shown.push({ message, index });
-  });
+  const { preface, rounds } = roundsOf(all);
 
   const box = document.createDocumentFragment();
-  if (shown.length === 0) {
-    box.appendChild(el('p', 'empty', emptyStreamNote()));
+  let shown = 0;
+  if (state.view !== 'changes') {
+    // Whatever came before the first ask: a Codex session opens with the instructions the
+    // CLI assembled, a Claude one with command plumbing
+    for (const { message, index } of preface) {
+      if (state.view === 'conversation' && !hasWords(message)) continue;
+      box.appendChild(messageNode(message, index));
+      shown++;
+    }
   }
-  shown.forEach(({ message, index }) => box.appendChild(messageNode(message, index)));
+  for (const round of rounds) {
+    const node = roundNode(round);
+    if (!node) continue;
+    box.appendChild(node);
+    shown++;
+  }
+  if (!shown) box.appendChild(el('p', 'empty', emptyStreamNote(all.length)));
   pane.replaceChildren(box);
   pane.dataset.view = view;
   // A session just opened eases its messages in. A refresh of the same view rebuilds
@@ -1276,23 +2097,17 @@ function renderSide(record) {
 // Conversation table of contents
 // ---------------------------------------------------------------------------
 
-// tocCard lists the user's messages in the loaded window — the questions, which are what
-// you navigate a long session by. Clicking one jumps to it in the stream.
+// tocCard lists the rounds in the loaded window, two lines each: what you asked, and
+// what the agent concluded, with how many steps it took and a mark when one failed.
+// Clicking either line jumps to it in the stream.
 function tocCard() {
   const detail = state.detail;
   const card = el('section', 'card toc-card');
   const all = (detail && detail.messages.messages) || [];
-  const entries = [];
-  all.forEach((message, index) => {
-    // Only turns that actually say something. In Claude's format a tool result comes
-    // back as a user-role message, and those are not questions to navigate by.
-    if (message.role === 'user' && tocPreviewOf(message) !== '') {
-      entries.push({ message, index });
-    }
-  });
+  const { rounds } = roundsOf(all);
 
   const head = el('h3', '', 'Conversation');
-  if (entries.length) head.appendChild(el('span', 'count', entries.length));
+  if (rounds.length) head.appendChild(el('span', 'count', rounds.length));
   card.appendChild(head);
 
   // The list covers the loaded window, which is the latest page by default; say so when
@@ -1303,23 +2118,42 @@ function tocCard() {
       'From the latest ' + all.length + ' of ' + total + ' messages'));
   }
 
-  if (!entries.length) {
+  if (!rounds.length) {
     card.appendChild(el('p', 'dim', 'No user messages in this window'));
     return card;
   }
 
   const list = el('ol', 'toc');
-  entries.forEach((entry, at) => {
-    const item = el('li');
-    const jump = el('button', 'toc-item');
-    jump.type = 'button';
-    jump.appendChild(el('span', 'toc-no', at + 1));
-    jump.appendChild(el('span', 'toc-text', tocPreviewOf(entry.message)));
-    jump.title = tocPreviewOf(entry.message, 400);
-    jump.addEventListener('click', () => gotoMessage(entry.index));
-    item.appendChild(jump);
+  for (const round of rounds) {
+    const item = el('li', 'toc-round');
+    const ask = el('button', 'toc-item toc-ask');
+    ask.type = 'button';
+    ask.appendChild(el('span', 'toc-no', round.no));
+    ask.appendChild(el('span', 'toc-text', tocPreviewOf(round.ask.message)));
+    ask.title = tocPreviewOf(round.ask.message, 400);
+    ask.addEventListener('click', () => gotoRound(round.no, 'ask'));
+    item.appendChild(ask);
+
+    const reply = el('button', 'toc-item toc-reply');
+    reply.type = 'button';
+    const meta = el('span', 'toc-meta');
+    const s = round.summary;
+    if (s.steps) meta.appendChild(el('span', '', s.steps + (s.steps === 1 ? ' step' : ' steps')));
+    if (s.failures || s.interrupted) {
+      const dot = el('span', 'toc-dot');
+      dot.title = s.failures ? s.failures + ' failed' : 'interrupted';
+      meta.appendChild(dot);
+    }
+    reply.appendChild(meta);
+    const text = round.final
+      ? tocPreviewOf(round.final.message)
+      : (s.interrupted ? 'interrupted' : 'no reply');
+    reply.appendChild(el('span', 'toc-text' + (round.final ? '' : ' dim'), text));
+    reply.title = round.final ? tocPreviewOf(round.final.message, 400) : text;
+    reply.addEventListener('click', () => gotoRound(round.no, 'final'));
+    item.appendChild(reply);
     list.appendChild(item);
-  });
+  }
   card.appendChild(list);
   return card;
 }
@@ -1332,29 +2166,31 @@ function tocPreviewOf(message, max) {
     if (block.type === 'text' && block.content) {
       const one = String(block.content).replace(/\s+/g, ' ').trim();
       if (!one) continue;
-      return one.length > limit ? one.slice(0, limit) + '\u2026' : one;
+      return one.length > limit ? one.slice(0, limit) + '…' : one;
     }
   }
   return '';
 }
 
-// gotoMessage scrolls a message into view and flashes it. The role filter can hide the
-// target, so a miss drops the filter and retries once rather than doing nothing.
-function gotoMessage(index) {
+// gotoRound scrolls a round's ask or reply into view and flashes it. The changes view
+// drops rounds without changes, so a miss there falls back to the whole view first.
+function gotoRound(no, part) {
   const pane = $('messages');
-  const find = () => pane.querySelector('.msg[data-index="' + index + '"]');
+  const find = () => pane.querySelector('.round[data-round="' + no + '"]');
 
   let node = find();
-  if (!node && state.role) {
-    state.role = '';  // the table of contents lists questions, whatever the filter is
+  if (!node && state.view === 'changes') {
+    state.view = 'all';
+    saveViewPrefs();
     renderMessages();
     renderStreamHead(state.byId.get(state.selectedId));
     node = find();
   }
   if (!node) return;
-  node.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  node.classList.add('flash');
-  setTimeout(() => node.classList.remove('flash'), 1400);
+  const target = (part === 'final' && node.querySelector('.msg.final')) || node.querySelector('.msg') || node;
+  target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  target.classList.add('flash');
+  setTimeout(() => target.classList.remove('flash'), 1400);
 }
 
 // selectSession opens a session. focusAt, when given, anchors the message window at that
@@ -1503,6 +2339,7 @@ async function syncDetail(options) {
     // Only clear when switching sessions; a plain refresh of the same session keeps the
     // old content on screen and avoids a flash
     state.openBlocks.clear();
+    state.roundOverrides.clear();
     $('messages').replaceChildren(loadingNodes());
     $('messages').dataset.view = '';
     $('side').replaceChildren();
@@ -1801,7 +2638,8 @@ function saveViewPrefs() {
       grouping: state.grouping,
       source: state.source,
       order: state.order,
-      role: state.role,
+      view: state.view,
+      expandAll: state.expandAll,
       auto: $('auto').checked,
       pane: state.pane,
       exportFormat: state.exportFormat,
@@ -1827,7 +2665,10 @@ function applyViewPrefs() {
   }
   if (typeof prefs.source === 'string') state.source = prefs.source;
   if (prefs.order === 'asc' || prefs.order === 'desc') state.order = prefs.order;
-  if (['', 'user', 'assistant', 'tools'].indexOf(prefs.role) >= 0) state.role = prefs.role;
+  if (['all', 'conversation', 'changes'].indexOf(prefs.view) >= 0) state.view = prefs.view;
+  // The earlier filters were by speaker; a saved one maps onto the nearest view
+  else if (prefs.role === 'user' || prefs.role === 'assistant') state.view = 'conversation';
+  if (typeof prefs.expandAll === 'boolean') state.expandAll = prefs.expandAll;
   if (typeof prefs.auto === 'boolean') $('auto').checked = prefs.auto;
   // Names of projects folded away; a name that no longer exists simply never matches
   if (['list', 'stream', 'side'].indexOf(prefs.pane) >= 0) state.pane = prefs.pane;

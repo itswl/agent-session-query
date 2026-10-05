@@ -31,6 +31,7 @@ span a Claude Code session and a Codex one in the same answer.
 | "What was in that one session?" | `search_sessions(pattern=<id>, query=…)` | Scopes the scan to one session instead of all of them |
 | "What did we work on last week?" | `list_sessions(since="7d")` | Filter by `source` / `project` too |
 | "Have I used agent X on repo Y?" | `list_projects` then `list_sessions(project=…)` | Projects are cwds |
+| "What did I do on that branch?" | `list_sessions(branch=…)` | The branch the session opened on, as its CLI recorded it then. Claude Code sessions carry one; the others do not |
 | "How did that end?" | `get_session(pattern=<id>)` | Metadata plus the final result — usually the whole answer, for about a kilobyte |
 | "Show me around there" | `get_messages(pattern=<id>, order="desc")` | The latest N is where a session's outcome lives |
 | "…right where that match was" | `get_messages(pattern=<id>, at=<hit timestamp>)` | **Lands on the hit.** Paging towards it is the mistake this exists to prevent |

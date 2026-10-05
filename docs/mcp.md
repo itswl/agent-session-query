@@ -56,7 +56,7 @@ current MCP specification (2025-06-18):
 | Tool | What it does |
 |------|--------------|
 | `search_sessions` | Full-text search over message bodies (ids and timestamps are not searched as text); takes `query` / `limit` / `per_session` / `since` / `until` / `cursor`, plus `pattern` to search inside one session and `role` to keep only `user` or `assistant` hits |
-| `list_sessions` | List sessions newest first, filtered by `source` / `project` / `since` / `until`; paginates |
+| `list_sessions` | List sessions newest first, filtered by `source` / `project` / `branch` / `since` / `until`; paginates. A row carries `branch` when its CLI recorded one — the branch the session opened on, not what the checkout is on now |
 | `list_projects` | Group sessions by project (cwd) — which agents were used on a given repository, and how many sessions each |
 | `get_session` | One session's metadata and final result; `source` disambiguates when an id collides |
 | `get_messages` | A session's messages; `order` picks the end, `role` narrows to `user` or `assistant`, `at` anchors the window at an instant, `cursor` pages. Tool output and thinking come cut to a preview and marked `truncated: true`; `full: true` returns them whole — ask on a narrow window, a build log is large. A `toolResult` carries `callId`, and `status` (`ok` / `error` / `interrupted`), `exitCode` and `durationMs` when the source recorded them |

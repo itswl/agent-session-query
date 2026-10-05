@@ -94,6 +94,11 @@ func (r record) public() map[string]any {
 	}
 	out["isActive"] = !r.sortAt.IsZero() && time.Since(r.sortAt) < activeWindow
 	out["project"] = r.project()
+	// A session started outside a repository has no branch, and the sources that do not
+	// record one have nothing to say either: an absent key says that, "" does not
+	if out["branch"] == "" {
+		delete(out, "branch")
+	}
 	if resume := r.resumeCommand(); resume != "" {
 		// Omitted rather than empty for the sources that have none: a key that is
 		// sometimes a command and sometimes "" reads as a command that failed to build

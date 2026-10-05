@@ -937,16 +937,17 @@ func (w countingWriter) Write(p []byte) (int, error) {
 // directly. Add a name when a route grows an ability; never rename or remove one, because
 // the whole point is that older callers keep reading it.
 var serverCapabilities = []string{
-	"brief.at",       // /sessions/<id>/brief?at=
-	"brief.since",    // /sessions/<id>/brief?since= — the delta handoff
-	"export.pack",    // /export across sessions
-	"export.session", // /sessions/<id>/export
-	"messages.at",    // /sessions/<id>/messages?at=
-	"messages.full",  // ?full=1 — tool output and thinking whole
-	"rounds",         // /sessions/<id>/rounds
-	"rounds.lastAt",  // a round carries the end of its work and the end of its rows apart
-	"search.pattern", // /search?pattern= — scoped to one session
-	"search.role",    // /search?role=
-	"sessions.etag",  // /sessions answers 304, and carries the server version
-	"usage",          // token usage on a final result
+	"brief.at",        // /sessions/<id>/brief?at=
+	"brief.since",     // /sessions/<id>/brief?since= — the delta handoff
+	"export.pack",     // /export across sessions
+	"export.session",  // /sessions/<id>/export
+	"messages.at",     // /sessions/<id>/messages?at=
+	"messages.full",   // ?full=1 — tool output and thinking whole
+	"rounds",          // /sessions/<id>/rounds
+	"rounds.lastAt",   // a round carries the end of its work and the end of its rows apart
+	"search.pattern",  // /search?pattern= — scoped to one session
+	"search.role",     // /search?role=
+	"sessions.branch", // a session row carries the git branch it opened on
+	"sessions.etag",   // /sessions answers 304, and carries the server version
+	"usage",           // token usage on a final result
 }

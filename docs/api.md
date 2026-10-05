@@ -30,6 +30,11 @@ no alias.
 `Authorization: Bearer <token>`. Without it everything is open (with a warning at startup).
 Tokens are compared in constant time. CORS is off by default, see `--cors-origin`.
 
+**Branch**: a session row carries `branch` when its CLI recorded one — the branch the
+session opened on, written down at the time, not what the checkout is on now. Claude Code
+records it on nearly every row; the other sources do not record it at all, and the key is
+then absent rather than empty. MCP `list_sessions` filters on it.
+
 **Capabilities**: `/health` lists what the build can do as `capabilities`, a sorted array of
 names such as `brief.since` or `messages.full`. A client that upgrades separately from the
 server it talks to asks for the name rather than mapping a version onto a feature list. The

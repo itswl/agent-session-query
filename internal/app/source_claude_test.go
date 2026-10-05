@@ -200,3 +200,39 @@ func TestClaudeFullRead(t *testing.T) {
 		t.Fatal("thinking must be whole in a full read")
 	}
 }
+
+// TestClaudeBranch: Claude Code writes gitBranch on nearly every row, and a session is
+// worth knowing the branch of. A session started outside a repository has none, and the
+// key is then absent rather than empty — "" would read as a branch that failed to load.
+func TestClaudeBranch(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "proj", "onbranch.jsonl"),
+		`{"type":"queue-operation","timestamp":"2026-09-21T07:58:00Z"}`,
+		`{"type":"user","sessionId":"onbranch","cwd":"/w","gitBranch":"feature/rounds","timestamp":"2026-09-21T08:00:00Z","message":{"role":"user","content":"ask"}}`,
+		`{"type":"assistant","gitBranch":"feature/rounds","timestamp":"2026-09-21T08:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`,
+	)
+	write(t, filepath.Join(root, "proj", "nobranch.jsonl"),
+		`{"type":"user","sessionId":"nobranch","cwd":"/tmp/scratch","timestamp":"2026-09-21T09:00:00Z","message":{"role":"user","content":"ask"}}`,
+		`{"type":"assistant","timestamp":"2026-09-21T09:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`,
+	)
+	api := newSessionQueryAPI([]SessionSource{newClaudeSource(root)}, 0)
+	sessions, _ := api.listSessions()
+	got := map[string]map[string]any{}
+	for _, s := range sessions {
+		got[toStr(s["sessionId"])] = s
+	}
+	if b := toStr(got["onbranch"]["branch"]); b != "feature/rounds" {
+		t.Errorf("branch = %q, want feature/rounds", b)
+	}
+	if _, present := got["nobranch"]["branch"]; present {
+		t.Errorf("a session outside a repository should carry no branch key: %v", got["nobranch"]["branch"])
+	}
+	// and the brief says which branch the work was on, for whoever picks it up
+	brief, err := api.sessionBrief("onbranch", "", 0, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(brief, "- branch: feature/rounds") {
+		t.Errorf("brief does not name the branch:\n%s", brief)
+	}
+}

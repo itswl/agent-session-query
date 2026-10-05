@@ -248,6 +248,18 @@ changed and touched, tool calls, failures) before the rounds themselves, capped 
 `briefMaxSections`. It is the second handoff of a session: what has happened since the other
 side last looked, rather than one round again.
 
+### The branch a session opened on
+
+Claude Code writes `gitBranch` on nearly every row, so `List()` picks it up in the head
+scan it already runs for the session id and the cwd, and stops as soon as all three are in
+place. A session started outside a repository has none, which is the one case that scan
+runs to `claudeHeadLines` — the cap exists for it. An empty value is dropped in `public()`
+rather than carried: a key that is sometimes a branch and sometimes `""` reads as a branch
+that failed to load. No other source on this machine records one.
+
+It is the branch at the time, not now. The checkout has moved on, the branch may be gone,
+and resolving it live would answer a question nobody asked.
+
 ### When a source cannot be read
 
 A source that returns no records and no error is empty; a source that could not be read at

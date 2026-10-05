@@ -173,6 +173,20 @@ function svgIcon(viewBox, paths) {
 function chevron(direction) {
   return svgIcon('0 0 16 16', [direction === 'left' ? 'M10 3.5 5.5 8l4.5 4.5' : 'M6 3.5 10.5 8 6 12.5']);
 }
+// branchGlyph: the git drawing — a line that leaves one and rejoins
+function branchGlyph() {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = svgIcon('0 0 16 16', ['M4.5 6v4', 'M4.5 10.5c0-2 7-1 7-3.5']);
+  for (const [cx, cy] of [[4.5, 4], [4.5, 12], [11.5, 4.5]]) {
+    const dot = document.createElementNS(ns, 'circle');
+    dot.setAttribute('cx', String(cx));
+    dot.setAttribute('cy', String(cy));
+    dot.setAttribute('r', '1.9');
+    svg.appendChild(dot);
+  }
+  return svg;
+}
+
 function infoGlyph() {
   const svg = svgIcon('0 0 16 16', ['M8 7.5v4M8 5v.5']);
   const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
@@ -850,6 +864,13 @@ function renderStreamHead(record) {
     const where = el('span', 'sub', record.cwd);
     where.title = record.cwd;
     meta.appendChild(where);
+  }
+  if (record.branch) {
+    const branch = el('span', 'branch');
+    branch.appendChild(branchGlyph());
+    branch.appendChild(el('span', 'name', record.branch));
+    branch.title = 'the git branch this session opened on';
+    meta.appendChild(branch);
   }
   box.appendChild(meta);
 
@@ -2588,6 +2609,9 @@ function sessionCard(record, final) {
     ['Created', record.createdAt],
     ['Model', record.model],
     ['Project', record.project],
+    // The branch the session opened on, as the CLI wrote it down at the time. Not what
+    // the checkout is on now: the work is months old and the branch may be gone.
+    ['Branch', record.branch],
     ['CLI', record.cliVersion],
     ['Token', record.totalTokens],
     ['Cost $', record.estimatedCostUsd],

@@ -52,7 +52,8 @@ func (s *ClaudeCodeSource) List() []record {
 		updated := updatedAtOf(path, modISO)
 		sid := stem
 		var cwd any = ""
-		var haveSID, haveCWD bool
+		branch := ""
+		var haveSID, haveCWD, haveBranch bool
 		seen := 0
 		eachJSONL(path, func(obj map[string]any) bool {
 			if !haveSID && truthy(obj["sessionId"]) {
@@ -61,8 +62,15 @@ func (s *ClaudeCodeSource) List() []record {
 			if !haveCWD && truthy(obj["cwd"]) {
 				cwd, haveCWD = obj["cwd"], true
 			}
+			// The branch the session opened on. Claude Code writes gitBranch on nearly
+			// every row, so the head scan already passes several; a session started
+			// outside a repository has none, and that is the one case the scan runs to
+			// the cap, which is why the cap is there.
+			if !haveBranch && truthy(obj["gitBranch"]) {
+				branch, haveBranch = toStr(obj["gitBranch"]), true
+			}
 			seen++
-			return !(haveSID && haveCWD) && seen < claudeHeadLines
+			return !(haveSID && haveCWD && haveBranch) && seen < claudeHeadLines
 		})
 		name := firstNonEmpty(claudeUserTitle(path), stem)
 		return newRecord(map[string]any{
@@ -74,6 +82,7 @@ func (s *ClaudeCodeSource) List() []record {
 			"hasFile":   true,
 			"status":    "done",
 			"cwd":       cwd,
+			"branch":    branch,
 			"updatedAt": updated,
 		}, updated)
 	})

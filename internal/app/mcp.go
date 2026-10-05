@@ -210,6 +210,17 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			}
 			sessions = filtered
 		}
+		// The branch the session opened on, as the CLI recorded it at the time — not what
+		// the checkout is on now, which is the question nobody is asking
+		if branch := strings.TrimSpace(argString(args, "branch")); branch != "" {
+			filtered := sessions[:0:0]
+			for _, item := range sessions {
+				if strings.Contains(toStr(item["branch"]), branch) {
+					filtered = append(filtered, item)
+				}
+			}
+			sessions = filtered
+		}
 		// since/until bound the update time; a session with no parseable time is left out
 		// of a bounded query rather than guessed into either side
 		window, err := parseTimeWindow(args)
@@ -621,13 +632,14 @@ func mcpTools() []map[string]any {
 		},
 		{
 			"name":        "list_sessions",
-			"description": "List sessions newest first, optionally filtered by source, project (cwd) or update time.",
+			"description": "List sessions newest first, optionally filtered by source, project (cwd), git branch or update time. A row carries branch when the CLI recorded one — the branch the session opened on, not what the checkout is on now.",
 			"annotations": readOnlyAnnotations("List sessions"),
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"source":  strSchema("restrict to one source: " + strings.Join(knownModes, " / ")),
 					"project": strSchema("filter by project path (cwd), substring match"),
+					"branch":  strSchema("filter by the git branch the session opened on, substring match"),
 					"since":   strSchema("only sessions updated after this, e.g. 30d / 12h / 2026-09-01"),
 					"until":   strSchema("only sessions updated before this, e.g. 7d (a week ago) / 2026-09-01"),
 					"limit":   intSchema("how many to return at most, default 20"),

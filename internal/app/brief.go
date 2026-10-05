@@ -538,6 +538,9 @@ func renderBrief(item record, rounds []round, selected []int, scanned, total int
 	}
 	fmt.Fprintf(&b, "# Session brief: %s\n\n", name)
 	fmt.Fprintf(&b, "- source %s · project %s\n", item.str("source"), item.str("cwd"))
+	if branch := item.str("branch"); branch != "" {
+		fmt.Fprintf(&b, "- branch: %s (when the session opened)\n", branch)
+	}
 	fmt.Fprintf(&b, "- sessionId: %s\n", item.str("sessionId"))
 	if file := item.str("file"); file != "" {
 		fmt.Fprintf(&b, "- file: %s\n", file)

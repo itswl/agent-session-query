@@ -106,28 +106,31 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   opens on the latest 200 messages and **loads the previous page when you scroll to the
   top** (or the next one at the bottom, when reading from the earliest) — the count in the
   header says how far into the session you are. Tool output comes cut to a preview, and
-  "Show full output" fetches the rest. Steps are coloured by category (run / read / write
-  / search / network / delegate)
-- **Right**: the final result stays visible — stopReason, the answer, the thinking, usage and
-  cost, session metadata (the file path included — that is the one you paste into a
-  terminal — and one click to export in any of the four formats: Markdown, JSONL, JSON or a
-  standalone HTML page), and a
-  **conversation table of contents**: two lines a round — what you asked, and what the
+  "Show full output" fetches the rest. Replies render their Markdown — headings, lists,
+  code, tables, links — and a message's time shows the clock alone on the session's own
+  day, the date in front on any other (the full timestamp is in the tooltip). Steps are
+  coloured by category (run / read / write / search / network / delegate)
+- **Right**: the final result stays visible — stopReason, the answer, the thinking — then
+  the **conversation table of contents**: two lines a round — what you asked, and what the
   agent concluded, with how many steps it took and a red mark when one failed or the round
-  was interrupted — click either to jump to it in the stream. It covers the loaded window
-  and says so when the session is longer
+  was interrupted — click either to jump to it in the stream (it covers the loaded window
+  and says so when the session is longer). Below it the session's facts: the command that
+  reopens it in its own CLI (copied with the `cd` it needs), the file path, one click to
+  export in any of the four formats (Markdown, JSONL, JSON or a standalone HTML page),
+  usage and cost, and the other sessions of the same project
 
 It installs as a web app: open `/ui` on a phone and "Add to Home Screen" gives it an
 icon, a name and a window without browser chrome, and it honours the notch and home
 indicator when it does. (The icons are drawn by `go run tools/icongen.go` — standard
 library only, so the same source produces the same bytes anywhere.)
 
-On a phone the title row and the pane switcher slide away as you scroll down and come back
-as you scroll up, and the three panes become one screen at a time with a **Sessions /
-Conversation / Details** switcher, and the search box and list filters belong to Sessions — they do
+On a phone the three panes become one screen at a time, picked from a **Sessions /
+Conversation / Details** tab bar at the bottom of the screen — under the thumb, above the
+home indicator, the way an installed app's is. Picking a session opens its conversation and
+the system's back gesture brings the list back; the title row slides away as you read down
+and returns as you scroll up. The search box and list filters belong to Sessions — they do
 nothing to a conversation or a details pane, so neither has to open with five rows of
-controls it cannot use;
-picking a session jumps straight to it. It refreshes every 10 seconds without disturbing
+controls it cannot use. It refreshes every 10 seconds without disturbing
 what you are reading (expanded blocks and scroll position are preserved), your view
 controls — grouping, source filter, order, filters, folded groups — survive a reload, and
 `/ui#<sessionId>` works as a deep link. Light and dark follow the system; the half-disc

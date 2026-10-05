@@ -302,46 +302,51 @@ body.hide-list #list, body.hide-side #side { display: none; }
    earlier version slid the title row and a tab bar away and back with the scroll
    direction, which read as the page jumping about. */
 @media (max-width: 860px) {
-  /* The app is exactly the viewport tall and the document never scrolls: every scroll
-     happens inside a screen. Heights come from flex, not from percentages — a chain of
-     height:100% through flex items is what iOS Safari resolves as "auto", which made each
-     screen as tall as its content, the page scroll as a whole, the head scroll off the
-     top and the list stop short of the bottom. The app stays in normal flow: pinned with
-     position:fixed, Safari dropped the safe-area padding and laid the head under the
-     status bar, where nothing can be tapped. dvh follows Safari's own bars as they come
-     and go; in an installed web app it is the whole screen. When iOS moves the document
-     all the same, app.js puts it back (pinDocument). */
-  html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
-  #app { height: 100vh; height: 100dvh; }
-  main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  /* On a phone the page is one document that scrolls as a whole, the way every page on a
+     phone does, and each screen's head sticks to the top of it. Nothing here is sized to
+     the viewport and nothing holds the document still: an app exactly one viewport tall
+     was three releases of fighting iOS over where the document rests — an installed web
+     app with an opaque status bar keeps the bar's height as an inset above the page, a
+     finger could drag the page up into it, and code that put the page back oscillated
+     with the system. A page that is meant to scroll has nothing to fight about. */
+  html, body { height: auto; }
+  /* On html alone, where it reaches the viewport. On body it would make body the scroll
+     container, and the heads below would stick to a box that moves with the page. */
+  html { overflow-x: hidden; }
+  #app { display: block; height: auto; }
+  main { display: block; height: auto; overflow: visible; }
+  /* body[data-pane] lifts these over the base rules further down the file (.stream is
+     overflow:hidden there, .messages and .list scroll on their own), which would
+     otherwise win on document order — and a head cannot stick inside an overflow:hidden box */
+  body[data-pane] .list-pane, body[data-pane] .stream, body[data-pane] .side-pane { overflow: visible; height: auto; min-height: 0; max-height: none; }
+  body[data-pane] .list, body[data-pane] .messages, body[data-pane] .side { overflow: visible; height: auto; flex: none; min-height: 0; }
 
   /* body[data-pane] keeps these ahead of the base .list/.stream/.side rules, which are
      defined further down the file and would otherwise win on document order */
   body[data-pane] .list-pane, body[data-pane] .stream, body[data-pane] .side-pane { display: none; }
   body[data-pane="list"] .list-pane, body[data-pane="side"] .side-pane,
   body[data-pane="stream"] .stream {
-    display: flex; flex: 1 1 auto; min-height: 0; height: auto;
+    display: block;
     animation: screen-in 240ms var(--ease) both;
   }
   /* Going back, the screen comes in from the side it left to */
   body.nav-back[data-pane="list"] .list-pane, body.nav-back[data-pane="stream"] .stream,
   body.nav-back[data-pane="side"] .side-pane { animation-name: screen-back; }
-  .messages, .list, .side { min-height: 0; }
   .list-pane { border-right: none; }
-  .side-pane { border-left: none; border-top: none; max-height: none; box-shadow: none; }
+  .side-pane { border-left: none; border-top: none; box-shadow: none; }
+  /* The page behind a short screen is the screen's own colour — and so is whatever the
+     system paints above and below the page, which it takes from the page */
+  body[data-pane="list"], body[data-pane="side"] { background: var(--panel); }
+  body[data-pane="stream"] { background: var(--stream-bg); }
+  /* The heads stick to the top; the content passes beneath them */
+  #app > header, .stream-head, .side-pane .pane-bar { position: sticky; top: 0; z-index: 5; }
+  .stream-head { background: var(--stream-bg); }
+  .side-pane .pane-bar { background: var(--panel); }
   /* Folding is a wide-screen affair. A fold remembered from a laptop must not empty a
      screen on a phone. */
   body.hide-list #list, body.hide-side #side { display: block; }
   body.hide-list #fold-groups { display: inline-block; }
   .pane-toggle, .pane-title { display: none; }
-
-  /* Scrolling stays inside the screen: no rubber-banding of the whole app, and no
-     pull-to-refresh under the finger in standalone mode */
-  .list, .messages, .side { overscroll-behavior: contain; overflow-x: hidden; }
-  /* A drag that starts on a head or a bar has nothing to scroll — but in an installed web
-     app with an opaque status bar, iOS would drag the whole page up into the bar's inset
-     and leave it there. No pan gesture starts on these; taps are unaffected. */
-  #app > header, .stream-head, .side-pane .pane-bar { touch-action: none; }
 
   /* The list screen: the title row, the search and the filters, the list. The other two
      screens have heads of their own, so the title row is the list's alone. */

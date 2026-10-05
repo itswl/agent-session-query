@@ -130,8 +130,9 @@ bytes anywhere.)
 On a phone the three panes are screens behind one another, the way an app lays them out:
 the session list is the home screen, picking a session slides its conversation in over it,
 and the conversation's head carries the way back and the way to the details, which slide
-in over the conversation. The system's back gesture walks the same way back. Nothing on
-any screen moves while you scroll. The search box and list filters belong to the list —
+in over the conversation. The system's back gesture walks the same way back. Each screen
+scrolls as a page does on a phone, its head fixed at the top, and keeps its place while
+another screen is up. The search box and list filters belong to the list —
 they do nothing to a conversation or a details screen, so neither opens with five rows of
 controls it cannot use. It refreshes every 10 seconds without disturbing
 what you are reading (expanded blocks, opened rounds and your place in the text are kept —

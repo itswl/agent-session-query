@@ -302,21 +302,7 @@ function showApp() {
   $('app').classList.remove('hidden');
   // With no token configured there is nothing to change
   $('logout').classList.toggle('hidden', !state.authRequired);
-  fitApp();
 }
-
-// fitApp sizes the app to the viewport the browser reports when the stylesheet's dvh
-// disagrees with it. They agree wherever the unit works; where it resolves to more than is
-// visible — reported for installed web apps on some iOS versions — the bottom of the app
-// would hang off the screen, and the body behind it show as a blank strip.
-function fitApp() {
-  const app = $('app');
-  app.style.height = '';
-  if (!isPhone()) return;
-  const want = window.innerHeight;
-  if (Math.abs(app.getBoundingClientRect().height - want) > 1) app.style.height = want + 'px';
-}
-window.addEventListener('resize', fitApp);
 
 // ---------------------------------------------------------------------------
 // Left pane: the session list (patched incrementally by sessionId, never rebuilt whole)
@@ -758,8 +744,10 @@ function renderSources() {
 
 function renderStreamHead(record) {
   const head = $('stream-head');
+  const settle = headSettler(head);
   if (!record) {
     head.replaceChildren();
+    settle();
     return;
   }
 
@@ -882,6 +870,21 @@ function renderStreamHead(record) {
   }
 
   head.replaceChildren(box);
+  settle();
+}
+
+// headSettler notes a head's height; the function it returns scrolls the page by however
+// much the head has grown or shrunk since. On a phone the head is part of the page, and
+// when it grows — the line of sums arrives with the final result — everything below it
+// would otherwise move under the reader's eyes. The head itself sticks to the top, so it
+// stays whole either way.
+function headSettler(head) {
+  if (!isPhone() || state.pane !== 'stream') return () => {};
+  const before = head.getBoundingClientRect().height;
+  return () => {
+    const delta = head.getBoundingClientRect().height - before;
+    if (delta) scrollerOf(head).scrollTop += delta;
+  };
 }
 
 // windowStats sums the loaded window. The numbers are the window's, and the row says so
@@ -2210,9 +2213,10 @@ function renderMessages() {
   // land back where it was
   const view = detail.sessionId + '|' + state.order;
   const sameView = pane.dataset.view === view;
-  const prevScroll = pane.scrollTop;
-  const wasAtBottom = sameView &&
-    pane.scrollHeight - pane.scrollTop - pane.clientHeight < STICK_TO_BOTTOM_PX;
+  const metrics = paneMetrics(pane);
+  const prevScroll = metrics.top;
+  const wasAtBottom = sameView && paneShown(pane) &&
+    metrics.height - metrics.top - metrics.visible < STICK_TO_BOTTOM_PX;
 
   const all = detail.messages.messages || [];
   const { preface, rounds } = roundsOf(all);
@@ -2255,9 +2259,11 @@ function renderMessages() {
 
   if (!sameView) {
     // Just opened: stick to the bottom when viewing the latest, start at the top for the earliest
-    scrollPaneTo(pane, state.order === 'desc' ? pane.scrollHeight : 0);
+    scrollPaneTo(pane, state.order === 'desc' ? SCROLL_END : 0);
+  } else if (!paneShown(pane)) {
+    // Another screen is up; the place kept for this one stands
   } else if (wasAtBottom) {
-    scrollPaneTo(pane, pane.scrollHeight);
+    scrollPaneTo(pane, SCROLL_END);
   } else if (!restoreAnchor(pane, anchor)) {
     scrollPaneTo(pane, prevScroll);
   }
@@ -2268,7 +2274,8 @@ function renderMessages() {
 // after a rebuild. Keys are the ones rounds and messages already have, which do not
 // change when a page is prepended or a step is opened.
 function captureAnchor(pane) {
-  const paneTop = pane.getBoundingClientRect().top;
+  if (!paneShown(pane)) return null;
+  const paneTop = isPhone() ? 0 : pane.getBoundingClientRect().top;
   for (const node of pane.querySelectorAll('[data-anchor]')) {
     const box = node.getBoundingClientRect();
     if (box.bottom - paneTop > 0) return { key: node.dataset.anchor, offset: box.top - paneTop };
@@ -2277,11 +2284,11 @@ function captureAnchor(pane) {
 }
 
 function restoreAnchor(pane, anchor) {
-  if (!anchor) return false;
+  if (!anchor || !paneShown(pane)) return false;
   const node = pane.querySelector('[data-anchor="' + CSS.escape(anchor.key) + '"]');
   if (!node) return false;
-  const paneTop = pane.getBoundingClientRect().top;
-  pane.scrollTop += (node.getBoundingClientRect().top - paneTop) - anchor.offset;
+  const paneTop = isPhone() ? 0 : pane.getBoundingClientRect().top;
+  scrollerOf(pane).scrollTop += (node.getBoundingClientRect().top - paneTop) - anchor.offset;
   return true;
 }
 
@@ -2592,9 +2599,9 @@ function renderSide(record) {
   if (timeline) box.appendChild(timeline);
   box.appendChild(pageCard());
   // A refresh rebuilds this pane; the reader may be halfway down it
-  const prevScroll = side.scrollTop;
+  const prevScroll = paneShown(side) ? paneMetrics(side).top : null;
   side.replaceChildren(box);
-  side.scrollTop = prevScroll;
+  if (prevScroll !== null) scrollPaneTo(side, prevScroll);
 }
 
 // pageCard says which server the page is talking to, how it was opened and, on a phone,
@@ -2716,6 +2723,13 @@ function tocPreviewOf(message, max) {
 // gotoRound scrolls a round's ask or reply into view and flashes it. The changes view
 // drops rounds without changes, so a miss there falls back to the whole view first.
 function gotoRound(no, part) {
+  // On a phone the list of rounds is on the details screen and the rounds themselves on
+  // the conversation screen behind it: step back to that first, and jump once it is up
+  if (isPhone() && state.pane !== 'stream') {
+    window.addEventListener('popstate', () => gotoRound(no, part), { once: true });
+    history.back();
+    return;
+  }
   const pane = $('messages');
   const find = () => pane.querySelector('.round[data-round="' + no + '"]');
 
@@ -2729,7 +2743,9 @@ function gotoRound(no, part) {
   }
   if (!node) return;
   const target = (part === 'final' && node.querySelector('.msg.final')) || node.querySelector('.msg') || node;
-  target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  // Instant on a phone: the page is the scroller there, and a glide still under way when
+  // the next screen comes up would carry that screen off with it
+  target.scrollIntoView({ block: 'center', behavior: isPhone() ? 'auto' : 'smooth' });
   target.classList.add('flash');
   setTimeout(() => target.classList.remove('flash'), 1400);
 }
@@ -2852,8 +2868,7 @@ async function loadMore(edge) {
 
   state.loadingMore = true;
   const pane = $('messages');
-  const beforeHeight = pane.scrollHeight;
-  const beforeTop = pane.scrollTop;
+  const before = paneMetrics(pane);
 
   let fresh = null;
   try {
@@ -2897,7 +2912,7 @@ async function loadMore(edge) {
   renderSide(record);
   if (edge === 'older') {
     // Prepending pushes everything down; hold the reader's place on the same message
-    scrollPaneTo(pane, beforeTop + (pane.scrollHeight - beforeHeight));
+    scrollPaneTo(pane, before.top + (paneMetrics(pane).height - before.height));
   }
 }
 
@@ -3046,7 +3061,7 @@ function moveSelection(delta) {
 
 function scrollMessages(toBottom) {
   const pane = $('messages');
-  scrollPaneTo(pane, toBottom ? pane.scrollHeight : 0);
+  scrollPaneTo(pane, toBottom ? SCROLL_END : 0);
 }
 
 function clearSearch() {
@@ -3162,55 +3177,26 @@ $('source-filter').addEventListener('change', (event) => {
   renderList();
 });
 
-// Reading on: fetch the next page when the reader reaches the edge that has one
-$('messages').addEventListener('scroll', () => {
+// Reading on: fetch the next page when the reader reaches the edge that has one. On a
+// phone the page itself is the scroller, so the window's scroll says the same thing.
+function onMessagesScroll() {
   const pane = $('messages');
-  if (state.loadingMore) return;
-  const nearTop = pane.scrollTop < SCROLL_LOAD_PX;
-  const nearBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < SCROLL_LOAD_PX;
+  if (state.loadingMore || !paneShown(pane)) return;
+  const m = paneMetrics(pane);
+  const nearTop = m.top < SCROLL_LOAD_PX;
+  const nearBottom = m.height - m.top - m.visible < SCROLL_LOAD_PX;
   if (state.order === 'desc') {
     if (nearTop) loadMore('older');
   } else if (nearBottom) {
     loadMore('newer');
   }
-}, { passive: true });
+}
+$('messages').addEventListener('scroll', onMessagesScroll, { passive: true });
+window.addEventListener('scroll', () => { if (isPhone()) onMessagesScroll(); }, { passive: true });
 
-// On a phone the document itself never scrolls: every scroll happens inside a screen, and
-// the app is exactly the viewport tall. iOS moves it all the same — a keyboard, a pull past
-// the end of a pane, a position it remembered — and leaves the head under the status bar,
-// where nothing can be tapped. Put it back whenever that happens. A pinch zoom is left
-// alone: panning is then the point.
-//
-// Back to the smallest position there is, not to 0. An installed web app whose status bar
-// is opaque keeps the bar's height as an inset above the page: the page rests just below
-// the bar, WebKit reports that resting position as minus the bar's height, and a finger
-// can drag the page up into the inset, where it stays. 0 is the bar's height too high —
-// the head under the bar, a strip of nothing at the bottom — and is exactly where
-// v0.21.4's scrollTo(0, 0) put it. A huge negative number is clamped to the top of the
-// inset there, and to 0 everywhere else.
-function pinDocument() {
-  if (!isPhone()) return;
-  const visual = window.visualViewport;
-  if (visual && visual.scale > 1.01) return;
-  window.scrollTo(0, -1e6);
-}
-window.addEventListener('scroll', pinDocument, { passive: true });
-window.addEventListener('resize', pinDocument);
-if (window.visualViewport) {
-  window.visualViewport.addEventListener('scroll', pinDocument, { passive: true });
-  window.visualViewport.addEventListener('resize', pinDocument);
-}
-// The document's scroll position is nothing to restore: it is never meant to have one, and
-// restoring a remembered one on the back gesture is one more way for the page to move
+// The page keeps each screen's place itself (showPane); the browser restoring a remembered
+// position of its own on the back gesture would fight that
 if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
-window.addEventListener('pageshow', pinDocument);
-window.addEventListener('popstate', pinDocument);
-// A keyboard going away is when iOS most often leaves the page where the keyboard pushed
-// it. The dismissal animates, so look once it is over as well as at once.
-document.addEventListener('focusout', () => {
-  setTimeout(pinDocument, 50);
-  setTimeout(pinDocument, 450);
-});
 
 $('fold-groups').addEventListener('click', foldAllGroups);
 
@@ -3329,8 +3315,54 @@ function applyPaneFolds() {
 // scrollTo sets a pane's scroll position. Named so the places the page moves the reader
 // on purpose — opening at an end, holding their place through a prepend, a jump from the
 // table of contents — read as such.
+// ---------------------------------------------------------------------------
+// Scrolling. On a wide screen each pane scrolls on its own. On a phone the page is one
+// document that scrolls as a whole, the way every page on a phone does, and each screen's
+// head sticks to the top of it: nothing is sized to the viewport and nothing holds the
+// document still. (An app exactly one viewport tall, with the document held still beneath
+// it, was three releases of fighting iOS over where the document rests — an installed web
+// app with an opaque status bar keeps the bar's height as an inset above the page, a
+// finger could drag the page up into it, and code that put the page back oscillated with
+// the system. A page that is meant to scroll has nothing to fight about.) Everything that
+// reads or sets a pane's scroll position goes through these.
+// ---------------------------------------------------------------------------
+
+const PANE_SCREEN = { list: 'list', messages: 'stream', side: 'side' };
+// phones: each screen's place in the page, kept while another screen is up
+const paneScroll = { list: 0, stream: 0, side: 0 };
+// a y past any height: the bottom, whatever the height is by the time the screen is shown
+const SCROLL_END = 1e9;
+
+// scrollerOf: the element whose scrollTop moves the pane's content
+function scrollerOf(pane) {
+  return isPhone() ? (document.scrollingElement || document.documentElement) : pane;
+}
+
+// paneShown: on a phone, whether the pane's screen is the one up. A screen that is not up
+// has no layout, so its position is kept in paneScroll until it is.
+function paneShown(pane) {
+  return !isPhone() || state.pane === PANE_SCREEN[pane.id];
+}
+
+// paneMetrics: where the pane's content stands — the scroll position, the full height and
+// the visible height — in whichever scroller moves it
+function paneMetrics(pane) {
+  if (!isPhone()) return { top: pane.scrollTop, height: pane.scrollHeight, visible: pane.clientHeight };
+  const scroller = scrollerOf(pane);
+  return { top: scroller.scrollTop, height: scroller.scrollHeight, visible: scroller.clientHeight };
+}
+
 function scrollPaneTo(pane, y) {
-  pane.scrollTop = y;
+  if (!isPhone()) {
+    pane.scrollTop = y;
+    return;
+  }
+  const screen = PANE_SCREEN[pane.id];
+  if (state.pane !== screen) {
+    paneScroll[screen] = y;
+    return;
+  }
+  scrollerOf(pane).scrollTop = y;
 }
 
 // showPane switches the phone screen. On a wide screen the attribute is inert: the CSS
@@ -3341,10 +3373,13 @@ const PANE_ORDER = ['list', 'stream', 'side'];
 function showPane(name) {
   const from = PANE_ORDER.indexOf(state.pane);
   const to = PANE_ORDER.indexOf(name);
+  const phone = isPhone();
+  // Each screen keeps its place in the page while another is up
+  if (phone && state.pane !== name) paneScroll[state.pane] = window.scrollY;
   document.body.classList.toggle('nav-back', to < from);
   state.pane = name;
   document.body.dataset.pane = name;
-  pinDocument();
+  if (phone) scrollerOf($('messages')).scrollTop = paneScroll[name] || 0;
 }
 
 async function start() {

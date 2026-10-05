@@ -59,13 +59,13 @@ func hermesSQLiteFinal(dbPath, mode, sessionID, status string) map[string]any {
 		return nil
 	}
 
+	shown := hermesShownClause(db, "")
 	var id, content, finishReason, reasoning, timestamp sql.NullString
 	row = db.QueryRow(
 		`SELECT id, content, finish_reason, reasoning, timestamp
 		 FROM messages
 		 WHERE session_id = ?
-		   AND role = 'assistant'
-		   AND COALESCE(active, 1) = 1
+		   AND role = 'assistant'`+shown+`
 		   AND finish_reason = 'stop'
 		   AND COALESCE(content, '') <> ''
 		 ORDER BY timestamp DESC, id DESC
@@ -88,7 +88,7 @@ func hermesSQLiteFinal(dbPath, mode, sessionID, status string) map[string]any {
 	if count == 0 {
 		var actual sql.NullInt64
 		err := db.QueryRow(
-			`SELECT COUNT(*) FROM messages WHERE session_id = ? AND COALESCE(active, 1) = 1`,
+			`SELECT COUNT(*) FROM messages WHERE session_id = ?`+shown,
 			sessionID,
 		).Scan(&actual)
 		if err != nil {
@@ -185,7 +185,7 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) ([]record, erro
 		       s.input_tokens, s.output_tokens, s.reasoning_tokens, s.estimated_cost_usd,
 		       s.started_at, s.ended_at,
 		       (SELECT MAX(m.timestamp) FROM messages m
-		         WHERE m.session_id = s.id AND COALESCE(m.active, 1) = 1),
+		         WHERE m.session_id = s.id` + hermesShownClause(db, "m.") + `),
 		       s.message_count
 		FROM sessions s` + hermesVisibilityClause(db))
 	if err != nil {
@@ -292,6 +292,33 @@ func hermesVisibilityClause(db *sql.DB) string {
 	return ""
 }
 
+// hermesShownClause is the WHERE fragment (leading AND) that keeps the message rows Hermes
+// itself displays, built from the columns this state.db has.
+//
+// Hermes marks rows two ways. Undo, rewind and regenerate set active = 0 and the row is
+// gone from the conversation. Context compression also sets active = 0 on the rows it
+// folded into a summary, but marks them compacted = 1 — and Hermes keeps showing those,
+// because the person did say and read them; only the model stopped seeing them. Filtering
+// on active alone, which this did, hid every compressed stretch of a long session: the
+// older half of the conversation vanished as soon as Hermes compressed it. So a row is
+// shown when it is live or compacted, and hidden only when it is neither. An older
+// state.db without the compacted column keeps the active-only rule, and one without
+// either column is left unfiltered.
+func hermesShownClause(db *sql.DB, alias string) string {
+	columns, err := tableColumns(db, "messages")
+	if err != nil {
+		warnHermesSQLite("messages", err)
+		return ""
+	}
+	switch {
+	case columns["active"] && columns["compacted"]:
+		return " AND (COALESCE(" + alias + "active, 1) = 1 OR COALESCE(" + alias + "compacted, 0) = 1)"
+	case columns["active"]:
+		return " AND COALESCE(" + alias + "active, 1) = 1"
+	}
+	return ""
+}
+
 // tableColumns reads one table's column names out of the schema: a schema read, so no rows
 // are touched and no data is read
 func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
@@ -315,9 +342,18 @@ func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
 // hermesSQLiteMessages reads messages for sessions that have no jsonl (the user/assistant/
 // tool rows in state.db, shaped exactly like the jsonl path: an assistant's reasoning
 // becomes thinking, its tool_calls column becomes toolCall blocks, a role=tool row is the
-// result and becomes a toolResult block, and epoch-second timestamps become UTC ISO).
-// For the latest N, let SQL walk backwards and reverse the result rather than reading the
-// whole conversation.
+// result and becomes a toolResult block paired by tool_call_id, and epoch-second
+// timestamps become UTC ISO).
+//
+// The rows are read the way Hermes reads them for display: in insertion order (timestamps
+// can regress — clock skew, and compression re-inserting rows with their original time),
+// filtered to what Hermes shows (see hermesShownClause), and collapsed on Hermes' own
+// display identity. Compression re-inserts the protected head and tail of a conversation
+// as live copies of archived originals, so a row is one message whether the database holds
+// it once or twice; the first position is kept and the most live copy is shown. Rows the
+// model reads but nobody typed (display_metadata.model_only, a micro-compaction merge) are
+// left out. The whole projection is read and the window is cut afterwards: a LIMIT in SQL
+// would count duplicates and hidden rows as messages.
 func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string]any {
 	out := []map[string]any{}
 	if q.limit <= 0 {
@@ -330,95 +366,140 @@ func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string
 	}
 	defer db.Close()
 
-	order := "ASC"
-	if q.fromEnd {
-		order = "DESC"
+	columns, err := tableColumns(db, "messages")
+	if err != nil {
+		warnHermesSQLite(sessionID, err)
+		return out
 	}
-	// at anchors the window at a point in time (see messageQuery); the comparison runs
-	// with the same direction as the ordering so the window sits on the right side of it
-	anchor, anchorArg := "", any(nil)
-	if !q.at.IsZero() {
-		if q.fromEnd {
-			anchor, anchorArg = " AND timestamp <= ?", q.at.Unix()
-		} else {
-			anchor, anchorArg = " AND timestamp >= ?", q.at.Unix()
+	// A column the schema lacks is selected as NULL under the same name, so one statement
+	// fits every Hermes version seen so far
+	col := func(name string) string {
+		if columns[name] {
+			return name
 		}
+		return "NULL AS " + name
 	}
-	args := []any{sessionID}
-	if anchorArg != nil {
-		args = append(args, anchorArg)
-	}
-	args = append(args, q.limit)
-
 	rows, err := db.Query(`
-		SELECT id, role, content, reasoning, tool_calls, tool_name, timestamp
+		SELECT id, role, content, `+col("reasoning")+`, `+col("tool_calls")+`, `+col("tool_name")+`,
+		       `+col("tool_call_id")+`, `+col("active")+`, `+col("display_metadata")+`, timestamp
 		FROM messages
-		WHERE session_id = ?
-		  AND COALESCE(active, 1) = 1
-		  AND role IN ('user', 'assistant', 'tool')`+anchor+`
-		ORDER BY timestamp `+order+`, id `+order+`
-		LIMIT ?`, args...)
+		WHERE session_id = ?`+hermesShownClause(db, "")+`
+		  AND role IN ('user', 'assistant', 'tool')
+		ORDER BY id ASC`, sessionID)
 	if err != nil {
 		warnHermesSQLite(sessionID, err)
 		return out
 	}
 	defer rows.Close()
 
+	type shownRow struct {
+		id, role, content, reasoning, toolCalls, toolName, toolCallID string
+		active                                                        int64
+		timestamp                                                     any
+	}
+	order := []shownRow{}
+	index := map[string]int{}
 	for rows.Next() {
-		var id, role, content, reasoning, toolCalls, toolName, timestamp any
-		if err := rows.Scan(&id, &role, &content, &reasoning, &toolCalls, &toolName, &timestamp); err != nil {
+		var id, role, content, reasoning, toolCalls, toolName, toolCallID, active, displayMeta, timestamp any
+		if err := rows.Scan(&id, &role, &content, &reasoning, &toolCalls, &toolName, &toolCallID, &active, &displayMeta, &timestamp); err != nil {
 			warnHermesSQLite(sessionID, err)
 			return out
 		}
+		if hermesModelOnly(displayMeta) {
+			continue
+		}
+		row := shownRow{
+			id: sqliteValueString(id), role: sqliteValueString(role), content: sqliteValueString(content),
+			reasoning: sqliteValueString(reasoning), toolCalls: sqliteValueString(toolCalls),
+			toolName: sqliteValueString(toolName), toolCallID: sqliteValueString(toolCallID),
+			active: 1, timestamp: timestamp,
+		}
+		if n, ok := toFloat(active); ok {
+			row.active = int64(n)
+		}
+		key := row.role + "\x00" + row.content + "\x00" + sqliteTimeString(timestamp) + "\x00" +
+			row.toolCallID + "\x00" + row.toolCalls + "\x00" + row.toolName
+		if at, seen := index[key]; seen {
+			kept := order[at]
+			if row.active > kept.active || (row.active == kept.active && row.id > kept.id) {
+				order[at] = row
+			}
+			continue
+		}
+		index[key] = len(order)
+		order = append(order, row)
+	}
+
+	sink := newMessageSink(q)
+	for _, row := range order {
 		parts := []map[string]any{}
-		roleStr := sqliteValueString(role)
-		switch roleStr {
+		switch row.role {
 		case "tool":
-			// One tool row is one result; the content is the tool's structured output
-			// (kept as-is, truncated), and tool_name says which tool ran
-			parts = append(parts, map[string]any{
-				"type":     "toolResult",
-				"toolName": sqliteValueString(toolName),
-				"content":  truncate(sqliteValueString(content), 500, "...[truncated]"),
-			})
+			// One tool row is one result; the content is the tool's structured output,
+			// tool_name says which tool ran and tool_call_id which call it answers. Hermes
+			// does not record whether it succeeded, so the block carries no status.
+			parts = append(parts, toolResultBlock(row.toolCallID, row.toolName, row.content, q.full))
 		default:
-			if r, ok := reasoning.(string); ok && r != "" {
-				parts = append(parts, map[string]any{"type": "thinking", "content": truncate(r, 1000, "...[truncated]")})
+			if row.reasoning != "" {
+				parts = append(parts, thinkingBlock(row.reasoning, q.full))
 			}
-			parts = append(parts, hermesToolCallBlocks(toolCalls)...)
-			if c, ok := content.(string); ok && c != "" {
-				parts = append(parts, map[string]any{"type": "text", "content": c})
+			parts = append(parts, hermesToolCallBlocks(row.toolCalls)...)
+			if row.content != "" {
+				parts = append(parts, textBlock(row.content))
 			}
 		}
-		out = append(out, map[string]any{
-			"id":        sqliteValueString(id),
-			"role":      roleStr,
-			"timestamp": sqliteTimeString(timestamp),
+		if !sink.add(map[string]any{
+			"id":        row.id,
+			"role":      row.role,
+			"timestamp": sqliteTimeString(row.timestamp),
 			"content":   parts,
-		})
-	}
-	if q.fromEnd { // queried in reverse; flip back into chronological order
-		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
-			out[i], out[j] = out[j], out[i]
+		}) {
+			break
 		}
 	}
-	return out
+	return sink.result()
+}
+
+// hermesModelOnly reads display_metadata.model_only, the mark on rows Hermes shows the
+// model but not the person. The column holds JSON, sometimes JSON-encoded twice.
+func hermesModelOnly(v any) bool {
+	raw := sqliteValueString(v)
+	if raw == "" {
+		return false
+	}
+	var decoded any = raw
+	for i := 0; i < 2; i++ {
+		text, ok := decoded.(string)
+		if !ok {
+			break
+		}
+		var next any
+		if json.Unmarshal([]byte(text), &next) != nil {
+			return false
+		}
+		decoded = next
+	}
+	meta, ok := decoded.(map[string]any)
+	if !ok {
+		return false
+	}
+	return truthy(meta["model_only"])
 }
 
 // hermesToolCallBlocks turns the tool_calls column (an OpenAI-shaped JSON array of
-// {function: {name, arguments-as-string}}) into toolCall blocks.
-func hermesToolCallBlocks(raw any) []map[string]any {
-	text, ok := raw.(string)
-	if !ok || text == "" {
+// {id, function: {name, arguments-as-string}}) into toolCall blocks.
+func hermesToolCallBlocks(raw string) []map[string]any {
+	if raw == "" {
 		return nil
 	}
 	var calls []struct {
+		ID       string `json:"id"`
 		Function struct {
 			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
 		} `json:"function"`
 	}
-	if err := json.Unmarshal([]byte(text), &calls); err != nil || len(calls) == 0 {
+	if err := json.Unmarshal([]byte(raw), &calls); err != nil || len(calls) == 0 {
 		return nil
 	}
 	blocks := []map[string]any{}
@@ -427,9 +508,7 @@ func hermesToolCallBlocks(raw any) []map[string]any {
 		if call.Function.Arguments != "" {
 			_ = json.Unmarshal([]byte(call.Function.Arguments), &args)
 		}
-		blocks = append(blocks, map[string]any{
-			"type": "toolCall", "name": call.Function.Name, "arguments": args,
-		})
+		blocks = append(blocks, toolCallBlock(call.ID, call.Function.Name, args))
 	}
 	return blocks
 }
@@ -461,8 +540,7 @@ func hermesSQLiteSearch(ctx context.Context, dbPath, sessionID string, q searchQ
 	rows, err := db.QueryContext(ctx, `
 		SELECT role, content, reasoning, timestamp
 		FROM messages
-		WHERE session_id = ?
-		  AND COALESCE(active, 1) = 1`+roleClause+`
+		WHERE session_id = ?`+hermesShownClause(db, "")+roleClause+`
 		  AND (content LIKE ? ESCAPE '\' OR reasoning LIKE ? ESCAPE '\')
 		ORDER BY timestamp ASC, id ASC
 		LIMIT ?`, args...)

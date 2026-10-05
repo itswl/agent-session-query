@@ -344,7 +344,7 @@ func TestMCPEveryArgumentIsAdvertised(t *testing.T) {
 		"search_sessions": {"query", "limit", "per_session", "since", "until", "cursor"},
 		"list_sessions":   {"source", "project", "since", "until", "limit", "cursor"},
 		"get_session":     {"pattern", "source"},
-		"get_messages":    {"pattern", "source", "limit", "order", "role", "at", "cursor"},
+		"get_messages":    {"pattern", "source", "limit", "order", "role", "at", "full", "cursor"},
 		"list_rounds":     {"pattern", "source"},
 		"session_brief":   {"pattern", "source", "round", "at"},
 	}
@@ -588,5 +588,47 @@ func TestMCPListRounds(t *testing.T) {
 	}
 	if bad[0].Error != nil {
 		t.Errorf("a tool failure must not become a JSON-RPC error: %v", bad[0].Error)
+	}
+}
+
+// TestMCPGetMessagesFull: tool output comes cut to a preview and marked, and full=true on a
+// narrow window returns it whole — the end of a failed command's output is exactly the part
+// a preview drops
+func TestMCPGetMessagesFull(t *testing.T) {
+	root := t.TempDir()
+	long := strings.Repeat("0123456789", 80)
+	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_mcpfull.jsonl"),
+		`{"type":"session","id":"mcp-full","cwd":"/tmp"}`,
+		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"run"}]}}`,
+		`{"type":"message","id":"m2","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash","content":[{"type":"text","text":"`+long+`"}],"isError":true}}`,
+	)
+	sources := []SessionSource{newPiSource(root)}
+	s := &mcpServer{api: newSessionQueryAPI(sources, 0), sources: sources, maxLimit: 1000}
+	call := func(args map[string]any) map[string]any {
+		t.Helper()
+		resp := mcpRoundTrip(t, s, map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+			"params": map[string]any{"name": "get_messages", "arguments": args},
+		})
+		text, isErr := toolText(t, resp[0])
+		if isErr {
+			t.Fatalf("tool error: %s", text)
+		}
+		var out map[string]any
+		if err := json.Unmarshal([]byte(text), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	result := func(out map[string]any) map[string]any {
+		return out["messages"].([]any)[1].(map[string]any)["content"].([]any)[0].(map[string]any)
+	}
+	cut := result(call(map[string]any{"pattern": "mcp-full"}))
+	if cut["truncated"] != true || cut["status"] != statusError || cut["callId"] != "c1" {
+		t.Fatalf("the preview must be cut, marked, and still carry the outcome: %v", cut)
+	}
+	whole := result(call(map[string]any{"pattern": "mcp-full", "full": true}))
+	if _, has := whole["truncated"]; has || whole["content"] != long {
+		t.Fatalf("full=true must return the whole output: %v", whole)
 	}
 }

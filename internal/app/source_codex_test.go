@@ -164,3 +164,210 @@ func TestCodexForkedMetaWithoutOwnID(t *testing.T) {
 		t.Fatalf("sessionId = %q; must not be the parent's", got)
 	}
 }
+
+// TestCodexToolRows: a rollout is more than its message rows. The calls, their outputs,
+// the thinking and the aborts each live on a row of their own, and for a long time none of
+// them were read — a Codex session showed two people talking with nothing in between, and
+// its brief listed no tools at all. The shapes are the ones real rollouts write: the older
+// shell tool's JSON output with exit code and duration in metadata, the newer tools'
+// text header ("Script completed / Wall time / Output:", "Exit code: N"), apply_patch's
+// input, and the event_msg that records the user stopping a turn.
+func TestCodexToolRows(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "2026", "10", "01", "rollout-2026-10-01T10-00-00-tools.jsonl")
+	write(t, path,
+		`{"timestamp":"2026-10-01T10:00:00Z","type":"session_meta","payload":{"id":"codex-tools","cwd":"/p","cli_version":"0.160.0"}}`,
+		`{"timestamp":"2026-10-01T10:00:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`,
+		`{"timestamp":"2026-10-01T10:00:00Z","type":"turn_context","payload":{"turn_id":"t1","model":"gpt-6.1","cwd":"/p"}}`,
+		`{"timestamp":"2026-10-01T10:00:00Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>sandbox</permissions instructions>"}]}}`,
+		`{"timestamp":"2026-10-01T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /p\n\n<INSTRUCTIONS>\n- be brief\n</INSTRUCTIONS>"}]}}`,
+		`{"timestamp":"2026-10-01T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/p</cwd>\n</environment_context>"}]}}`,
+		`{"timestamp":"2026-10-01T10:00:02Z","type":"response_item","payload":{"type":"message","id":"msg_user","role":"user","content":[{"type":"input_text","text":"update the README"}]}}`,
+		`{"timestamp":"2026-10-01T10:00:06Z","type":"response_item","payload":{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"**Inspecting README**"}],"encrypted_content":"gAAA"}}`,
+		`{"timestamp":"2026-10-01T10:00:06Z","type":"response_item","payload":{"type":"reasoning","id":"rs_2","summary":[],"encrypted_content":"gAAB"}}`,
+		`{"timestamp":"2026-10-01T10:00:08Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"ls\"],\"workdir\":\"/p\"}","call_id":"call_ls"}}`,
+		`{"timestamp":"2026-10-01T10:00:09Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_ls","output":"{\"output\":\"file1.txt\\nfile2.txt\",\"metadata\":{\"exit_code\":0,\"duration_seconds\":0.1}}"}}`,
+		`{"timestamp":"2026-10-01T10:00:10Z","type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_read","name":"exec","input":"text((await tools.exec_command({cmd:\"sed -n '1,80p' README.md\"})).output)"}}`,
+		`{"timestamp":"2026-10-01T10:00:11Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_read","output":[{"type":"input_text","text":"Script completed\nWall time 0.1 seconds\nOutput:\n"},{"type":"input_text","text":"# demo\n"}]}}`,
+		`{"timestamp":"2026-10-01T10:00:15Z","type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_4","call_id":"call_patch","name":"apply_patch","input":"*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** End Patch"}}`,
+		`{"timestamp":"2026-10-01T10:00:16Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_patch","output":"Exit code: 0\nWall time: 0.064 seconds\nOutput:\nSuccess. Updated the following files:\nM README.md\n"}}`,
+		`{"timestamp":"2026-10-01T10:00:17Z","type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_5","call_id":"call_bad","name":"apply_patch","input":"*** Begin Patch\n*** Update File: notes.md\n@@\n-x\n+y\n*** End Patch"}}`,
+		`{"timestamp":"2026-10-01T10:00:18Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_bad","output":"apply_patch verification failed: context not found"}}`,
+		`{"timestamp":"2026-10-01T10:00:20Z","type":"response_item","payload":{"type":"function_call","id":"fc_2","name":"exec_command","arguments":"{\"cmd\":\"cargo test\",\"workdir\":\"/p\"}","call_id":"call_build"}}`,
+		`{"timestamp":"2026-10-01T10:00:25Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_build","output":"{\"output\":\"test failed\\n\",\"metadata\":{\"exit_code\":101,\"duration_seconds\":3}}"}}`,
+		`{"timestamp":"2026-10-01T10:00:26Z","type":"response_item","payload":{"type":"web_search_call","status":"completed","action":{"type":"search","query":"cargo test flags"}}}`,
+		`{"timestamp":"2026-10-01T10:00:30Z","type":"response_item","payload":{"type":"message","id":"msg_final","role":"assistant","content":[{"type":"output_text","text":"README updated."}]}}`,
+		`{"timestamp":"2026-10-01T10:00:31Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":9,"total_tokens":109},"last_token_usage":{"input_tokens":50}}}}`,
+		`{"timestamp":"2026-10-01T10:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"run it again"}]}}`,
+		`{"timestamp":"2026-10-01T10:01:05Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t2","reason":"interrupted","duration_ms":95000}}`,
+	)
+
+	s := newCodexSource(root)
+	rec := s.List()[0]
+	if rec.str("model") != "gpt-6.1" {
+		t.Errorf("the model lives on turn_context and was not picked up: %q", rec.str("model"))
+	}
+
+	msgs := s.Messages(rec, messageQuery{limit: 100})
+	// Every row the reader shows is counted the same way by the list and by Final
+	final := s.Final(rec)
+	if n := codexCountMessages(path); n != len(msgs) || final["messageCount"] != len(msgs) {
+		t.Fatalf("counts disagree: counter %d, messages %d, final %v", n, len(msgs), final["messageCount"])
+	}
+	// 4 user rows (2 injected) + 1 thinking (the encrypted-only one yields nothing) +
+	// 5 calls + 5 outputs + 1 web search + 1 assistant + 1 abort = 18
+	if len(msgs) != 18 {
+		for i, m := range msgs {
+			t.Logf("%2d %s %v", i, m["role"], m["content"])
+		}
+		t.Fatalf("messages = %d", len(msgs))
+	}
+
+	byCall := map[string]map[string]any{}
+	var injected, thinking, aborted int
+	for _, m := range msgs {
+		if truthy(m["injected"]) {
+			injected++
+		}
+		for _, block := range m["content"].([]map[string]any) {
+			switch block["type"] {
+			case "thinking":
+				thinking++
+				if block["content"] != "**Inspecting README**" {
+					t.Errorf("thinking = %v", block["content"])
+				}
+			case "toolResult":
+				byCall[toStr(block["callId"])] = block
+				// A web search has no output row and answers itself on the assistant
+				// message; every other result is a role=tool message of its own
+				if m["role"] != "tool" && block["toolName"] != "web_search" {
+					t.Errorf("a result rides on a role=tool message, got %v", m["role"])
+				}
+			case "event":
+				aborted++
+				if m["role"] != "system" || block["kind"] != eventInterrupted {
+					t.Errorf("abort event = %v on role %v", block, m["role"])
+				}
+			}
+		}
+	}
+	if injected != 2 {
+		t.Errorf("the AGENTS.md and environment rows must be flagged injected, got %d", injected)
+	}
+	if thinking != 1 || aborted != 1 {
+		t.Errorf("thinking = %d, aborted = %d", thinking, aborted)
+	}
+
+	// The older shell tool: JSON output, exit code and duration in metadata
+	ls := byCall["call_ls"]
+	if ls["toolName"] != "shell" || ls["status"] != statusOK || ls["exitCode"] != 0 || ls["durationMs"] != int64(100) || ls["content"] != "file1.txt\nfile2.txt" {
+		t.Errorf("shell result = %v", ls)
+	}
+	// The exec tool: a text header that is information, not output
+	read := byCall["call_read"]
+	if read["toolName"] != "exec" || read["content"] != "# demo\n" || read["durationMs"] != int64(100) || read["status"] != statusOK {
+		t.Errorf("exec result = %v", read)
+	}
+	// apply_patch: "Exit code: 0" header; a rejected patch is an error without one
+	patch := byCall["call_patch"]
+	if patch["toolName"] != "apply_patch" || patch["exitCode"] != 0 || patch["durationMs"] != int64(64) || !strings.HasPrefix(toStr(patch["content"]), "Success.") {
+		t.Errorf("apply_patch result = %v", patch)
+	}
+	if bad := byCall["call_bad"]; bad["status"] != statusError {
+		t.Errorf("a rejected patch must be an error, got %v", bad)
+	}
+	// A failing command: the exit code is the verdict
+	build := byCall["call_build"]
+	if build["status"] != statusError || build["exitCode"] != 101 || build["durationMs"] != int64(3000) {
+		t.Errorf("failed command = %v", build)
+	}
+
+	// The call blocks carry the id their result answers, and decoded arguments
+	calls := 0
+	for _, m := range msgs {
+		for _, block := range m["content"].([]map[string]any) {
+			if block["type"] != "toolCall" {
+				continue
+			}
+			calls++
+			if block["name"] == "shell" {
+				args := block["arguments"].(map[string]any)
+				if block["id"] != "call_ls" || args["workdir"] != "/p" {
+					t.Errorf("shell call = %v", block)
+				}
+			}
+			if block["name"] == "apply_patch" && !strings.Contains(toStr(block["arguments"].(map[string]any)["input"]), "*** Begin Patch") {
+				t.Errorf("apply_patch call lost its patch: %v", block)
+			}
+		}
+	}
+	if calls != 6 { // five paired calls and the web search
+		t.Errorf("tool calls = %d", calls)
+	}
+
+	// Final: the last assistant words, the model, and usage from token_count when there
+	// is no token_usage_record (total_token_usage is cumulative, so the last one is the
+	// total, not a sum)
+	if final["text"] != "README updated." || final["model"] != "gpt-6.1" {
+		t.Errorf("final = %v", final)
+	}
+	usage := final["usage"].(map[string]any)
+	if usage["inputTokens"] != int64(100) || usage["cacheReadTokens"] != int64(40) || usage["outputTokens"] != int64(9) {
+		t.Errorf("usage = %v", usage)
+	}
+
+	// Search: a hit inside a call or its output names a speaker rather than the row type
+	for line, want := range map[string]string{
+		`{"type":"response_item","payload":{"type":"function_call","name":"shell"}}`:         "assistant",
+		`{"type":"response_item","payload":{"type":"function_call_output","output":"x"}}`:    "tool",
+		`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}`:   "user",
+		`{"type":"response_item","payload":{"type":"reasoning","summary":[{"text":"hmm"}]}}`: "assistant",
+	} {
+		var obj map[string]any
+		if err := jsonUnmarshalString(line, &obj); err != nil {
+			t.Fatal(err)
+		}
+		if got := hitRole(obj); got != want {
+			t.Errorf("hitRole(%s) = %q, want %q", line, got, want)
+		}
+	}
+}
+
+// TestCodexOutputHeaders pins the header grammar: only a run of known lines closed by
+// "Output:" is a header; anything else is output and stays whole.
+func TestCodexOutputHeaders(t *testing.T) {
+	body, outcome := codexOutput("Chunk ID: abc\nWall time: 2.5 seconds\nProcess exited with code 3\nOutput:\nboom\n")
+	if body != "boom\n" || outcome.exitCode != 3 || !outcome.hasExit || outcome.durationMs != 2500 || outcome.status != statusError {
+		t.Errorf("header parse = %q %+v", body, outcome)
+	}
+	body, outcome = codexOutput("Script failed\nWall time 0.2 seconds\nOutput:\n")
+	if body != "" || outcome.status != statusError {
+		t.Errorf("Script failed must be an error: %q %+v", body, outcome)
+	}
+	// A first line that merely looks like a header line, with no Output: closing it
+	body, outcome = codexOutput("Exit code: 1 is what the docs say\nreal output")
+	if body != "Exit code: 1 is what the docs say\nreal output" || outcome.hasExit {
+		t.Errorf("a non-header must stay whole: %q %+v", body, outcome)
+	}
+	// JSON that is not the legacy shape is output
+	body, _ = codexOutput(`{"result": 1}`)
+	if body != `{"result": 1}` {
+		t.Errorf("non-legacy JSON must stay whole: %q", body)
+	}
+}
+
+// TestCodexInjected: what the CLI assembles is not what the person asked
+func TestCodexInjected(t *testing.T) {
+	for text, want := range map[string]bool{
+		"# AGENTS.md instructions for /p\n\n<INSTRUCTIONS>\nx\n</INSTRUCTIONS>": true,
+		"<environment_context>\n  <cwd>/p</cwd>\n</environment_context>":        true,
+		"<recommended_plugins>\n- a\n</recommended_plugins>":                    true,
+		"update the README":                       false,
+		"<b>bold</b> is html, and this trails it": false,
+		"<cwd>/p</cwd> please fix":                false,
+	} {
+		if got := codexInjected(text); got != want {
+			t.Errorf("codexInjected(%q) = %v, want %v", text, got, want)
+		}
+	}
+}

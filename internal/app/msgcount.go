@@ -29,21 +29,19 @@ func lineHasAll(line []byte, tokens ...string) bool {
 	return true
 }
 
-// claudeCountMessages: user/assistant rows, sidechains excluded (see ClaudeCodeSource.Final)
+// claudeCountMessages: user/assistant rows, sidechains excluded, plus the system rows the
+// reader shows as events (see claudeProbe.counts — one rule for the list, Final and here)
 func claudeCountMessages(path string) int {
 	n := 0
 	eachJSONLLine(path, func(line []byte) bool {
-		if !lineHasAll(line, `"type"`, `"message"`) {
+		// A conversation row carries a message object; the system rows that count carry a
+		// subtype. Anything with neither is skipped before it is decoded.
+		if !bytes.Contains(line, []byte(`"type"`)) ||
+			!(bytes.Contains(line, []byte(`"message"`)) || bytes.Contains(line, []byte(`"subtype"`))) {
 			return true
 		}
-		var probe struct {
-			Type        string `json:"type"`
-			IsSidechain bool   `json:"isSidechain"`
-		}
-		if json.Unmarshal(line, &probe) != nil {
-			return true
-		}
-		if (probe.Type == "user" || probe.Type == "assistant") && !probe.IsSidechain {
+		var probe claudeProbe
+		if json.Unmarshal(line, &probe) == nil && probe.counts() {
 			n++
 		}
 		return true
@@ -69,25 +67,16 @@ func piCountMessages(path string) int {
 	return n
 }
 
-// codexCountMessages: response_item messages, the developer's assembled instructions
-// excluded (see CodexSource.Final)
+// codexCountMessages: every row the reader turns into a message — conversation rows,
+// thinking, calls and their outputs, aborts — by the one rule in codexProbe.counts
 func codexCountMessages(path string) int {
 	n := 0
 	eachJSONLLine(path, func(line []byte) bool {
-		if !lineHasAll(line, `"response_item"`, `"message"`) {
+		if !bytes.Contains(line, []byte(`"response_item"`)) && !bytes.Contains(line, []byte(`"turn_aborted"`)) {
 			return true
 		}
-		var probe struct {
-			Type    string `json:"type"`
-			Payload struct {
-				Type string `json:"type"`
-				Role string `json:"role"`
-			} `json:"payload"`
-		}
-		if json.Unmarshal(line, &probe) != nil {
-			return true
-		}
-		if probe.Type == "response_item" && probe.Payload.Type == "message" && probe.Payload.Role != "developer" {
+		var probe codexProbe
+		if json.Unmarshal(line, &probe) == nil && probe.counts() {
 			n++
 		}
 		return true

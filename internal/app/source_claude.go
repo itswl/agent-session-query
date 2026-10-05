@@ -109,34 +109,130 @@ func claudeUserTitle(path string) string {
 	})
 }
 
-// parts folds Claude Code's content into the shared block array shape
-func (s *ClaudeCodeSource) parts(content any) []map[string]any {
+// claudeInterruptedPrefix opens the text Claude Code writes when the user stops a turn:
+// "[Request interrupted by user]" as a user text block, and "[Request interrupted by user
+// for tool use]" as the content of the tool_result the stopped call never produced.
+const claudeInterruptedPrefix = "[Request interrupted by user"
+
+// claudeRow folds one user or assistant row into the shared block array shape.
+//
+// names carries tool_use id → tool name across the scan: a tool_result row names only the
+// call it answers (tool_use_id), and the name that lets a reader see "the Bash call failed"
+// rather than "a tool failed" lives on the assistant row before it.
+type claudeRow struct {
+	names map[string]string
+	full  bool
+}
+
+func (c claudeRow) parts(obj map[string]any) []map[string]any {
+	msg := getMap(obj, "message")
 	parts := []map[string]any{}
-	switch c := content.(type) {
+	switch content := msg["content"].(type) {
 	case string:
-		if c != "" {
-			parts = append(parts, map[string]any{"type": "text", "content": c})
+		if content != "" {
+			parts = append(parts, c.textOrEvent(content))
 		}
 		return parts
 	case []any:
-		for _, item := range c {
+		for _, item := range content {
 			m, ok := item.(map[string]any)
 			if !ok {
 				continue
 			}
 			switch m["type"] {
 			case "text":
-				parts = append(parts, map[string]any{"type": "text", "content": strField(m, "text")})
+				if text := strField(m, "text"); text != "" {
+					parts = append(parts, c.textOrEvent(text))
+				}
 			case "thinking":
-				parts = append(parts, map[string]any{"type": "thinking", "content": truncate(strField(m, "thinking"), 1000, "...[truncated]")})
+				parts = append(parts, thinkingBlock(strField(m, "thinking"), c.full))
 			case "tool_use":
-				parts = append(parts, map[string]any{"type": "toolCall", "name": strField(m, "name"), "arguments": getOr(m, "input", map[string]any{})})
+				id, name := strField(m, "id"), strField(m, "name")
+				if id != "" && c.names != nil {
+					c.names[id] = name
+				}
+				parts = append(parts, toolCallBlock(id, name, getOr(m, "input", map[string]any{})))
 			case "tool_result":
-				parts = append(parts, map[string]any{"type": "toolResult", "toolName": "", "content": truncate(contentText(m["content"]), 500, "...[truncated]")})
+				parts = append(parts, c.toolResult(obj, m))
 			}
 		}
 	}
 	return parts
+}
+
+// textOrEvent: the interruption notice is not something the user said, it is something
+// that happened, so it becomes an event rather than a user text block (and so does not
+// start a round)
+func (c claudeRow) textOrEvent(text string) map[string]any {
+	if strings.HasPrefix(strings.TrimSpace(text), claudeInterruptedPrefix) {
+		return eventBlock(eventInterrupted, strings.TrimSpace(text))
+	}
+	return textBlock(text)
+}
+
+// toolResult pairs the result with its call and records how the call ended. is_error is
+// Claude's own verdict; the row-level toolUseResult says when the user interrupted the
+// command, and so does the placeholder text a stopped call gets as its result.
+func (c claudeRow) toolResult(obj, m map[string]any) map[string]any {
+	callID := strField(m, "tool_use_id")
+	text := contentText(m["content"])
+	block := toolResultBlock(callID, c.names[callID], text, c.full)
+	outcome := toolOutcome{status: statusFromError(truthy(m["is_error"]))}
+	if truthy(getMap(obj, "toolUseResult")["interrupted"]) || strings.HasPrefix(strings.TrimSpace(text), claudeInterruptedPrefix) {
+		outcome.status = statusInterrupted
+	}
+	return outcome.apply(block)
+}
+
+// claudeSystemEvent turns the system rows worth a reader's attention into event blocks:
+// a compaction boundary (the context the model sees was rewritten here) and a stop hook
+// that failed. The rest — turn_duration, informational, local_command — is bookkeeping
+// and yields nothing. Measured locally over 60 sessions: 562 system rows, of which 12
+// compactions and 289 hook summaries, most of the latter with no errors.
+func claudeSystemEvent(obj map[string]any) map[string]any {
+	switch obj["subtype"] {
+	case "compact_boundary":
+		return eventBlock(eventCompaction, strOr(obj["content"], "Context compacted"))
+	case "stop_hook_summary":
+		errs := []string{}
+		for _, raw := range getSlice(obj, "hookErrors") {
+			if text := contentText(raw); text != "" {
+				errs = append(errs, text)
+			}
+		}
+		if len(errs) == 0 {
+			return nil
+		}
+		return eventBlock(eventHookError, strings.Join(errs, "\n"))
+	}
+	return nil
+}
+
+// claudeProbe is the small decode every whole-file scan does per row: enough to decide
+// whether the row counts as a message and to pick up usage, nothing more. counts is the
+// one rule Messages, Final and the background counter all follow, so the number in the
+// list is the number of rows the reader will get.
+type claudeProbe struct {
+	Type        string            `json:"type"`
+	Subtype     string            `json:"subtype"`
+	IsSidechain bool              `json:"isSidechain"`
+	HookErrors  []json.RawMessage `json:"hookErrors"`
+	Message     struct {
+		Usage json.RawMessage `json:"usage"`
+	} `json:"message"`
+}
+
+func (p claudeProbe) counts() bool {
+	if p.IsSidechain {
+		return false
+	}
+	switch p.Type {
+	case "user", "assistant":
+		return true
+	case "system":
+		return p.Subtype == "compact_boundary" || (p.Subtype == "stop_hook_summary" && len(p.HookErrors) > 0)
+	}
+	return false
 }
 
 func (s *ClaudeCodeSource) Messages(r record, q messageQuery) []map[string]any {
@@ -145,11 +241,25 @@ func (s *ClaudeCodeSource) Messages(r record, q messageQuery) []map[string]any {
 	if path == "" {
 		return sink.result()
 	}
+	row := claudeRow{names: map[string]string{}, full: q.full}
 	eachJSONL(path, func(obj map[string]any) bool {
-		if obj["type"] != "user" && obj["type"] != "assistant" {
+		if truthy(obj["isSidechain"]) { // subagent messages are not part of the main thread
 			return true
 		}
-		if truthy(obj["isSidechain"]) { // subagent messages are not part of the main thread
+		switch obj["type"] {
+		case "system":
+			event := claudeSystemEvent(obj)
+			if event == nil {
+				return true
+			}
+			return sink.add(map[string]any{
+				"id":        getOr(obj, "uuid", ""),
+				"role":      "system",
+				"timestamp": getOr(obj, "timestamp", ""),
+				"content":   []map[string]any{event},
+			})
+		case "user", "assistant":
+		default:
 			return true
 		}
 		msg := getMap(obj, "message")
@@ -157,7 +267,7 @@ func (s *ClaudeCodeSource) Messages(r record, q messageQuery) []map[string]any {
 			"id":        getOr(obj, "uuid", ""),
 			"role":      strOr(msg["role"], strOr(obj["type"], "")),
 			"timestamp": getOr(obj, "timestamp", ""),
-			"content":   s.parts(msg["content"]),
+			"content":   row.parts(obj),
 		})
 	})
 	return sink.result()
@@ -168,7 +278,7 @@ func (s *ClaudeCodeSource) Final(r record) map[string]any {
 	if path == "" {
 		return nil
 	}
-	// Only type / isSidechain matter here; big fields like content wait until the last
+	// Only the probe fields matter here; big fields like content wait until the last
 	// assistant message, which is the only one fully decoded
 	var rawLast []byte
 	count := 0
@@ -178,20 +288,8 @@ func (s *ClaudeCodeSource) Final(r record) map[string]any {
 	// per assistant message.
 	var totals usageTotals
 	eachJSONLLine(path, func(line []byte) bool {
-		var probe struct {
-			Type        string `json:"type"`
-			IsSidechain bool   `json:"isSidechain"`
-			Message     struct {
-				Usage json.RawMessage `json:"usage"`
-			} `json:"message"`
-		}
-		if json.Unmarshal(line, &probe) != nil {
-			return true
-		}
-		if probe.Type != "user" && probe.Type != "assistant" {
-			return true
-		}
-		if probe.IsSidechain {
+		var probe claudeProbe
+		if json.Unmarshal(line, &probe) != nil || !probe.counts() {
 			return true
 		}
 		count++
@@ -223,7 +321,7 @@ func (s *ClaudeCodeSource) Final(r record) map[string]any {
 	}
 
 	msg := getMap(lastAssistant, "message")
-	parts := s.parts(msg["content"])
+	parts := claudeRow{}.parts(lastAssistant)
 	texts := []string{}
 	thoughts := []string{}
 	toolCalls := []any{}
@@ -238,10 +336,14 @@ func (s *ClaudeCodeSource) Final(r record) map[string]any {
 				thoughts = append(thoughts, c)
 			}
 		case "toolCall":
-			toolCalls = append(toolCalls, map[string]any{
+			call := map[string]any{
 				"name":      strField(p, "name"),
 				"arguments": getOr(p, "arguments", map[string]any{}),
-			})
+			}
+			if id := strField(p, "id"); id != "" {
+				call["id"] = id
+			}
+			toolCalls = append(toolCalls, call)
 		}
 	}
 	stopReason := strOr(msg["stop_reason"], "")

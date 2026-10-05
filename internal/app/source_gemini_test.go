@@ -135,3 +135,53 @@ func TestGeminiMergesContinuationFiles(t *testing.T) {
 		t.Fatal("search must find text that only exists in the continuation file")
 	}
 }
+
+// TestGeminiInlineToolStatus: newer Gemini CLI answers a call on the toolCalls entry
+// itself — a status, and the output as resultDisplay or under result — while older files
+// answer on the user row that follows (and echo the response under result without the
+// output, which is why a result field alone is not an answer, see TestGeminiSource). A
+// file carrying both must show each result once, with the status the entry recorded.
+func TestGeminiInlineToolStatus(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "projB", "chats", "session-2026-10-01T10-00-00.jsonl"),
+		`{"sessionId":"g-2","startTime":"2026-10-01T10:00:00Z","lastUpdated":"2026-10-01T10:05:00Z"}`,
+		`{"type":"user","id":"u1","timestamp":"t1","content":[{"text":"build it"}]}`,
+		`{"type":"gemini","id":"g1","timestamp":"t2","content":"","toolCalls":[`+
+			`{"id":"run-1","name":"run_shell_command","args":{"command":"npm run build"},"status":"error","resultDisplay":"npm ERR! missing script"},`+
+			`{"id":"rep-1","name":"replace","args":{"file_path":"config.ts","old_string":"a","new_string":"b"},"status":"success","resultDisplay":{"fileName":"config.ts","fileDiff":"--- a\n+++ b\n-a\n+b\n"}},`+
+			`{"id":"cancel-1","name":"run_shell_command","args":{"command":"sleep 9"},"status":"cancelled","result":[{"functionResponse":{"id":"cancel-1","name":"run_shell_command","response":{"error":"Command was cancelled by the user."}}}]},`+
+			`{"id":"late-1","name":"read_file","args":{"file_path":"x"},"status":"success"}]}`,
+		// The user row repeats run-1 (already answered: skipped) and brings late-1's
+		// output (the status came earlier without output: applied here)
+		`{"type":"user","id":"u2","timestamp":"t3","content":[{"functionResponse":{"id":"run-1","name":"run_shell_command","response":{"output":"npm ERR! missing script"}}},{"functionResponse":{"id":"late-1","name":"read_file","response":{"output":"the file"}}}]}`,
+	)
+	s := newGeminiSource(root)
+	msgs := s.Messages(s.List()[0], messageQuery{limit: 10})
+	parts := msgs[1]["content"].([]map[string]any)
+	results := map[string]map[string]any{}
+	calls := 0
+	for _, p := range parts {
+		switch p["type"] {
+		case "toolCall":
+			calls++
+		case "toolResult":
+			results[toStr(p["callId"])] = p
+		}
+	}
+	if calls != 4 || len(results) != 3 {
+		t.Fatalf("calls = %d, inline results = %d: %v", calls, len(results), parts)
+	}
+	if r := results["run-1"]; r["status"] != statusError || r["content"] != "npm ERR! missing script" || r["toolName"] != "run_shell_command" {
+		t.Errorf("failed command = %v", r)
+	}
+	if r := results["rep-1"]; r["status"] != statusOK || !strings.Contains(toStr(r["content"]), "+b") {
+		t.Errorf("replace = %v", r)
+	}
+	if r := results["cancel-1"]; r["status"] != statusInterrupted || r["content"] != "Command was cancelled by the user." {
+		t.Errorf("cancelled = %v", r)
+	}
+	later := msgs[2]["content"].([]map[string]any)
+	if len(later) != 1 || later[0]["callId"] != "late-1" || later[0]["status"] != statusOK || later[0]["content"] != "the file" {
+		t.Fatalf("the user row must skip the answered call and carry the late one with its status: %v", later)
+	}
+}

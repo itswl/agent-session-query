@@ -71,17 +71,30 @@ func geminiThoughts(v any) string {
 	return ""
 }
 
-// geminiParts folds one Gemini message into the shared block array. Tool-driven
-// sessions carry very little prose: when a call is issued, content is the empty string
-// and the substance sits in toolCalls (name + args, no result — the result arrives as a
-// functionResponse on a later user row). A user row's content array carries those
-// functionResponse entries back. thoughts goes first, matching the other sources.
-func geminiParts(m map[string]any) []map[string]any {
+// geminiFolder folds Gemini messages into the shared block array across one scan.
+//
+// Tool-driven sessions carry very little prose: when a call is issued, content is the
+// empty string and the substance sits in toolCalls (id + name + args). Where the result
+// lands has changed over Gemini CLI's versions. Older files answer on a later user row, as
+// a functionResponse entry in its content array, and echo that same response under the
+// call's result field without the real output — so a result field alone is not a result.
+// Newer files write a status onto the toolCalls entry, with the output as resultDisplay
+// (a string, or a file diff object) or under result. A status is the signal: with one,
+// the call is answered in place and the user row's copy, if any, is skipped; without one,
+// the user row is the answer. statuses carries a status that arrived without any output
+// to the user row that brings it. thoughts goes first, matching the other sources.
+type geminiFolder struct {
+	full     bool
+	answered map[string]bool
+	statuses map[string]string
+}
+
+func (g geminiFolder) parts(m map[string]any) []map[string]any {
 	parts := []map[string]any{}
 	switch content := m["content"].(type) {
 	case string:
 		if content != "" {
-			parts = append(parts, map[string]any{"type": "text", "content": content})
+			parts = append(parts, textBlock(content))
 		}
 	case []any:
 		for _, item := range content {
@@ -90,15 +103,14 @@ func geminiParts(m map[string]any) []map[string]any {
 				continue
 			}
 			if text, ok := mm["text"].(string); ok && text != "" {
-				parts = append(parts, map[string]any{"type": "text", "content": text})
+				parts = append(parts, textBlock(text))
 			}
 			if fr, ok := mm["functionResponse"].(map[string]any); ok {
-				output := contentText(getMap(fr, "response")["output"])
-				parts = append(parts, map[string]any{
-					"type":     "toolResult",
-					"toolName": strOr(fr["name"], ""),
-					"content":  truncate(output, 500, "...[truncated]"),
-				})
+				id := strOr(fr["id"], "")
+				if id != "" && g.answered != nil && g.answered[id] {
+					continue // already answered on the call itself
+				}
+				parts = append(parts, g.result(id, strOr(fr["name"], ""), getMap(fr, "response"), "", g.statusOf(id)))
 			}
 		}
 	}
@@ -107,16 +119,80 @@ func geminiParts(m map[string]any) []map[string]any {
 		if !ok {
 			continue
 		}
-		parts = append(parts, map[string]any{
-			"type":      "toolCall",
-			"name":      strOr(mm["name"], ""),
-			"arguments": getOr(mm, "args", map[string]any{}),
-		})
+		id, name := strOr(mm["id"], ""), strOr(mm["name"], "")
+		parts = append(parts, toolCallBlock(id, name, getOr(mm, "args", map[string]any{})))
+		// The newer shape answers the call in place: a status, and the output as
+		// resultDisplay (a string, or a file diff object) or under result[]
+		status := strOr(mm["status"], "")
+		switch status {
+		case "":
+			continue // the older shape: the user row that follows carries the answer
+		case "executing", "pending", "scheduled", "validating", "awaiting_approval":
+			continue // still running when the file was written: no result yet
+		}
+		display := ""
+		switch d := mm["resultDisplay"].(type) {
+		case string:
+			display = d
+		case map[string]any:
+			display = strOr(d["fileDiff"], "")
+		}
+		var response map[string]any
+		for _, r := range getSlice(mm, "result") {
+			if rm, ok := r.(map[string]any); ok {
+				response = getMap(getMap(rm, "functionResponse"), "response")
+				break
+			}
+		}
+		if display == "" && response == nil {
+			// A verdict without output: keep it for the user row that brings the output
+			if id != "" && g.statuses != nil {
+				g.statuses[id] = status
+			}
+			continue
+		}
+		parts = append(parts, g.result(id, name, response, display, status))
+		if id != "" && g.answered != nil {
+			g.answered[id] = true
+		}
 	}
 	if thoughts := geminiThoughts(m["thoughts"]); thoughts != "" {
-		parts = append([]map[string]any{{"type": "thinking", "content": truncate(thoughts, 1000, "...[truncated]")}}, parts...)
+		parts = append([]map[string]any{thinkingBlock(thoughts, g.full)}, parts...)
 	}
 	return parts
+}
+
+// statusOf is the status a call's entry recorded without any output, for the user row
+func (g geminiFolder) statusOf(id string) string {
+	if g.statuses == nil {
+		return ""
+	}
+	return g.statuses[id]
+}
+
+// result builds a toolResult from whichever of the two shapes supplied it: the response
+// object's output or error, or the display text. An error field is the verdict when the
+// entry carries no status of its own.
+func (g geminiFolder) result(id, name string, response map[string]any, display, status string) map[string]any {
+	output := contentText(response["output"])
+	errText := contentText(response["error"])
+	content := firstNonEmpty(display, output, errText)
+	outcome := toolOutcome{}
+	switch status {
+	case "success", "completed":
+		outcome.status = statusOK
+	case "error":
+		outcome.status = statusError
+	case "cancelled", "canceled":
+		outcome.status = statusInterrupted
+	default:
+		if errText != "" {
+			outcome.status = statusError
+		} else if response != nil {
+			outcome.status = statusOK
+		}
+	}
+	return outcome.apply(toolResultBlock(id, name, content, g.full))
 }
 
 // eachGeminiEntry yields messages line by line. A Gemini jsonl is an append log shaped
@@ -264,6 +340,7 @@ func (s *GeminiSource) Messages(r record, q messageQuery) []map[string]any {
 	sink := newMessageSink(q)
 	// One session may span several files (see mergeGeminiSessions); filename order is
 	// chronological, so reading them in sequence reconstructs the conversation
+	folder := geminiFolder{full: q.full, answered: map[string]bool{}, statuses: map[string]string{}}
 	for _, path := range geminiFilesOf(r) {
 		eachGeminiEntry(path, func(m map[string]any) bool {
 			if m["type"] != "user" && m["type"] != "gemini" {
@@ -277,7 +354,7 @@ func (s *GeminiSource) Messages(r record, q messageQuery) []map[string]any {
 				"id":        getOr(m, "id", ""),
 				"role":      role,
 				"timestamp": getOr(m, "timestamp", ""),
-				"content":   geminiParts(m),
+				"content":   folder.parts(m),
 			})
 		})
 	}
@@ -336,7 +413,7 @@ func (s *GeminiSource) Final(r record) map[string]any {
 
 	texts := []string{}
 	toolCalls := []any{}
-	for _, p := range geminiParts(lastGemini) {
+	for _, p := range (geminiFolder{}).parts(lastGemini) {
 		switch p["type"] {
 		case "text":
 			if c := strField(p, "content"); c != "" {
@@ -349,7 +426,7 @@ func (s *GeminiSource) Final(r record) map[string]any {
 			})
 		}
 	}
-	thinking := truncate(geminiThoughts(lastGemini["thoughts"]), 1000, "...[truncated]")
+	thinking, _ := clip(geminiThoughts(lastGemini["thoughts"]), thinkingLimit, false)
 	return map[string]any{
 		"status":       "done",
 		"isFinal":      true,

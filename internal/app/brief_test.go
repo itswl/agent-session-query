@@ -291,3 +291,83 @@ func TestBriefReadsTheTailNotTheHead(t *testing.T) {
 		t.Fatalf("at older than the tail = %v", err)
 	}
 }
+
+// TestRoundFailuresAndChanges: a round says how many tool calls failed, and tells the
+// files it changed from the files it merely read. Before this the two were one list,
+// which read as "changed twelve files" after reading eleven and editing one, and a failed
+// edit counted as a change.
+func TestRoundFailuresAndChanges(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "proj", "ffff.jsonl"),
+		`{"type":"user","sessionId":"ffff","cwd":"/w","timestamp":"2026-10-01T10:00:00Z","message":{"role":"user","content":"fix the build"}}`,
+		`{"type":"assistant","timestamp":"2026-10-01T10:00:01Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"/x/readme.md"}}]}}`,
+		`{"type":"user","timestamp":"2026-10-01T10:00:02Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r1","content":"text"}]}}`,
+		`{"type":"assistant","timestamp":"2026-10-01T10:00:03Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"e1","name":"Edit","input":{"file_path":"/x/a.go","old_string":"a","new_string":"b"}}]}}`,
+		`{"type":"user","timestamp":"2026-10-01T10:00:04Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"e1","is_error":true,"content":"String to replace not found"}]}}`,
+		`{"type":"assistant","timestamp":"2026-10-01T10:00:05Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"w1","name":"Write","input":{"file_path":"/x/b.go","content":"package x"}}]}}`,
+		`{"type":"user","timestamp":"2026-10-01T10:00:06Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"w1","content":"ok"}]}}`,
+		`{"type":"assistant","timestamp":"2026-10-01T10:00:07Z","message":{"role":"assistant","content":[{"type":"text","text":"wrote b.go, a.go did not match"}]}}`,
+	)
+	api := newSessionQueryAPI([]SessionSource{newClaudeSource(root)}, 0)
+	sr, err := api.roundsOf("ffff", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := sr.rounds[0]
+	if r.failures != 1 || r.toolCalls != 3 {
+		t.Errorf("failures = %d, toolCalls = %d", r.failures, r.toolCalls)
+	}
+	if strings.Join(r.files, ",") != "/x/readme.md,/x/a.go,/x/b.go" {
+		t.Errorf("files touched = %v", r.files)
+	}
+	if strings.Join(r.changed, ",") != "/x/b.go" {
+		t.Errorf("files changed = %v (the failed Edit is not a change, the Read never was)", r.changed)
+	}
+
+	out, _ := api.sessionRounds("ffff", "")
+	row := out["rounds"].([]map[string]any)[0]
+	if row["failures"] != 1 || strings.Join(row["filesChanged"].([]string), ",") != "/x/b.go" {
+		t.Errorf("rounds row = %v", row)
+	}
+
+	brief, err := api.sessionBrief("ffff", "", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"- Changed: /x/b.go",
+		"- Files: /x/readme.md, /x/a.go, /x/b.go",
+		"- Tools: read 1 · write 2 · failed 1",
+		// the cheapest handoff: the command that reopens the session, in its directory
+		"- resume: cd /w && claude --resume ffff",
+	} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("brief lacks %q:\n%s", want, brief)
+		}
+	}
+}
+
+// TestSplitRoundsRespectsInjectedAndEvents: a user row the CLI assembled (injected) does
+// not open a round, and a recorded interruption event marks the round interrupted even
+// when the next ask has not come yet
+func TestSplitRoundsRespectsInjectedAndEvents(t *testing.T) {
+	text := func(s string) []map[string]any { return []map[string]any{textBlock(s)} }
+	rounds := splitRounds([]map[string]any{
+		{"role": "user", "injected": true, "timestamp": "2026-10-01T10:00:00Z", "content": text("# AGENTS.md instructions")},
+		{"role": "user", "timestamp": "2026-10-01T10:00:01Z", "content": text("real ask")},
+		{"role": "assistant", "timestamp": "2026-10-01T10:00:02Z", "content": []map[string]any{toolCallBlock("c1", "shell", map[string]any{"command": "sleep"})}},
+		{"role": "system", "timestamp": "2026-10-01T10:00:03Z", "content": []map[string]any{eventBlock(eventInterrupted, "Turn aborted: interrupted")}},
+	})
+	if len(rounds) != 1 {
+		t.Fatalf("rounds = %d, want 1 (the injected row starts nothing)", len(rounds))
+	}
+	if rounds[0].asked != "real ask" || !rounds[0].interrupted {
+		t.Fatalf("round = %+v", rounds[0])
+	}
+	// The rounds index marks a failed round distinctly from an interrupted one
+	failed := round{index: 1, failures: 2, asked: "x"}
+	brief := renderBrief(record{fields: map[string]any{"sessionId": "s"}}, []round{failed, {index: 2, interrupted: true, asked: "y"}}, 2, 2, 2)
+	if !strings.Contains(brief, "✗ x · 2 failed") || !strings.Contains(brief, "⚠ y") {
+		t.Errorf("rounds index marks = \n%s", brief)
+	}
+}

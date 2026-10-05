@@ -215,10 +215,10 @@ func (s *JsonMapSource) Messages(r record, q messageQuery) []map[string]any {
 	}
 	eachJSONL(path, func(obj map[string]any) bool {
 		if obj["type"] == "message" {
-			return sink.add(s.formatMessage(obj))
+			return sink.add(s.formatMessage(obj, q.full))
 		}
 		if role := obj["role"]; role == "user" || role == "assistant" {
-			return sink.add(s.formatMessage(obj))
+			return sink.add(s.formatMessage(obj, q.full))
 		}
 		return true
 	})
@@ -239,7 +239,7 @@ func (s *JsonMapSource) Search(ctx context.Context, r record, q searchQuery) []m
 }
 
 // formatMessage renders one message (OpenClaw's content array / Hermes's string).
-func (s *JsonMapSource) formatMessage(msg map[string]any) map[string]any {
+func (s *JsonMapSource) formatMessage(msg map[string]any, full bool) map[string]any {
 	var content any
 	var role string
 	if msg["type"] == "message" {
@@ -267,32 +267,32 @@ func (s *JsonMapSource) formatMessage(msg map[string]any) map[string]any {
 			}
 			switch m["type"] {
 			case "text":
-				parts = append(parts, map[string]any{"type": "text", "content": strField(m, "text")})
+				parts = append(parts, textBlock(strField(m, "text")))
 			case "thinking":
-				parts = append(parts, map[string]any{"type": "thinking", "content": truncate(strField(m, "thinking"), 1000, "...[truncated]")})
+				parts = append(parts, thinkingBlock(strField(m, "thinking"), full))
 			case "toolCall":
-				args := m["arguments"]
-				if args == nil {
-					args = map[string]any{}
-				}
-				parts = append(parts, map[string]any{"type": "toolCall", "name": strField(m, "name"), "arguments": args})
+				parts = append(parts, toolCallBlock(strField(m, "id"), strField(m, "name"), getOr(m, "arguments", map[string]any{})))
 			case "toolResult":
 				resultText := ""
 				for _, raw := range getSlice(m, "content") {
 					if rm, ok := raw.(map[string]any); ok && rm["type"] == "text" {
-						resultText = truncate(strField(rm, "text"), 500, "...[truncated]")
+						resultText = strField(rm, "text")
 					}
 				}
-				parts = append(parts, map[string]any{"type": "toolResult", "toolName": strField(m, "toolName"), "content": resultText})
+				block := toolResultBlock(strField(m, "toolCallId"), strField(m, "toolName"), resultText, full)
+				if _, has := m["isError"]; has {
+					block = toolOutcome{status: statusFromError(truthy(m["isError"]))}.apply(block)
+				}
+				parts = append(parts, block)
 			}
 		}
 	case string:
 		if role == "assistant" {
 			if reasoning := strField(msg, "reasoning"); reasoning != "" {
-				parts = append(parts, map[string]any{"type": "thinking", "content": truncate(reasoning, 1000, "...[truncated]")})
+				parts = append(parts, thinkingBlock(reasoning, full))
 			}
 		}
-		parts = append(parts, map[string]any{"type": "text", "content": c})
+		parts = append(parts, textBlock(c))
 	}
 
 	return map[string]any{

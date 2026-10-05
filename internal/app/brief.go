@@ -32,22 +32,36 @@ var errNoSession = errors.New("no session matches the pattern")
 
 // round is one exchange: a real user message and everything that happened until the
 // next one.
+//
+// files is every file a tool named — read, searched or written — and changed is the
+// subset a write-kind call touched and did not fail at. The two used to be one list, which
+// read as "the round changed twelve files" when it had read eleven and edited one.
+// failures counts the tool results that reported an error or an interruption; it is the
+// number a reader scans a session for first, and the one a brief handed to another agent
+// must not leave out.
 type round struct {
 	index       int
 	startAt     string
 	endAt       string
 	messages    int
 	toolCalls   int
+	failures    int
 	files       []string
+	changed     []string
 	kinds       map[string]int
 	asked       string
 	outcome     string
 	interrupted bool
+
+	// pending holds the write-kind calls still waiting for their result, by call id, so
+	// that a failed edit does not count as a change
+	pending map[string]string
 }
 
-// isRoundStart: a user message carrying human words that is not command plumbing
+// isRoundStart: a user message carrying human words that is not command plumbing, and
+// not one the CLI assembled (a Codex AGENTS.md or environment row carries injected: true)
 func isRoundStart(m map[string]any) bool {
-	if toStr(m["role"]) != "user" {
+	if toStr(m["role"]) != "user" || truthy(m["injected"]) {
 		return false
 	}
 	text := strings.TrimSpace(messageText(m["content"]))
@@ -139,7 +153,7 @@ func splitRounds(messages []map[string]any) []round {
 		starting := isRoundStart(m)
 		if starting {
 			if cur != nil {
-				cur.interrupted = humanLast
+				cur.interrupted = cur.interrupted || humanLast
 				rounds = append(rounds, *cur)
 			}
 			cur = &round{
@@ -147,6 +161,7 @@ func splitRounds(messages []map[string]any) []round {
 				startAt: toStr(m["timestamp"]),
 				asked:   strings.TrimSpace(messageText(m["content"])),
 				kinds:   map[string]int{},
+				pending: map[string]string{},
 			}
 		} else if cur == nil {
 			continue
@@ -155,12 +170,28 @@ func splitRounds(messages []map[string]any) []round {
 		cur.messages++
 		humanLast = starting
 		for _, block := range contentBlocks(m["content"]) {
-			if toStr(block["type"]) != "toolCall" {
-				continue
+			switch toStr(block["type"]) {
+			case "toolCall":
+				cur.toolCalls++
+				cur.files = appendFilePath(cur.files, block["arguments"])
+				kind := toolKindOf(toStr(block["name"]))
+				cur.kinds[kind]++
+				if kind == "write" {
+					cur.noteWrite(toStr(block["id"]), block["arguments"])
+				}
+			case "toolResult":
+				failed := isFailedResult(block)
+				if failed {
+					cur.failures++
+				}
+				cur.settleWrite(toStr(block["callId"]), failed)
+			case "event":
+				// The user stopping the turn is recorded as an event by the sources that
+				// know it happened; the ask-after-ask heuristic below catches the rest
+				if toStr(block["kind"]) == eventInterrupted {
+					cur.interrupted = true
+				}
 			}
-			cur.toolCalls++
-			cur.files = appendFilePath(cur.files, block["arguments"])
-			cur.kinds[toolKindOf(toStr(block["name"]))]++
 		}
 		if role == "assistant" {
 			if text := strings.TrimSpace(messageText(m["content"])); text != "" {
@@ -169,10 +200,43 @@ func splitRounds(messages []map[string]any) []round {
 		}
 	}
 	if cur != nil {
-		cur.interrupted = humanLast
+		cur.interrupted = cur.interrupted || humanLast
 		rounds = append(rounds, *cur)
 	}
 	return rounds
+}
+
+// noteWrite records a write-kind call. One without an id cannot be paired with a result,
+// so it counts as a change on the spot; one with an id waits for its result.
+func (r *round) noteWrite(id string, arguments any) {
+	files := appendFilePath(nil, arguments)
+	if len(files) == 0 {
+		return
+	}
+	if id == "" {
+		r.changed = appendUnique(r.changed, files[0])
+		return
+	}
+	r.pending[id] = files[0]
+}
+
+// settleWrite pairs a result with its write call: a failure is not a change
+func (r *round) settleWrite(callID string, failed bool) {
+	file, ok := r.pending[callID]
+	if !ok {
+		return
+	}
+	delete(r.pending, callID)
+	if !failed {
+		r.changed = appendUnique(r.changed, file)
+	}
+}
+
+func appendUnique(list []string, s string) []string {
+	if containsString(list, s) {
+		return list
+	}
+	return append(list, s)
 }
 
 // capText shortens s to about n characters — runes, not bytes: asks are often CJK and
@@ -323,15 +387,17 @@ func (a *SessionQueryAPI) sessionRounds(pattern, sourceWanted string) (map[strin
 	list := make([]map[string]any, 0, len(rounds))
 	for _, r := range rounds {
 		list = append(list, map[string]any{
-			"round":       r.index,
-			"startAt":     r.startAt,
-			"endAt":       r.endAt,
-			"messages":    r.messages,
-			"toolCalls":   r.toolCalls,
-			"files":       r.files,
-			"asked":       capText(r.asked, 160),
-			"outcome":     capText(r.outcome, 240),
-			"interrupted": r.interrupted,
+			"round":        r.index,
+			"startAt":      r.startAt,
+			"endAt":        r.endAt,
+			"messages":     r.messages,
+			"toolCalls":    r.toolCalls,
+			"failures":     r.failures,
+			"files":        nonNilStrings(r.files),
+			"filesChanged": nonNilStrings(r.changed),
+			"asked":        capText(r.asked, 160),
+			"outcome":      capText(r.outcome, 240),
+			"interrupted":  r.interrupted,
 		})
 	}
 	return map[string]any{
@@ -383,6 +449,14 @@ func (a *SessionQueryAPI) sessionBrief(pattern, sourceWanted string, roundNo int
 	return renderBrief(item, rounds, selected, sr.scanned, sr.total), nil
 }
 
+// nonNilStrings keeps an empty list an empty JSON array rather than null
+func nonNilStrings(list []string) []string {
+	if list == nil {
+		return []string{}
+	}
+	return list
+}
+
 // renderBrief lays the brief out in fixed sections: the headers are the interface the
 // receiving side prompts around, not decoration.
 func renderBrief(item record, rounds []round, selected, scanned, total int) string {
@@ -398,6 +472,15 @@ func renderBrief(item record, rounds []round, selected, scanned, total int) stri
 	fmt.Fprintf(&b, "- sessionId: %s\n", item.str("sessionId"))
 	if file := item.str("file"); file != "" {
 		fmt.Fprintf(&b, "- file: %s\n", file)
+	}
+	// The cheapest handoff of all is to reopen the session in the CLI that wrote it, so
+	// the brief says how, with the cd the page prepends for the same reason (see
+	// resumeCommand): the agent is found from anywhere, but it works where it is launched
+	if resume := item.resumeCommand(); resume != "" {
+		if cwd := item.str("cwd"); isAbsolutePath(cwd) {
+			resume = "cd " + shellArg(cwd) + " && " + resume
+		}
+		fmt.Fprintf(&b, "- resume: %s\n", resume)
 	}
 	if len(rounds) > 0 {
 		span := rounds[len(rounds)-1].endAt
@@ -417,11 +500,14 @@ func renderBrief(item record, rounds []round, selected, scanned, total int) stri
 			shown = append(append([]round{}, rounds[:5]...), rounds[len(rounds)-15:]...)
 		}
 		for _, r := range shown {
-			mark := "✓"
-			if r.interrupted {
+			mark, note := "✓", ""
+			switch {
+			case r.failures > 0:
+				mark, note = "✗", fmt.Sprintf(" · %d failed", r.failures)
+			case r.interrupted:
 				mark = "⚠"
 			}
-			fmt.Fprintf(&b, "- #%d %s %s %s\n", r.index, shortTime(r.startAt), mark, capText(r.asked, 100))
+			fmt.Fprintf(&b, "- #%d %s %s %s%s\n", r.index, shortTime(r.startAt), mark, capText(r.asked, 100), note)
 		}
 		if len(shown) < len(rounds) {
 			fmt.Fprintf(&b, "- … %d rounds not shown\n", len(rounds)-len(shown))
@@ -438,27 +524,29 @@ func renderBrief(item record, rounds []round, selected, scanned, total int) stri
 		}
 		b.WriteString(header + "\n\n")
 		fmt.Fprintf(&b, "- Asked: %s\n", capText(r.asked, 300))
-		if len(r.files) > 0 {
-			files, more := r.files, ""
-			if len(files) > 20 {
-				more = fmt.Sprintf(" … and %d more", len(files)-20)
-				files = files[:20]
-			}
-			fmt.Fprintf(&b, "- Files: %s%s\n", strings.Join(files, ", "), more)
+		if len(r.changed) > 0 {
+			fmt.Fprintf(&b, "- Changed: %s\n", joinFiles(r.changed))
 		}
-		if len(r.kinds) > 0 {
+		if len(r.files) > 0 {
+			fmt.Fprintf(&b, "- Files: %s\n", joinFiles(r.files))
+		}
+		if len(r.kinds) > 0 || r.toolCalls > 0 {
 			kinds := make([]string, 0, len(r.kinds))
 			for kind := range r.kinds {
 				kinds = append(kinds, kind)
 			}
 			sort.Strings(kinds)
-			parts := make([]string, 0, len(kinds))
+			parts := make([]string, 0, len(kinds)+1)
 			for _, kind := range kinds {
 				parts = append(parts, fmt.Sprintf("%s %d", kind, r.kinds[kind]))
 			}
+			if len(parts) == 0 {
+				parts = append(parts, strconv.Itoa(r.toolCalls))
+			}
+			if r.failures > 0 {
+				parts = append(parts, fmt.Sprintf("failed %d", r.failures))
+			}
 			fmt.Fprintf(&b, "- Tools: %s\n", strings.Join(parts, " · "))
-		} else if r.toolCalls > 0 {
-			fmt.Fprintf(&b, "- Tools: %d\n", r.toolCalls)
 		}
 		ended := r.outcome
 		if ended == "" {
@@ -486,6 +574,26 @@ func renderBrief(item record, rounds []round, selected, scanned, total int) stri
 		fmt.Fprintf(&b, "\nDig deeper: GET /sessions/%s/messages?limit=200 — or MCP get_messages with pattern=%q. session_brief takes round=/at= for another round.\n", id, id)
 	}
 	return b.String()
+}
+
+// joinFiles lists up to twenty files and says how many more there were
+func joinFiles(files []string) string {
+	more := ""
+	if len(files) > 20 {
+		more = fmt.Sprintf(" … and %d more", len(files)-20)
+		files = files[:20]
+	}
+	return strings.Join(files, ", ") + more
+}
+
+// isAbsolutePath: a plain absolute path, Unix or Windows. A labeled --path instance
+// prefixes cwd with its label (box2:/srv/proj), and a cd to that fails — and since the two
+// halves are joined by &&, the resume would never run.
+func isAbsolutePath(p string) bool {
+	if strings.HasPrefix(p, "/") {
+		return true
+	}
+	return len(p) >= 3 && ((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z')) && p[1] == ':' && (p[2] == '\\' || p[2] == '/')
 }
 
 // briefHTTPError maps a brief-layer error onto a status and payload. Only the miss is a

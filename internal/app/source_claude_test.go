@@ -94,3 +94,109 @@ func TestClaudeHeadStopsEarly(t *testing.T) {
 		t.Fatalf("list = %v", list)
 	}
 }
+
+// TestClaudeToolStatusAndEvents: Claude records how every tool call ended — is_error on
+// the result, interrupted on the row's toolUseResult, and the placeholder text a stopped
+// call gets — and none of it was read, so a failed Bash and a successful one looked the
+// same. The system rows worth a reader's attention (a compaction, a hook that failed)
+// become events; the bookkeeping rows yield nothing and are not counted.
+func TestClaudeToolStatusAndEvents(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "proj", "eeee.jsonl")
+	write(t, path,
+		`{"type":"user","uuid":"u1","sessionId":"eeee","cwd":"/w","timestamp":"2026-10-01T10:00:00Z","message":{"role":"user","content":"build it"}}`,
+		`{"type":"assistant","uuid":"a1","timestamp":"2026-10-01T10:00:01Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"make"}}]}}`,
+		`{"type":"user","uuid":"u2","timestamp":"2026-10-01T10:00:02Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"make: command not found"}]},"toolUseResult":{"stdout":"","stderr":"make: command not found","interrupted":false}}`,
+		`{"type":"assistant","uuid":"a2","timestamp":"2026-10-01T10:00:03Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"sleep 100"}}]}}`,
+		`{"type":"user","uuid":"u3","timestamp":"2026-10-01T10:00:04Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"[Request interrupted by user for tool use]"}]},"toolUseResult":{"interrupted":true}}`,
+		`{"type":"user","uuid":"u4","timestamp":"2026-10-01T10:00:05Z","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}`,
+		`{"type":"system","subtype":"compact_boundary","uuid":"s1","timestamp":"2026-10-01T10:00:06Z","content":"Conversation compacted"}`,
+		`{"type":"system","subtype":"stop_hook_summary","uuid":"s2","timestamp":"2026-10-01T10:00:07Z","hookErrors":["notify.sh exited with code 127"]}`,
+		`{"type":"system","subtype":"stop_hook_summary","uuid":"s3","timestamp":"2026-10-01T10:00:08Z","hookErrors":[]}`,
+		`{"type":"system","subtype":"turn_duration","uuid":"s4","timestamp":"2026-10-01T10:00:09Z","durationMs":1234}`,
+		`{"type":"assistant","uuid":"a3","timestamp":"2026-10-01T10:00:10Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"tool_use","id":"t3","name":"Edit","input":{"file_path":"/w/a.go"}},{"type":"text","text":"done"}]}}`,
+		`{"type":"user","uuid":"u5","timestamp":"2026-10-01T10:00:11Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t3","is_error":false,"content":[{"type":"text","text":"ok"}]}]}}`,
+	)
+	s := newClaudeSource(root)
+	rec := s.List()[0]
+	msgs := s.Messages(rec, messageQuery{limit: 100})
+	final := s.Final(rec)
+	if n := claudeCountMessages(path); n != len(msgs) || final["messageCount"] != len(msgs) {
+		t.Fatalf("counts disagree: counter %d, messages %d, final %v", n, len(msgs), final["messageCount"])
+	}
+	// 10 conversation and event rows: the empty hook summary and turn_duration are not
+	// messages
+	if len(msgs) != 10 {
+		t.Fatalf("messages = %d", len(msgs))
+	}
+
+	results := map[string]map[string]any{}
+	events := []string{}
+	for _, m := range msgs {
+		for _, block := range m["content"].([]map[string]any) {
+			switch block["type"] {
+			case "toolResult":
+				results[toStr(block["callId"])] = block
+			case "event":
+				events = append(events, toStr(block["kind"]))
+				if m["id"] == "u4" && block["content"] != "[Request interrupted by user]" {
+					t.Errorf("interruption event = %v", block)
+				}
+			case "text":
+				if m["id"] == "u4" {
+					t.Error("the interruption notice must be an event, not the user's words")
+				}
+			}
+		}
+	}
+	if r := results["t1"]; r["toolName"] != "Bash" || r["status"] != statusError || r["content"] != "make: command not found" {
+		t.Errorf("failed Bash = %v", r)
+	}
+	if r := results["t2"]; r["status"] != statusInterrupted || r["toolName"] != "Bash" {
+		t.Errorf("interrupted Bash = %v", r)
+	}
+	if r := results["t3"]; r["status"] != statusOK || r["toolName"] != "Edit" {
+		t.Errorf("successful Edit = %v", r)
+	}
+	if strings.Join(events, ",") != "interrupted,compaction,hook_error" {
+		t.Errorf("events = %v", events)
+	}
+	// The final result's tool calls keep their ids too
+	calls := final["toolCalls"].([]any)
+	if len(calls) != 1 || calls[0].(map[string]any)["id"] != "t3" {
+		t.Errorf("final toolCalls = %v", calls)
+	}
+}
+
+// TestClaudeFullRead: the ordinary read cuts tool output and thinking to a preview and says
+// so; a full read keeps every byte
+func TestClaudeFullRead(t *testing.T) {
+	root := t.TempDir()
+	long := strings.Repeat("line of output\n", 100)
+	write(t, filepath.Join(root, "proj", "ffff.jsonl"),
+		`{"type":"user","uuid":"u1","sessionId":"ffff","cwd":"/w","timestamp":"t","message":{"role":"user","content":"go"}}`,
+		`{"type":"assistant","uuid":"a1","timestamp":"t","message":{"role":"assistant","content":[{"type":"thinking","thinking":"`+strings.Repeat("думать ", 300)+`"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}`,
+		`{"type":"user","uuid":"u2","timestamp":"t","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"`+strings.ReplaceAll(long, "\n", `\n`)+`"}]}}`,
+	)
+	s := newClaudeSource(root)
+	rec := s.List()[0]
+
+	preview := s.Messages(rec, messageQuery{limit: 10})
+	cut := preview[2]["content"].([]map[string]any)[0]
+	if cut["truncated"] != true || !strings.HasSuffix(toStr(cut["content"]), truncationMark) {
+		t.Fatalf("the preview must be cut and say so: %v", cut)
+	}
+	thinking := preview[1]["content"].([]map[string]any)[0]
+	if thinking["truncated"] != true {
+		t.Fatalf("thinking must be cut in a preview read: %v", thinking)
+	}
+
+	whole := s.Messages(rec, messageQuery{limit: 10, full: true})
+	full := whole[2]["content"].([]map[string]any)[0]
+	if _, has := full["truncated"]; has || full["content"] != long {
+		t.Fatalf("a full read must keep the output whole: %v", full)
+	}
+	if _, has := whole[1]["content"].([]map[string]any)[0]["truncated"]; has {
+		t.Fatal("thinking must be whole in a full read")
+	}
+}

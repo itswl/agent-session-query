@@ -125,8 +125,20 @@ func (s *PiSource) Messages(r record, q messageQuery) []map[string]any {
 			return true
 		}
 		msg := getMap(obj, "message")
+		role := strOr(msg["role"], "unknown")
 		parts := []map[string]any{}
+		if role == "toolResult" {
+			// A tool result is its own message in Pi's format: toolCallId, toolName and
+			// isError ride on the message and the output is its content array. Measured
+			// locally over the newest 40 sessions: 554 of them, 49 with isError true.
+			text, _ := blockArrayText(msg["content"])
+			block := toolResultBlock(strField(msg, "toolCallId"), strField(msg, "toolName"), text, q.full)
+			parts = append(parts, toolOutcome{status: statusFromError(truthy(msg["isError"]))}.apply(block))
+		}
 		for _, item := range getSlice(msg, "content") {
+			if role == "toolResult" {
+				break // folded into the one block above
+			}
 			m, ok := item.(map[string]any)
 			if !ok {
 				continue
@@ -135,19 +147,22 @@ func (s *PiSource) Messages(r record, q messageQuery) []map[string]any {
 			_, hasText := m["text"]
 			switch {
 			case kind == "text" || hasText:
-				parts = append(parts, map[string]any{"type": "text", "content": strField(m, "text")})
+				parts = append(parts, textBlock(strField(m, "text")))
 			case kind == "thinking":
-				parts = append(parts, map[string]any{"type": "thinking", "content": truncate(strField(m, "thinking"), 1000, "...[truncated]")})
+				parts = append(parts, thinkingBlock(strField(m, "thinking"), q.full))
+			case kind == "toolCall":
+				parts = append(parts, toolCallBlock(strField(m, "id"), strField(m, "name"), getOr(m, "arguments", map[string]any{})))
 			default:
 				if kind == "" {
 					kind = "unknown"
 				}
-				parts = append(parts, map[string]any{"type": kind, "content": truncate(contentText(m), 500, "...[truncated]")})
+				cut, _ := clip(contentText(m), toolResultLimit, q.full)
+				parts = append(parts, map[string]any{"type": kind, "content": cut})
 			}
 		}
 		return sink.add(map[string]any{
 			"id":        getOr(obj, "id", ""),
-			"role":      strOr(msg["role"], "unknown"),
+			"role":      role,
 			"timestamp": getOr(msg, "timestamp", getOr(obj, "timestamp", "")),
 			"content":   parts,
 		})

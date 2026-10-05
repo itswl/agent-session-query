@@ -182,6 +182,7 @@ func (s *OpenClawSource) Messages(r record, q messageQuery) []map[string]any {
 				Timestamp  any    `json:"timestamp"`
 				ToolName   string `json:"toolName"`
 				ToolCallID string `json:"toolCallId"`
+				IsError    bool   `json:"isError"`
 				Content    any    `json:"content"`
 				Model      string `json:"model"`
 			} `json:"message"`
@@ -196,12 +197,10 @@ func (s *OpenClawSource) Messages(r record, q messageQuery) []map[string]any {
 		switch m.Role {
 		case "toolResult":
 			// A tool result is its own message; keep it one, as a single toolResult
-			// block — toolName travels on the message
+			// block — toolName, toolCallId and isError travel on the message
 			text, _ := blockArrayText(m.Content)
-			blocks = append(blocks, map[string]any{
-				"type": "toolResult", "toolName": m.ToolName,
-				"content": truncate(text, 500, "...[truncated]"),
-			})
+			block := toolResultBlock(m.ToolCallID, m.ToolName, text, q.full)
+			blocks = append(blocks, toolOutcome{status: statusFromError(m.IsError)}.apply(block))
 		default:
 			if content, ok := m.Content.([]any); ok {
 				for _, item := range content {
@@ -211,24 +210,21 @@ func (s *OpenClawSource) Messages(r record, q messageQuery) []map[string]any {
 					}
 					switch block["type"] {
 					case "text":
-						blocks = append(blocks, map[string]any{"type": "text", "content": strField(block, "text")})
+						blocks = append(blocks, textBlock(strField(block, "text")))
 					case "toolCall":
-						blocks = append(blocks, map[string]any{
-							"type":      "toolCall",
-							"name":      strField(block, "name"),
-							"arguments": getOr(block, "arguments", map[string]any{}),
-						})
+						blocks = append(blocks, toolCallBlock(strField(block, "id"), strField(block, "name"), getOr(block, "arguments", map[string]any{})))
 					case "thinking":
-						blocks = append(blocks, map[string]any{"type": "thinking", "content": strField(block, "thinking")})
+						blocks = append(blocks, thinkingBlock(strField(block, "thinking"), q.full))
 					default:
+						cut, _ := clip(contentText(block), toolResultLimit, q.full)
 						blocks = append(blocks, map[string]any{
 							"type":    strOr(block["type"], "unknown"),
-							"content": truncate(contentText(block), 500, "...[truncated]"),
+							"content": cut,
 						})
 					}
 				}
 			} else if text, ok := m.Content.(string); ok && text != "" {
-				blocks = append(blocks, map[string]any{"type": "text", "content": text})
+				blocks = append(blocks, textBlock(text))
 			}
 		}
 

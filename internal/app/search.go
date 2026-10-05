@@ -343,6 +343,9 @@ func hitRole(obj map[string]any) string {
 	if role := grokHitRole(obj); role != "" {
 		return role
 	}
+	if role := codexHitRole(obj); role != "" {
+		return role
+	}
 	return strOr(obj["type"], "")
 }
 

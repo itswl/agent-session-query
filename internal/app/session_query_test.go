@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1252,5 +1253,79 @@ func TestPublicOmitsMissingResumeCommand(t *testing.T) {
 	without := newRecord(map[string]any{"source": "gemini", "sessionId": "g-1"}, "").public()
 	if _, present := without["resumeCommand"]; present {
 		t.Errorf("gemini must not carry the key at all: %v", without)
+	}
+}
+
+// jsonUnmarshalString decodes one JSON line into a map, for fixtures written inline
+func jsonUnmarshalString(line string, into *map[string]any) error {
+	return json.Unmarshal([]byte(line), into)
+}
+
+// TestHTTPMessagesFull: the ordinary read cuts tool output to a preview and marks it; ?full=1
+// returns it whole, and the export always does — a document that cut every output at five
+// hundred characters was a preview of the session, not the session
+func TestHTTPMessagesFull(t *testing.T) {
+	root := t.TempDir()
+	long := strings.Repeat("0123456789", 80)
+	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_full.jsonl"),
+		`{"type":"session","id":"full-1","cwd":"/tmp"}`,
+		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"run"}]}}`,
+		`{"type":"message","id":"m2","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"seq"}}],"stopReason":"toolUse"}}`,
+		`{"type":"message","id":"m3","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash","content":[{"type":"text","text":"`+long+`"}],"isError":false}}`,
+		`{"type":"message","id":"m4","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"done"}]}}`,
+	)
+	sources := []SessionSource{newPiSource(root)}
+	api := newSessionQueryAPI(sources, 0)
+	srv := httptest.NewServer(newAPIServer(serverOptions{mode: "auto", sources: sources, api: api, maxConnections: 50}))
+	defer srv.Close()
+
+	_, body := get(t, srv.URL+"/sessions/full-1/messages", "")
+	result := body["messages"].([]any)[2].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if result["truncated"] != true || len(result["content"].(string)) >= len(long) {
+		t.Fatalf("the default read must cut and say so: %v", result)
+	}
+	_, body = get(t, srv.URL+"/sessions/full-1/messages?full=1", "")
+	result = body["messages"].([]any)[2].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if _, has := result["truncated"]; has || result["content"] != long {
+		t.Fatalf("?full=1 must return the whole output: %v", result)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/sessions/full-1/export", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(raw), long) {
+		t.Fatal("the export must carry the whole output")
+	}
+}
+
+// TestExportRendersOutcomes: a document says how each tool call ended and what happened
+// between the turns, in words a reader scans for
+func TestExportRendersOutcomes(t *testing.T) {
+	blocks := []map[string]any{
+		toolCallBlock("c1", "Bash", map[string]any{"command": "make"}),
+		toolOutcome{status: statusError, exitCode: 2, hasExit: true, durationMs: 2300}.apply(toolResultBlock("c1", "Bash", "no rule", false)),
+		eventBlock(eventCompaction, "Conversation compacted"),
+		toolOutcome{status: statusInterrupted}.apply(toolResultBlock("c2", "Bash", "", false)),
+	}
+	var md strings.Builder
+	writeBlocks(&md, blocks)
+	for _, want := range []string{"↳ Bash — failed · exit 2 · 2.3s", "> context compacted: Conversation compacted", "↳ Bash — interrupted"} {
+		if !strings.Contains(md.String(), want) {
+			t.Errorf("markdown lacks %q:\n%s", want, md.String())
+		}
+	}
+	var page strings.Builder
+	writeHTMLBlocks(&page, blocks)
+	if !strings.Contains(page.String(), `class="result failed"`) || !strings.Contains(page.String(), `class="event"`) {
+		t.Errorf("html lacks the outcome classes:\n%s", page.String())
+	}
+	for ms, want := range map[int64]string{300: "300ms", 2300: "2.3s", 45_000: "45s", 134_000: "2m14s", 7_200_000: "2h"} {
+		if got := formatDurationMs(ms); got != want {
+			t.Errorf("formatDurationMs(%d) = %q, want %q", ms, got, want)
+		}
 	}
 }

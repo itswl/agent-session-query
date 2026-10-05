@@ -46,6 +46,11 @@ type messageQuery struct {
 	// a match in the middle of a 16 000-message session is in neither end's window.
 	// Zero means "no anchoring", the usual case.
 	at time.Time
+	// full asks for tool output and thinking whole rather than cut to a preview (see
+	// blocks.go). The ordinary read cuts them, because a window of two hundred messages
+	// carrying every build log in full is megabytes; the export and a caller that wants
+	// the end of the output the preview dropped ask for this.
+	full bool
 }
 
 // messageSink collects messages according to a messageQuery.

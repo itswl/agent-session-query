@@ -189,3 +189,122 @@ func TestOpenCodeSearch(t *testing.T) {
 		t.Fatalf("a tool argument must not count as a body hit: %v", hits)
 	}
 }
+
+// openCodeV2Schema is the 2.x layout reduced to the columns the source reads: a session
+// row with its title, directory and times; one message row per message with the parts
+// inline under data.
+const openCodeV2Schema = `
+CREATE TABLE session_v2 (
+	id TEXT PRIMARY KEY, directory TEXT NOT NULL, title TEXT,
+	time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+CREATE TABLE session_message (
+	id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, seq INTEGER NOT NULL,
+	time_created INTEGER NOT NULL, data TEXT NOT NULL);`
+
+func newOpenCodeV2Fixture(t *testing.T, withV1 bool) *OpenCodeSource {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "opencode.db")
+	db, err := sql.Open("sqlite", sqliteURI(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	statements := []string{openCodeV2Schema,
+		`INSERT INTO session_v2 VALUES ('ses_v2', '/w/new', 'New layout', 1790000000000, 1790000100000)`,
+		`INSERT INTO session_message VALUES ('v2m1', 'ses_v2', 'user', 1, 1790000000000, '{"text":"hello v2"}')`,
+		`INSERT INTO session_message VALUES ('v2m2', 'ses_v2', 'assistant', 2, 1790000050000,
+			'{"role":"assistant","modelID":"gpt-x","providerID":"openai","finish":"stop","tokens":{"input":10,"output":5,"reasoning":0,"cache":{"read":1,"write":0}},"cost":0.01,"content":[{"type":"reasoning","text":"think"},{"type":"tool","name":"bash","id":"c9","state":{"status":"error","input":{"command":"false"},"error":"exit 1","metadata":{"exit":1},"time":{"start":1000,"end":1500}}},{"type":"text","text":"done v2"}]}')`,
+	}
+	if withV1 {
+		statements = append(statements, openCodeSchema,
+			`INSERT INTO session VALUES ('ses_old', '/w/old', 'Old layout', 'old', NULL, 1780000000000, 1780000100000, NULL, 0, 0, 0, 0, 0, 0)`,
+			`INSERT INTO message VALUES ('msg_o1', 'ses_old', 1780000000000, 1780000000000, '{"role":"user","time":{"created":1780000000000}}')`,
+			`INSERT INTO part VALUES ('po1', 'msg_o1', 'ses_old', 1, 1, '{"type":"text","text":"hello v1"}')`,
+			// a migrated copy keeps its id: it lives in session_v2 now and must not list twice
+			`INSERT INTO session VALUES ('ses_v2', '/w/new', 'New layout', 'new', NULL, 1790000000000, 1790000100000, NULL, 0, 0, 0, 0, 0, 0)`,
+		)
+	}
+	for _, stmt := range statements {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("executing %q failed: %v", stmt, err)
+		}
+	}
+	return newOpenCodeSource(path)
+}
+
+// TestOpenCodeV2: 2.x moved sessions to session_v2 and messages to session_message and
+// stopped writing the V1 tables, so a 2.x install listed nothing here and said nothing —
+// an empty source and a moved one answer alike.
+func TestOpenCodeV2(t *testing.T) {
+	s := newOpenCodeV2Fixture(t, false)
+	list := s.List()
+	if len(list) != 1 {
+		t.Fatalf("list = %d", len(list))
+	}
+	rec := list[0]
+	if rec.str("sessionId") != "ses_v2" || rec.str("cwd") != "/w/new" || rec.str("shortKey") != "New layout" {
+		t.Fatalf("record = %v", rec.fields)
+	}
+	if rec.get("messageCount") != int64(2) {
+		t.Errorf("messageCount = %v", rec.get("messageCount"))
+	}
+
+	msgs := s.Messages(rec, messageQuery{limit: 10})
+	if len(msgs) != 2 || msgs[0]["role"] != "user" || msgs[0]["content"].([]map[string]any)[0]["content"] != "hello v2" {
+		t.Fatalf("messages = %v", msgs)
+	}
+	blocks := msgs[1]["content"].([]map[string]any)
+	kinds := []string{}
+	for _, b := range blocks {
+		kinds = append(kinds, toStr(b["type"]))
+	}
+	if strings.Join(kinds, ",") != "thinking,toolCall,toolResult,text" {
+		t.Fatalf("assistant blocks = %v", kinds)
+	}
+	// a 2.x tool item names its tool as name and its call as id
+	if blocks[1]["id"] != "c9" || blocks[1]["name"] != "bash" {
+		t.Errorf("call = %v", blocks[1])
+	}
+	if r := blocks[2]; r["callId"] != "c9" || r["status"] != statusError || r["exitCode"] != 1 || r["durationMs"] != int64(500) || r["content"] != "error: exit 1" {
+		t.Errorf("result = %v", r)
+	}
+
+	final := s.Final(rec)
+	if final["text"] != "done v2" || final["isFinal"] != true || final["model"] != "openai/gpt-x" || final["messageCount"] != 2 {
+		t.Fatalf("final = %v", final)
+	}
+	usage := final["usage"].(map[string]any)
+	if usage["inputTokens"] != int64(10) || usage["cacheReadTokens"] != int64(1) || usage["estimatedCostUsd"] != 0.01 {
+		t.Errorf("usage = %v", usage)
+	}
+
+	hits := s.Search(context.Background(), rec, searchQuery{needle: "done", lowered: []byte("done"), limit: 10, perSession: 3})
+	if len(hits) != 1 || hits[0]["role"] != "assistant" || !strings.Contains(toStr(hits[0]["snippet"]), "done v2") {
+		t.Fatalf("search = %v", hits)
+	}
+	none := s.Search(context.Background(), rec, searchQuery{needle: "c9", lowered: []byte("c9"), limit: 10, perSession: 3})
+	if len(none) != 0 {
+		t.Errorf("a hit in a call id is not a body hit: %v", none)
+	}
+}
+
+// TestOpenCodeMixedSchemas: a database that saw 2.x and then 1.x again holds both layouts;
+// the V1 sessions that never migrated are listed beside the V2 ones, a migrated one once.
+func TestOpenCodeMixedSchemas(t *testing.T) {
+	s := newOpenCodeV2Fixture(t, true)
+	list := s.List()
+	ids := map[string]record{}
+	for _, rec := range list {
+		ids[rec.str("sessionId")] = rec
+	}
+	if len(list) != 2 || ids["ses_v2"].fields == nil || ids["ses_old"].fields == nil {
+		t.Fatalf("list = %v", list)
+	}
+	old := s.Messages(ids["ses_old"], messageQuery{limit: 10})
+	if len(old) != 1 || old[0]["content"].([]map[string]any)[0]["content"] != "hello v1" {
+		t.Fatalf("the V1 session must still read through the V1 tables: %v", old)
+	}
+	if s.Final(ids["ses_v2"])["text"] != "done v2" {
+		t.Error("the migrated session reads through V2")
+	}
+}

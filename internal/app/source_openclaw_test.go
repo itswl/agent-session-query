@@ -179,3 +179,40 @@ func TestOpenClawSearch(t *testing.T) {
 		}
 	}
 }
+
+// TestOpenClawToolResultStatus: the result message pairs with its call by toolCallId and
+// carries isError, which is the whole of what OpenClaw records about how a tool went
+func TestOpenClawToolResultStatus(t *testing.T) {
+	s := newOpenClawFixture(t)
+	msgs := s.Messages(recordOf(t, s, "ses_cli"), messageQuery{limit: 20})
+	call := msgs[1]["content"].([]map[string]any)[0]
+	if call["id"] != "c1" {
+		t.Fatalf("the call must carry its id: %v", call)
+	}
+	res := msgs[2]["content"].([]map[string]any)[0]
+	if res["callId"] != "c1" || res["status"] != statusOK {
+		t.Fatalf("the result must pair with the call and say it went fine: %v", res)
+	}
+
+	path := filepath.Join(t.TempDir(), "openclaw-agent.sqlite")
+	db, err := sql.Open("sqlite", sqliteURI(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{openClawSchema,
+		`INSERT INTO session_windows VALUES ('ses_err', 'agent:main:main', 'done', 1, 2, 2, 2, 'p', 'm', '')`,
+		`INSERT INTO transcript_events VALUES ('ses_err', 1, '{"type":"message","timestamp":"2026-10-01T10:00:00Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"c2","name":"bash","arguments":{"command":"false"}}]}}', 1)`,
+		`INSERT INTO transcript_events VALUES ('ses_err', 2, '{"type":"message","timestamp":"2026-10-01T10:00:01Z","message":{"role":"toolResult","toolCallId":"c2","toolName":"bash","isError":true,"content":[{"type":"text","text":"exit 1"}]}}', 2)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	db.Close()
+	errSource := newOpenClawSource([]string{path})
+	msgs = errSource.Messages(recordOf(t, errSource, "ses_err"), messageQuery{limit: 20})
+	res = msgs[1]["content"].([]map[string]any)[0]
+	if res["callId"] != "c2" || res["status"] != statusError || res["content"] != "exit 1" {
+		t.Fatalf("a failed tool = %v", res)
+	}
+}

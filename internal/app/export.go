@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"strconv"
 	"strings"
 )
 
@@ -337,14 +338,83 @@ func writeHTMLBlocks(b *strings.Builder, content any) {
 			fmt.Fprintf(b, "<details class=\"tool\"><summary>⚙ %s</summary><pre>%s</pre></details>\n",
 				html.EscapeString(strOr(block["name"], "(unnamed tool)")), html.EscapeString(string(args)))
 		case "toolResult":
-			fmt.Fprintf(b, "<details class=\"result\"><summary>↳ %s</summary><pre>%s</pre></details>\n",
-				html.EscapeString(strOr(block["toolName"], "result")), html.EscapeString(text))
+			class := "result"
+			if isFailedResult(block) {
+				class += " failed"
+			}
+			fmt.Fprintf(b, "<details class=\"%s\"><summary>↳ %s%s</summary><pre>%s</pre></details>\n",
+				class, html.EscapeString(strOr(block["toolName"], "result")),
+				html.EscapeString(resultOutcomeText(block)), html.EscapeString(text))
+		case "event":
+			fmt.Fprintf(b, "<p class=\"event\">%s</p>\n", html.EscapeString(eventText(block)))
 		default:
 			if text != "" {
 				fmt.Fprintf(b, "<pre>%s</pre>\n", html.EscapeString(text))
 			}
 		}
 	}
+}
+
+// resultOutcomeText is the suffix a rendered result carries: how it ended, in the words a
+// reader scans for — " — failed · exit 1 · 2.3s". Nothing when the source recorded nothing.
+func resultOutcomeText(block map[string]any) string {
+	parts := []string{}
+	switch toStr(block["status"]) {
+	case statusError:
+		parts = append(parts, "failed")
+	case statusInterrupted:
+		parts = append(parts, "interrupted")
+	}
+	if code, ok := toFloat(block["exitCode"]); ok && (code != 0 || len(parts) > 0) {
+		parts = append(parts, fmt.Sprintf("exit %d", int(code)))
+	}
+	if ms, ok := toFloat(block["durationMs"]); ok && ms > 0 {
+		parts = append(parts, formatDurationMs(int64(ms)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " — " + strings.Join(parts, " · ")
+}
+
+// eventText names an event the way the page does
+func eventText(block map[string]any) string {
+	label := map[string]string{
+		eventCompaction:  "context compacted",
+		eventInterrupted: "interrupted",
+		eventHookError:   "hook failed",
+		eventModelChange: "model changed",
+	}[toStr(block["kind"])]
+	if label == "" {
+		label = toStr(block["kind"])
+	}
+	if text := strOr(block["content"], ""); text != "" && text != label {
+		return label + ": " + text
+	}
+	return label
+}
+
+// formatDurationMs: 300ms / 2.4s / 1m12s / 1h3m
+func formatDurationMs(ms int64) string {
+	switch {
+	case ms < 1000:
+		return fmt.Sprintf("%dms", ms)
+	case ms < 10_000:
+		return strconv.FormatFloat(float64(ms)/1000, 'f', 1, 64) + "s"
+	case ms < 60_000:
+		return fmt.Sprintf("%ds", ms/1000)
+	case ms < 3_600_000:
+		m, sec := ms/60_000, (ms%60_000)/1000
+		if sec == 0 {
+			return fmt.Sprintf("%dm", m)
+		}
+		return fmt.Sprintf("%dm%ds", m, sec)
+	}
+	h, m := ms/3_600_000, (ms%3_600_000)/60_000
+	if m == 0 {
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dh%dm", h, m)
 }
 
 // exportStyles is inline so the page makes no requests at all
@@ -377,6 +447,8 @@ summary { cursor: pointer; padding: 5px 10px; font-size: 13px; }
 details.thinking summary { color: #6b7280; font-style: italic; }
 details.tool summary { color: #7c3aed; font-weight: 650; }
 details.result summary { color: #6b7280; }
+details.result.failed summary { color: #dc2626; }
+.event { margin: 8px 0; color: #6b7280; font-size: 13px; font-style: italic; }
 </style>
 `
 
@@ -415,7 +487,9 @@ func writeBlocks(b *strings.Builder, content any) {
 			fmt.Fprintf(b, "**⚙ %s**\n\n```json\n%s\n```\n\n", strOr(block["name"], "(unnamed tool)"), args)
 		case "toolResult":
 			label := strOr(block["toolName"], "result")
-			fmt.Fprintf(b, "↳ %s\n\n```\n%s\n```\n\n", label, strOr(block["content"], ""))
+			fmt.Fprintf(b, "↳ %s%s\n\n```\n%s\n```\n\n", label, resultOutcomeText(block), strOr(block["content"], ""))
+		case "event":
+			fmt.Fprintf(b, "> %s\n\n", eventText(block))
 		}
 	}
 }

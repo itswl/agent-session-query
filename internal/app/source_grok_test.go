@@ -256,3 +256,54 @@ func TestGrokTitleJoinsChunkedPrompt(t *testing.T) {
 		t.Errorf("shortKey = %q, want the whole prompt", got)
 	}
 }
+
+// TestGrokArchivedSessionsAndFailedTool: Grok moves an archived session from
+// ~/.grok/sessions to ~/.grok/archived_sessions beside it, and the list used to lose it
+// there. A tool call that ends with status failed is a failure the result records.
+func TestGrokArchivedSessionsAndFailedTool(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, "sessions")
+	live := filepath.Join(root, "%2Fw%2Flive", "11111111-1111-7111-8111-111111111111")
+	write(t, filepath.Join(live, "summary.json"),
+		`{"info":{"id":"11111111-1111-7111-8111-111111111111","cwd":"/w/live"},"generated_title":"Live one","last_active_at":"2026-10-01T10:00:00Z"}`)
+	write(t, filepath.Join(live, "updates.jsonl"),
+		`{"timestamp":1790000000,"method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hello"}}}}`)
+	archived := filepath.Join(home, "archived_sessions", "%2Fw%2Fold", "22222222-2222-7222-8222-222222222222")
+	write(t, filepath.Join(archived, "summary.json"),
+		`{"info":{"id":"22222222-2222-7222-8222-222222222222","cwd":"/w/old"},"generated_title":"Archived one","last_active_at":"2026-09-01T10:00:00Z"}`)
+	write(t, filepath.Join(archived, "updates.jsonl"),
+		`{"timestamp":1789000000,"method":"session/update","params":{"sessionId":"s2","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"run the build"}}}}`,
+		`{"timestamp":1789000001,"method":"session/update","params":{"sessionId":"s2","update":{"sessionUpdate":"tool_call","toolCallId":"call_9","title":"run_command","rawInput":{"command":"make"},"_meta":{"x.ai/tool":{"name":"run_command","kind":"execute"}}}}}`,
+		`{"timestamp":1789000002,"method":"session/update","params":{"sessionId":"s2","update":{"sessionUpdate":"tool_call_update","toolCallId":"call_9","status":"failed","content":[{"type":"content","content":{"type":"text","text":"make: *** No rule"}}]}}}`,
+	)
+
+	s := newGrokSource(root)
+	list := s.List()
+	if len(list) != 2 {
+		t.Fatalf("list = %d records, want the live and the archived session", len(list))
+	}
+	var old record
+	for _, rec := range list {
+		switch rec.str("shortKey") {
+		case "Live one":
+			if truthy(rec.get("archived")) {
+				t.Error("the live session must not be marked archived")
+			}
+		case "Archived one":
+			old = rec
+			if !truthy(rec.get("archived")) {
+				t.Error("the archived session must say so")
+			}
+		}
+	}
+	msgs := s.Messages(old, messageQuery{limit: 10})
+	parts := msgs[1]["content"].([]map[string]any)
+	if len(parts) != 2 || parts[0]["id"] != "call_9" || parts[1]["callId"] != "call_9" || parts[1]["status"] != statusError || parts[1]["toolName"] != "run_command" {
+		t.Fatalf("archived transcript = %v", parts)
+	}
+
+	// A relocated root has no archived_sessions beside it to look at
+	if newGrokSource(t.TempDir()).archivedRoot() != "" {
+		t.Error("a root not named sessions must not invent a sibling")
+	}
+}

@@ -344,6 +344,10 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		q := messageQuery{
 			limit:   limit,
 			fromEnd: strings.EqualFold(argString(args, "order"), "desc"),
+			// Tool output and thinking are cut to a preview unless asked for whole: an
+			// agent reading why a command failed wants the end of its output, which is
+			// the part a preview drops
+			full: argBool(args, "full"),
 		}
 		// Anchoring is how a search hit in the middle of a long session is reachable:
 		// without it the window only ever comes from one end
@@ -511,6 +515,21 @@ func argString(args map[string]any, key string) string {
 	return toStr(args[key])
 }
 
+// argBool reads a boolean argument; a string "true" is accepted too, since not every
+// client types its arguments
+func argBool(args map[string]any, key string) bool {
+	if args == nil {
+		return false
+	}
+	switch v := args[key].(type) {
+	case bool:
+		return v
+	case string:
+		return queryFlag(v)
+	}
+	return false
+}
+
 func argInt(args map[string]any, key string, def, max int) int {
 	n := def
 	if args != nil {
@@ -568,6 +587,10 @@ func cursorSchema() map[string]any {
 
 func intSchema(desc string) map[string]any {
 	return map[string]any{"type": "integer", "description": desc}
+}
+
+func boolSchema(desc string) map[string]any {
+	return map[string]any{"type": "boolean", "description": desc}
 }
 
 func mcpTools() []map[string]any {
@@ -656,7 +679,7 @@ func mcpTools() []map[string]any {
 		},
 		{
 			"name":        "get_messages",
-			"description": "Fetch a session's messages. The interesting part of a long session is usually its end, so use order=desc for the latest N. role narrows to the human intent (user) or the answers (assistant).",
+			"description": "Fetch a session's messages. The interesting part of a long session is usually its end, so use order=desc for the latest N. role narrows to the human intent (user) or the answers (assistant). Tool output and thinking come cut to a preview, marked truncated:true; pass full=true on a narrow window (at= a hit's timestamp, a small limit) to read them whole. A toolResult carries callId, status (ok / error / interrupted), exitCode and durationMs when the source recorded them.",
 			"annotations": readOnlyAnnotations("Get messages"),
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -667,6 +690,7 @@ func mcpTools() []map[string]any {
 					"order":   strSchema("asc for the earliest N (default), desc for the latest N"),
 					"role":    strSchema("keep only this role: user or assistant"),
 					"at":      strSchema("anchor the window at this time instead of at an end — pass a hit's timestamp from search_sessions to land on it: asc starts there, desc ends there"),
+					"full":    boolSchema("return tool output and thinking whole instead of cut to a preview; use on a small window, a full build log is large"),
 					"cursor":  cursorSchema(),
 				},
 				"required": []string{"pattern"},
@@ -678,7 +702,7 @@ func mcpTools() []map[string]any {
 			// no way to learn the round is one of nine, or to walk the other eight. The
 			// only way to ask was to request an out-of-range round and read the bound back
 			// off the error, which is not an interface. This is the enumeration.
-			"description": "List a session's rounds — one per real user message — with each round's number, time span and message count, plus the total. Use it to walk a session round by round with session_brief, which renders one round and cannot say how many there are.",
+			"description": "List a session's rounds — one per real user message — with each round's number, time span, message and tool-call counts, how many tool calls failed, the files touched and the files changed, plus the total. Use it to find the round that went wrong, and to walk a session round by round with session_brief, which renders one round and cannot say how many there are.",
 			"annotations": readOnlyAnnotations("List session rounds"),
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -691,7 +715,7 @@ func mcpTools() []map[string]any {
 		},
 		{
 			"name":        "session_brief",
-			"description": "A compact handoff brief of one round of a session: the ask in the user's words, files the tools touched, how the exchange ended. Deterministic extraction, not an AI summary. A session is segmented into rounds at each real user message; without round/at the latest round is briefed. Pairs with search_sessions — brief the round a hit falls in via at.",
+			"description": "A compact handoff brief of one round of a session: the ask in the user's words, the files changed and the files touched, tools by category with the number that failed, how the exchange ended, and the command that resumes the session in its own CLI. Deterministic extraction, not an AI summary. A session is segmented into rounds at each real user message; without round/at the latest round is briefed. Pairs with search_sessions — brief the round a hit falls in via at.",
 			"annotations": readOnlyAnnotations("Brief a session round"),
 			"inputSchema": map[string]any{
 				"type": "object",

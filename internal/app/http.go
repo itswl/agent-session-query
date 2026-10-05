@@ -245,7 +245,7 @@ var rootEndpoints = []rootEndpoint{
 	{"GET", "/ui", true, "the web page"},
 	{"GET", "/sessions", false, "list every session"},
 	{"GET", "/sessions/<pattern>", false, "one session"},
-	{"GET", "/sessions/<pattern>/messages?limit=50", false, "its messages, newest first by default"},
+	{"GET", "/sessions/<pattern>/messages?limit=50&full=1", false, "its messages, newest first by default; full=1 keeps tool output and thinking whole instead of cut to a preview"},
 	{"GET", "/sessions/<pattern>/final", false, "its final result"},
 	{"GET", "/sessions/<pattern>/export?format=", false, "one session as a document: md, jsonl, json or html"},
 	{"GET", "/sessions/<pattern>/rounds", false, "the session split into rounds — one per real user message"},
@@ -520,10 +520,13 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			}
 			// No ?limit= means the whole session. The page-default of 200 is a page size;
 			// an export is a document, and one that silently held a twelfth of the session
-			// was taken for the whole thing.
+			// was taken for the whole thing. For the same reason it carries every byte of
+			// every tool output: a document that cut each one at five hundred characters
+			// was not the session, it was a preview of it.
 			if _, given := r.URL.Query()["limit"]; !given {
 				exportQuery.limit = exportMaxMessages
 			}
+			exportQuery.full = true
 			format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
 			if format == "" {
 				format = exportFormatMarkdown
@@ -617,12 +620,14 @@ func (s *apiServer) parseLimit(r *http.Request, ceiling int) int {
 	return limit
 }
 
-// parseMessageQuery reads ?limit= and ?order= (desc asks for the latest N)
+// parseMessageQuery reads ?limit=, ?order= (desc asks for the latest N) and ?full=
+// (tool output and thinking whole rather than cut to a preview)
 func (s *apiServer) parseMessageQuery(r *http.Request, ceiling int) (messageQuery, error) {
 	order := strings.TrimSpace(r.URL.Query().Get("order"))
 	q := messageQuery{
 		limit:   s.parseLimit(r, ceiling),
 		fromEnd: strings.EqualFold(order, "desc"),
+		full:    queryFlag(r.URL.Query().Get("full")),
 	}
 	// ?at= positions the window at a point in time rather than at one end, which is how a
 	// caller lands on a specific message in a long session (a search hit, say). Absolute
@@ -635,6 +640,16 @@ func (s *apiServer) parseMessageQuery(r *http.Request, ceiling int) (messageQuer
 		q.at = at
 	}
 	return q, nil
+}
+
+// queryFlag reads a boolean query parameter: 1 / true / yes turn it on, anything else
+// (including absence) leaves it off
+func queryFlag(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
 }
 
 // parseAt reads an absolute instant: RFC3339, "2006-01-02T15:04:05", "2006-01-02", or a

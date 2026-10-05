@@ -463,3 +463,85 @@ CREATE TABLE messages (
 		t.Fatalf("a scan that no longer touches the database still reports its old failure: %v", err)
 	}
 }
+
+// TestHermesCompactedRowsStayVisible: Hermes shows live rows and the rows its context
+// compression archived (active = 0, compacted = 1), and hides only what undo, rewind and
+// regenerate removed (active = 0, compacted = 0). Filtering on active alone, as this did,
+// hid the older half of every compressed session. Compression also re-inserts protected
+// rows as live copies of archived originals, so a row is one message whether the database
+// holds it once or twice; and rows the model reads but nobody typed (model_only) stay out.
+// A tool row pairs with its call by tool_call_id.
+func TestHermesCompactedRowsStayVisible(t *testing.T) {
+	dbPath := newHermesFixture(t)
+	schema := `
+CREATE TABLE sessions (
+	id TEXT PRIMARY KEY, message_count INTEGER,
+	input_tokens INTEGER, output_tokens INTEGER,
+	cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+	reasoning_tokens INTEGER, estimated_cost_usd REAL,
+	session_key TEXT, display_name TEXT, source TEXT, model TEXT,
+	started_at REAL, ended_at REAL, title TEXT, cwd TEXT, archived INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE messages (
+	id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT,
+	finish_reason TEXT, reasoning TEXT, timestamp REAL,
+	active INTEGER DEFAULT 1, compacted INTEGER DEFAULT 0,
+	tool_calls TEXT, tool_name TEXT, tool_call_id TEXT, display_metadata TEXT
+);`
+	makeHermesDB(t, dbPath, schema, []string{
+		`INSERT INTO sessions (id, session_key, title, cwd) VALUES ('h-comp', 'cli', 'compressed one', '/w')`,
+		// the original of a protected head row, archived by compression
+		`INSERT INTO messages (id, session_id, role, content, timestamp, active, compacted) VALUES (1, 'h-comp', 'user', 'first ask', 100, 0, 1)`,
+		// an answer compression folded into a summary: archived, still shown
+		`INSERT INTO messages (id, session_id, role, content, finish_reason, timestamp, active, compacted) VALUES (2, 'h-comp', 'assistant', 'old answer', 'stop', 200, 0, 1)`,
+		// rewound away: hidden
+		`INSERT INTO messages (id, session_id, role, content, timestamp, active, compacted) VALUES (3, 'h-comp', 'assistant', 'rewound away', 300, 0, 0)`,
+		// the live copy of row 1 compression re-inserted, same words and time
+		`INSERT INTO messages (id, session_id, role, content, timestamp, active, compacted) VALUES (4, 'h-comp', 'user', 'first ask', 100, 1, 0)`,
+		// a call and its result, paired by tool_call_id
+		`INSERT INTO messages (id, session_id, role, content, timestamp, active, tool_calls) VALUES (5, 'h-comp', 'assistant', '', 400, 1, '[{"id":"call_1","type":"function","function":{"name":"terminal","arguments":"{\"command\":\"ls\"}"}}]')`,
+		`INSERT INTO messages (id, session_id, role, content, timestamp, active, tool_name, tool_call_id) VALUES (6, 'h-comp', 'tool', 'a.txt', 401, 1, 'terminal', 'call_1')`,
+		// what only the model sees
+		`INSERT INTO messages (id, session_id, role, content, timestamp, active, display_metadata) VALUES (7, 'h-comp', 'user', 'merged context', 402, 1, '{"model_only": true}')`,
+		`INSERT INTO messages (id, session_id, role, content, finish_reason, timestamp, active) VALUES (8, 'h-comp', 'assistant', 'the end', 'stop', 500, 1)`,
+	})
+
+	msgs := hermesSQLiteMessages(dbPath, "h-comp", messageQuery{limit: 50})
+	texts := []string{}
+	for _, m := range msgs {
+		for _, block := range m["content"].([]map[string]any) {
+			switch block["type"] {
+			case "text", "toolResult":
+				texts = append(texts, toStr(block["content"]))
+			case "toolCall":
+				if block["id"] != "call_1" || block["name"] != "terminal" {
+					t.Errorf("tool call = %v", block)
+				}
+			}
+			if block["type"] == "toolResult" && (block["callId"] != "call_1" || block["toolName"] != "terminal") {
+				t.Errorf("tool result = %v", block)
+			}
+		}
+	}
+	want := "first ask|old answer|a.txt|the end"
+	if got := strings.Join(texts, "|"); got != want {
+		t.Fatalf("shown rows = %q, want %q", got, want)
+	}
+	// The kept copy of the duplicated row is the live one
+	if msgs[0]["id"] != "4" {
+		t.Errorf("the live copy (id 4) must be the one shown, got id %v", msgs[0]["id"])
+	}
+
+	// The window is cut after the projection: the latest two are the pair's result and
+	// the closing answer, not whatever two rows the table held last
+	tail := hermesSQLiteMessages(dbPath, "h-comp", messageQuery{limit: 2, fromEnd: true})
+	if len(tail) != 2 || tail[0]["id"] != "6" || tail[1]["id"] != "8" {
+		t.Errorf("latest 2 = %v", tail)
+	}
+
+	// Final follows the same projection: the newest shown stop answer
+	final := hermesSQLiteFinal(dbPath, "hermes", "h-comp", "done")
+	if final == nil || final["text"] != "the end" {
+		t.Fatalf("final = %v", final)
+	}
+}

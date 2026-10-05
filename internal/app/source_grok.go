@@ -39,13 +39,29 @@ func (s *GrokSource) Location() string { return s.root }
 
 func (s *GrokSource) Exists() bool { return fileExists(s.root) }
 
-// files lists the session index files: <root>/<group>/<session-id>/summary.json.
+// files lists the session index files: <root>/<group>/<session-id>/summary.json, plus
+// the same layout under the archived_sessions directory beside the root, where Grok
+// moves a session the user archives. An archived session is still history — the list
+// carries it with archived:true rather than losing it.
 func (s *GrokSource) files() []string {
 	files, err := filepath.Glob(filepath.Join(s.root, "*", "*", "summary.json"))
 	if err != nil {
 		return nil
 	}
+	if archived := s.archivedRoot(); archived != "" {
+		more, _ := filepath.Glob(filepath.Join(archived, "*", "*", "summary.json"))
+		files = append(files, more...)
+	}
 	return files
+}
+
+// archivedRoot is ~/.grok/archived_sessions when the root is the default sessions
+// directory; a relocated root (--path grok=/x) has no sibling to look beside.
+func (s *GrokSource) archivedRoot() string {
+	if filepath.Base(s.root) != "sessions" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(s.root), "archived_sessions")
 }
 
 // grokUpdatesPath is the conversation log beside a session's summary.json.
@@ -116,7 +132,7 @@ func (s *GrokSource) List() []record {
 			grokUserTitle(updates),
 			sid,
 		)
-		return newRecord(map[string]any{
+		fields := map[string]any{
 			"source":    "grok",
 			"key":       dir,
 			"shortKey":  title,
@@ -127,7 +143,11 @@ func (s *GrokSource) List() []record {
 			"cwd":       grokCwd(info, filepath.Dir(dir)),
 			"model":     strOr(meta["current_model_id"], ""),
 			"updatedAt": updated,
-		}, updated)
+		}
+		if archived := s.archivedRoot(); archived != "" && strings.HasPrefix(path, archived+string(filepath.Separator)) {
+			fields["archived"] = true
+		}
+		return newRecord(fields, updated)
 	})
 }
 
@@ -274,6 +294,7 @@ func grokToolResultText(body map[string]any) string {
 // emitted when the speaker changes or the stream ends.
 type grokGrouper struct {
 	emit    func(m map[string]any) bool
+	full    bool
 	role    string
 	at      any
 	parts   []map[string]any
@@ -282,8 +303,8 @@ type grokGrouper struct {
 	stopped bool
 }
 
-func newGrokGrouper(emit func(m map[string]any) bool) *grokGrouper {
-	return &grokGrouper{emit: emit, names: map[string]string{}}
+func newGrokGrouper(emit func(m map[string]any) bool, full bool) *grokGrouper {
+	return &grokGrouper{emit: emit, full: full, names: map[string]string{}}
 }
 
 // add takes one update; false means the consumer has enough and the scan may stop.
@@ -314,27 +335,24 @@ func (g *grokGrouper) append(u grokUpdate) {
 		g.text("thinking", contentText(u.body["content"]))
 	case "tool_call":
 		name := grokToolName(u.body)
-		if id := toStr(u.body["toolCallId"]); id != "" && name != "" {
+		id := toStr(u.body["toolCallId"])
+		if id != "" && name != "" {
 			g.names[id] = name
 		}
-		g.parts = append(g.parts, map[string]any{
-			"type":      "toolCall",
-			"name":      name,
-			"arguments": getOr(u.body, "rawInput", map[string]any{}),
-		})
+		g.parts = append(g.parts, toolCallBlock(id, name, getOr(u.body, "rawInput", map[string]any{})))
 	case "tool_call_update":
 		// An update with no status is the call being re-titled while it runs. Only a
-		// finished one carries output, and only that is worth a block of its own.
-		switch toStr(u.body["status"]) {
+		// finished one carries output, and only that is worth a block of its own; the
+		// status it finished with is the one bit Grok records about how it went.
+		status := toStr(u.body["status"])
+		switch status {
 		case "completed", "failed":
 		default:
 			return
 		}
-		g.parts = append(g.parts, map[string]any{
-			"type":     "toolResult",
-			"toolName": g.names[toStr(u.body["toolCallId"])],
-			"content":  truncate(grokToolResultText(u.body), 500, "...[truncated]"),
-		})
+		id := toStr(u.body["toolCallId"])
+		block := toolResultBlock(id, g.names[id], grokToolResultText(u.body), g.full)
+		g.parts = append(g.parts, toolOutcome{status: statusFromError(status == "failed")}.apply(block))
 	}
 }
 
@@ -363,9 +381,9 @@ func (g *grokGrouper) flush() bool {
 	}
 	// Thinking is capped here rather than per chunk: the cap belongs to the block a
 	// reader sees, and the chunks it was streamed in are an accident of transport.
-	for _, p := range g.parts {
+	for i, p := range g.parts {
 		if p["type"] == "thinking" {
-			p["content"] = truncate(toStr(p["content"]), 1000, "...[truncated]")
+			g.parts[i] = thinkingBlock(toStr(p["content"]), g.full)
 		}
 	}
 	message := map[string]any{
@@ -395,7 +413,7 @@ func (s *GrokSource) Messages(r record, q messageQuery) []map[string]any {
 	if path == "" {
 		return sink.result()
 	}
-	g := newGrokGrouper(sink.add)
+	g := newGrokGrouper(sink.add, q.full)
 	eachGrokUpdate(path, g.add)
 	g.flush()
 	return sink.result()
@@ -415,7 +433,7 @@ func (s *GrokSource) Messages(r record, q messageQuery) []map[string]any {
 // lines, so every update has to be decoded in order.
 func grokCountMessages(summaryPath string) int {
 	n := 0
-	g := newGrokGrouper(func(map[string]any) bool { n++; return true })
+	g := newGrokGrouper(func(map[string]any) bool { n++; return true }, false)
 	eachGrokUpdate(grokUpdatesPath(summaryPath), g.add)
 	g.flush()
 	return n
@@ -442,7 +460,7 @@ func (s *GrokSource) Final(r record) map[string]any {
 			last = m
 		}
 		return true
-	})
+	}, false)
 	eachGrokUpdate(path, func(u grokUpdate) bool {
 		// turn_completed is Grok's own event, so it never reaches the transcript grouping;
 		// it is where the per-turn token totals and the stop reason live.

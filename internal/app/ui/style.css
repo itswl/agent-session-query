@@ -64,6 +64,9 @@
 :root[data-theme="dark"] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
+/* A tap is answered by the control's own hover/active state; the platform's grey flash on
+   top of it reads as a second, unrelated reaction */
+button, .item, .toc-item, summary { -webkit-tap-highlight-color: transparent; }
 
 html { height: 100%; }
 body {
@@ -175,6 +178,8 @@ header {
   min-height: 52px; padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--line);
 }
 header .brand { display: flex; align-items: center; gap: 9px; margin-right: 10px; white-space: nowrap; }
+.icon-label { display: inline-flex; align-items: center; gap: 6px; }
+.icon-label svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 header h1 { font-size: 14px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 header input[type=search] {
   flex: 1 1 280px; min-width: 160px; max-width: 560px; padding-left: 32px;
@@ -290,25 +295,36 @@ body.hide-list #list, body.hide-side #side { display: none; }
 /* The pane switcher is a phone affordance only */
 .panes { display: none; }
 
-/* Phones: one pane at a time.
+/* Phones: one pane at a time, picked from a tab bar at the bottom of the screen.
    Stacking all three made for a very long page in which the conversation — the thing you
-   opened the page for — started below the fold, under a 40vh list. Now the switcher picks
-   a pane and the other two are out of the way, which also gives the stream the full
-   height instead of 70vh of it. */
+   opened the page for — started below the fold, under a 40vh list. The tab bar sits where
+   an installed app's does: under the thumb, above the home indicator, always there. The
+   title row still slides away as you read down (it does nothing while you read) and comes
+   back as you scroll up. */
 @media (max-width: 860px) {
   #app { height: 100dvh; }
   main { display: block; overflow: hidden; }
 
+  /* The tab bar: icons over labels, the active one in the accent */
   .panes {
-    order: 2;
-    display: flex; gap: 2px; flex: 0 0 auto;
-    padding: 6px 10px 8px; background: var(--panel); border-bottom: 1px solid var(--line);
+    order: 5;
+    display: flex; gap: 0; flex: 0 0 auto;
+    padding: 4px 8px calc(4px + env(safe-area-inset-bottom));
+    background: var(--panel); border-top: 1px solid var(--line);
   }
   .panes button {
-    flex: 1; padding: 8px 6px; font-size: 13px; font-weight: 500;
+    flex: 1; display: grid; justify-items: center; gap: 2px;
+    padding: 6px 4px 5px; min-height: 48px;
+    font: 500 10.5px/1.2 var(--sans); letter-spacing: 0.01em;
     background: transparent; color: var(--dim); border: 0; border-radius: var(--r-md);
+    transition: color var(--dur) var(--ease);
   }
-  .panes button.on { background: var(--panel-3); color: var(--fg); }
+  .panes button svg {
+    width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.7;
+    stroke-linecap: round; stroke-linejoin: round;
+  }
+  .panes button:active { transform: none; }
+  .panes button.on { color: var(--accent); }
 
   /* body[data-pane] keeps these ahead of the base .list/.stream/.side rules, which are
      defined further down the file and would otherwise win on document order */
@@ -326,37 +342,82 @@ body.hide-list #list, body.hide-side #side { display: none; }
   /* The bar has one job on a phone — "Collapse all" — and shows only while it has it */
   .pane-bar { display: none; }
   .list-pane .pane-bar:has(#fold-groups:not(.hidden)) { display: flex; height: 36px; padding: 0 10px; }
-  .stream-head { padding: 14px 16px 12px; }
-  .messages { padding-left: 14px; padding-right: 14px; }
-  .side { padding-left: 16px; padding-right: 16px; padding-bottom: 12px; }
 
-  /* On a phone the header keeps only the title and its buttons — one row. The search and
-     the list filters move out of it entirely: they sit below the pane switcher and show
-     only while the Sessions pane is up, because none of them do anything to a
-     conversation. That is about two thirds of the height they took before, and the
-     conversation now starts right under the switcher. */
+  /* Scrolling stays inside the pane: no rubber-banding of the whole app, and no
+     pull-to-refresh under the finger in standalone mode */
+  .list, .messages, .side { overscroll-behavior: contain; }
+
+  /* The header keeps one row: the title and two icon buttons. The search and the list
+     filters move out of it entirely: they sit under the header and show only while the
+     Sessions pane is up, because none of them do anything to a conversation. */
   #app > header { order: 1; }
   #app > main { order: 4; }
-  header { min-height: 0; padding: 8px 10px; gap: 6px; }
+  header { min-height: 0; padding: 6px 10px 6px 14px; gap: 4px; }
+  header .brand { margin-right: auto; }
   header h1 { font-size: 15px; }
-  #refresh, #logout { padding: 5px 10px; font-size: 12.5px; }
-  #logout { margin-left: auto; }
+  #refresh { width: 36px; height: 36px; padding: 0; justify-content: center; border-radius: var(--r-md); }
+  #refresh .label { display: none; }
+  #refresh svg { width: 17px; height: 17px; }
+  #theme { width: 36px; height: 36px; }
+  #logout { padding: 5px 10px; font-size: 12.5px; }
 
   #controls {
     order: 3;
     display: none;
-    flex-wrap: wrap; gap: 6px;
-    padding: 8px 10px 10px;
+    flex-wrap: wrap; gap: 8px;
+    padding: 6px 12px 10px;
     background: var(--panel); border-bottom: 1px solid var(--line);
   }
   body[data-pane="list"] #controls { display: flex; }
-  #controls #search { flex: 1 1 100%; min-width: 0; max-width: none; padding: 9px 11px 9px 32px; }
-  #controls #source-filter, #controls #grouping { flex: 1 1 40%; min-width: 0; }
-  #controls .auto { font-size: 12px; }
-  #controls #status { flex: 1 1 100%; font-size: 11.5px; margin-left: 0; order: 0; }
+  /* 16px, or iOS zooms the page in when the field takes focus */
+  #controls #search { flex: 1 1 100%; min-width: 0; max-width: none; padding: 10px 11px 10px 34px; font-size: 16px; background-position: 12px 50%; }
+  #controls #source-filter, #controls #grouping { flex: 1 1 0; min-width: 0; font-size: 13px; padding: 7px 26px 7px 10px; }
+  #controls .auto { flex: 0 0 auto; font-size: 0; gap: 0; } /* the switch alone; its meaning is the row it sits in */
+  #controls .auto input { width: 32px; height: 18px; }
+  #controls .auto input::after { width: 14px; height: 14px; }
+  #controls .auto input:checked::after { transform: translateX(14px); }
+  #controls #status { display: none; } /* the dots and times on the rows say what it said */
 
-  /* Touch targets rather than mouse-sized ones */
-  .seg-btn, .item, .toc-item { min-height: 34px; }
+  /* The conversation head: title, one line of where and when, one row of controls,
+     one line of sums. What it held before — the resume command, two rows of controls —
+     took a third of the screen before the first message. */
+  .stream-head { padding: 10px 14px 8px; }
+  .stream-head .tagrow { margin-bottom: 4px; gap: 8px; }
+  .stream-head h2 {
+    font-size: 15px; margin: 0 0 2px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .stream-head .sub { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; word-break: normal; }
+  .toolbar { margin-top: 8px; gap: 6px; flex-wrap: nowrap; }
+  .toolbar .seg.view { flex: 1 1 auto; display: flex; }
+  .toolbar .seg.view .seg-btn { flex: 1; padding: 5px 4px; text-align: center; }
+  .toolbar .seg.order .seg-label, .toolbar .expand-toggle .label { display: none; }
+  .toolbar .seg .seg-btn, .toolbar .expand-toggle { min-height: 32px; }
+  .toolbar .expand-toggle { padding: 0 9px; }
+  .stats { margin-top: 6px; font-size: 11.5px; gap: 2px 10px; }
+
+  .messages { padding-left: 12px; padding-right: 12px; padding-top: 12px; padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
+  .side { padding-left: 16px; padding-right: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+  .list { padding-bottom: env(safe-area-inset-bottom); }
+
+  /* Bubbles and steps sized for a thumb and a narrow column */
+  .msg { padding: 9px 12px 10px; }
+  .round { margin-bottom: 20px; }
+  .timeline { margin-left: 2px; padding-left: 10px; }
+  .timeline-toggle { min-height: 36px; font-size: 12px; }
+  .step-head {
+    display: grid; grid-template-columns: auto auto 1fr; column-gap: 8px; row-gap: 0;
+    grid-template-areas: "glyph name meta" "target target target"; align-items: baseline;
+    padding: 5px 6px; min-height: 36px;
+  }
+  .step .glyph { grid-area: glyph; }
+  .step .step-name { grid-area: name; }
+  .step .step-meta { grid-area: meta; justify-self: end; }
+  .step .step-target { grid-area: target; font-size: 11.5px; }
+  .step .step-target:empty { display: none; }
+  .step-details, .note, .event, .steps > details, .step .preview { margin-left: 10px; }
+  .steps.nested { margin-left: 10px; }
+  .seg-btn, .item, .toc-item { min-height: 36px; }
   .toc { max-height: none; }
 
   .keyhint { display: none; }
@@ -366,34 +427,25 @@ body.hide-list #list, body.hide-side #side { display: none; }
      bars and on the scrollable content rather than on the app: insetting #app would leave
      the letterbox bars plainly visible. env() resolves to 0 everywhere there is no inset. */
   #app > header {
-    padding-top: calc(8px + env(safe-area-inset-top));
+    padding-top: calc(6px + env(safe-area-inset-top));
+    padding-left: calc(14px + env(safe-area-inset-left));
+    padding-right: calc(10px + env(safe-area-inset-right));
+  }
+  #controls, .panes {
     padding-left: calc(10px + env(safe-area-inset-left));
     padding-right: calc(10px + env(safe-area-inset-right));
   }
-  .panes, #controls {
-    padding-left: calc(10px + env(safe-area-inset-left));
-    padding-right: calc(10px + env(safe-area-inset-right));
-  }
-  .list { padding-bottom: env(safe-area-inset-bottom); }
-  .messages { padding-bottom: calc(48px + env(safe-area-inset-bottom)); }
-  .side { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
 
-  /* The last row of a list or a conversation should be reachable above the indicator */
-  .panes { padding-bottom: 8px; }
-
-  /* Scrolling down slides the title row and the pane switcher away; see slideChrome. */
-  #app > header, .panes {
+  /* Scrolling down slides the title row away; the tab bar stays. See slideChrome. */
+  #app > header {
     overflow: hidden;
     transition: max-height .22s ease, padding .22s ease, opacity .18s ease;
+    max-height: 80px;
   }
-  #app > header { max-height: 80px; }
-  /* With the Sessions pane up the controls wrap onto a second row inside the header, and
-     the header must be allowed to grow around them. The clamp exists for the slide, and
-     the slide is driven by scrolling the conversation, which is not on screen here. */
+  /* With the Sessions pane up the header must be allowed to grow around the controls. The
+     clamp exists for the slide, and the slide is driven by scrolling the conversation. */
   body[data-pane="list"] #app > header { max-height: none; }
-  .panes { max-height: 60px; }
   body.chrome-hidden #app > header { max-height: 0; padding-top: 0; padding-bottom: 0; opacity: 0; }
-  body.chrome-hidden .panes { max-height: 0; padding-top: 0; padding-bottom: 0; opacity: 0; }
 }
 
 /* ---- Left pane: session list ---- */
@@ -566,14 +618,6 @@ body.chrome-hidden .stream-head { display: none; }
 .stream-head:empty { display: none; }
 /* The title is what the session was about — a question, most of the time — so it is set
    like a heading, not like an identifier */
-/* The command that reopens a session in its own CLI. Shown and copied verbatim: making
-   the button copy something other than what is on screen would be a small lie, and the
-   working directory it needs is the line directly above. */
-.stream-head .resume { display: flex; align-items: center; gap: 8px; margin: 6px 0 0; }
-.stream-head .resume code {
-  font: 12px/1.5 var(--mono); color: var(--fg-mid); background: var(--hover);
-  padding: 2px 7px; border-radius: var(--r-sm); word-break: break-all;
-}
 
 .stream-head h2 {
   font-size: 17px; font-weight: 600; line-height: 1.35; letter-spacing: -0.014em;
@@ -590,11 +634,9 @@ body.chrome-hidden .stream-head { display: none; }
   color: var(--dim); font-size: 13.5px; max-width: 34ch; margin-inline: auto; text-wrap: balance;
 }
 
-.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-.toolbar .count {
-  color: var(--dim); font-size: 12px; margin-left: auto; white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
+.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.toolbar .expand-toggle { display: inline-flex; align-items: center; gap: 5px; }
+.toolbar .expand-toggle .icon { font-size: 13px; line-height: 1; }
 
 .seg { display: inline-flex; gap: 2px; padding: 2px; background: var(--panel-2); border-radius: var(--r-md); }
 .seg .seg-btn {
@@ -604,6 +646,7 @@ body.chrome-hidden .stream-head { display: none; }
 .seg .seg-btn:hover { color: var(--fg); background: transparent; }
 .seg .seg-btn:active { transform: none; }
 .seg .seg-btn.on { background: var(--panel-3); color: var(--fg); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18); }
+.seg .seg-btn .seg-icon { margin-right: 4px; }
 
 /* ---- Right pane: the final result, always visible ---- */
 .side-pane {
@@ -623,6 +666,14 @@ body.chrome-hidden .stream-head { display: none; }
 .idrow code { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
 .idrow button { flex: 0 0 auto; white-space: nowrap; }
 .side .sub { color: var(--dim); font: 11.5px/1.5 var(--mono); word-break: break-all; margin: 8px 0 0; }
+/* The command that reopens a session in its own CLI. Shown and copied verbatim: making the
+   button copy something other than what is on screen would be a small lie. */
+.resume { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0 0; }
+.resume code {
+  flex: 1 1 auto; min-width: 0; font: 11.5px/1.5 var(--mono); color: var(--fg-mid); background: var(--hover);
+  padding: 3px 8px; border-radius: var(--r-sm); word-break: break-all;
+}
+.resume button { flex: 0 0 auto; white-space: nowrap; }
 .timeline { display: grid; gap: 2px; margin-top: 8px; }
 .timeline-item {
   display: block; width: 100%; text-align: left; padding: 7px 10px;
@@ -647,7 +698,7 @@ body.chrome-hidden .stream-head { display: none; }
   font-size: 12.5px; margin: 0 0 10px; color: var(--fg); font-weight: 600; letter-spacing: -0.005em;
   display: flex; align-items: center; gap: 6px;
 }
-.card .text { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-size: 13.5px; line-height: 1.6; }
+.card .text { overflow-wrap: anywhere; word-break: break-word; font-size: 13.5px; line-height: 1.6; }
 
 /* Final result: the one section that is a surface, with its state on the edge */
 .card.final-done, .card.final-pending {
@@ -710,13 +761,13 @@ body.chrome-hidden .stream-head { display: none; }
 }
 .msg.user.is-tool .role { color: var(--dim); }
 .msg .head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 2px; }
-.msg .head .time { margin-left: auto; font-family: var(--mono); font-size: 11px; }
+.msg .head .time { margin-left: auto; font-family: var(--mono); font-size: 11px; cursor: default; }
 .msg .role { font-size: 12px; font-weight: 600; letter-spacing: 0.01em; text-transform: capitalize; }
 .msg.user .role { color: var(--accent); }
 .msg.assistant .role { color: var(--ok); }
 
 .block { margin-top: 8px; }
-.block.text { white-space: pre-wrap; word-break: break-word; line-height: 1.65; }
+.block.text { word-break: break-word; line-height: 1.65; }
 .block.thinking {
   color: var(--dim); font-size: 13px; line-height: 1.6;
   border-left: 2px solid var(--line); padding: 2px 0 2px 12px;
@@ -930,7 +981,7 @@ details > summary .fold-size { flex: none; font-size: 11px; font-variant-numeric
 
 /* What the agent said along the way, events between the turns, and a round without a reply */
 .note {
-  margin: 4px 0 6px 27px; color: var(--fg-mid); white-space: pre-wrap; word-break: break-word;
+  margin: 4px 0 6px 27px; color: var(--fg-mid); word-break: break-word;
   font-size: 13px; line-height: 1.6; border-left: 2px solid var(--line-soft); padding-left: 12px;
 }
 .note.injected, .note.from-user { color: var(--dim); font-size: 12.5px; }
@@ -960,3 +1011,42 @@ details > summary .fold-size { flex: none; font-size: 11px; font-variant-numeric
   .step-details, .note, .event, .steps > details { margin-left: 12px; }
   .step .preview { margin-left: 12px; }
 }
+
+/* ---- Markdown ----
+   Agents write Markdown, and a reply read as raw marks — ## for a heading, ** around every
+   emphasis, a fence around every command — is a reply read through a screen door. The
+   renderer builds nodes and sets text through textContent only; a link gets an href only
+   when its scheme is http or https. Headings are kept modest: a message is one voice in
+   a conversation, not a document. */
+.md { line-height: 1.65; word-break: break-word; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 8px; }
+.md h3, .md h4, .md h5, .md h6 { margin: 12px 0 6px; font-weight: 600; line-height: 1.35; letter-spacing: -0.005em; }
+.md h3 { font-size: 15px; }
+.md h4 { font-size: 14px; }
+.md h5, .md h6 { font-size: 13.5px; color: var(--fg-mid); }
+.md ul, .md ol { margin: 0 0 8px; padding-left: 22px; }
+.md li { margin: 2px 0; }
+.md li > p { margin: 0; }
+.md li > ul, .md li > ol { margin: 2px 0 0; }
+.md pre.code {
+  margin: 6px 0 8px; padding: 8px 12px; background: var(--panel); border: 1px solid var(--line-soft);
+  border-radius: var(--r-md); font: 12px/1.6 var(--mono); white-space: pre-wrap; word-break: break-word;
+  overflow-x: auto; color: var(--fg-mid);
+}
+.md pre.code code { background: transparent; padding: 0; font-size: inherit; border-radius: 0; }
+.md code { font-family: var(--mono); font-size: 0.92em; background: var(--panel-2); padding: 1px 5px; border-radius: var(--r-sm); }
+.msg.user .md code { background: light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.08)); }
+.md blockquote { margin: 6px 0 8px; padding: 2px 0 2px 12px; border-left: 2px solid var(--line); color: var(--fg-mid); }
+.md blockquote > :last-child { margin-bottom: 0; }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
+.md table { border-collapse: collapse; margin: 6px 0 8px; font-size: 13px; display: block; overflow-x: auto; max-width: 100%; }
+.md th, .md td { border: 1px solid var(--line); padding: 4px 9px; text-align: left; vertical-align: top; }
+.md th { background: var(--panel-2); font-weight: 600; }
+.md a { color: var(--accent); text-decoration: underline; text-decoration-color: var(--accent-line); text-underline-offset: 2px; }
+.md a:hover { text-decoration-color: var(--accent); }
+.md .md-image { color: var(--dim); font-style: italic; }
+.md strong { font-weight: 600; }
+.card .text.md { font-size: 13.5px; }
+.note.md, .block.thinking.md { font-size: inherit; }

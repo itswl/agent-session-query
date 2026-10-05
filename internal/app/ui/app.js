@@ -153,11 +153,17 @@ function button(className, label, onClick) {
   return node;
 }
 
-// segmented renders a group of mutually exclusive buttons (which slice / whose messages)
-function segmented(options, current, onPick) {
-  const wrap = el('div', 'seg');
-  for (const [value, label] of options) {
-    wrap.appendChild(button('seg-btn' + (value === current ? ' on' : ''), label, () => onPick(value)));
+// segmented renders a group of mutually exclusive buttons (which slice / which view). An
+// option may carry an icon; on a phone the stylesheet keeps the icon and drops the label
+// where the row is too narrow for both.
+function segmented(options, current, onPick, className) {
+  const wrap = el('div', 'seg' + (className ? ' ' + className : ''));
+  for (const [value, label, icon] of options) {
+    const btn = button('seg-btn' + (value === current ? ' on' : ''), '', () => onPick(value));
+    if (icon) btn.appendChild(el('span', 'seg-icon', icon));
+    btn.appendChild(el('span', 'seg-label', label));
+    btn.title = label;
+    wrap.appendChild(btn);
   }
   return wrap;
 }
@@ -730,36 +736,15 @@ function renderStreamHead(record) {
   const title = el('h2', '', record.shortKey || record.sessionId);
   title.title = record.key || '';
   box.appendChild(title);
-  if (record.cwd) box.appendChild(el('p', 'sub', record.cwd));
-  // How to reopen this session in the CLI that wrote it. The server omits the field for
-  // the two sources that cannot be resumed by id, so the row is absent rather than empty.
-  //
-  // The command is shown bare and copied with a cd in front of it. Measured on Claude Code
-  // and Grok, both resolve a session id from any working directory, so the cd is not what
-  // makes the session findable — it is what makes the resumed agent work in the right
-  // place. Without it the conversation continues while its tools point somewhere else,
-  // which on a coding session is worse than not resuming at all. The button says what it
-  // copies, so the difference between the two is stated rather than hidden.
-  if (record.resumeCommand) {
-    const resume = el('div', 'resume');
-    resume.appendChild(el('code', '', record.resumeCommand));
-    // cwd is not always a directory: a labeled --path instance prefixes it with its label
-    // (box2:/srv/proj) so the sessions group separately. Prefixing a cd with that produces
-    // a command that fails, and since the two are joined by && the resume never runs — a
-    // button worse than no button. Only a plainly absolute path earns the cd.
-    const dir = /^(\/|[A-Za-z]:[\\/])/.test(record.cwd || '') ? record.cwd : '';
-    const full = dir
-      ? 'cd ' + shellArg(dir) + ' && ' + record.resumeCommand
-      : record.resumeCommand;
-    const copy = button('ghost tiny', dir ? 'Copy with cd' : 'Copy', copyText(full));
-    copy.title = dir ? 'Copies: ' + full : 'Copies the command';
-    resume.appendChild(copy);
-    box.appendChild(resume);
+  if (record.cwd) {
+    const where = el('p', 'sub', record.cwd);
+    where.title = record.cwd;
+    box.appendChild(where);
   }
 
   const bar = el('div', 'toolbar');
   bar.appendChild(segmented(
-    [['asc', '↑ earliest'], ['desc', '↓ latest']],
+    [['asc', 'earliest', '↑'], ['desc', 'latest', '↓']],
     state.order,
     (value) => {
       if (value === state.order) return;
@@ -768,6 +753,7 @@ function renderStreamHead(record) {
       saveViewPrefs();
       syncDetail({ force: true });
     },
+    'order',
   ));
   // Three views of the same rounds: everything, the words alone, the file changes alone
   bar.appendChild(segmented(
@@ -780,21 +766,26 @@ function renderStreamHead(record) {
       renderMessages();
       renderStreamHead(record); // only to move the highlight onto the other button
     },
+    'view',
   ));
   // Every round's work at once, when reading the whole thing. A per-round choice made
   // after this is kept until the switch is thrown again.
-  const expand = button('ghost tiny', state.expandAll ? 'Collapse steps' : 'Expand steps', () => {
+  const expand = button('ghost tiny expand-toggle', '', () => {
     state.expandAll = !state.expandAll;
     state.roundOverrides.clear();
     saveViewPrefs();
     renderMessages();
     renderStreamHead(record);
   });
+  expand.appendChild(el('span', 'icon', state.expandAll ? '⊟' : '⊞'));
+  expand.appendChild(el('span', 'label', state.expandAll ? 'Collapse steps' : 'Expand steps'));
   expand.title = state.expandAll
     ? 'Fold the work of every round back to one line'
     : 'Open the work of every round';
+  expand.setAttribute('aria-label', expand.title);
   expand.classList.toggle('hidden', state.view !== 'all');
   bar.appendChild(expand);
+  box.appendChild(bar);
 
   const detail = state.detail;
   if (detail) {
@@ -819,14 +810,9 @@ function renderStreamHead(record) {
         ? total + ' messages · showing the ' + (state.order === 'desc' ? 'latest ' : 'earliest ') + shown
         : shown + ' messages';
     }
-    bar.appendChild(el('span', 'count', label));
-  }
-  box.appendChild(bar);
-
-  // What the window amounts to: rounds, tool calls, failures, how long it ran
-  if (detail) {
-    const stats = windowStats(detail);
-    if (stats) box.appendChild(stats);
+    // What the window amounts to — rounds, tool calls, failures, how long it ran — and
+    // how much of the session it is, on one line
+    box.appendChild(windowStats(detail, label));
   }
 
   head.replaceChildren(box);
@@ -835,20 +821,20 @@ function renderStreamHead(record) {
 // windowStats sums the loaded window. The numbers are the window's, and the row says so
 // when the session is longer: a total would need the whole file, and the header already
 // has the honest count.
-function windowStats(detail) {
+function windowStats(detail, countLabel) {
   const all = detail.messages.messages || [];
-  if (!all.length) return null;
-  const { rounds } = roundsOf(all);
-  const tools = rounds.reduce((n, r) => n + r.summary.steps, 0);
-  const failures = rounds.reduce((n, r) => n + r.summary.failures, 0);
   const row = el('div', 'stats');
-  row.appendChild(el('span', '', rounds.length + (rounds.length === 1 ? ' round' : ' rounds')));
-  row.appendChild(el('span', '', tools + (tools === 1 ? ' tool call' : ' tool calls')));
-  if (failures) row.appendChild(el('span', 'fail', failures + ' failed'));
-  const span = timeSpan(all[0].timestamp, all[all.length - 1].timestamp);
-  if (span > 0) row.appendChild(el('span', '', formatDuration(span)));
-  const total = Number(detail.final && detail.final.messageCount) || 0;
-  if (total > all.length) row.appendChild(el('span', 'dim', 'in the loaded window'));
+  if (all.length) {
+    const { rounds } = roundsOf(all);
+    const tools = rounds.reduce((n, r) => n + r.summary.steps, 0);
+    const failures = rounds.reduce((n, r) => n + r.summary.failures, 0);
+    row.appendChild(el('span', '', rounds.length + (rounds.length === 1 ? ' round' : ' rounds')));
+    row.appendChild(el('span', '', tools + (tools === 1 ? ' tool call' : ' tool calls')));
+    if (failures) row.appendChild(el('span', 'fail', failures + ' failed'));
+    const span = timeSpan(all[0].timestamp, all[all.length - 1].timestamp);
+    if (span > 0) row.appendChild(el('span', '', formatDuration(span)));
+  }
+  if (countLabel) row.appendChild(el('span', 'dim count', countLabel));
   return row;
 }
 
@@ -936,10 +922,360 @@ function outcomeText(result) {
   return parts.length ? ' — ' + parts.join(' · ') : '';
 }
 
+// ---------------------------------------------------------------------------
+// Markdown. Agents write it, and a reply read as raw marks — ## for a heading, ** around
+// every emphasis, a fence around every command — is a reply read through a screen door.
+// This renders the subset that shows up in transcripts: headings, lists, fenced code,
+// block quotes, tables, emphasis, inline code, links. It builds nodes and sets text
+// through textContent only; no HTML is ever assembled from the text, which is what keeps
+// the page's one hard rule intact, and a link gets an href only when its scheme is http or
+// https. A single newline inside a paragraph is a line break: that is how a chat reads,
+// and how the plain rendering behaved before.
+// ---------------------------------------------------------------------------
+
+const FENCE_RE = /^\s{0,3}(`{3,}|~{3,})\s*([\w.+#-]*)\s*$/;
+const FENCE_CLOSE_RE = /^\s{0,3}(`{3,}|~{3,})\s*$/;
+const HEADING_RE = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
+const RULE_RE = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
+const QUOTE_RE = /^\s{0,3}>\s?/;
+const ITEM_RE = /^(\s*)([-*+]|\d{1,3}[.)])\s+(.*)$/;
+const TABLE_SEP_RE = /^\s{0,3}\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+const URL_RE = /^https?:\/\/[^\s<>"'`)\]]+/;
+
+// markdownNode renders text into root (a fresh div.md when none is given)
+function markdownNode(text, root) {
+  const box = root || el('div', 'md');
+  const lines = String(text == null ? '' : text).replace(/\r\n?/g, '\n').split('\n');
+  let i = 0;
+  let para = [];
+  const flush = () => {
+    if (!para.length) return;
+    const p = el('p');
+    appendInline(p, para.join('\n'));
+    box.appendChild(p);
+    para = [];
+  };
+  while (i < lines.length) {
+    const line = lines[i];
+    const fence = FENCE_RE.exec(line);
+    if (fence) {
+      flush();
+      const body = [];
+      i++;
+      while (i < lines.length && !FENCE_CLOSE_RE.test(lines[i])) {
+        body.push(lines[i]);
+        i++;
+      }
+      i++; // the closing fence, when there was one
+      const pre = el('pre', 'code');
+      const code = el('code', '', body.join('\n'));
+      if (fence[2]) code.dataset.lang = fence[2];
+      pre.appendChild(code);
+      box.appendChild(pre);
+      continue;
+    }
+    if (!line.trim()) {
+      flush();
+      i++;
+      continue;
+    }
+    const heading = HEADING_RE.exec(line);
+    if (heading) {
+      flush();
+      // A message is one voice in a conversation, not a document: its # is an h3
+      const h = el('h' + Math.min(6, heading[1].length + 2));
+      appendInline(h, heading[2]);
+      box.appendChild(h);
+      i++;
+      continue;
+    }
+    if (RULE_RE.test(line)) {
+      flush();
+      box.appendChild(el('hr'));
+      i++;
+      continue;
+    }
+    if (QUOTE_RE.test(line)) {
+      flush();
+      const quoted = [];
+      while (i < lines.length && QUOTE_RE.test(lines[i])) {
+        quoted.push(lines[i].replace(QUOTE_RE, ''));
+        i++;
+      }
+      box.appendChild(markdownNode(quoted.join('\n'), el('blockquote')));
+      continue;
+    }
+    if (line.trim().startsWith('|') && i + 1 < lines.length && TABLE_SEP_RE.test(lines[i + 1])) {
+      flush();
+      i = parseTable(lines, i, box);
+      continue;
+    }
+    if (ITEM_RE.test(line)) {
+      flush();
+      i = parseList(lines, i, box);
+      continue;
+    }
+    para.push(line);
+    i++;
+  }
+  flush();
+  return box;
+}
+
+function leadingSpaces(line) {
+  return line.length - line.replace(/^\s+/, '').length;
+}
+
+// parseList reads one list at one indent. A line indented deeper than the item belongs
+// to it — a nested list, or a paragraph continuing the item — and is rendered inside it.
+function parseList(lines, i, box) {
+  const first = ITEM_RE.exec(lines[i]);
+  const indent = first[1].length;
+  const ordered = /^\d/.test(first[2]);
+  const list = el(ordered ? 'ol' : 'ul');
+  if (ordered) {
+    const start = parseInt(first[2], 10);
+    if (start > 1) list.start = start;
+  }
+  while (i < lines.length) {
+    const m = ITEM_RE.exec(lines[i]);
+    if (!m || m[1].length !== indent || /^\d/.test(m[2]) !== ordered) break;
+    i++;
+    const children = [];
+    while (i < lines.length) {
+      const next = lines[i];
+      if (!next.trim()) {
+        // A blank line ends the list unless what follows is still inside this item
+        const after = lines[i + 1];
+        if (after !== undefined && after.trim() && leadingSpaces(after) > indent) {
+          children.push('');
+          i++;
+          continue;
+        }
+        break;
+      }
+      if (leadingSpaces(next) > indent) {
+        children.push(next.slice(Math.min(leadingSpaces(next), indent + 2)));
+        i++;
+        continue;
+      }
+      break;
+    }
+    const li = el('li');
+    appendInline(li, m[3]);
+    if (children.length) {
+      const sub = markdownNode(children.join('\n'), el('div'));
+      while (sub.firstChild) li.appendChild(sub.firstChild);
+    }
+    list.appendChild(li);
+  }
+  box.appendChild(list);
+  return i;
+}
+
+// parseTable reads a pipe table: a header row, the separator, then rows until a line that
+// is not one
+function parseTable(lines, i, box) {
+  const splitRow = (line) => {
+    let t = line.trim();
+    if (t.startsWith('|')) t = t.slice(1);
+    if (t.endsWith('|')) t = t.slice(0, -1);
+    return t.split('|').map((cell) => cell.trim());
+  };
+  const header = splitRow(lines[i]);
+  i += 2;
+  const table = el('table');
+  const thead = el('thead');
+  const headRow = el('tr');
+  for (const cell of header) {
+    const th = el('th');
+    appendInline(th, cell);
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody = el('tbody');
+  while (i < lines.length && lines[i].trim().startsWith('|')) {
+    const cells = splitRow(lines[i]);
+    const row = el('tr');
+    for (let c = 0; c < header.length; c++) {
+      const td = el('td');
+      appendInline(td, cells[c] || '');
+      row.appendChild(td);
+    }
+    tbody.appendChild(row);
+    i++;
+  }
+  table.appendChild(tbody);
+  box.appendChild(table);
+  return i;
+}
+
+// appendInline renders a run of text with its inline marks into parent. inLink is set
+// while rendering a link's own label, where another link cannot start — and where a
+// bare URL used as its own label would otherwise link itself without end.
+function appendInline(parent, text, inLink) {
+  let i = 0;
+  let buf = '';
+  const flush = () => {
+    if (buf) {
+      parent.appendChild(document.createTextNode(buf));
+      buf = '';
+    }
+  };
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '\n') {
+      flush();
+      parent.appendChild(el('br'));
+      i++;
+      continue;
+    }
+    if (c === '\\' && i + 1 < text.length && /[\\`*_{}\[\]()#+\-.!~|>]/.test(text[i + 1])) {
+      buf += text[i + 1];
+      i += 2;
+      continue;
+    }
+    if (c === '`') {
+      const run = /^`+/.exec(text.slice(i))[0];
+      const end = text.indexOf(run, i + run.length);
+      if (end > 0) {
+        flush();
+        parent.appendChild(el('code', '', text.slice(i + run.length, end).trim()));
+        i = end + run.length;
+        continue;
+      }
+    }
+    if (text.startsWith('**', i)) {
+      const end = text.indexOf('**', i + 2);
+      if (end > i + 2) {
+        flush();
+        const strong = el('strong');
+        appendInline(strong, text.slice(i + 2, end), inLink);
+        parent.appendChild(strong);
+        i = end + 2;
+        continue;
+      }
+    }
+    if (text.startsWith('~~', i)) {
+      const end = text.indexOf('~~', i + 2);
+      if (end > i + 2) {
+        flush();
+        const del = el('del');
+        appendInline(del, text.slice(i + 2, end), inLink);
+        parent.appendChild(del);
+        i = end + 2;
+        continue;
+      }
+    }
+    // Emphasis with * only: _ is too common inside identifiers to read as a mark
+    if (c === '*' && text[i + 1] && text[i + 1] !== ' ' && text[i + 1] !== '*') {
+      const end = text.indexOf('*', i + 1);
+      if (end > i + 1 && text[end - 1] !== ' ') {
+        flush();
+        const em = el('em');
+        appendInline(em, text.slice(i + 1, end), inLink);
+        parent.appendChild(em);
+        i = end + 1;
+        continue;
+      }
+    }
+    if (c === '!' && text[i + 1] === '[') {
+      const m = /^!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/.exec(text.slice(i));
+      if (m) {
+        flush();
+        // Never fetched: the page makes no request anywhere else, and an image in a
+        // transcript is a file on another machine's disk anyway
+        parent.appendChild(el('span', 'md-image', '[image' + (m[1] ? ': ' + m[1] : '') + ']'));
+        i += m[0].length;
+        continue;
+      }
+    }
+    if (c === '[' && !inLink) {
+      const m = /^\[([^\]\n]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/.exec(text.slice(i));
+      if (m) {
+        flush();
+        parent.appendChild(linkNode(m[1], m[2]));
+        i += m[0].length;
+        continue;
+      }
+    }
+    if (c === 'h' && !inLink && (i === 0 || !/[\w/]/.test(text[i - 1]))) {
+      const m = URL_RE.exec(text.slice(i));
+      if (m) {
+        const url = m[0].replace(/[.,;:!?]+$/, '');
+        flush();
+        parent.appendChild(linkNode(url, url));
+        i += url.length;
+        continue;
+      }
+    }
+    buf += c;
+    i++;
+  }
+  flush();
+}
+
+// linkNode: an href only for http and https. Anything else keeps its label and shows the
+// target on hover, which is the honest rendering of a link the page will not follow.
+function linkNode(label, href) {
+  const a = el('a', 'md-link');
+  appendInline(a, label, true);
+  if (/^https?:\/\//i.test(href)) {
+    a.href = href;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+  }
+  a.title = href;
+  return a;
+}
+
+// plainText is Markdown with its marks removed, for a one-line preview
+function plainText(text) {
+  return String(text == null ? '' : text)
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/[#>*`~|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// ---- Times ----
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+// dayKey is the local calendar day of a timestamp, for deciding whether a time needs its
+// date in front of it
+function dayKey(iso) {
+  const t = parseTime(iso);
+  if (Number.isNaN(t)) return '';
+  const d = new Date(t);
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+}
+
+// shortTime renders a message time the way a reader scans it: the clock alone on the
+// session's own day, the date in front on any other day, the year only when it differs.
+// The full timestamp stays in the tooltip.
+function shortTime(iso, refDay) {
+  const t = parseTime(iso);
+  if (Number.isNaN(t)) return String(iso || '');
+  const d = new Date(t);
+  const clock = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  if (dayKey(iso) === refDay) return clock;
+  const year = d.getFullYear() === new Date().getFullYear() ? '' : d.getFullYear() + '-';
+  return year + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' + clock;
+}
+
+// streamDay is the day the loaded window ends on; times on that day show the clock alone
+let streamDay = '';
+
 function blockNode(block) {
   switch (block.type || 'unknown') {
     case 'text':
-      return el('div', 'block text', block.content);
+      return markdownNode(block.content, el('div', 'block text md'));
     case 'thinking':
       return el('div', 'block thinking', block.content);
     case 'event':
@@ -1253,7 +1589,11 @@ function messageNode(message, index, options) {
   // A message with nothing displayable is worth one line of explanation, not a whole block
   if (blocks.length === 0) head.appendChild(el('span', 'empty-hint', 'nothing to display'));
   if (message.id) head.title = 'id: ' + message.id;
-  if (message.timestamp) head.appendChild(el('span', 'time', String(message.timestamp)));
+  if (message.timestamp) {
+    const time = el('span', 'time', shortTime(message.timestamp, streamDay));
+    time.title = String(message.timestamp);
+    head.appendChild(time);
+  }
   node.appendChild(head);
 
   blocks.forEach(({ position, node: rendered, block }) => {
@@ -1743,7 +2083,7 @@ function thinkingStepNode(step) {
 
 // noteNode: what the agent said along the way, before its reply
 function noteNode(step) {
-  const rendered = el('div', 'note' + (step.role === 'user' ? ' from-user' : ''), step.block.content);
+  const rendered = markdownNode(step.block.content, el('div', 'note md' + (step.role === 'user' ? ' from-user' : '')));
   const plain = rendered.textContent || '';
   if (plain.length <= FOLD_AT.text) return rendered;
   return foldable(rendered, step.key, 'note');
@@ -1769,6 +2109,8 @@ function renderMessages() {
 
   const all = detail.messages.messages || [];
   const { preface, rounds } = roundsOf(all);
+  const record = state.byId.get(state.selectedId);
+  streamDay = dayKey(all.length ? all[all.length - 1].timestamp : '') || dayKey(record && record.updatedAt);
 
   const box = document.createDocumentFragment();
   let shown = 0;
@@ -1839,7 +2181,7 @@ function finalCard(final) {
   card.appendChild(badges);
 
   if (final.error) card.appendChild(el('div', 'text', final.error));
-  if (final.text) card.appendChild(el('div', 'text', final.text));
+  if (final.text) card.appendChild(markdownNode(final.text, el('div', 'text md')));
   if (!final.text && !final.error) card.appendChild(el('div', 'text dim', '(no text result)'));
 
   if (final.thinking) {
@@ -2032,6 +2374,31 @@ function sessionCard(record, final) {
     ['Cost $', record.estimatedCostUsd],
     ['File', record.hasFile ? 'present' : 'missing (may exist only in state.db)'],
   ]));
+  // How to reopen this session in the CLI that wrote it. The server omits the field for
+  // the two sources that cannot be resumed by id, so the row is absent rather than empty.
+  //
+  // The command is shown bare and copied with a cd in front of it. Measured on Claude Code
+  // and Grok, both resolve a session id from any working directory, so the cd is not what
+  // makes the session findable — it is what makes the resumed agent work in the right
+  // place. Without it the conversation continues while its tools point somewhere else,
+  // which on a coding session is worse than not resuming at all. The button says what it
+  // copies, so the difference between the two is stated rather than hidden.
+  if (record.resumeCommand) {
+    const resume = el('div', 'resume');
+    resume.appendChild(el('code', '', record.resumeCommand));
+    // cwd is not always a directory: a labeled --path instance prefixes it with its label
+    // (box2:/srv/proj) so the sessions group separately. Prefixing a cd with that produces
+    // a command that fails, and since the two are joined by && the resume never runs — a
+    // button worse than no button. Only a plainly absolute path earns the cd.
+    const dir = /^(\/|[A-Za-z]:[\\/])/.test(record.cwd || '') ? record.cwd : '';
+    const full = dir
+      ? 'cd ' + shellArg(dir) + ' && ' + record.resumeCommand
+      : record.resumeCommand;
+    const copy = button('ghost tiny', dir ? 'Copy with cd' : 'Copy', copyText(full));
+    copy.title = dir ? 'Copies: ' + full : 'Copies the command';
+    resume.appendChild(copy);
+    body.appendChild(resume);
+  }
   if (record.file) {
     const path = el('p', 'sub', record.file);
     path.title = record.file;
@@ -2078,14 +2445,15 @@ function renderSide(record) {
     side.replaceChildren();
     return;
   }
+  // The answer first, then the way around the session, then the facts about it
   const box = document.createDocumentFragment();
   box.appendChild(finalCard(detail.final || {}));
+  box.appendChild(tocCard());
+  box.appendChild(sessionCard(record, detail.final));
   const usage = usageCard((detail.final && detail.final.usage) || {});
   if (usage) box.appendChild(usage);
-  box.appendChild(sessionCard(record, detail.final));
   const timeline = projectTimeline(record);
   if (timeline) box.appendChild(timeline);
-  box.appendChild(tocCard());
   side.replaceChildren(box);
 }
 
@@ -2164,7 +2532,7 @@ function tocPreviewOf(message, max) {
   const limit = max || 70;
   for (const block of message.content || []) {
     if (block.type === 'text' && block.content) {
-      const one = String(block.content).replace(/\s+/g, ' ').trim();
+      const one = plainText(block.content);
       if (!one) continue;
       return one.length > limit ? one.slice(0, limit) + '…' : one;
     }
@@ -2195,19 +2563,38 @@ function gotoRound(no, part) {
 
 // selectSession opens a session. focusAt, when given, anchors the message window at that
 // instant instead of at the end — how a search hit becomes somewhere you can land.
-function selectSession(sessionId, focusAt) {
+// selectSession opens a session. focusAt, when given, anchors the message window at that
+// instant instead of at the end — how a search hit becomes somewhere you can land. quiet
+// is the page choosing a session on its own (the newest, on load): the selection is made
+// without a history entry and without changing which pane a phone shows.
+function selectSession(sessionId, focusAt, quiet) {
   if (!sessionId) return;
   setChromeHidden(false);
   if (sessionId === state.selectedId && (focusAt || '') === state.focusAt) return;
   state.focusAt = focusAt || '';
   state.selectedId = sessionId;
-  // On a phone the list and the conversation are different screens: picking a session
-  // there means you want to read it
-  if ($('panes') && getComputedStyle($('panes')).display !== 'none') showPane('stream');
   const encoded = encodeURIComponent(sessionId);
-  if (location.hash.replace(/^#/, '') !== encoded) location.hash = encoded;
+  const current = location.hash.replace(/^#/, '');
+  if (isPhone()) {
+    // On a phone the list and the conversation are different screens: picking a session
+    // means you want to read it, and the system's back gesture should bring the list
+    // back. The history entry carries the pane so popstate can tell which way it went;
+    // the page's own choice replaces the current entry instead, so back still leaves.
+    if (quiet) history.replaceState(history.state, '', '#' + encoded);
+    else if (current !== encoded) history.pushState({ pane: 'stream' }, '', '#' + encoded);
+    else history.replaceState({ pane: 'stream' }, '', '#' + encoded);
+    if (!quiet) showPane('stream');
+  } else if (current !== encoded) {
+    if (quiet) history.replaceState(history.state, '', '#' + encoded);
+    else location.hash = encoded;
+  }
   renderList();
   syncDetail({ force: true });
+}
+
+// isPhone: the one-pane layout, where the tab bar decides what is on screen
+function isPhone() {
+  return matchMedia('(max-width: 860px)').matches;
 }
 
 // loadingNodes is the shape of a conversation while one loads: a few blocks the size of
@@ -2625,7 +3012,27 @@ $('auto').addEventListener('change', (event) => {
   }
 });
 
+// Back and forward. On a phone an entry made by opening a session carries pane: 'stream';
+// landing on any other entry means the reader stepped back out, so the list comes back
+// and the hash is left alone — the hashchange that follows must not reopen the session.
+let suppressHashSelect = false;
+window.addEventListener('popstate', (event) => {
+  if (!isPhone()) return;
+  if (event.state && event.state.pane === 'stream') {
+    // Forward into a conversation: show it; the hashchange that follows selects the
+    // session when the entry names a different one
+    showPane('stream');
+    return;
+  }
+  suppressHashSelect = true;
+  showPane('list');
+});
+
 window.addEventListener('hashchange', () => {
+  if (suppressHashSelect) {
+    suppressHashSelect = false;
+    return;
+  }
   const id = decodeURIComponent(location.hash.replace(/^#/, ''));
   if (id && id !== state.selectedId && state.byId.has(id)) selectSession(id);
 });
@@ -2780,7 +3187,9 @@ function showPane(name) {
   const nav = $('panes');
   if (nav) {
     for (const button of nav.children) {
-      button.classList.toggle('on', button.dataset.pane === name);
+      const on = button.dataset.pane === name;
+      button.classList.toggle('on', on);
+      button.setAttribute('aria-current', on ? 'page' : 'false');
     }
   }
   saveViewPrefs();
@@ -2792,11 +3201,19 @@ async function start() {
   applyPaneFolds();
   syncFoldAllButton();
   const hashId = decodeURIComponent(location.hash.replace(/^#/, ''));
-  if (hashId) state.selectedId = hashId;
+  if (hashId) {
+    state.selectedId = hashId;
+    // A deep link opens on the conversation it names, on a phone too
+    if (isPhone()) {
+      history.replaceState({ pane: 'stream' }, '', location.hash);
+      showPane('stream');
+    }
+  }
   await refresh();
   if (!state.selectedId && state.sessions.length > 0) {
-    // Select the newest by default, so opening the page shows something
-    selectSession(state.sessions[0].sessionId);
+    // Select the newest by default, so opening the page shows something — quietly: no
+    // history entry, and a phone stays on the pane it was on
+    selectSession(state.sessions[0].sessionId, '', true);
   }
   if ($('auto').checked) startAutoRefresh();
 }

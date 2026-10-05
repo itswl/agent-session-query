@@ -20,10 +20,12 @@ import (
 // at the end. It describes; it never claims a conclusion.
 
 // roundPlumbingPrefixes marks command-plumbing rows: user role and real text, but not a
-// human turn. They never start a round.
+// human turn. They never start a round. Besides the slash-command plumbing, Claude Code
+// hands the model a background task's completion as a user row wrapped in
+// <task-notification>, and hooks' context as <system-reminder>.
 var roundPlumbingPrefixes = []string{
 	"<command-name>", "<command-message>", "<command-args>", "<command-contents>",
-	"<local-command-", "<caveat", "Caveat:",
+	"<local-command-", "<caveat", "Caveat:", "<task-notification", "<system-reminder",
 }
 
 // errNoSession is what the brief endpoints return when the pattern matches nothing; the
@@ -73,7 +75,9 @@ func isRoundStart(m map[string]any) bool {
 			return false
 		}
 	}
-	return true
+	// A message that is wholly one XML-style element is context a CLI injected, whatever
+	// the tag: a person does not type a question that way (the Codex rule, see wrappedInTag)
+	return !wrappedInTag(text)
 }
 
 // contentBlocks folds a message's content field into blocks, whatever the transport did

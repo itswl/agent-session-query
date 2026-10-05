@@ -355,6 +355,10 @@ func TestSplitRoundsRespectsInjectedAndEvents(t *testing.T) {
 	rounds := splitRounds([]map[string]any{
 		{"role": "user", "injected": true, "timestamp": "2026-10-01T10:00:00Z", "content": text("# AGENTS.md instructions")},
 		{"role": "user", "timestamp": "2026-10-01T10:00:01Z", "content": text("real ask")},
+		// Claude Code hands a finished background task to the model as a user row; a
+		// row that is wholly one XML element is injected whatever its tag
+		{"role": "user", "timestamp": "2026-10-01T10:00:01Z", "content": text("<task-notification>\n<task-id>x</task-id>\n</task-notification>")},
+		{"role": "user", "timestamp": "2026-10-01T10:00:01Z", "content": text("<teammate-message from=\"a\">done</teammate-message>")},
 		{"role": "assistant", "timestamp": "2026-10-01T10:00:02Z", "content": []map[string]any{toolCallBlock("c1", "shell", map[string]any{"command": "sleep"})}},
 		{"role": "system", "timestamp": "2026-10-01T10:00:03Z", "content": []map[string]any{eventBlock(eventInterrupted, "Turn aborted: interrupted")}},
 	})

@@ -28,7 +28,7 @@ const titleLength = 80
 //   - "[Request interrupted" — an aborted turn
 //   - "Caveat:" — the standalone form of the Claude Code caveat row
 var titleNoisePrefixes = []string{
-	"<command", "<local-command", "<bash", "<system-reminder",
+	"<command", "<local-command", "<bash", "<system-reminder", "<task-notification",
 	"<environment_context", "<user_instructions", "# AGENTS.md",
 	"[Request interrupted", "Caveat:",
 }

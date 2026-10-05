@@ -958,8 +958,11 @@ function windowStats(detail, countLabel) {
     row.appendChild(el('span', '', asked + (asked === 1 ? ' round' : ' rounds')));
     row.appendChild(el('span', '', tools + (tools === 1 ? ' tool call' : ' tool calls')));
     if (failures) row.appendChild(el('span', 'fail', failures + ' failed'));
-    const span = timeSpan(all[0].timestamp, all[all.length - 1].timestamp);
-    if (span > 0) row.appendChild(el('span', '', formatDuration(span)));
+    // The work in this window, round by round, rather than first row to last: a session
+    // left open over a weekend spans days, and reading that as how long the work took is
+    // the same mistake a round made before its end was separated from its last row.
+    const worked = rounds.reduce((n, r) => n + (r.summary.durationMs || 0), 0);
+    if (worked > 0) row.appendChild(el('span', '', formatDuration(worked)));
   }
   if (countLabel) row.appendChild(el('span', 'dim count', countLabel));
   return row;
@@ -1639,6 +1642,16 @@ function fileOf(args) {
 }
 
 // summarizeRound is the folded line: steps, commands, files changed, failures, time
+// isWorkRow: the agent's own rows. The ask is one by definition; a row that only carries
+// text the CLI put in the user's mouth (a task notification, a reminder, a block of
+// context) is not, however late it arrives.
+function isWorkRow(message) {
+  if (!message) return false;
+  if (message.role === 'assistant') return true;
+  return (message.content || []).some(
+    (b) => b.type === 'toolCall' || b.type === 'toolResult' || b.type === 'event');
+}
+
 function summarizeRound(round) {
   const tools = flatToolSteps(round.steps);
   const changed = new Set();
@@ -1656,7 +1669,13 @@ function summarizeRound(round) {
   }
   const items = round.items;
   const firstAt = round.ask ? round.ask.message.timestamp : (items.length ? items[0].message.timestamp : '');
-  const lastAt = items.length ? items[items.length - 1].message.timestamp : firstAt;
+  // The end of the work, not the end of the rows: a notification or a block of context
+  // the CLI drops in hours later belongs to whichever round was last, and a round of two
+  // commands would report ninety-four hours. The server splits the two the same way.
+  let lastAt = firstAt;
+  for (const item of items) {
+    if (isWorkRow(item.message)) lastAt = item.message.timestamp || lastAt;
+  }
   let durationMs = timeSpan(firstAt, lastAt);
   if (!(durationMs > 0)) {
     durationMs = tools.reduce((sum, s) => sum + (Number(s.result && s.result.durationMs) || 0), 0);

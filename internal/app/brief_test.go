@@ -57,7 +57,7 @@ func TestSplitRounds(t *testing.T) {
 func TestSessionBriefSelection(t *testing.T) {
 	api := briefFixture(t)
 	// default: the latest round, which is the interrupted one
-	brief, err := api.sessionBrief("rrrr", "", 0, "")
+	brief, err := api.sessionBrief("rrrr", "", 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestSessionBriefSelection(t *testing.T) {
 		}
 	}
 	// round=1 reaches the earlier round
-	brief, err = api.sessionBrief("rrrr", "", 1, "")
+	brief, err = api.sessionBrief("rrrr", "", 1, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestSessionBriefSelection(t *testing.T) {
 		t.Error("round 1 brief leaked round 2's ask into the detail section")
 	}
 	// at= picks the round a timestamp falls in
-	brief, err = api.sessionBrief("rrrr", "", 0, "2026-09-21T09:00:00Z")
+	brief, err = api.sessionBrief("rrrr", "", 0, "2026-09-21T09:00:00Z", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,13 +88,13 @@ func TestSessionBriefSelection(t *testing.T) {
 		t.Error("at=09:00 should brief round 2")
 	}
 	// errors
-	if _, err := api.sessionBrief("rrrr", "", 5, ""); err == nil || !strings.Contains(err.Error(), "1..2") {
+	if _, err := api.sessionBrief("rrrr", "", 5, "", ""); err == nil || !strings.Contains(err.Error(), "1..2") {
 		t.Fatalf("round out of range = %v", err)
 	}
-	if _, err := api.sessionBrief("rrrr", "", 0, "2020-01-01T00:00:00Z"); err == nil {
+	if _, err := api.sessionBrief("rrrr", "", 0, "2020-01-01T00:00:00Z", ""); err == nil {
 		t.Fatal("an at outside every round should error")
 	}
-	if _, err := api.sessionBrief("zzzz", "", 0, ""); err == nil || err != errNoSession {
+	if _, err := api.sessionBrief("zzzz", "", 0, "", ""); err == nil || err != errNoSession {
 		t.Fatalf("no-session = %v", err)
 	}
 }
@@ -214,7 +214,7 @@ func TestSessionRoundsSurfacesPartialScan(t *testing.T) {
 	if out["partial"] != true || out["messagesTotal"] != 999999 {
 		t.Fatalf("partial = %v, total = %v", out["partial"], out["messagesTotal"])
 	}
-	brief, err := api.sessionBrief("rrrr", "", 0, "")
+	brief, err := api.sessionBrief("rrrr", "", 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestSessionBriefSourceDisambiguation(t *testing.T) {
 		labeledSource{SessionSource: newClaudeSource(dirB), mode: "claude:b"},
 	}, 0)
 	for _, source := range []string{"claude:a", "claude:b"} {
-		brief, err := api.sessionBrief("cccc", source, 0, "")
+		brief, err := api.sessionBrief("cccc", source, 0, "", "")
 		if err != nil {
 			t.Fatalf("%s: %v", source, err)
 		}
@@ -271,7 +271,7 @@ func TestBriefReadsTheTailNotTheHead(t *testing.T) {
 		t.Fatalf("scan bounds = %v / %v / %v", out["partial"], out["messagesScanned"], out["messagesTotal"])
 	}
 
-	brief, err := api.sessionBrief("tail", "", 0, "")
+	brief, err := api.sessionBrief("tail", "", 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestBriefReadsTheTailNotTheHead(t *testing.T) {
 	}
 
 	// An at older than the tail states the bounds instead of pretending
-	_, err = api.sessionBrief("tail", "", 0, "2026-09-21T07:00:00Z")
+	_, err = api.sessionBrief("tail", "", 0, "2026-09-21T07:00:00Z", "")
 	if err == nil || !strings.Contains(err.Error(), "latest") {
 		t.Fatalf("at older than the tail = %v", err)
 	}
@@ -330,7 +330,7 @@ func TestRoundFailuresAndChanges(t *testing.T) {
 		t.Errorf("rounds row = %v", row)
 	}
 
-	brief, err := api.sessionBrief("ffff", "", 0, "")
+	brief, err := api.sessionBrief("ffff", "", 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,8 +370,114 @@ func TestSplitRoundsRespectsInjectedAndEvents(t *testing.T) {
 	}
 	// The rounds index marks a failed round distinctly from an interrupted one
 	failed := round{index: 1, failures: 2, asked: "x"}
-	brief := renderBrief(record{fields: map[string]any{"sessionId": "s"}}, []round{failed, {index: 2, interrupted: true, asked: "y"}}, 2, 2, 2)
+	brief := renderBrief(record{fields: map[string]any{"sessionId": "s"}}, []round{failed, {index: 2, interrupted: true, asked: "y"}}, []int{2}, 2, 2, "")
 	if !strings.Contains(brief, "✗ x · 2 failed") || !strings.Contains(brief, "⚠ y") {
 		t.Errorf("rounds index marks = \n%s", brief)
+	}
+}
+
+// TestRoundEndIgnoresLateRows: a notification the CLI delivers hours after the agent
+// stopped lands in whichever round was last. It must not become that round's end — a
+// round of two commands reporting ninety-four hours is the bug this covers — but a search
+// hit inside it still has to resolve to that round, which is what lastAt keeps.
+func TestRoundEndIgnoresLateRows(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "proj", "late.jsonl"),
+		`{"type":"user","sessionId":"late","cwd":"/w","timestamp":"2026-09-21T08:00:00Z","message":{"role":"user","content":"ask one"}}`,
+		`{"type":"assistant","timestamp":"2026-09-21T08:01:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}`,
+		`{"type":"user","timestamp":"2026-09-21T08:01:30Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"ok"}]}]}}`,
+		`{"type":"assistant","timestamp":"2026-09-21T08:02:00Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`,
+		// four days later, with nobody at the keyboard
+		`{"type":"user","timestamp":"2026-09-25T06:00:00Z","message":{"role":"user","content":"<task-notification>a background task finished</task-notification>"}}`,
+		`{"type":"user","timestamp":"2026-09-25T06:00:10Z","message":{"role":"user","content":"<system-reminder>a reminder</system-reminder>"}}`,
+	)
+	api := newSessionQueryAPI([]SessionSource{newClaudeSource(root)}, 0)
+	sr, err := api.roundsOf("late", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sr.rounds) != 1 {
+		t.Fatalf("rounds = %d, want 1 (neither tagged row is an ask)", len(sr.rounds))
+	}
+	r := sr.rounds[0]
+	if r.endAt != "2026-09-21T08:02:00Z" {
+		t.Errorf("endAt = %q, want the assistant's last word 2026-09-21T08:02:00Z", r.endAt)
+	}
+	if r.spanEnd() != "2026-09-25T06:00:10Z" {
+		t.Errorf("spanEnd = %q, want the last row 2026-09-25T06:00:10Z", r.spanEnd())
+	}
+	// a hit in the late row still names this round
+	if _, err := api.sessionBrief("late", "", 0, "2026-09-25T06:00:05Z", ""); err != nil {
+		t.Errorf("brief at a late row: %v", err)
+	}
+	out, err := api.sessionRounds("late", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := out["rounds"].([]map[string]any)[0]
+	if row["endAt"] != "2026-09-21T08:02:00Z" || row["lastAt"] != "2026-09-25T06:00:10Z" {
+		t.Errorf("rounds row = %v", row)
+	}
+}
+
+// TestBriefSince: the delta handoff. Everything that ran after a moment, with a summary
+// of the stretch before the rounds themselves.
+func TestBriefSince(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "proj", "delta.jsonl"),
+		`{"type":"user","sessionId":"delta","cwd":"/w","timestamp":"2026-09-21T08:00:00Z","message":{"role":"user","content":"ask one"}}`,
+		`{"type":"assistant","timestamp":"2026-09-21T08:01:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"w1","name":"Write","input":{"file_path":"/x/one.go"}}]}}`,
+		`{"type":"user","timestamp":"2026-09-21T08:01:10Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"w1","content":[{"type":"text","text":"ok"}]}]}}`,
+		`{"type":"assistant","timestamp":"2026-09-21T08:02:00Z","message":{"role":"assistant","content":[{"type":"text","text":"first done"}]}}`,
+		`{"type":"user","sessionId":"delta","cwd":"/w","timestamp":"2026-09-21T10:00:00Z","message":{"role":"user","content":"ask two"}}`,
+		`{"type":"assistant","timestamp":"2026-09-21T10:01:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"w2","name":"Write","input":{"file_path":"/x/two.go"}}]}}`,
+		`{"type":"user","timestamp":"2026-09-21T10:01:10Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"w2","content":[{"type":"text","text":"ok"}]}]}}`,
+		`{"type":"assistant","timestamp":"2026-09-21T10:02:00Z","message":{"role":"assistant","content":[{"type":"text","text":"second done"}]}}`,
+		`{"type":"user","sessionId":"delta","cwd":"/w","timestamp":"2026-09-21T11:00:00Z","message":{"role":"user","content":"ask three"}}`,
+		`{"type":"assistant","timestamp":"2026-09-21T11:02:00Z","message":{"role":"assistant","content":[{"type":"text","text":"third done"}]}}`,
+	)
+	api := newSessionQueryAPI([]SessionSource{newClaudeSource(root)}, 0)
+
+	brief, err := api.sessionBrief("delta", "", 0, "", "2026-09-21T09:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(brief, "## Since 2026-09-21T09:00:00Z") {
+		t.Errorf("no delta header:\n%s", brief)
+	}
+	if !strings.Contains(brief, "2 rounds: #2 → #3") {
+		t.Errorf("delta covers the wrong rounds:\n%s", brief)
+	}
+	// the first round's file is before the cut; the second round's is not
+	if strings.Contains(brief, "/x/one.go") || !strings.Contains(brief, "/x/two.go") {
+		t.Errorf("delta files are not the delta's:\n%s", brief)
+	}
+	// both rounds after the cut are spelled out, the one before is not
+	for _, want := range []string{"## Round 2", "## Round 3", "ask two", "ask three"} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("missing %q:\n%s", want, brief)
+		}
+	}
+	if strings.Contains(brief, "## Round 1") {
+		t.Errorf("round 1 is before the cut:\n%s", brief)
+	}
+	// a relative form is the same question asked the way a caller usually has it
+	if _, err := api.sessionBrief("delta", "", 0, "", "9999d"); err != nil {
+		t.Errorf("relative since: %v", err)
+	}
+	if _, err := api.sessionBrief("delta", "", 0, "", "1m"); err == nil ||
+		!strings.Contains(err.Error(), "no round") {
+		t.Errorf("a cut after everything should say so, got %v", err)
+	}
+	if _, err := api.sessionBrief("delta", "", 0, "", "not-a-time"); err == nil {
+		t.Error("an unreadable since should be an error")
+	}
+	// one round chosen by number still renders alone, with no delta header
+	one, err := api.sessionBrief("delta", "", 2, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(one, "## Since") || strings.Contains(one, "## Round 3") {
+		t.Errorf("round= should pick exactly one round:\n%s", one)
 	}
 }

@@ -233,6 +233,21 @@ round marks it interrupted outright; the ask-after-ask heuristic covers the sour
 record no such event. The brief carries the resume command with the `cd` the page prepends
 for the same reason (see `resumeCommand`).
 
+**A round ends when the work ends, not when its rows do.** `endAt` is the last row that is
+the ask, an assistant message, or a row carrying a tool call, a tool result or an event.
+A notification or a block of context a CLI delivers while nobody is at the keyboard is a
+user row that starts no round, so it joins whichever round was last; counted as the end, it
+turned a round of two commands into ninety-four hours. `lastAt` (`spanEnd`) keeps that final
+row, because a search hit inside it still has to resolve to its round, and the two are
+reported apart by `/rounds`. The page applies the same rule in `summarizeRound`, and sums
+the rounds rather than spanning the window for the figure above a conversation.
+
+**`since` briefs a stretch.** `round` and `at` select one round; `since` selects every round
+that ran after a moment and renders a `## Since` summary (rounds covered, the union of files
+changed and touched, tool calls, failures) before the rounds themselves, capped at
+`briefMaxSections`. It is the second handoff of a session: what has happened since the other
+side last looked, rather than one round again.
+
 ### When a source cannot be read
 
 A source that returns no records and no error is empty; a source that could not be read at

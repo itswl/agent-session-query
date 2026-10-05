@@ -13,7 +13,7 @@ no alias.
 | `/sessions/<pattern>/messages?limit=50&order=asc&full=1` | yes | A session's messages; `order=asc` (the default) takes the earliest N, `order=desc` the latest N, and `at=<time>` anchors the window at that instant instead of at an end. Tool output and thinking come cut to a preview and marked `truncated: true`; `full=1` returns them whole (ask for a narrow window, a build log is large). Capped by `--max-limit` |
 | `/sessions/<pattern>/final` | yes | A session's final result |
 | `/sessions/<pattern>/rounds?source=` | yes | The session split into rounds — one per real user message (command plumbing, tool results and the rows a CLI injects do not start one): index, times, message and tool-call counts, `failures` (tool results that reported an error or an interruption), `files` touched by any tool, `filesChanged` (write-kind calls that did not fail), whether the round ended interrupted. The scan covers the **latest** 20 000 messages — `partial` / `messagesScanned` / `messagesTotal` say when it is shorter than the session, and round numbering is over that tail |
-| `/sessions/<pattern>/brief?round=&at=&source=` | yes | A compact handoff brief (`text/markdown`, deterministic extraction, not a summary): the ask in the user's words, the files changed and the files touched, tools by category with how many failed, how the round ended, the state at the end, and the command that reopens the session in its own CLI (with the `cd` it needs) — with the same partial-scan note when it applies (the scan covers the latest messages; round numbering is over that tail). The rounds index marks a round with failures `✗` and an interrupted one `⚠`. Defaults to the latest round; `round=N` picks one, `at=<time>` briefs the round a timestamp falls in; `source` disambiguates when an id collides across sources |
+| `/sessions/<pattern>/brief?round=&at=&since=&source=` | yes | A compact handoff brief (`text/markdown`, deterministic extraction, not a summary): the ask in the user's words, the files changed and the files touched, tools by category with how many failed, how the round ended, the state at the end, and the command that reopens the session in its own CLI (with the `cd` it needs) — with the same partial-scan note when it applies (the scan covers the latest messages; round numbering is over that tail). The rounds index marks a round with failures `✗` and an interrupted one `⚠`. Defaults to the latest round; `round=N` picks one, `at=<time>` briefs the round a timestamp falls in, `since=<time|2h|7d>` briefs every round that ran after a moment and opens with what the stretch adds up to — the delta for handing the same session over a second time; `source` disambiguates when an id collides across sources |
 | `/sessions/<pattern>/export?order=desc&format=md` | yes | Export the session. **No `limit` means the whole session** (up to 20 000 messages), and tool output and thinking are carried whole, never cut to a preview; the header states what it covers, and says so when it is partial. A result says how it ended (`↳ Bash — failed · exit 1 · 2.3s`) and events between the turns are quoted. Four formats: |
 
 | `format` | Served as | For |
@@ -29,6 +29,11 @@ no alias.
 **Authentication**: once `--hook_token` is set, endpoints marked "yes" require
 `Authorization: Bearer <token>`. Without it everything is open (with a warning at startup).
 Tokens are compared in constant time. CORS is off by default, see `--cors-origin`.
+
+**Capabilities**: `/health` lists what the build can do as `capabilities`, a sorted array of
+names such as `brief.since` or `messages.full`. A client that upgrades separately from the
+server it talks to asks for the name rather than mapping a version onto a feature list. The
+list is append-only: a name is never renamed or removed.
 
 **Conditional requests**: `/sessions` returns an `ETag`; repeating the request with
 `If-None-Match` while the list is unchanged returns `304`. The tag also changes with the

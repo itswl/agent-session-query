@@ -309,6 +309,22 @@ func TestHTTPRoutes(t *testing.T) {
 	// Unauthenticated endpoints
 	if code, body := get(t, srv.URL+"/health", ""); code != 200 || body["status"] != "ok" {
 		t.Fatalf("/health = %d %v", code, body)
+	} else {
+		// A client that upgrades separately from the server asks what this build can do
+		// rather than mapping a version onto a feature list
+		caps, ok := body["capabilities"].([]any)
+		if !ok || len(caps) == 0 {
+			t.Fatalf("/health capabilities = %v", body["capabilities"])
+		}
+		found := map[string]bool{}
+		for _, c := range caps {
+			found[toStr(c)] = true
+		}
+		for _, want := range []string{"brief.since", "messages.full", "rounds.lastAt"} {
+			if !found[want] {
+				t.Errorf("/health capabilities missing %q: %v", want, caps)
+			}
+		}
 	}
 	if code, _ := get(t, srv.URL+"/", ""); code != 200 {
 		t.Fatalf("/ = %d", code)
@@ -1348,5 +1364,24 @@ func TestListVersionFollowsBuild(t *testing.T) {
 	}
 	if again := listVersion(nil, nil); again != after {
 		t.Fatalf("ETag not stable: %s then %s", after, again)
+	}
+}
+
+// TestServerCapabilitiesAreSortedAndUnique: the list is read by clients older than the
+// build serving it, so it is append-only and stable. A duplicate or an unsorted entry is
+// a merge that went wrong.
+func TestServerCapabilitiesAreSortedAndUnique(t *testing.T) {
+	seen := map[string]bool{}
+	for i, name := range serverCapabilities {
+		if name == "" || strings.TrimSpace(name) != name {
+			t.Errorf("capability %d = %q", i, name)
+		}
+		if seen[name] {
+			t.Errorf("duplicate capability %q", name)
+		}
+		seen[name] = true
+		if i > 0 && serverCapabilities[i-1] > name {
+			t.Errorf("capabilities out of order: %q before %q", serverCapabilities[i-1], name)
+		}
 	}
 }

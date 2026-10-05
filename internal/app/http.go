@@ -249,7 +249,7 @@ var rootEndpoints = []rootEndpoint{
 	{"GET", "/sessions/<pattern>/final", false, "its final result"},
 	{"GET", "/sessions/<pattern>/export?format=", false, "one session as a document: md, jsonl, json or html"},
 	{"GET", "/sessions/<pattern>/rounds", false, "the session split into rounds — one per real user message"},
-	{"GET", "/sessions/<pattern>/brief?round=", false, "a handoff brief of one round (default the latest); ?at=<ts> picks the round a timestamp falls in"},
+	{"GET", "/sessions/<pattern>/brief?round=", false, "a handoff brief of one round (default the latest); ?at=<ts> picks the round a timestamp falls in, ?since=<ts|2h> briefs every round after a moment"},
 	{"GET", "/search?q=", false, "full-text search across every source"},
 	{"GET", "/projects", false, "session counts grouped by project"},
 	{"GET", "/export?project=", false, "a pack: what was asked and concluded across sessions, oldest first"},
@@ -279,10 +279,11 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 	// Health check: unauthenticated, so monitoring can probe it
 	if path == "/health" {
 		body := map[string]any{
-			"status":  "ok",
-			"version": buildVersion,
-			"mode":    s.mode,
-			"sources": sourceModes(s.sources),
+			"status":       "ok",
+			"version":      buildVersion,
+			"mode":         s.mode,
+			"sources":      sourceModes(s.sources),
+			"capabilities": serverCapabilities,
 			// The page uses this to decide whether to show the token prompt: with no token
 			// configured there is no reason to make anyone invent one
 			"authRequired": s.token != "",
@@ -499,7 +500,8 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 				}
 				roundNo = n
 			}
-			brief, err := s.api.sessionBrief(pattern, r.URL.Query().Get("source"), roundNo, r.URL.Query().Get("at"))
+			brief, err := s.api.sessionBrief(pattern, r.URL.Query().Get("source"), roundNo,
+				r.URL.Query().Get("at"), r.URL.Query().Get("since"))
 			if err != nil {
 				status, payload := briefHTTPError(err)
 				writeJSON(w, status, payload)
@@ -926,4 +928,25 @@ type countingWriter struct {
 func (w countingWriter) Write(p []byte) (int, error) {
 	w.server.countBadRequest()
 	return os.Stderr.Write(p)
+}
+
+// serverCapabilities names what this build can do, for a client that upgrades separately
+// from the server it talks to — a page an installed web app kept from an older release, an
+// MCP client pinned to an older binary, a script someone wrote last month. Branching on a
+// version string means knowing which version introduced what; a flag can be asked for
+// directly. Add a name when a route grows an ability; never rename or remove one, because
+// the whole point is that older callers keep reading it.
+var serverCapabilities = []string{
+	"brief.at",       // /sessions/<id>/brief?at=
+	"brief.since",    // /sessions/<id>/brief?since= — the delta handoff
+	"export.pack",    // /export across sessions
+	"export.session", // /sessions/<id>/export
+	"messages.at",    // /sessions/<id>/messages?at=
+	"messages.full",  // ?full=1 — tool output and thinking whole
+	"rounds",         // /sessions/<id>/rounds
+	"rounds.lastAt",  // a round carries the end of its work and the end of its rows apart
+	"search.pattern", // /search?pattern= — scoped to one session
+	"search.role",    // /search?role=
+	"sessions.etag",  // /sessions answers 304, and carries the server version
+	"usage",          // token usage on a final result
 }

@@ -425,7 +425,8 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if err != nil {
 			return nil, err
 		}
-		brief, err := s.api.sessionBrief(pattern, sourceWanted, argInt(args, "round", 0, 1<<30), strings.TrimSpace(argString(args, "at")))
+		brief, err := s.api.sessionBrief(pattern, sourceWanted, argInt(args, "round", 0, 1<<30),
+			strings.TrimSpace(argString(args, "at")), strings.TrimSpace(argString(args, "since")))
 		if err != nil {
 			return nil, err
 		}
@@ -715,7 +716,7 @@ func mcpTools() []map[string]any {
 		},
 		{
 			"name":        "session_brief",
-			"description": "A compact handoff brief of one round of a session: the ask in the user's words, the files changed and the files touched, tools by category with the number that failed, how the exchange ended, and the command that resumes the session in its own CLI. Deterministic extraction, not an AI summary. A session is segmented into rounds at each real user message; without round/at the latest round is briefed. Pairs with search_sessions — brief the round a hit falls in via at.",
+			"description": "A compact handoff brief of one round of a session: the ask in the user's words, the files changed and the files touched, tools by category with the number that failed, how the exchange ended, and the command that resumes the session in its own CLI. Deterministic extraction, not an AI summary. A session is segmented into rounds at each real user message; without round/at/since the latest round is briefed. Pairs with search_sessions — brief the round a hit falls in via at. Handing the same session over a second time, pass since=<the first handoff's time> for the delta rather than one round.",
 			"annotations": readOnlyAnnotations("Brief a session round"),
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -724,6 +725,7 @@ func mcpTools() []map[string]any {
 					"source":  strSchema("restrict the match to one source: " + strings.Join(knownModes, " / ")),
 					"round":   intSchema("1-based round number; default the latest"),
 					"at":      strSchema("brief the round this timestamp falls in, e.g. a hit's timestamp from search_sessions"),
+					"since":   strSchema("brief every round that ran after this moment instead of one, e.g. 2h / 2026-10-05T08:00:00Z — the delta for a second handoff of the same session"),
 				},
 				"required": []string{"pattern"},
 			},

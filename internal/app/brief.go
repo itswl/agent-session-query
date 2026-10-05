@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -42,9 +43,15 @@ var errNoSession = errors.New("no session matches the pattern")
 // number a reader scans a session for first, and the one a brief handed to another agent
 // must not leave out.
 type round struct {
-	index       int
+	index int
+	// startAt is the ask. endAt is the last thing the agent did — the end of the work,
+	// not the end of the rows: a notification or a block of context the CLI dropped in
+	// hours later lands in whichever round was last and would otherwise stretch it, which
+	// is how a round of four commands came to report ninety-four hours. lastAt is that
+	// final row, kept because a search hit in one still has to resolve to this round.
 	startAt     string
 	endAt       string
+	lastAt      string
 	messages    int
 	toolCalls   int
 	failures    int
@@ -144,6 +151,9 @@ func containsString(list []string, s string) bool {
 	return false
 }
 
+// briefMaxSections caps how many rounds a delta brief spells out in full
+const briefMaxSections = 12
+
 // splitRounds segments messages into rounds. The rule is the page's table of contents
 // moved server-side: a round starts at a user message with words of its own, and
 // everything up to the next such message belongs to it. Messages before the first real
@@ -170,12 +180,19 @@ func splitRounds(messages []map[string]any) []round {
 		} else if cur == nil {
 			continue
 		}
-		cur.endAt = toStr(m["timestamp"])
+		at := toStr(m["timestamp"])
+		if at != "" {
+			cur.lastAt = at
+		}
+		// The ask and the agent's own rows are work; a row that only carries text the CLI
+		// put in the user's mouth is not, however late it arrives (see the round comment)
+		work := starting || role == "assistant"
 		cur.messages++
 		humanLast = starting
 		for _, block := range contentBlocks(m["content"]) {
 			switch toStr(block["type"]) {
 			case "toolCall":
+				work = true
 				cur.toolCalls++
 				cur.files = appendFilePath(cur.files, block["arguments"])
 				kind := toolKindOf(toStr(block["name"]))
@@ -184,12 +201,14 @@ func splitRounds(messages []map[string]any) []round {
 					cur.noteWrite(toStr(block["id"]), block["arguments"])
 				}
 			case "toolResult":
+				work = true
 				failed := isFailedResult(block)
 				if failed {
 					cur.failures++
 				}
 				cur.settleWrite(toStr(block["callId"]), failed)
 			case "event":
+				work = true
 				// The user stopping the turn is recorded as an event by the sources that
 				// know it happened; the ask-after-ask heuristic below catches the rest
 				if toStr(block["kind"]) == eventInterrupted {
@@ -201,6 +220,9 @@ func splitRounds(messages []map[string]any) []round {
 			if text := strings.TrimSpace(messageText(m["content"])); text != "" {
 				cur.outcome = text
 			}
+		}
+		if work && at != "" {
+			cur.endAt = at
 		}
 	}
 	if cur != nil {
@@ -394,6 +416,7 @@ func (a *SessionQueryAPI) sessionRounds(pattern, sourceWanted string) (map[strin
 			"round":        r.index,
 			"startAt":      r.startAt,
 			"endAt":        r.endAt,
+			"lastAt":       r.spanEnd(),
 			"messages":     r.messages,
 			"toolCalls":    r.toolCalls,
 			"failures":     r.failures,
@@ -418,13 +441,14 @@ func (a *SessionQueryAPI) sessionRounds(pattern, sourceWanted string) (map[strin
 // sessionBrief renders one round as a markdown handoff brief. roundNo 0 means the
 // latest round; atParam, when given, selects the round the timestamp falls in — how a
 // search hit becomes the thing being briefed.
-func (a *SessionQueryAPI) sessionBrief(pattern, sourceWanted string, roundNo int, atParam string) (string, error) {
+func (a *SessionQueryAPI) sessionBrief(pattern, sourceWanted string, roundNo int, atParam, sinceParam string) (string, error) {
 	sr, err := a.roundsOf(pattern, sourceWanted)
 	if err != nil {
 		return "", err
 	}
 	item, rounds := sr.item, sr.rounds
-	selected := 0
+	selected := []int{}
+	since := ""
 	switch {
 	case atParam != "":
 		at, ok := parseTimestamp(atParam)
@@ -433,24 +457,63 @@ func (a *SessionQueryAPI) sessionBrief(pattern, sourceWanted string, roundNo int
 		}
 		for _, r := range rounds {
 			start, okStart := parseTimestamp(r.startAt)
-			end, okEnd := parseTimestamp(r.endAt)
+			end, okEnd := parseTimestamp(r.spanEnd())
 			if okStart && okEnd && !at.Before(start) && !at.After(end) {
-				selected = r.index
+				selected = []int{r.index}
 				break
 			}
 		}
-		if selected == 0 {
+		if len(selected) == 0 {
 			return "", fmt.Errorf("at %q falls in no round of this session (the scan covers the latest %d of %d messages)", atParam, sr.scanned, sr.total)
 		}
 	case roundNo != 0:
 		if roundNo < 1 || roundNo > len(rounds) {
 			return "", fmt.Errorf("round must be 1..%d, got %d", len(rounds), roundNo)
 		}
-		selected = roundNo
+		selected = []int{roundNo}
+	case sinceParam != "":
+		// The delta handoff: everything the session has done since the other side last
+		// looked, rather than a round chosen by number. A round that was still running
+		// at that moment counts — it is work the receiver has not seen either.
+		cut, err := parseSince(sinceParam)
+		if err != nil {
+			return "", err
+		}
+		since = cut.UTC().Format(time.RFC3339)
+		for _, r := range rounds {
+			end, ok := parseTimestamp(r.spanEnd())
+			if !ok || !end.Before(cut) {
+				selected = append(selected, r.index)
+			}
+		}
+		if len(selected) == 0 {
+			return "", fmt.Errorf("no round of this session ran since %s (the scan covers the latest %d of %d messages)", since, sr.scanned, sr.total)
+		}
 	case len(rounds) > 0:
-		selected = rounds[len(rounds)-1].index
+		selected = []int{rounds[len(rounds)-1].index}
 	}
-	return renderBrief(item, rounds, selected, sr.scanned, sr.total), nil
+	return renderBrief(item, rounds, selected, sr.scanned, sr.total, since), nil
+}
+
+// spanEnd is the last row of the round, work or not: the end of the stretch of session
+// the round covers, which is what a timestamp has to fall inside to name it.
+func (r round) spanEnd() string {
+	if r.lastAt != "" {
+		return r.lastAt
+	}
+	if r.endAt != "" {
+		return r.endAt
+	}
+	return r.startAt
+}
+
+// workEnd is the last thing the agent did, falling back to the ask for a round that never
+// got one: the end a duration should be measured to.
+func (r round) workEnd() string {
+	if r.endAt != "" {
+		return r.endAt
+	}
+	return r.startAt
 }
 
 // nonNilStrings keeps an empty list an empty JSON array rather than null
@@ -462,8 +525,10 @@ func nonNilStrings(list []string) []string {
 }
 
 // renderBrief lays the brief out in fixed sections: the headers are the interface the
-// receiving side prompts around, not decoration.
-func renderBrief(item record, rounds []round, selected, scanned, total int) string {
+// receiving side prompts around, not decoration. selected names the rounds to render in
+// full — one for a round chosen by number or by timestamp, several for a delta since a
+// moment, which is what a second handoff of the same session wants.
+func renderBrief(item record, rounds []round, selected []int, scanned, total int, since string) string {
 	var b strings.Builder
 	// Most titles arrive through titleFromUserText, which already cleans them, but the
 	// SQLite sources take theirs straight from a column
@@ -487,11 +552,7 @@ func renderBrief(item record, rounds []round, selected, scanned, total int) stri
 		fmt.Fprintf(&b, "- resume: %s\n", resume)
 	}
 	if len(rounds) > 0 {
-		span := rounds[len(rounds)-1].endAt
-		if span == "" {
-			span = rounds[0].startAt
-		}
-		fmt.Fprintf(&b, "- %d rounds · %s → %s\n", len(rounds), shortTime(rounds[0].startAt), shortTime(span))
+		fmt.Fprintf(&b, "- %d rounds · %s → %s\n", len(rounds), shortTime(rounds[0].startAt), shortTime(rounds[len(rounds)-1].workEnd()))
 	}
 	if total > scanned {
 		fmt.Fprintf(&b, "- scanned the latest %d of %d messages (partial)\n", scanned, total)
@@ -518,8 +579,55 @@ func renderBrief(item record, rounds []round, selected, scanned, total int) stri
 		}
 	}
 
+	chosen := map[int]bool{}
+	for _, index := range selected {
+		chosen[index] = true
+	}
+
+	// A delta covers a stretch rather than one exchange, so it opens with what the stretch
+	// adds up to: the receiving side reads that first and the rounds for the detail.
+	if since != "" && len(selected) > 0 {
+		var files, changed []string
+		calls, failures := 0, 0
+		for _, r := range rounds {
+			if !chosen[r.index] {
+				continue
+			}
+			for _, f := range r.files {
+				files = appendUnique(files, f)
+			}
+			for _, f := range r.changed {
+				changed = appendUnique(changed, f)
+			}
+			calls += r.toolCalls
+			failures += r.failures
+		}
+		first, last := rounds[selected[0]-1], rounds[selected[len(selected)-1]-1]
+		fmt.Fprintf(&b, "\n## Since %s\n\n", since)
+		fmt.Fprintf(&b, "- %d rounds: #%d → #%d · %s → %s\n", len(selected), first.index, last.index,
+			shortTime(first.startAt), shortTime(last.workEnd()))
+		if len(changed) > 0 {
+			fmt.Fprintf(&b, "- Changed: %s\n", joinFiles(changed))
+		}
+		if len(files) > 0 {
+			fmt.Fprintf(&b, "- Files: %s\n", joinFiles(files))
+		}
+		fmt.Fprintf(&b, "- Tools: %d calls · failed %d\n", calls, failures)
+	}
+
+	// Enough rounds to follow the work, newest kept: a delta over a long absence would
+	// otherwise be the whole session again, which is what the receiver cannot afford
+	if len(selected) > briefMaxSections {
+		selected = selected[len(selected)-briefMaxSections:]
+		chosen = map[int]bool{}
+		for _, index := range selected {
+			chosen[index] = true
+		}
+		fmt.Fprintf(&b, "- … only the latest %d rounds are detailed below\n", briefMaxSections)
+	}
+
 	for _, r := range rounds {
-		if r.index != selected {
+		if !chosen[r.index] {
 			continue
 		}
 		header := "\n## Round " + strconv.Itoa(r.index)
@@ -575,7 +683,7 @@ func renderBrief(item record, rounds []round, selected, scanned, total int) stri
 	b.WriteString(capText(state, 400) + "\n")
 
 	if id := item.str("sessionId"); id != "" {
-		fmt.Fprintf(&b, "\nDig deeper: GET /sessions/%s/messages?limit=200 — or MCP get_messages with pattern=%q. session_brief takes round=/at= for another round.\n", id, id)
+		fmt.Fprintf(&b, "\nDig deeper: GET /sessions/%s/messages?limit=200 — or MCP get_messages with pattern=%q. session_brief takes round=/at= for another round, and since= for everything after a moment.\n", id, id)
 	}
 	return b.String()
 }

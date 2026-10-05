@@ -68,7 +68,7 @@
    top of it reads as a second, unrelated reaction */
 button, .item, .toc-item, summary { -webkit-tap-highlight-color: transparent; }
 
-html { height: 100%; }
+html { height: 100%; -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
   background: var(--bg);
@@ -302,13 +302,16 @@ body.hide-list #list, body.hide-side #side { display: none; }
    earlier version slid the title row and a tab bar away and back with the scroll
    direction, which read as the page jumping about. */
 @media (max-width: 860px) {
-  /* The app is pinned to the viewport and the document never scrolls: every scroll
+  /* The app is exactly the viewport tall and the document never scrolls: every scroll
      happens inside a screen. Heights come from flex, not from percentages — a chain of
-     height:100% through flex items is exactly what iOS Safari resolves as "auto", which
-     made each screen as tall as its content, the page scroll as a whole, the head scroll
-     off the top and the list stop short of the bottom. */
-  html, body { height: 100%; overflow: hidden; }
-  #app { position: fixed; inset: 0; height: auto; }
+     height:100% through flex items is what iOS Safari resolves as "auto", which made each
+     screen as tall as its content, the page scroll as a whole, the head scroll off the
+     top and the list stop short of the bottom. The app stays in normal flow: pinned with
+     position:fixed, Safari dropped the safe-area padding and laid the head under the
+     status bar, where nothing can be tapped. dvh follows Safari's own bars as they come
+     and go; in an installed web app it is the whole screen. */
+  html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+  #app { height: 100vh; height: 100dvh; }
   main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 
   /* body[data-pane] keeps these ahead of the base .list/.stream/.side rules, which are

@@ -42,6 +42,7 @@ const state = {
   token: '',
   authRequired: true,
   serverVersion: '',   // what /health said; a poll answered by another version reloads the page
+  insets: null,        // what the system covers of the page, measured or assumed
   sessions: [],
   byId: new Map(),
   selectedId: '',
@@ -297,11 +298,67 @@ function showGate(message) {
   $('gate-token').focus();
 }
 
+// ---------------------------------------------------------------------------
+// What the system covers of the page
+// ---------------------------------------------------------------------------
+
+// envInsets reads the four safe-area insets the browser gives, through a probe element:
+// env() is a CSS value, and a padding is the way to a number in script.
+function envInsets() {
+  const probe = el('div', 'safe-probe');
+  document.body.appendChild(probe);
+  const style = getComputedStyle(probe);
+  const out = {
+    top: Math.round(parseFloat(style.paddingTop) || 0),
+    right: Math.round(parseFloat(style.paddingRight) || 0),
+    bottom: Math.round(parseFloat(style.paddingBottom) || 0),
+    left: Math.round(parseFloat(style.paddingLeft) || 0),
+  };
+  probe.remove();
+  return out;
+}
+
+function isInstalled() {
+  return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+}
+
+// applySafeInsets writes the insets the layout keeps clear of. Normally they are the
+// browser's own. An installed web app with a translucent status bar is the exception that
+// cost several releases: it draws under the status bar and the home indicator and reports
+// every inset as zero, so the head came out beneath the status bar with nothing to tap.
+// There the page is as tall as the whole screen while something is drawn over it, which is
+// what this detects — and the bar's height has to be assumed, since nothing reports it. A
+// screen half again taller than it is wide is one of the tall iPhones, whose status bar is
+// 44pt and home indicator 34pt; anything else is an older one with a 20pt bar and no
+// indicator. Assumed once at a size change, never while scrolling: a static padding cannot
+// oscillate with the system the way a correction applied to the scroll position did.
+function applySafeInsets() {
+  const root = document.documentElement;
+  const env = envInsets();
+  let { top, bottom } = env;
+  const portrait = window.innerHeight >= window.innerWidth;
+  const screenHeight = portrait
+    ? Math.max(screen.width, screen.height)
+    : Math.min(screen.width, screen.height);
+  const coversTheScreen = window.innerHeight >= screenHeight - 1;
+  if (isInstalled() && coversTheScreen && !top) {
+    const tall = Math.max(screen.width, screen.height) / Math.min(screen.width, screen.height) >= 1.9;
+    top = tall ? 44 : 20;
+    if (!bottom && tall) bottom = 34;
+  }
+  state.insets = { top, right: env.right, bottom, left: env.left, assumed: top !== env.top };
+  root.style.setProperty('--safe-top', top + 'px');
+  root.style.setProperty('--safe-bottom', bottom + 'px');
+}
+window.addEventListener('resize', applySafeInsets);
+window.addEventListener('orientationchange', applySafeInsets);
+
 function showApp() {
   $('gate').classList.add('hidden');
   $('app').classList.remove('hidden');
   // With no token configured there is nothing to change
   $('logout').classList.toggle('hidden', !state.authRequired);
+  applySafeInsets();
 }
 
 // ---------------------------------------------------------------------------
@@ -2618,12 +2675,11 @@ function pageCard() {
   if (isPhone()) {
     const visual = window.visualViewport;
     const app = $('app').getBoundingClientRect();
-    const probe = el('div', 'safe-probe');
-    document.body.appendChild(probe);
-    const style = getComputedStyle(probe);
-    const inset = [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft]
-      .map((v) => Math.round(parseFloat(v) || 0)).join(' ');
-    probe.remove();
+    const env = envInsets();
+    const used = state.insets || env;
+    const inset = [env.top, env.right, env.bottom, env.left].join(' ')
+      + ' · keeping clear of ' + used.top + ' above, ' + used.bottom + ' below'
+      + (used.assumed ? ' (assumed: nothing was reported)' : '');
     pairs.push(['Screen', screen.width + '×' + screen.height]);
     pairs.push(['Viewport', innerWidth + '×' + innerHeight
       + (visual ? ', visible ' + Math.round(visual.width) + '×' + Math.round(visual.height) : '')]);

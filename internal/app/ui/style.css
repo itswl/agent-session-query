@@ -16,6 +16,15 @@
      it, which sets data-theme on this element. The stylesheet needs no second copy of the
      palette for that, and a stored choice is applied by theme.js before the first paint. */
   color-scheme: light dark;
+  /* What the system covers of the page: a notch or a status bar above, a home indicator
+     below. env() is the answer wherever it is given — but an installed web app with a
+     translucent status bar draws under it and reports nothing, so app.js measures and
+     overwrites these. Everything that keeps clear of an edge uses the variable, never
+     env() directly, or it would keep clear of nothing on such a device. */
+  --safe-top: env(safe-area-inset-top);
+  --safe-right: env(safe-area-inset-right);
+  --safe-bottom: env(safe-area-inset-bottom);
+  --safe-left: env(safe-area-inset-left);
   --bg: light-dark(#ffffff, #000000);           /* the canvas: the conversation sits on it */
   --stream-bg: var(--bg);
   --panel: light-dark(#fafafa, #0a0a0a);        /* list, details, header */
@@ -301,153 +310,6 @@ body.hide-list #list, body.hide-side #side { display: none; }
    way back (see popstate in app.js). Nothing on any screen moves while you scroll: an
    earlier version slid the title row and a tab bar away and back with the scroll
    direction, which read as the page jumping about. */
-@media (max-width: 860px) {
-  /* On a phone the page is one document that scrolls as a whole, the way every page on a
-     phone does, and each screen's head sticks to the top of it. Nothing here is sized to
-     the viewport and nothing holds the document still: an app exactly one viewport tall
-     was three releases of fighting iOS over where the document rests — an installed web
-     app with an opaque status bar keeps the bar's height as an inset above the page, a
-     finger could drag the page up into it, and code that put the page back oscillated
-     with the system. A page that is meant to scroll has nothing to fight about. */
-  html, body { height: auto; }
-  /* On html alone, where it reaches the viewport. On body it would make body the scroll
-     container, and the heads below would stick to a box that moves with the page. */
-  html { overflow-x: hidden; }
-  #app { display: block; height: auto; }
-  main { display: block; height: auto; overflow: visible; }
-  /* body[data-pane] lifts these over the base rules further down the file (.stream is
-     overflow:hidden there, .messages and .list scroll on their own), which would
-     otherwise win on document order — and a head cannot stick inside an overflow:hidden box */
-  body[data-pane] .list-pane, body[data-pane] .stream, body[data-pane] .side-pane { overflow: visible; height: auto; min-height: 0; max-height: none; }
-  body[data-pane] .list, body[data-pane] .messages, body[data-pane] .side { overflow: visible; height: auto; flex: none; min-height: 0; }
-
-  /* body[data-pane] keeps these ahead of the base .list/.stream/.side rules, which are
-     defined further down the file and would otherwise win on document order */
-  body[data-pane] .list-pane, body[data-pane] .stream, body[data-pane] .side-pane { display: none; }
-  body[data-pane="list"] .list-pane, body[data-pane="side"] .side-pane,
-  body[data-pane="stream"] .stream {
-    display: block;
-    animation: screen-in 240ms var(--ease) both;
-  }
-  /* Going back, the screen comes in from the side it left to */
-  body.nav-back[data-pane="list"] .list-pane, body.nav-back[data-pane="stream"] .stream,
-  body.nav-back[data-pane="side"] .side-pane { animation-name: screen-back; }
-  .list-pane { border-right: none; }
-  .side-pane { border-left: none; border-top: none; box-shadow: none; }
-  /* The page behind a short screen is the screen's own colour — and so is whatever the
-     system paints above and below the page, which it takes from the page */
-  body[data-pane="list"], body[data-pane="side"] { background: var(--panel); }
-  body[data-pane="stream"] { background: var(--stream-bg); }
-  /* The heads stick to the top; the content passes beneath them */
-  #app > header, .stream-head, .side-pane .pane-bar { position: sticky; top: 0; z-index: 5; }
-  .stream-head { background: var(--stream-bg); }
-  .side-pane .pane-bar { background: var(--panel); }
-  /* Folding is a wide-screen affair. A fold remembered from a laptop must not empty a
-     screen on a phone. */
-  body.hide-list #list, body.hide-side #side { display: block; }
-  body.hide-list #fold-groups { display: inline-block; }
-  .pane-toggle, .pane-title { display: none; }
-
-  /* The list screen: the title row, the search and the filters, the list. The other two
-     screens have heads of their own, so the title row is the list's alone. */
-  #app > header { order: 1; }
-  #app > main { order: 4; }
-  body[data-pane="stream"] #app > header, body[data-pane="side"] #app > header { display: none; }
-  header { min-height: 0; padding: 6px 10px 6px 14px; gap: 4px; }
-  header .brand { margin-right: auto; }
-  header h1 { font-size: 15px; }
-  #refresh { width: 36px; height: 36px; padding: 0; justify-content: center; border-radius: var(--r-md); }
-  #refresh .label { display: none; }
-  #refresh svg { width: 17px; height: 17px; }
-  #theme { width: 36px; height: 36px; }
-  #logout { padding: 5px 10px; font-size: 12.5px; }
-  .list-pane .pane-bar { display: none; }
-  .list-pane .pane-bar:has(#fold-groups:not(.hidden)) { display: flex; height: 36px; padding: 0 10px; }
-
-  #controls {
-    order: 3;
-    display: none;
-    flex-wrap: wrap; gap: 8px;
-    padding: 6px 12px 10px;
-    background: var(--panel); border-bottom: 1px solid var(--line);
-  }
-  body[data-pane="list"] #controls { display: flex; }
-  /* 16px, or iOS zooms the page in when the field takes focus */
-  #controls #search { flex: 1 1 100%; min-width: 0; max-width: none; padding: 10px 11px 10px 34px; font-size: 16px; background-position: 12px 50%; }
-  #controls #source-filter, #controls #grouping { flex: 1 1 0; min-width: 0; font-size: 13px; padding: 7px 26px 7px 10px; }
-  #controls .auto { flex: 0 0 auto; font-size: 0; gap: 0; } /* the switch alone; its meaning is the row it sits in */
-  #controls .auto input { width: 32px; height: 18px; }
-  #controls .auto input::after { width: 14px; height: 14px; }
-  #controls .auto input:checked::after { transform: translateX(14px); }
-  #controls #status { display: none; } /* the dots and times on the rows say what it said */
-
-  /* The conversation screen's head: back · title · details, then one line of where and
-     when, one row of controls, one line of sums. It stays put. */
-  .stream-head { padding: 4px 10px 8px 6px; }
-  .head-nav { gap: 4px; min-height: 44px; }
-  .stream .head-nav .nav-back-btn, .stream .head-nav .nav-details-btn { display: inline-flex; flex: none; }
-  .head-nav .nav-back-btn span { display: none; } /* the chevron alone: the title beside it says where you are */
-  .stream-head h2 {
-    font-size: 15px;
-    display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden;
-  }
-  .stream-head .meta { margin: 0 0 0 10px; gap: 8px; flex-wrap: nowrap; }
-  .stream-head .meta .sub { display: none; } /* the path is in Details; the head keeps to where and when */
-  .toolbar { margin: 8px 0 0 10px; gap: 6px; flex-wrap: nowrap; }
-  .toolbar .seg.view { flex: 1 1 auto; display: flex; }
-  .toolbar .seg.view .seg-btn { flex: 1; padding: 5px 4px; text-align: center; }
-  .toolbar .seg.order .seg-label, .toolbar .expand-toggle .label { display: none; }
-  .toolbar .seg .seg-btn, .toolbar .expand-toggle { min-height: 32px; }
-  .toolbar .expand-toggle { padding: 0 9px; }
-  .stats { margin: 6px 0 0 10px; font-size: 11.5px; gap: 2px 10px; }
-
-  /* The details screen's head: the way back, and its name */
-  .side-pane .pane-bar { display: flex; height: 44px; padding: 0 10px 0 6px; gap: 6px; }
-  .side-pane .pane-bar .pane-title { display: inline; margin-right: auto; font-size: 15px; color: var(--fg); }
-  .side-pane .pane-bar #side-back { display: inline-flex; }
-
-  .messages { padding: 12px 12px calc(24px + env(safe-area-inset-bottom)); }
-  .side { padding: 14px 16px calc(16px + env(safe-area-inset-bottom)); }
-  .list { padding-bottom: env(safe-area-inset-bottom); }
-
-  /* Bubbles and steps sized for a thumb and a narrow column */
-  .msg { padding: 9px 12px 10px; }
-  .round { margin-bottom: 20px; }
-  .timeline { margin-left: 2px; padding-left: 10px; }
-  .timeline-toggle { min-height: 36px; font-size: 12px; }
-  .step-head {
-    display: grid; grid-template-columns: auto auto 1fr; column-gap: 8px; row-gap: 0;
-    grid-template-areas: "glyph name meta" "target target target"; align-items: baseline;
-    padding: 5px 6px; min-height: 36px;
-  }
-  .step .glyph { grid-area: glyph; }
-  .step .step-name { grid-area: name; }
-  .step .step-meta { grid-area: meta; justify-self: end; }
-  .step .step-target { grid-area: target; font-size: 11.5px; }
-  .step .step-target:empty { display: none; }
-  .step-details, .note, .event, .steps > details, .step .preview { margin-left: 10px; }
-  .steps.nested { margin-left: 10px; }
-  .seg-btn, .item, .toc-item { min-height: 36px; }
-  .toc { max-height: none; }
-
-  .keyhint { display: none; }
-
-  /* Installed as a web app the page runs edge to edge — under a notch and under the home
-     indicator. The backgrounds are meant to reach those edges, so the padding goes on the
-     bars and on the scrollable content rather than on the app: insetting #app would leave
-     the letterbox bars plainly visible. env() resolves to 0 everywhere there is no inset. */
-  #app > header {
-    padding-top: calc(6px + env(safe-area-inset-top));
-    padding-left: calc(14px + env(safe-area-inset-left));
-    padding-right: calc(10px + env(safe-area-inset-right));
-  }
-  .stream-head, .side-pane .pane-bar { padding-top: calc(4px + env(safe-area-inset-top)); }
-  .side-pane .pane-bar { height: auto; min-height: 44px; }
-  #controls {
-    padding-left: calc(10px + env(safe-area-inset-left));
-    padding-right: calc(10px + env(safe-area-inset-right));
-  }
-}
 
 /* Read by pageCard: env() is a CSS value, and a padding is the way to a number in script */
 .safe-probe {
@@ -1092,3 +954,159 @@ details > summary .fold-size { flex: none; font-size: 11px; font-variant-numeric
 .md strong { font-weight: 600; }
 .card .text.md { font-size: 13.5px; }
 .note.md, .block.thinking.md { font-size: inherit; }
+
+/* ---------------------------------------------------------------------------
+   Phones. Last in the file on purpose: these rules and the ones above them are
+   mostly plain class selectors of equal weight, so the one written later wins.
+   Written earlier, a phone rule for .stream-head or .messages lost to the base
+   rule further down and never applied at all — which is how the conversation
+   head kept the wide screen's padding, and so sat under the status bar however
+   the inset above it was worked out.
+   --------------------------------------------------------------------------- */
+@media (max-width: 860px) {
+  /* On a phone the page is one document that scrolls as a whole, the way every page on a
+     phone does, and each screen's head sticks to the top of it. Nothing here is sized to
+     the viewport and nothing holds the document still: an app exactly one viewport tall
+     was three releases of fighting iOS over where the document rests — an installed web
+     app with an opaque status bar keeps the bar's height as an inset above the page, a
+     finger could drag the page up into it, and code that put the page back oscillated
+     with the system. A page that is meant to scroll has nothing to fight about. */
+  html, body { height: auto; }
+  /* On html alone, where it reaches the viewport. On body it would make body the scroll
+     container, and the heads below would stick to a box that moves with the page. */
+  html { overflow-x: hidden; }
+  #app { display: block; height: auto; }
+  main { display: block; height: auto; overflow: visible; }
+  /* body[data-pane] lifts these over the base rules further down the file (.stream is
+     overflow:hidden there, .messages and .list scroll on their own), which would
+     otherwise win on document order — and a head cannot stick inside an overflow:hidden box */
+  body[data-pane] .list-pane, body[data-pane] .stream, body[data-pane] .side-pane { overflow: visible; height: auto; min-height: 0; max-height: none; }
+  body[data-pane] .list, body[data-pane] .messages, body[data-pane] .side { overflow: visible; height: auto; flex: none; min-height: 0; }
+
+  /* body[data-pane] keeps these ahead of the base .list/.stream/.side rules, which are
+     defined further down the file and would otherwise win on document order */
+  body[data-pane] .list-pane, body[data-pane] .stream, body[data-pane] .side-pane { display: none; }
+  body[data-pane="list"] .list-pane, body[data-pane="side"] .side-pane,
+  body[data-pane="stream"] .stream {
+    display: block;
+    animation: screen-in 240ms var(--ease) both;
+  }
+  /* Going back, the screen comes in from the side it left to */
+  body.nav-back[data-pane="list"] .list-pane, body.nav-back[data-pane="stream"] .stream,
+  body.nav-back[data-pane="side"] .side-pane { animation-name: screen-back; }
+  .list-pane { border-right: none; }
+  .side-pane { border-left: none; border-top: none; box-shadow: none; }
+  /* The page behind a short screen is the screen's own colour — and so is whatever the
+     system paints above and below the page, which it takes from the page */
+  body[data-pane="list"], body[data-pane="side"] { background: var(--panel); }
+  body[data-pane="stream"] { background: var(--stream-bg); }
+  /* The heads stick to the top; the content passes beneath them */
+  #app > header, .stream-head, .side-pane .pane-bar { position: sticky; top: 0; z-index: 5; }
+  .stream-head { background: var(--stream-bg); }
+  .side-pane .pane-bar { background: var(--panel); }
+  /* Folding is a wide-screen affair. A fold remembered from a laptop must not empty a
+     screen on a phone. */
+  body.hide-list #list, body.hide-side #side { display: block; }
+  body.hide-list #fold-groups { display: inline-block; }
+  .pane-toggle, .pane-title { display: none; }
+
+  /* The list screen: the title row, the search and the filters, the list. The other two
+     screens have heads of their own, so the title row is the list's alone. */
+  #app > header { order: 1; }
+  #app > main { order: 4; }
+  body[data-pane="stream"] #app > header, body[data-pane="side"] #app > header { display: none; }
+  header { min-height: 0; padding: 6px 10px 6px 14px; gap: 4px; }
+  header .brand { margin-right: auto; }
+  header h1 { font-size: 15px; }
+  #refresh { width: 36px; height: 36px; padding: 0; justify-content: center; border-radius: var(--r-md); }
+  #refresh .label { display: none; }
+  #refresh svg { width: 17px; height: 17px; }
+  #theme { width: 36px; height: 36px; }
+  #logout { padding: 5px 10px; font-size: 12.5px; }
+  .list-pane .pane-bar { display: none; }
+  .list-pane .pane-bar:has(#fold-groups:not(.hidden)) { display: flex; height: 36px; padding: 0 10px; }
+
+  #controls {
+    order: 3;
+    display: none;
+    flex-wrap: wrap; gap: 8px;
+    padding: 6px 12px 10px;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  body[data-pane="list"] #controls { display: flex; }
+  /* 16px, or iOS zooms the page in when the field takes focus */
+  #controls #search { flex: 1 1 100%; min-width: 0; max-width: none; padding: 10px 11px 10px 34px; font-size: 16px; background-position: 12px 50%; }
+  #controls #source-filter, #controls #grouping { flex: 1 1 0; min-width: 0; font-size: 13px; padding: 7px 26px 7px 10px; }
+  #controls .auto { flex: 0 0 auto; font-size: 0; gap: 0; } /* the switch alone; its meaning is the row it sits in */
+  #controls .auto input { width: 32px; height: 18px; }
+  #controls .auto input::after { width: 14px; height: 14px; }
+  #controls .auto input:checked::after { transform: translateX(14px); }
+  #controls #status { display: none; } /* the dots and times on the rows say what it said */
+
+  /* The conversation screen's head: back · title · details, then one line of where and
+     when, one row of controls, one line of sums. It stays put. */
+  .stream-head { padding: 4px 10px 8px 6px; }
+  .head-nav { gap: 4px; min-height: 44px; }
+  .stream .head-nav .nav-back-btn, .stream .head-nav .nav-details-btn { display: inline-flex; flex: none; }
+  .head-nav .nav-back-btn span { display: none; } /* the chevron alone: the title beside it says where you are */
+  .stream-head h2 {
+    font-size: 15px;
+    display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .stream-head .meta { margin: 0 0 0 10px; gap: 8px; flex-wrap: nowrap; }
+  .stream-head .meta .sub { display: none; } /* the path is in Details; the head keeps to where and when */
+  .toolbar { margin: 8px 0 0 10px; gap: 6px; flex-wrap: nowrap; }
+  .toolbar .seg.view { flex: 1 1 auto; display: flex; }
+  .toolbar .seg.view .seg-btn { flex: 1; padding: 5px 4px; text-align: center; }
+  .toolbar .seg.order .seg-label, .toolbar .expand-toggle .label { display: none; }
+  .toolbar .seg .seg-btn, .toolbar .expand-toggle { min-height: 32px; }
+  .toolbar .expand-toggle { padding: 0 9px; }
+  .stats { margin: 6px 0 0 10px; font-size: 11.5px; gap: 2px 10px; }
+
+  /* The details screen's head: the way back, and its name */
+  .side-pane .pane-bar { display: flex; height: 44px; padding: 0 10px 0 6px; gap: 6px; }
+  .side-pane .pane-bar .pane-title { display: inline; margin-right: auto; font-size: 15px; color: var(--fg); }
+  .side-pane .pane-bar #side-back { display: inline-flex; }
+
+  .messages { padding: 12px 12px calc(24px + var(--safe-bottom)); }
+  .side { padding: 14px 16px calc(16px + var(--safe-bottom)); }
+  .list { padding-bottom: var(--safe-bottom); }
+
+  /* Bubbles and steps sized for a thumb and a narrow column */
+  .msg { padding: 9px 12px 10px; }
+  .round { margin-bottom: 20px; }
+  .timeline { margin-left: 2px; padding-left: 10px; }
+  .timeline-toggle { min-height: 36px; font-size: 12px; }
+  .step-head {
+    display: grid; grid-template-columns: auto auto 1fr; column-gap: 8px; row-gap: 0;
+    grid-template-areas: "glyph name meta" "target target target"; align-items: baseline;
+    padding: 5px 6px; min-height: 36px;
+  }
+  .step .glyph { grid-area: glyph; }
+  .step .step-name { grid-area: name; }
+  .step .step-meta { grid-area: meta; justify-self: end; }
+  .step .step-target { grid-area: target; font-size: 11.5px; }
+  .step .step-target:empty { display: none; }
+  .step-details, .note, .event, .steps > details, .step .preview { margin-left: 10px; }
+  .steps.nested { margin-left: 10px; }
+  .seg-btn, .item, .toc-item { min-height: 36px; }
+  .toc { max-height: none; }
+
+  .keyhint { display: none; }
+
+  /* Installed as a web app the page runs edge to edge — under a notch and under the home
+     indicator. The backgrounds are meant to reach those edges, so the padding goes on the
+     bars and on the scrollable content rather than on the app: insetting #app would leave
+     the letterbox bars plainly visible. env() resolves to 0 everywhere there is no inset. */
+  #app > header {
+    padding-top: calc(6px + var(--safe-top));
+    padding-left: calc(14px + var(--safe-left));
+    padding-right: calc(10px + var(--safe-right));
+  }
+  .stream-head, .side-pane .pane-bar { padding-top: calc(4px + var(--safe-top)); }
+  .side-pane .pane-bar { height: auto; min-height: 44px; }
+  #controls {
+    padding-left: calc(10px + var(--safe-left));
+    padding-right: calc(10px + var(--safe-right));
+  }
+}

@@ -302,18 +302,27 @@ body.hide-list #list, body.hide-side #side { display: none; }
    earlier version slid the title row and a tab bar away and back with the scroll
    direction, which read as the page jumping about. */
 @media (max-width: 860px) {
-  #app { height: 100dvh; }
-  main { display: block; overflow: hidden; }
+  /* The app is pinned to the viewport and the document never scrolls: every scroll
+     happens inside a screen. Heights come from flex, not from percentages — a chain of
+     height:100% through flex items is exactly what iOS Safari resolves as "auto", which
+     made each screen as tall as its content, the page scroll as a whole, the head scroll
+     off the top and the list stop short of the bottom. */
+  html, body { height: 100%; overflow: hidden; }
+  #app { position: fixed; inset: 0; height: auto; }
+  main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 
   /* body[data-pane] keeps these ahead of the base .list/.stream/.side rules, which are
      defined further down the file and would otherwise win on document order */
   body[data-pane] .list-pane, body[data-pane] .stream, body[data-pane] .side-pane { display: none; }
   body[data-pane="list"] .list-pane, body[data-pane="side"] .side-pane,
-  body[data-pane="stream"] .stream { display: flex; animation: screen-in 240ms var(--ease) both; }
+  body[data-pane="stream"] .stream {
+    display: flex; flex: 1 1 auto; min-height: 0; height: auto;
+    animation: screen-in 240ms var(--ease) both;
+  }
   /* Going back, the screen comes in from the side it left to */
   body.nav-back[data-pane="list"] .list-pane, body.nav-back[data-pane="stream"] .stream,
   body.nav-back[data-pane="side"] .side-pane { animation-name: screen-back; }
-  .list-pane, .stream, .side-pane { height: 100%; }
+  .messages, .list, .side { min-height: 0; }
   .list-pane { border-right: none; }
   .side-pane { border-left: none; border-top: none; max-height: none; box-shadow: none; }
   /* Folding is a wide-screen affair. A fold remembered from a laptop must not empty a

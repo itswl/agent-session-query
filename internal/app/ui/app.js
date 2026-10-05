@@ -2681,7 +2681,15 @@ function gotoRound(no, part) {
 // without a history entry and without changing which pane a phone shows.
 function selectSession(sessionId, focusAt, quiet) {
   if (!sessionId) return;
-  if (sessionId === state.selectedId && (focusAt || '') === state.focusAt) return;
+  if (sessionId === state.selectedId && (focusAt || '') === state.focusAt) {
+    // Already the selected session. On a phone that is still a tap on a row, and a tap
+    // on a row means "open it": the page picked this one on load without showing it.
+    if (isPhone() && !quiet && state.pane === 'list') {
+      history.pushState({ pane: 'stream' }, '', '#' + encodeURIComponent(sessionId));
+      showPane('stream');
+    }
+    return;
+  }
   state.focusAt = focusAt || '';
   state.selectedId = sessionId;
   const encoded = encodeURIComponent(sessionId);

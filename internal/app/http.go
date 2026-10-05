@@ -398,7 +398,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			w.WriteHeader(http.StatusNotModified)
 			return http.StatusNotModified
 		}
-		body := map[string]any{"sessions": sessions, "total": len(sessions)}
+		body := map[string]any{"sessions": sessions, "total": len(sessions), "version": buildVersion}
 		// A source that could not be read answers with the same empty list as a source with
 		// nothing in it; this is where the two are told apart
 		if warnings := s.api.listWarnings(); len(warnings) > 0 {

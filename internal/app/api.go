@@ -134,6 +134,12 @@ func (a *SessionQueryAPI) listWarnings() []map[string]any {
 // did change.
 func listVersion(records []record, warnings []map[string]any) string {
 	h := fnv.New64a()
+	// The server's own version is part of it: after an upgrade every page's stored tag
+	// stops matching, its next poll gets a full answer carrying the new version, and the
+	// page reloads itself rather than running the previous version's script against the
+	// new API until the browser happens to discard it.
+	_, _ = h.Write([]byte(buildVersion))
+	_, _ = h.Write([]byte{0x1e})
 	for _, r := range records {
 		for _, field := range []string{"source", "key", "updatedAt", "status"} {
 			_, _ = h.Write([]byte(r.str(field)))

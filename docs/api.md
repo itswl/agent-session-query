@@ -31,7 +31,9 @@ no alias.
 Tokens are compared in constant time. CORS is off by default, see `--cors-origin`.
 
 **Conditional requests**: `/sessions` returns an `ETag`; repeating the request with
-`If-None-Match` while the list is unchanged returns `304`.
+`If-None-Match` while the list is unchanged returns `304`. The tag also changes with the
+server's version, and the body carries it as `version`: a page served by the previous
+version gets a full answer on its next poll and reloads itself.
 
 **Limits and overload**: connections past the cap queue, and get a 503 if they cannot;
 `?limit=` is clamped to `--max-limit`. See the

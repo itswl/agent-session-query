@@ -41,6 +41,7 @@ const SCROLL_LOAD_PX = 320;
 const state = {
   token: '',
   authRequired: true,
+  serverVersion: '',   // what /health said; a poll answered by another version reloads the page
   sessions: [],
   byId: new Map(),
   selectedId: '',
@@ -301,7 +302,21 @@ function showApp() {
   $('app').classList.remove('hidden');
   // With no token configured there is nothing to change
   $('logout').classList.toggle('hidden', !state.authRequired);
+  fitApp();
 }
+
+// fitApp sizes the app to the viewport the browser reports when the stylesheet's dvh
+// disagrees with it. They agree wherever the unit works; where it resolves to more than is
+// visible — reported for installed web apps on some iOS versions — the bottom of the app
+// would hang off the screen, and the body behind it show as a blank strip.
+function fitApp() {
+  const app = $('app');
+  app.style.height = '';
+  if (!isPhone()) return;
+  const want = window.innerHeight;
+  if (Math.abs(app.getBoundingClientRect().height - want) > 1) app.style.height = want + 'px';
+}
+window.addEventListener('resize', fitApp);
 
 // ---------------------------------------------------------------------------
 // Left pane: the session list (patched incrementally by sessionId, never rebuilt whole)
@@ -1614,6 +1629,18 @@ function emptyStreamNote(count) {
 
 // foldable wraps a long block in a disclosure that still says what it holds. The key has
 // to be stable across rebuilds, so an expanded block stays expanded through a refresh.
+// summaryNode builds a <summary> whose contents sit in a row of their own. The row is a
+// div because WebKit has laid the summary element out as a block whatever display it was
+// given: with the flex on the summary itself, the preview — eighty characters that never
+// wrap — ran on in one line and pushed the whole conversation sideways on an iPhone.
+function summaryNode(children) {
+  const summary = el('summary');
+  const row = el('div', 'fold-row');
+  for (const child of children) row.appendChild(child);
+  summary.appendChild(row);
+  return summary;
+}
+
 function foldable(rendered, key, kind) {
   const plain = rendered.textContent || '';
   const details = el('details');
@@ -1622,11 +1649,11 @@ function foldable(rendered, key, kind) {
     if (details.open) state.openBlocks.add(key);
     else state.openBlocks.delete(key);
   });
-  const summary = el('summary');
-  summary.appendChild(el('span', 'fold-kind', kind));
-  summary.appendChild(el('span', 'fold-preview', plain.replace(/\s+/g, ' ').trim().slice(0, 80)));
-  summary.appendChild(el('span', 'fold-size', plain.length + ' chars'));
-  details.appendChild(summary);
+  details.appendChild(summaryNode([
+    el('span', 'fold-kind', kind),
+    el('span', 'fold-preview', plain.replace(/\s+/g, ' ').trim().slice(0, 80)),
+    el('span', 'fold-size', plain.length + ' chars'),
+  ]));
   details.appendChild(rendered);
   return details;
 }
@@ -2228,11 +2255,11 @@ function renderMessages() {
 
   if (!sameView) {
     // Just opened: stick to the bottom when viewing the latest, start at the top for the earliest
-    scrollTo(pane, state.order === 'desc' ? pane.scrollHeight : 0);
+    scrollPaneTo(pane, state.order === 'desc' ? pane.scrollHeight : 0);
   } else if (wasAtBottom) {
-    scrollTo(pane, pane.scrollHeight);
+    scrollPaneTo(pane, pane.scrollHeight);
   } else if (!restoreAnchor(pane, anchor)) {
-    scrollTo(pane, prevScroll);
+    scrollPaneTo(pane, prevScroll);
   }
 }
 
@@ -2295,7 +2322,7 @@ function finalCard(final) {
 
   if (final.thinking) {
     const details = el('details');
-    details.appendChild(el('summary', '', 'Thinking'));
+    details.appendChild(summaryNode([el('span', '', 'Thinking')]));
     details.appendChild(el('div', 'block thinking', final.thinking));
     card.appendChild(details);
   }
@@ -2563,10 +2590,44 @@ function renderSide(record) {
   if (usage) box.appendChild(usage);
   const timeline = projectTimeline(record);
   if (timeline) box.appendChild(timeline);
+  box.appendChild(pageCard());
   // A refresh rebuilds this pane; the reader may be halfway down it
   const prevScroll = side.scrollTop;
   side.replaceChildren(box);
   side.scrollTop = prevScroll;
+}
+
+// pageCard says which server the page is talking to, how it was opened and, on a phone,
+// how the screen is laid out: the numbers a layout fault on an iPhone comes down to, which
+// cannot otherwise be read without a Mac and a cable.
+function pageCard() {
+  const card = el('section', 'card page-card');
+  card.appendChild(el('h3', '', 'This page'));
+  const installed = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const pairs = [
+    ['Server', state.serverVersion || 'unknown'],
+    ['Opened as', installed ? 'an installed app' : 'a browser tab'],
+  ];
+  if (isPhone()) {
+    const visual = window.visualViewport;
+    const app = $('app').getBoundingClientRect();
+    const probe = el('div', 'safe-probe');
+    document.body.appendChild(probe);
+    const style = getComputedStyle(probe);
+    const inset = [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft]
+      .map((v) => Math.round(parseFloat(v) || 0)).join(' ');
+    probe.remove();
+    pairs.push(['Screen', screen.width + '×' + screen.height]);
+    pairs.push(['Viewport', innerWidth + '×' + innerHeight
+      + (visual ? ', visible ' + Math.round(visual.width) + '×' + Math.round(visual.height) : '')]);
+    pairs.push(['Moved', 'scroll ' + Math.round(scrollY)
+      + (visual ? ', visual ' + Math.round(visual.offsetTop) + ', scale ' + visual.scale.toFixed(2) : '')]);
+    pairs.push(['App', Math.round(app.top) + ' to ' + Math.round(app.bottom)
+      + ' of a ' + document.documentElement.scrollHeight + ' document']);
+    pairs.push(['Safe area', inset]);
+  }
+  card.appendChild(kv(pairs));
+  return card;
 }
 
 // ---------------------------------------------------------------------------
@@ -2836,7 +2897,7 @@ async function loadMore(edge) {
   renderSide(record);
   if (edge === 'older') {
     // Prepending pushes everything down; hold the reader's place on the same message
-    scrollTo(pane, beforeTop + (pane.scrollHeight - beforeHeight));
+    scrollPaneTo(pane, beforeTop + (pane.scrollHeight - beforeHeight));
   }
 }
 
@@ -2918,9 +2979,25 @@ function handleError(err) {
   }
 }
 
+// serverChanged reloads the page when the server answering it is no longer the version
+// that served it. An installed web app on a phone is never reloaded by hand, so without
+// this the previous version's page would run against the new API until the phone
+// discarded it — and a layout fix would never arrive.
+function serverChanged(version) {
+  if (!version) return false;
+  if (!state.serverVersion) {
+    state.serverVersion = version;
+    return false;
+  }
+  if (version === state.serverVersion) return false;
+  location.reload();
+  return true;
+}
+
 async function refresh() {
   try {
     const data = await api('/sessions');
+    if (serverChanged(data.version)) return;
     state.sessions = data.sessions || [];
     state.byId = new Map(state.sessions.map((s) => [s.sessionId, s]));
     state.loadedAt = new Date().toLocaleTimeString();
@@ -2969,7 +3046,7 @@ function moveSelection(delta) {
 
 function scrollMessages(toBottom) {
   const pane = $('messages');
-  scrollTo(pane, toBottom ? pane.scrollHeight : 0);
+  scrollPaneTo(pane, toBottom ? pane.scrollHeight : 0);
 }
 
 function clearSearch() {
@@ -3098,6 +3175,25 @@ $('messages').addEventListener('scroll', () => {
   }
 }, { passive: true });
 
+// On a phone the document itself never scrolls: every scroll happens inside a screen, and
+// the app is exactly the viewport tall. iOS moves it all the same — a keyboard, a pull past
+// the end of a pane, a position it remembered — and leaves the head under the status bar,
+// where nothing can be tapped. Put it back whenever that happens. A pinch zoom is left
+// alone: panning is then the point.
+function pinDocument() {
+  if (!isPhone()) return;
+  const visual = window.visualViewport;
+  if (visual && visual.scale > 1.01) return;
+  const moved = window.scrollY || window.scrollX || (visual && (visual.offsetTop || visual.offsetLeft));
+  if (moved) window.scrollTo(0, 0);
+}
+window.addEventListener('scroll', pinDocument, { passive: true });
+window.addEventListener('resize', pinDocument);
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('scroll', pinDocument, { passive: true });
+  window.visualViewport.addEventListener('resize', pinDocument);
+}
+
 $('fold-groups').addEventListener('click', foldAllGroups);
 
 $('toggle-list').addEventListener('click', () => {
@@ -3215,7 +3311,7 @@ function applyPaneFolds() {
 // scrollTo sets a pane's scroll position. Named so the places the page moves the reader
 // on purpose — opening at an end, holding their place through a prepend, a jump from the
 // table of contents — read as such.
-function scrollTo(pane, y) {
+function scrollPaneTo(pane, y) {
   pane.scrollTop = y;
 }
 
@@ -3266,6 +3362,7 @@ async function start() {
     const res = await fetch('/health');
     const health = await res.json();
     state.authRequired = health.authRequired !== false;
+    state.serverVersion = health.version || '';
   } catch (e) {
     state.authRequired = true; // if we cannot ask, assume authentication is required
   }

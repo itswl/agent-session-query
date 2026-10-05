@@ -337,6 +337,10 @@ func TestHTTPRoutes(t *testing.T) {
 	if first["sessionId"] != "sess-1" || first["source"] != "pi" {
 		t.Fatalf("session = %v", first)
 	}
+	// The body names the server's version; the page reloads itself when it changes
+	if body["version"] != buildVersion {
+		t.Fatalf("version = %v, want %q", body["version"], buildVersion)
+	}
 
 	// The /api prefix is equivalent
 	if code, body := get(t, srv.URL+"/api/sessions", "secret"); code != 200 || body["total"] != float64(1) {
@@ -1327,5 +1331,22 @@ func TestExportRendersOutcomes(t *testing.T) {
 		if got := formatDurationMs(ms); got != want {
 			t.Errorf("formatDurationMs(%d) = %q, want %q", ms, got, want)
 		}
+	}
+}
+
+// TestListVersionFollowsBuild: the sessions ETag changes with the server version, so a page
+// served by the previous version gets a full answer — and the new version — on its next poll.
+func TestListVersionFollowsBuild(t *testing.T) {
+	saved := buildVersion
+	defer func() { buildVersion = saved }()
+	buildVersion = "v1.0.0"
+	before := listVersion(nil, nil)
+	buildVersion = "v1.0.1"
+	after := listVersion(nil, nil)
+	if before == after {
+		t.Fatalf("ETag %s did not change with the version", before)
+	}
+	if again := listVersion(nil, nil); again != after {
+		t.Fatalf("ETag not stable: %s then %s", after, again)
 	}
 }

@@ -309,7 +309,8 @@ body.hide-list #list, body.hide-side #side { display: none; }
      top and the list stop short of the bottom. The app stays in normal flow: pinned with
      position:fixed, Safari dropped the safe-area padding and laid the head under the
      status bar, where nothing can be tapped. dvh follows Safari's own bars as they come
-     and go; in an installed web app it is the whole screen. */
+     and go; in an installed web app it is the whole screen. When iOS moves the document
+     all the same, app.js puts it back (pinDocument). */
   html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
   #app { height: 100vh; height: 100dvh; }
   main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -336,7 +337,7 @@ body.hide-list #list, body.hide-side #side { display: none; }
 
   /* Scrolling stays inside the screen: no rubber-banding of the whole app, and no
      pull-to-refresh under the finger in standalone mode */
-  .list, .messages, .side { overscroll-behavior: contain; }
+  .list, .messages, .side { overscroll-behavior: contain; overflow-x: hidden; }
 
   /* The list screen: the title row, the search and the filters, the list. The other two
      screens have heads of their own, so the title row is the list's alone. */
@@ -437,6 +438,12 @@ body.hide-list #list, body.hide-side #side { display: none; }
     padding-left: calc(10px + env(safe-area-inset-left));
     padding-right: calc(10px + env(safe-area-inset-right));
   }
+}
+
+/* Read by pageCard: env() is a CSS value, and a padding is the way to a number in script */
+.safe-probe {
+  position: fixed; top: 0; left: 0; visibility: hidden; pointer-events: none;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
 @keyframes screen-in {
@@ -637,7 +644,9 @@ body.hide-list #list, body.hide-side #side { display: none; }
 .nav-details-btn { padding: 4px 6px; }
 .nav-details-btn span { display: none; }
 
-.messages { flex: 1 1 auto; overflow: auto; padding: 18px 22px 56px; outline: none; }
+/* It scrolls one way. Anything laid out wider than the pane — a line that cannot wrap —
+   would otherwise let the whole conversation be dragged sideways, and on a phone it was */
+.messages { flex: 1 1 auto; overflow-x: hidden; overflow-y: auto; padding: 18px 22px 56px; outline: none; }
 /* A line of prose is easiest to read at 60–75 characters; shell output can go wider */
 .messages > * { max-width: 960px; }
 .messages .empty {
@@ -847,19 +856,24 @@ body.hide-list #list, body.hide-side #side { display: none; }
 details { margin-top: 8px; }
 /* A folded block should still say what it holds, not only how big it is */
 details > summary {
-  display: flex; align-items: center; gap: 8px;
+  display: block; min-width: 0;
   padding: 5px 10px; border-radius: var(--r-sm); list-style: none;
   color: var(--dim); font-size: 12px; cursor: pointer; user-select: none;
   background: var(--panel); border: 1px solid var(--line-soft);
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 details > summary::-webkit-details-marker { display: none; }
-details > summary::before {
+/* The row inside the summary is a div because WebKit has laid the summary element out as
+   a block whatever display it was given: with the flex on the summary itself, the preview
+   — eighty characters that never wrap — ran on in one line and pushed the conversation
+   sideways on an iPhone. A div is laid out as asked everywhere. */
+details > summary .fold-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+details > summary .fold-row::before {
   content: ""; flex: none; width: 0; height: 0;
   border: 4px solid transparent; border-left: 5px solid var(--dim); margin-left: 2px;
   transition: transform var(--dur) var(--ease);
 }
-details[open] > summary::before { transform: rotate(90deg); }
+details[open] > summary .fold-row::before { transform: rotate(90deg); }
 details[open] > summary { margin-bottom: 6px; }
 details > summary:hover { color: var(--fg-mid); background: var(--panel-2); }
 details > summary .fold-kind {
@@ -867,7 +881,7 @@ details > summary .fold-kind {
   color: var(--fg-mid);
 }
 details > summary .fold-preview {
-  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: var(--mono); font-size: 11.5px;
 }
 details > summary .fold-size { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; }

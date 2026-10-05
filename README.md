@@ -121,8 +121,11 @@ when the server was started with `--hook_token`, and it stays in the browser's l
 
 It installs as a web app: open `/ui` on a phone and "Add to Home Screen" gives it an
 icon, a name and a window without browser chrome, and it honours the notch and home
-indicator when it does. (The icons are drawn by `go run tools/icongen.go` — standard
-library only, so the same source produces the same bytes anywhere.)
+indicator when it does. After an upgrade of the server an open page reloads itself on its
+next refresh, since an installed app is never reloaded by hand; the Details screen ends
+with a card naming the server's version and how the page was opened. (The icons are drawn
+by `go run tools/icongen.go` — standard library only, so the same source produces the same
+bytes anywhere.)
 
 On a phone the three panes are screens behind one another, the way an app lays them out:
 the session list is the home screen, picking a session slides its conversation in over it,

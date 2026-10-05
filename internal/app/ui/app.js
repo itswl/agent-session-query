@@ -3180,12 +3180,19 @@ $('messages').addEventListener('scroll', () => {
 // the end of a pane, a position it remembered — and leaves the head under the status bar,
 // where nothing can be tapped. Put it back whenever that happens. A pinch zoom is left
 // alone: panning is then the point.
+//
+// Back to the smallest position there is, not to 0. An installed web app whose status bar
+// is opaque keeps the bar's height as an inset above the page: the page rests just below
+// the bar, WebKit reports that resting position as minus the bar's height, and a finger
+// can drag the page up into the inset, where it stays. 0 is the bar's height too high —
+// the head under the bar, a strip of nothing at the bottom — and is exactly where
+// v0.21.4's scrollTo(0, 0) put it. A huge negative number is clamped to the top of the
+// inset there, and to 0 everywhere else.
 function pinDocument() {
   if (!isPhone()) return;
   const visual = window.visualViewport;
   if (visual && visual.scale > 1.01) return;
-  const moved = window.scrollY || window.scrollX || (visual && (visual.offsetTop || visual.offsetLeft));
-  if (moved) window.scrollTo(0, 0);
+  window.scrollTo(0, -1e6);
 }
 window.addEventListener('scroll', pinDocument, { passive: true });
 window.addEventListener('resize', pinDocument);

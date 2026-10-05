@@ -338,6 +338,10 @@ body.hide-list #list, body.hide-side #side { display: none; }
   /* Scrolling stays inside the screen: no rubber-banding of the whole app, and no
      pull-to-refresh under the finger in standalone mode */
   .list, .messages, .side { overscroll-behavior: contain; overflow-x: hidden; }
+  /* A drag that starts on a head or a bar has nothing to scroll — but in an installed web
+     app with an opaque status bar, iOS would drag the whole page up into the bar's inset
+     and leave it there. No pan gesture starts on these; taps are unaffected. */
+  #app > header, .stream-head, .side-pane .pane-bar { touch-action: none; }
 
   /* The list screen: the title row, the search and the filters, the list. The other two
      screens have heads of their own, so the title row is the list's alone. */

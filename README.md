@@ -124,14 +124,16 @@ icon, a name and a window without browser chrome, and it honours the notch and h
 indicator when it does. (The icons are drawn by `go run tools/icongen.go` — standard
 library only, so the same source produces the same bytes anywhere.)
 
-On a phone the three panes become one screen at a time, picked from a **Sessions /
-Conversation / Details** tab bar at the bottom of the screen — under the thumb, above the
-home indicator, the way an installed app's is. Picking a session opens its conversation and
-the system's back gesture brings the list back; the title row slides away as you read down
-and returns as you scroll up. The search box and list filters belong to Sessions — they do
-nothing to a conversation or a details pane, so neither has to open with five rows of
+On a phone the three panes are screens behind one another, the way an app lays them out:
+the session list is the home screen, picking a session slides its conversation in over it,
+and the conversation's head carries the way back and the way to the details, which slide
+in over the conversation. The system's back gesture walks the same way back. Nothing on
+any screen moves while you scroll. The search box and list filters belong to the list —
+they do nothing to a conversation or a details screen, so neither opens with five rows of
 controls it cannot use. It refreshes every 10 seconds without disturbing
-what you are reading (expanded blocks and scroll position are preserved), your view
+what you are reading (expanded blocks, opened rounds and your place in the text are kept —
+a rebuild holds the round you were reading where it was, even when something above it
+changed), your view
 controls — grouping, source filter, order, filters, folded groups — survive a reload, and
 `/ui#<sessionId>` works as a deep link. Light and dark follow the system; the half-disc
 button in the header switches, and switching back to what the system shows hands control

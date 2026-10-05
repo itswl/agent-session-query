@@ -51,7 +51,7 @@ const state = {
   roundOverrides: new Map(), // round key → open or folded, chosen by hand over expandAll
   order: 'desc',       // desc = the latest N (the end of a session is the interesting part)
   grouping: 'time',    // time = by update time; project = grouped by project (cwd)
-  pane: 'stream',      // phones only: which of the three panes is on screen
+  pane: 'list',        // phones only: which of the three screens is up (list is home)
   hideList: false,     // wide screens: fold the session list away
   hideSide: false,     // wide screens: fold the details pane away
   content: null,       // content search for the current keyword:
@@ -151,6 +151,34 @@ function button(className, label, onClick) {
   node.type = 'button';
   node.addEventListener('click', onClick);
   return node;
+}
+
+// chevron and infoGlyph draw the two glyphs the phone screens navigate by. SVG built from
+// nodes, like everything else here: no markup strings.
+function svgIcon(viewBox, paths) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', viewBox);
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  for (const d of paths) {
+    const path = document.createElementNS(ns, 'path');
+    path.setAttribute('d', d);
+    svg.appendChild(path);
+  }
+  return svg;
+}
+function chevron(direction) {
+  return svgIcon('0 0 16 16', [direction === 'left' ? 'M10 3.5 5.5 8l4.5 4.5' : 'M6 3.5 10.5 8 6 12.5']);
+}
+function infoGlyph() {
+  const svg = svgIcon('0 0 16 16', ['M8 7.5v4M8 5v.5']);
+  const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  circle.setAttribute('cx', '8');
+  circle.setAttribute('cy', '8');
+  circle.setAttribute('r', '6');
+  svg.insertBefore(circle, svg.firstChild);
+  return svg;
 }
 
 // segmented renders a group of mutually exclusive buttons (which slice / which view). An
@@ -721,6 +749,32 @@ function renderStreamHead(record) {
   }
 
   const box = el('div');
+  // Row one: the title, between the way back to the list and the way to the details. The
+  // two buttons exist at every width and the stylesheet shows them on a phone, where the
+  // three panes are screens behind one another.
+  const nav = el('div', 'head-nav');
+  const back = el('button', 'ghost nav-back-btn');
+  back.type = 'button';
+  back.setAttribute('aria-label', 'Back to the session list');
+  back.appendChild(chevron('left'));
+  back.appendChild(el('span', '', 'Sessions'));
+  back.addEventListener('click', backFromStream);
+  nav.appendChild(back);
+  const title = el('h2', '', record.shortKey || record.sessionId);
+  title.title = record.key || '';
+  nav.appendChild(title);
+  const details = el('button', 'ghost nav-details-btn');
+  details.type = 'button';
+  details.setAttribute('aria-label', 'Details of this session');
+  details.title = 'Details';
+  details.appendChild(infoGlyph());
+  details.appendChild(el('span', '', 'Details'));
+  details.addEventListener('click', openDetails);
+  nav.appendChild(details);
+  box.appendChild(nav);
+
+  // Row two: where and when, on one line
+  const meta = el('div', 'meta');
   const tagrow = el('div', 'tagrow');
   tagrow.appendChild(sourceTag(record.source));
   if (record.status) tagrow.appendChild(statusTag(record.status));
@@ -731,16 +785,13 @@ function renderStreamHead(record) {
     time.title = record.updatedAt;
     tagrow.appendChild(time);
   }
-  box.appendChild(tagrow);
-
-  const title = el('h2', '', record.shortKey || record.sessionId);
-  title.title = record.key || '';
-  box.appendChild(title);
+  meta.appendChild(tagrow);
   if (record.cwd) {
-    const where = el('p', 'sub', record.cwd);
+    const where = el('span', 'sub', record.cwd);
     where.title = record.cwd;
-    box.appendChild(where);
+    meta.appendChild(where);
   }
+  box.appendChild(meta);
 
   const bar = el('div', 'toolbar');
   bar.appendChild(segmented(
@@ -826,9 +877,10 @@ function windowStats(detail, countLabel) {
   const row = el('div', 'stats');
   if (all.length) {
     const { rounds } = roundsOf(all);
+    const asked = rounds.filter((r) => r.ask).length;
     const tools = rounds.reduce((n, r) => n + r.summary.steps, 0);
     const failures = rounds.reduce((n, r) => n + r.summary.failures, 0);
-    row.appendChild(el('span', '', rounds.length + (rounds.length === 1 ? ' round' : ' rounds')));
+    row.appendChild(el('span', '', asked + (asked === 1 ? ' round' : ' rounds')));
     row.appendChild(el('span', '', tools + (tools === 1 ? ' tool call' : ' tool calls')));
     if (failures) row.appendChild(el('span', 'fail', failures + ' failed'));
     const span = timeSpan(all[0].timestamp, all[all.length - 1].timestamp);
@@ -1327,16 +1379,25 @@ function roleLabel(message) {
 // list the server's isRoundStart keeps
 const PLUMBING_PREFIXES = [
   '<command-name>', '<command-message>', '<command-args>', '<command-contents>',
-  '<local-command-', '<caveat', 'Caveat:',
+  '<local-command-', '<caveat', 'Caveat:', '<task-notification', '<system-reminder',
 ];
 
-// isAsk: a user message carrying words of its own, not command plumbing, and not one
-// the CLI assembled (those arrive flagged injected)
+// isAsk: a user message carrying words of its own, not command plumbing, not one the CLI
+// assembled (those arrive flagged injected), and not one that is wholly an XML-style
+// element — a person does not type a question that way
 function isAsk(message) {
   if (message.role !== 'user' || message.injected) return false;
   const text = messageWords(message).trim();
   if (!text) return false;
-  return !PLUMBING_PREFIXES.some((prefix) => text.startsWith(prefix));
+  if (PLUMBING_PREFIXES.some((prefix) => text.startsWith(prefix))) return false;
+  return !wrappedInTag(text);
+}
+
+// wrappedInTag: <name …>…</name>, the same name at both ends and nothing outside them
+function wrappedInTag(text) {
+  if (text.length < 5 || text[0] !== '<' || text[text.length - 1] !== '>') return false;
+  const m = /^<([A-Za-z][\w-]*)[\s>]/.exec(text);
+  return !!m && text.endsWith('</' + m[1] + '>');
 }
 
 // roundsOf groups a window into rounds once per window: the stream, the header's stats
@@ -1361,8 +1422,17 @@ function buildRounds(all) {
     else current.items.push({ message, index });
   });
   if (rounds.length) rounds[rounds.length - 1].last = true;
-  rounds.forEach(analyseRound);
-  return { preface, rounds };
+  // What comes before the first ask is the tail of a round whose ask lies outside the
+  // window (a window opened at the latest page, or at a search hit), or the rows a CLI
+  // injected at the start. Either way it is work and words, not a conversation opener,
+  // so it is read as a round without an ask: folded like the others, its reply shown.
+  let lead = null;
+  if (preface.some(({ message }) => message.role !== 'user' || hasWords(message) || (message.content || []).length)) {
+    lead = { no: 0, key: 'lead:' + messageKey(preface[0].message), ask: null, items: preface, last: rounds.length === 0 };
+  }
+  const analysed = lead ? [lead].concat(rounds) : rounds;
+  analysed.forEach(analyseRound);
+  return { preface: lead ? [] : preface, rounds: analysed };
 }
 
 // analyseRound turns the messages after an ask into steps — a tool call paired with its
@@ -1510,8 +1580,9 @@ function summarizeRound(round) {
     }
   }
   const items = round.items;
-  const lastAt = items.length ? items[items.length - 1].message.timestamp : round.ask.message.timestamp;
-  let durationMs = timeSpan(round.ask.message.timestamp, lastAt);
+  const firstAt = round.ask ? round.ask.message.timestamp : (items.length ? items[0].message.timestamp : '');
+  const lastAt = items.length ? items[items.length - 1].message.timestamp : firstAt;
+  let durationMs = timeSpan(firstAt, lastAt);
   if (!(durationMs > 0)) {
     durationMs = tools.reduce((sum, s) => sum + (Number(s.result && s.result.durationMs) || 0), 0);
   }
@@ -1614,9 +1685,18 @@ function messageNode(message, index, options) {
 function roundNode(round) {
   const record = state.byId.get(state.selectedId);
   if (state.view === 'changes' && !flatToolSteps(round.steps).some(isChangeStep)) return null;
-  const node = el('section', 'round');
+  const node = el('section', 'round' + (round.ask ? '' : ' lead'));
   node.dataset.round = round.no;
-  node.appendChild(messageNode(round.ask.message, round.ask.index, { label: '#' + round.no }));
+  if (round.ask) {
+    node.appendChild(messageNode(round.ask.message, round.ask.index, { label: '#' + round.no }));
+  } else {
+    // The ask lies before this window (or there is none): say so, where the bubble would be
+    const total = Number(state.detail && state.detail.final && state.detail.final.messageCount) || 0;
+    const all = (state.detail && state.detail.messages.messages) || [];
+    node.appendChild(el('p', 'round-lead', total > all.length
+      ? 'earlier in this session — the ask is before the loaded window'
+      : 'before the first ask'));
+  }
 
   if (state.view === 'changes') {
     const list = el('div', 'steps changes');
@@ -2119,17 +2199,24 @@ function renderMessages() {
     // CLI assembled, a Claude one with command plumbing
     for (const { message, index } of preface) {
       if (state.view === 'conversation' && !hasWords(message)) continue;
-      box.appendChild(messageNode(message, index));
+      const node = messageNode(message, index);
+      node.dataset.anchor = 'm:' + messageKey(message);
+      box.appendChild(node);
       shown++;
     }
   }
   for (const round of rounds) {
     const node = roundNode(round);
     if (!node) continue;
+    node.dataset.anchor = 'r:' + round.key;
     box.appendChild(node);
     shown++;
   }
   if (!shown) box.appendChild(el('p', 'empty', emptyStreamNote(all.length)));
+  // A rebuild of the same view holds the reader's place by what they were looking at, not
+  // by a pixel offset: a refresh that adds a step above the viewport, or a round opened
+  // above it, would otherwise move the text under their eyes
+  const anchor = sameView ? captureAnchor(pane) : null;
   pane.replaceChildren(box);
   pane.dataset.view = view;
   // A session just opened eases its messages in. A refresh of the same view rebuilds
@@ -2144,9 +2231,31 @@ function renderMessages() {
     scrollTo(pane, state.order === 'desc' ? pane.scrollHeight : 0);
   } else if (wasAtBottom) {
     scrollTo(pane, pane.scrollHeight);
-  } else {
+  } else if (!restoreAnchor(pane, anchor)) {
     scrollTo(pane, prevScroll);
   }
+}
+
+// captureAnchor notes the first round (or message) still in view and how far below the
+// top of the pane it starts; restoreAnchor puts that same element back at that offset
+// after a rebuild. Keys are the ones rounds and messages already have, which do not
+// change when a page is prepended or a step is opened.
+function captureAnchor(pane) {
+  const paneTop = pane.getBoundingClientRect().top;
+  for (const node of pane.querySelectorAll('[data-anchor]')) {
+    const box = node.getBoundingClientRect();
+    if (box.bottom - paneTop > 0) return { key: node.dataset.anchor, offset: box.top - paneTop };
+  }
+  return null;
+}
+
+function restoreAnchor(pane, anchor) {
+  if (!anchor) return false;
+  const node = pane.querySelector('[data-anchor="' + CSS.escape(anchor.key) + '"]');
+  if (!node) return false;
+  const paneTop = pane.getBoundingClientRect().top;
+  pane.scrollTop += (node.getBoundingClientRect().top - paneTop) - anchor.offset;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -2454,7 +2563,10 @@ function renderSide(record) {
   if (usage) box.appendChild(usage);
   const timeline = projectTimeline(record);
   if (timeline) box.appendChild(timeline);
+  // A refresh rebuilds this pane; the reader may be halfway down it
+  const prevScroll = side.scrollTop;
   side.replaceChildren(box);
+  side.scrollTop = prevScroll;
 }
 
 // ---------------------------------------------------------------------------
@@ -2472,7 +2584,7 @@ function tocCard() {
   const detail = state.detail;
   const card = el('section', 'card toc-card');
   const all = (detail && detail.messages.messages) || [];
-  const { rounds } = roundsOf(all);
+  const rounds = roundsOf(all).rounds.filter((r) => r.ask);
 
   const head = el('h3', '', 'Conversation');
   if (rounds.length) head.appendChild(el('span', 'count', rounds.length));
@@ -2569,7 +2681,6 @@ function gotoRound(no, part) {
 // without a history entry and without changing which pane a phone shows.
 function selectSession(sessionId, focusAt, quiet) {
   if (!sessionId) return;
-  setChromeHidden(false);
   if (sessionId === state.selectedId && (focusAt || '') === state.focusAt) return;
   state.focusAt = focusAt || '';
   state.selectedId = sessionId;
@@ -2592,9 +2703,30 @@ function selectSession(sessionId, focusAt, quiet) {
   syncDetail({ force: true });
 }
 
-// isPhone: the one-pane layout, where the tab bar decides what is on screen
+// isPhone: the one-screen layout, where the three panes are screens behind one another
 function isPhone() {
   return matchMedia('(max-width: 860px)').matches;
+}
+
+// openDetails slides the details screen in over the conversation, with a history entry
+// so the back gesture returns to the conversation
+function openDetails() {
+  if (!isPhone()) return;
+  history.pushState({ pane: 'side' }, '', location.hash || location.pathname);
+  showPane('side');
+}
+
+// backFromStream and backFromSide are the chevrons on the two inner screens. When the
+// screen was reached through a history entry of its own, going back is what the system
+// gesture would do; otherwise the screen is shown directly.
+function backFromStream() {
+  if (history.state && history.state.pane === 'stream') history.back();
+  else showPane('list');
+}
+
+function backFromSide() {
+  if (history.state && history.state.pane === 'side') history.back();
+  else showPane('stream');
 }
 
 // loadingNodes is the shape of a conversation while one loads: a few blocks the size of
@@ -2946,25 +3078,8 @@ $('source-filter').addEventListener('change', (event) => {
 });
 
 // Reading on: fetch the next page when the reader reaches the edge that has one
-// Touch devices report the gesture directly, so they do not have to infer it from a
-// scroll position that the chrome's own hiding keeps moving.
-let touchAnchorY = null;
-$('messages').addEventListener('touchstart', (event) => {
-  touchAnchorY = event.touches.length ? event.touches[0].clientY : null;
-}, { passive: true });
-$('messages').addEventListener('touchmove', (event) => {
-  if (touchAnchorY === null || !event.touches.length) return;
-  const y = event.touches[0].clientY;
-  const dy = touchAnchorY - y; // > 0: the finger moved up, content moves down
-  if (Math.abs(dy) < CHROME_JITTER_PX) return;
-  touchAnchorY = y;
-  slideChromeByTouch(dy);
-}, { passive: true });
-$('messages').addEventListener('touchend', () => { touchAnchorY = null; }, { passive: true });
-
 $('messages').addEventListener('scroll', () => {
   const pane = $('messages');
-  slideChrome(pane.scrollTop);
   if (state.loadingMore) return;
   const nearTop = pane.scrollTop < SCROLL_LOAD_PX;
   const nearBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < SCROLL_LOAD_PX;
@@ -2996,12 +3111,6 @@ systemLight.addEventListener('change', () => {
   if (!document.documentElement.dataset.theme) applyTheme('');
 });
 
-if ($('panes')) {
-  for (const button of $('panes').children) {
-    button.addEventListener('click', () => showPane(button.dataset.pane));
-  }
-}
-
 $('auto').addEventListener('change', (event) => {
   saveViewPrefs();
   if (event.target.checked) {
@@ -3012,30 +3121,25 @@ $('auto').addEventListener('change', (event) => {
   }
 });
 
-// Back and forward. On a phone an entry made by opening a session carries pane: 'stream';
-// landing on any other entry means the reader stepped back out, so the list comes back
-// and the hash is left alone — the hashchange that follows must not reopen the session.
-let suppressHashSelect = false;
+// Back and forward. On a phone every screen but the list was reached through a history
+// entry naming it, so the entry landed on says which screen to show; landing on one with
+// no pane is the list.
 window.addEventListener('popstate', (event) => {
   if (!isPhone()) return;
-  if (event.state && event.state.pane === 'stream') {
-    // Forward into a conversation: show it; the hashchange that follows selects the
-    // session when the entry names a different one
-    showPane('stream');
-    return;
-  }
-  suppressHashSelect = true;
-  showPane('list');
+  const pane = event.state && event.state.pane;
+  showPane(pane === 'side' || pane === 'stream' ? pane : 'list');
 });
 
+// A hash names a session. On a phone with the list up — the reader just stepped back
+// out — the selection follows it quietly, so the row stays highlighted and the
+// conversation behind it matches the address without the screen changing.
 window.addEventListener('hashchange', () => {
-  if (suppressHashSelect) {
-    suppressHashSelect = false;
-    return;
-  }
   const id = decodeURIComponent(location.hash.replace(/^#/, ''));
-  if (id && id !== state.selectedId && state.byId.has(id)) selectSession(id);
+  if (!id || id === state.selectedId || !state.byId.has(id)) return;
+  selectSession(id, '', isPhone() && state.pane !== 'stream');
 });
+
+$('side-back').addEventListener('click', backFromSide);
 
 // saveViewPrefs records the view controls. Called from each control's own handler, so
 // there is no single "settings changed" funnel to forget.
@@ -3048,7 +3152,6 @@ function saveViewPrefs() {
       view: state.view,
       expandAll: state.expandAll,
       auto: $('auto').checked,
-      pane: state.pane,
       exportFormat: state.exportFormat,
       hideList: state.hideList,
       hideSide: state.hideSide,
@@ -3077,8 +3180,6 @@ function applyViewPrefs() {
   else if (prefs.role === 'user' || prefs.role === 'assistant') state.view = 'conversation';
   if (typeof prefs.expandAll === 'boolean') state.expandAll = prefs.expandAll;
   if (typeof prefs.auto === 'boolean') $('auto').checked = prefs.auto;
-  // Names of projects folded away; a name that no longer exists simply never matches
-  if (['list', 'stream', 'side'].indexOf(prefs.pane) >= 0) state.pane = prefs.pane;
   if (EXPORT_FORMATS.some(([v]) => v === prefs.exportFormat)) state.exportFormat = prefs.exportFormat;
   if (typeof prefs.hideList === 'boolean') state.hideList = prefs.hideList;
   if (typeof prefs.hideSide === 'boolean') state.hideSide = prefs.hideSide;
@@ -3103,96 +3204,24 @@ function applyPaneFolds() {
   }
 }
 
-// On a phone the title row and the pane switcher together are a tenth of the screen, and
-// while you are reading downwards neither is doing anything. Scrolling down slides them
-// away, scrolling up brings them back, and the top of the conversation always shows them
-// — the standard phone behaviour, and it costs nothing on a wide screen where the media
-// query never matches.
-const CHROME_HIDE_AFTER_PX = 40;
-const CHROME_JITTER_PX = 8;
-let chromeHidden = false;
-let chromeLastY = 0;
-let scrollQuietUntil = 0;
-
-// The page scrolls itself — opening a session jumps to the newest message, prepending a
-// page holds the reader's place, the table of contents scrolls to its target. Those are
-// not the reader moving, and treating the jump to the bottom on open as "scrolled down"
-// hid the header the moment a session appeared.
+// scrollTo sets a pane's scroll position. Named so the places the page moves the reader
+// on purpose — opening at an end, holding their place through a prepend, a jump from the
+// table of contents — read as such.
 function scrollTo(pane, y) {
-  scrollQuietUntil = performance.now() + 250;
   pane.scrollTop = y;
 }
 
-function slideChrome(y) {
-  if (performance.now() < scrollQuietUntil) {
-    chromeLastY = y;
-    return;
-  }
-  // No decision is taken at either end of the scroll range. Hiding the chrome changes the
-  // container's height and therefore the scroll geometry, so a bounce at an edge produces
-  // scroll events that look like the reader moving — which is what made the block flip
-  // back and forth a few times when a phone was pulled to the bottom. (An overscroll
-  // bounce lives here, which is why it showed up there first.)
-  const pane = $('messages');
-  if (y <= 0 || y >= pane.scrollHeight - pane.clientHeight - 1) {
-    if (y <= 0) {
-      chromeLastY = y;
-      setChromeHidden(false); // the top of the conversation always shows it
-    }
-    return;
-  }
-  // No width check: the stream head slides everywhere, and the header/pane-switcher rules
-  // simply do not apply above the phone breakpoint.
-  if (y < CHROME_HIDE_AFTER_PX) {
-    setChromeHidden(false);
-  } else if (y > chromeLastY + CHROME_JITTER_PX) {
-    setChromeHidden(true); // moving down the conversation
-  } else if (y < chromeLastY - CHROME_JITTER_PX) {
-    setChromeHidden(false); // coming back up
-  }
-  chromeLastY = y;
-}
-
-// On a touch screen the finger decides, not the scroll position: a reader dragging
-// upwards is moving down the conversation, and that stays true however the layout
-// reflows underneath. The scroll path above is what remains for a mouse or a trackpad,
-// where the wheel is the only signal there is.
-function slideChromeByTouch(dy) {
-  const pane = $('messages');
-  if (performance.now() < scrollQuietUntil) return;
-  if (pane.scrollTop <= 0) {
-    setChromeHidden(false);
-    return;
-  }
-  setChromeHidden(dy > 0);
-}
-
-function setChromeHidden(hidden) {
-  if (hidden === chromeHidden) return;
-  chromeHidden = hidden;
-  document.body.classList.toggle('chrome-hidden', hidden);
-  // The layout changed under the scroll position, so the delta the scroll handler sees
-  // next is not the reader's; take the current position as the new baseline. The quiet
-  // window covers the reflow that follows.
-  chromeLastY = $('messages').scrollTop;
-  scrollQuietUntil = performance.now() + 250;
-}
-
-// showPane switches the phone layout. On a wide screen the attribute is inert: the CSS
-// only consults it below the phone breakpoint.
+// showPane switches the phone screen. On a wide screen the attribute is inert: the CSS
+// only consults it below the phone breakpoint. The screens have an order — list,
+// conversation, details — and the direction of the change picks which way the incoming
+// screen slides.
+const PANE_ORDER = ['list', 'stream', 'side'];
 function showPane(name) {
+  const from = PANE_ORDER.indexOf(state.pane);
+  const to = PANE_ORDER.indexOf(name);
+  document.body.classList.toggle('nav-back', to < from);
   state.pane = name;
   document.body.dataset.pane = name;
-  setChromeHidden(false); // a pane change is not a scroll: show the chrome again
-  const nav = $('panes');
-  if (nav) {
-    for (const button of nav.children) {
-      const on = button.dataset.pane === name;
-      button.classList.toggle('on', on);
-      button.setAttribute('aria-current', on ? 'page' : 'false');
-    }
-  }
-  saveViewPrefs();
 }
 
 async function start() {
@@ -3203,9 +3232,11 @@ async function start() {
   const hashId = decodeURIComponent(location.hash.replace(/^#/, ''));
   if (hashId) {
     state.selectedId = hashId;
-    // A deep link opens on the conversation it names, on a phone too
+    // A deep link opens on the conversation it names, on a phone too — with the list
+    // behind it, so the back gesture has somewhere to go
     if (isPhone()) {
-      history.replaceState({ pane: 'stream' }, '', location.hash);
+      history.replaceState({ pane: 'list' }, '', location.pathname);
+      history.pushState({ pane: 'stream' }, '', '#' + encodeURIComponent(hashId));
       showPane('stream');
     }
   }

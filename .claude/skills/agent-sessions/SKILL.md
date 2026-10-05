@@ -1,14 +1,14 @@
 ---
 name: agent-sessions
-description: 'Query the session history of every agent CLI on this machine — Claude Code, Codex, Gemini CLI, Pi, Hermes, OpenClaw, OpenCode — through the read-only `agent-sessions` MCP server, and hand a stretch of that history to another agent. Use when the user asks what they worked on before, which session covered a topic, how something was solved previously, whether they have dealt with a problem already, or wants context migrated to another agent or machine. Trigger phrases include "之前怎么解决的", "上周做了什么", "我是不是弄过这个", "把上下文给另一个 AI".'
+description: 'Query the session history of every agent CLI on this machine — Claude Code, Codex, Gemini CLI, Pi, Hermes, OpenClaw, OpenCode, Grok — through the read-only `agent-sessions` MCP server, and hand a stretch of that history to another agent. Use when the user asks what they worked on before, which session covered a topic, how something was solved previously, whether they have dealt with a problem already, or wants context migrated to another agent or machine. Trigger phrases include "之前怎么解决的", "上周做了什么", "我是不是弄过这个", "把上下文给另一个 AI".'
 metadata:
-  version: 1.0.0
+  version: 1.1.0
 ---
 
 # Query the agent session history on this machine
 
 Every agent CLI keeps a record of what it did; this server reads them. It is **read-only** —
-it never modifies session data — and it covers all seven sources at once, so a question can
+it never modifies session data — and it covers all eight sources at once, so a question can
 span a Claude Code session and a Codex one in the same answer.
 
 ## Ground rules
@@ -34,6 +34,9 @@ span a Claude Code session and a Codex one in the same answer.
 | "How did that end?" | `get_session(pattern=<id>)` | Metadata plus the final result — usually the whole answer, for about a kilobyte |
 | "Show me around there" | `get_messages(pattern=<id>, order="desc")` | The latest N is where a session's outcome lives |
 | "…right where that match was" | `get_messages(pattern=<id>, at=<hit timestamp>)` | **Lands on the hit.** Paging towards it is the mistake this exists to prevent |
+| "Which step failed? What did it change?" | `list_rounds(pattern=<id>)` | One row per round: `failures`, `filesChanged`, `files` touched, whether it ended interrupted |
+| "Hand this round to another agent" | `session_brief(pattern=<id>, round=N)` | The ask, the files changed, tools with the number that failed, how it ended, and the command that resumes the session |
+| "Show me the whole output of that command" | `get_messages(pattern=<id>, at=<ts>, limit=3, full=true)` | Tool output comes cut to a preview (`truncated: true`); `full` on a narrow window returns it whole |
 
 ### Landing on a search hit
 
@@ -47,6 +50,16 @@ get_messages(pattern=S, at=T, order="desc")   → the messages ending at that hi
 
 Without `at`, reaching a hit 8 000 messages into a session means paging through it — on a
 large session that is hundreds of requests.
+
+### Reading how a tool call went
+
+A `toolResult` block carries `callId` (the `toolCall` it answers), and `status` (`ok` /
+`error` / `interrupted`), `exitCode` and `durationMs` when the source recorded them. A
+result with no `status` is one whose CLI does not record outcomes (Hermes) — not a success.
+Tool output and thinking are cut to a preview on an ordinary read and marked
+`truncated: true`; when the end of a failed command's output is what matters, repeat the
+call with `full: true`, `at` the result's timestamp and a small `limit`. Do not ask for a
+whole session with `full` on: every build log in full is megabytes.
 
 ## Reading a whole session
 

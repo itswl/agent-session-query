@@ -16,8 +16,24 @@ and deployment see the [README](../README.md).
   one per session; `display_name` is the older field), `sessions.cwd` carries the working
   directory, rows Hermes itself hides are skipped (see below), an
   assistant's `tool_calls` column (OpenAI-shaped JSON with the arguments as a string)
-  becomes `toolCall` blocks, and a `role = 'tool'` row — the result, with `tool_name` —
-  becomes one `toolResult` block. When
+  becomes `toolCall` blocks carrying each call's `id`, and a `role = 'tool'` row — the
+  result, with `tool_name` and `tool_call_id` — becomes one `toolResult` block paired to its
+  call. Hermes does not record whether a tool succeeded, so those results carry no status.
+
+  Message rows are read the way Hermes displays them. Undo, rewind and regenerate set
+  `active = 0`; context compression also sets `active = 0` on the rows it folded into a
+  summary but marks them `compacted = 1`, and Hermes keeps showing those — the person did
+  say and read them, only the model stopped seeing them. Filtering on `active` alone, which
+  this did, hid the older half of every compressed session. A row is shown when it is live
+  or compacted (`hermesShownClause`, built from the columns the database has), rows read in
+  insertion order (`ORDER BY id`: timestamps regress when compression re-inserts rows with
+  their original time), duplicates collapsed on Hermes's own display identity (role,
+  content, timestamp, tool call id, tool calls, tool name — compression re-inserts the
+  protected head and tail of a conversation as live copies of archived originals, and the
+  most live copy is shown at the first position), and rows marked
+  `display_metadata.model_only` left out. The window (`limit` / `order` / `at`) is cut after
+  that projection, not in SQL, where a `LIMIT` would count hidden rows and duplicates as
+  messages. When
   both exist, sessions are deduplicated by sessionId with the jsonl winning. A session with
   no jsonl also falls back to `state.db` for `final` (opened read-only, taking the last
   `active=1` assistant message with `finish_reason=stop`, and falling back to the real count
@@ -51,7 +67,12 @@ and deployment see the [README](../README.md).
   are the `type=message` rows, `message.content` is a block array (`text` / `thinking` /
   `toolCall` / `toolResult`), and `stopReason` may sit inside `message` or at the top level
 - **Pi**: row types are `session` (metadata), `model_change` and `message`; messages come from
-  the `message` rows (`message.role` plus the `message.content` block array).
+  the `message` rows (`message.role` plus the `message.content` block array). A tool call is
+  a `toolCall` block with `id`, `name` and `arguments` on the assistant message; its result
+  is a message of its own with role `toolResult`, carrying `toolCallId`, `toolName` and
+  `isError` on the message and the output in its content array — it becomes one
+  `toolResult` block paired by id, with `status` from `isError` (measured locally over the
+  newest 40 sessions: 554 pairs, 49 failures).
   Listing metadata **must come from the `type=session` row specifically**: a `model_change`
   record carries its own `id` field, so reading only the first line reports an event id as the
   session id (measured locally, this really happened). With no `session` row at all (a
@@ -59,16 +80,51 @@ and deployment see the [README](../README.md).
 - **Claude Code**: message rows are `type=user` / `assistant` with the content in
   `message.content` (`text` / `thinking` / `tool_use` / `tool_result` blocks). `isSidechain`
   rows (subagents) are skipped, as are non-conversation rows such as `queue-operation`,
-  `attachment` and `mode`.
+  `attachment` and `mode`. A `tool_use` carries its `id`; the `tool_result` that answers it
+  names that id as `tool_use_id`, and the tool's name travels from the call to the result
+  through a map kept over the scan (a result row names only the call). Claude records how
+  every call ended: `is_error` on the result, `interrupted` on the row-level
+  `toolUseResult`, and the placeholder `[Request interrupted by user for tool use]` a
+  stopped call gets as its output — all three become the result's `status`. The same notice
+  as a user text block becomes an `interrupted` event rather than the user's words, so it
+  does not start a round. Two kinds of `system` row become events too: `compact_boundary`
+  (the context the model sees was rewritten here) and a `stop_hook_summary` with
+  `hookErrors`; `turn_duration`, `informational` and the rest yield nothing and are not
+  counted. Measured locally over 60 sessions: 562 system rows, 12 compactions, 289 hook
+  summaries of which most carried no error.
   `cwd` is not on the first line — a run of non-conversation rows precedes it. Across 174 real
   local sessions the distribution was: line 2 once, line 3 123 times, line 4 30 times, line 5
   19 times, line 6 once
-- **Codex**: message rows are `type=response_item` with `payload.type=message`; rows whose
-  `payload.role` is `developer` (machine-assembled instructions) do not count, and usage comes
-  from `token_usage_record`.
-  The metadata row is `type=session_meta` (authoritative and complete, so the scan stops
-  there); only when it is absent does the scan salvage fields from later rows — measured
-  against a real rollout, the row types are complementary: `turn_context` carries only `cwd`,
+- **Codex**: the conversation is spread over several row types, and for a long time only
+  the `response_item` / `message` rows were read — a Codex session showed two people talking
+  with nothing in between, and its brief listed no tools. Now each of these yields one
+  message: `message` (role `developer` is machine-assembled instructions and does not
+  count; a user row that opens with `# AGENTS.md`, `<environment_context`, `<permissions
+  instructions` or is wholly one XML-style element is kept but flagged `injected`, so a
+  round does not start at it), `reasoning` (the `summary` entries become thinking; a row
+  with only `encrypted_content` yields nothing), `function_call` (name, `arguments` as a
+  JSON string — decoded, or kept under `raw` — and `call_id`), `custom_tool_call` (the
+  freeform tools `exec` and `apply_patch`, with `input` in place of arguments),
+  `local_shell_call` (the older shell: `action.command`), `web_search_call` (which has no
+  output row and so answers itself), and `function_call_output` /
+  `custom_tool_call_output` (a `role=tool` message paired by `call_id`). An output is a
+  string or a list of `{type, text}` items, and it often opens with a header that is
+  information rather than output: the older shell tool wrote a JSON document
+  (`{"output": …, "metadata": {"exit_code", "duration_seconds"}}`), the newer tools write
+  known lines — `Exit code: N`, `Process exited with code N`, `Wall time: 0.3 seconds`,
+  `Script completed` / `Script failed`, `Chunk ID:` — closed by a line reading `Output:`.
+  The header is read into `exitCode`, `durationMs` and `status` and removed; anything that
+  is not that exact shape is output and stays whole. An `apply_patch` output that begins
+  `apply_patch verification failed` or `patch rejected` is an error with no exit code.
+  `event_msg` / `turn_aborted` becomes an `interrupted` event; the other events are
+  bookkeeping. One rule — `codexProbe.counts` — decides what is a message for the list's
+  background count, for `Final` and for the reader, so the three agree. Usage comes from
+  the `token_usage_record` rows summed, or, in a rollout without them, from the last
+  `event_msg` / `token_count` (`info.total_token_usage` is cumulative, so the last one is
+  the total). The model is on `turn_context`, which the metadata scan runs on to.
+  The metadata row is `type=session_meta` (authoritative and complete); only when it is
+  absent does the scan salvage fields from later rows — measured against a real rollout,
+  the row types are complementary: `turn_context` carries only `cwd`,
   `token_usage_record` only `session_id`.
   **Salvaging never touches a bare `id`**: a message row (`response_item`) payload carries
   `id = "msg_..."`, and picking that up would report a message ID as the session ID.
@@ -89,7 +145,14 @@ and deployment see the [README](../README.md).
   sessions carry very little prose: issuing a call leaves `content` empty with the substance in
   `toolCalls` (becoming a `toolCall` block with just name and args), and the result comes back
   as a `functionResponse` entry in a later user row's `content` array (becoming a `toolResult`
-  block). `thoughts` becomes thinking whether it is a string or a `[{subject, description}]`
+  block paired by `id`). Where the result lands has changed across Gemini CLI's versions:
+  older files answer on the user row and echo the response under the call's `result` field
+  without the real output, so a `result` field alone is not an answer; newer files write a
+  `status` onto the `toolCalls` entry (`success` / `error` / `cancelled`) with the output as
+  `resultDisplay` (a string, or a file-diff object) or under `result`. A status is the
+  signal: with one the call is answered in place and the user row's copy, if any, is
+  skipped; a status that arrived without output is carried to the user row that brings it.
+  `thoughts` becomes thinking whether it is a string or a `[{subject, description}]`
   array (each entry's description is taken)
 - **OpenCode**: everything lives in one SQLite database at
   `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` — there is no jsonl, so it is the
@@ -100,8 +163,25 @@ and deployment see the [README](../README.md).
   `provider/model`. Messages are `message` rows joined to their `part` rows: `text` /
   `reasoning` map to text / thinking, and a `tool` part — which carries the call and its
   result together (`state.input` / `state.output` / `state.error`) — becomes a `toolCall`
-  block followed by a `toolResult` block once its state is `completed` or `error`.
-  `step-start` / `step-finish` are boundaries, not content, and are dropped. The final
+  block followed by a `toolResult` block once its state is `completed` or `error`, paired by
+  `callID`; `status` follows the state (an error whose text says `abort` is an
+  interruption), the exit code sits in `state.metadata.exit` and the duration is
+  `state.time.start` to `end`. `step-start` / `step-finish` are boundaries, not content,
+  and are dropped.
+
+  **OpenCode 2.x** moved sessions to `session_v2` and messages to `session_message` and
+  stopped writing the V1 tables, so a 2.x install listed nothing here and said nothing — an
+  empty source and a moved one answer alike. The schema is detected per database: V2 when
+  both tables exist (one alone is a migration caught halfway, and the V1 tables are still
+  the truth then). A `session_message` row is one message, ordered by `seq`, its `type` the
+  role and its parts inline under `data.content` (the same shapes as the part rows, except
+  that a tool item names its tool as `name` and its call as `id`); a user row may carry its
+  words as `data.text`. The final result is the newest assistant row that said something,
+  with usage summed over the assistant rows' own `tokens` and `cost`; search is a `LIKE`
+  over the rows. A database that saw 2.x and then 1.x again holds both layouts: the V1
+  sessions never migrated are listed beside the V2 ones (a migrated session keeps its id,
+  so `NOT EXISTS` keeps each to one row), and each session reads through the layout it
+  lives in. The final
   result is the newest assistant message carrying a `finish` field; timestamps are unix
   milliseconds throughout (opened read-only — verified that reads work through the live
   write-ahead log, so sessions still being written are visible)
@@ -117,11 +197,41 @@ and deployment see the [README](../README.md).
   updates, so consecutive updates from one speaker are folded into a single message and
   consecutive text chunks into a single block: `user_message_chunk` / `agent_message_chunk`
   become text, `agent_thought_chunk` thinking, `tool_call` a `toolCall` block, and the
-  `tool_call_update` that reports `completed` or `failed` a `toolResult` (a status-less one
-  is the call being re-titled mid-flight and carries no output). The cwd comes from
+  `tool_call_update` that reports `completed` or `failed` a `toolResult` paired by
+  `toolCallId`, with `status` from which of the two it was (a status-less one is the call
+  being re-titled mid-flight and carries no output). A session the user archives moves to
+  `~/.grok/archived_sessions/` with the same layout; it is listed from there too, marked
+  `archived`. The cwd comes from
   `info.cwd`; the group directory name is that same path URL-encoded, which is the fallback,
   and above 255 bytes Grok substitutes a slug plus a hash and records the real path in a
   `.cwd` file beside the sessions
+
+### Blocks: one shape for eight transcripts
+
+Every parser produces the same block array (`blocks.go`): `text`, `thinking`, `toolCall`
+(`id`, `name`, `arguments`), `toolResult` (`callId`, `toolName`, `content`, and `status` /
+`exitCode` / `durationMs` when recorded) and `event` (`kind`, `content`). The id pairing is
+what lets the page, the brief and an MCP caller say *which* command failed rather than only
+that one did; `status` is written only when the source said something, so a Hermes result
+with no status is "not recorded", not "fine".
+
+Tool output is cut to 500 characters and thinking to 1 000 on the ordinary read, and a cut
+block carries `truncated: true`. The cut is a window-size decision, not a storage one: a
+page of two hundred messages carrying every build log in full is megabytes. A full read —
+`?full=1`, MCP's `full`, and always the export — keeps every byte, which is what an agent
+reading why a command failed needs: the end of the output is exactly the part a preview
+drops. The page fetches a cut block's message again with `full=1` when asked.
+
+### Rounds and the brief
+
+`brief.go` segments a session at each real user message (`isRoundStart`: a user row with
+words of its own, not command plumbing, not `injected`). A round carries the files any tool
+named and, separately, the files a write-kind call changed and did not fail at — a write
+waits for its result by call id, so a failed edit is not a change — plus `failures`, the
+count of results that reported an error or an interruption. An `interrupted` event in the
+round marks it interrupted outright; the ask-after-ask heuristic covers the sources that
+record no such event. The brief carries the resume command with the `cd` the page prepends
+for the same reason (see `resumeCommand`).
 
 ### When a source cannot be read
 

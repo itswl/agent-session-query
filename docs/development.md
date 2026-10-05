@@ -6,7 +6,9 @@
 ├── cmd/healthcheck/           # the container liveness probe
 ├── internal/app/              # everything: run.go (flags and startup), http.go (routing,
 │                              #   auth, rate limiting), api.go (merging, matching, caching),
-│                              #   record.go, source*.go (the data sources),
+│                              #   record.go, blocks.go (the one block shape every source
+│                              #   produces), source*.go (the data sources),
+│                              #   brief.go (rounds and the handoff brief),
 │                              #   search.go (full-text search), export.go (Markdown export),
 │                              #   mcp.go (the MCP server),
 │                              #   filecache.go (file-head cache keyed by mtime),
@@ -41,7 +43,11 @@ git push origin v0.3.0
 
 Adding a data source: implement the `SessionSource` interface (`Mode` / `Location` /
 `Exists` / `List` / `Messages` / `Final`), register it in the `factories` map inside
-`buildSources()`, and add the mode name to `knownModes`. Merging across sources, match
+`buildSources()`, and add the mode name to `knownModes`. Build message content with the
+helpers in `blocks.go` — `toolCallBlock` with the call's id, `toolResultBlock` with the id it
+answers and a `toolOutcome` for how it ended, `thinkingBlock`, `eventBlock` — and honour
+`messageQuery.full`, so the page, the brief and the MCP tools read the new source like the
+others. Merging across sources, match
 ranking, full-text search, project grouping and the `source` tag are all handled once by the
 framework. A source whose sessions do not live in files (Hermes when it is all SQLite, for
 instance) can additionally implement `searchableSource` to take over searching itself.

@@ -10,11 +10,11 @@ no alias.
 | `/sessions` | yes | List every session (merged across sources, newest first) |
 | `/export?project=&since=&until=&source=&mode=index` | yes | **Export several sessions as one document.** Oldest first, because a pack answers "how did this get here" where the list answers "what am I doing". `mode=index` (the default) gives one block per session — when, where, what was asked, what it concluded, and the id to check it against; `mode=full` inlines the transcripts. `format=md` (default) or `jsonl`. `limit` defaults to 20 sessions of the matching set, and the header always states how many of that set it holds |
 | `/sessions/<pattern>` | yes | One session's metadata |
-| `/sessions/<pattern>/messages?limit=50&order=asc` | yes | A session's messages; `order=asc` (the default) takes the earliest N, `order=desc` the latest N, and `at=<time>` anchors the window at that instant instead of at an end. Capped by `--max-limit` |
+| `/sessions/<pattern>/messages?limit=50&order=asc&full=1` | yes | A session's messages; `order=asc` (the default) takes the earliest N, `order=desc` the latest N, and `at=<time>` anchors the window at that instant instead of at an end. Tool output and thinking come cut to a preview and marked `truncated: true`; `full=1` returns them whole (ask for a narrow window, a build log is large). Capped by `--max-limit` |
 | `/sessions/<pattern>/final` | yes | A session's final result |
-| `/sessions/<pattern>/rounds?source=` | yes | The session split into rounds — one per real user message (command plumbing and tool results do not start one): index, times, files touched, whether the round ended interrupted. The scan covers the **latest** 20 000 messages — `partial` / `messagesScanned` / `messagesTotal` say when it is shorter than the session, and round numbering is over that tail |
-| `/sessions/<pattern>/brief?round=&at=&source=` | yes | A compact handoff brief (`text/markdown`, deterministic extraction, not a summary): the ask in the user's words, files touched, tools by category, how the round ended, and the state at the end — with the same partial-scan note when it applies (the scan covers the latest messages; round numbering is over that tail). Defaults to the latest round; `round=N` picks one, `at=<time>` briefs the round a timestamp falls in; `source` disambiguates when an id collides across sources |
-| `/sessions/<pattern>/export?order=desc&format=md` | yes | Export the session. **No `limit` means the whole session** (up to 20 000 messages); the header states what it covers, and says so when it is partial. Four formats: |
+| `/sessions/<pattern>/rounds?source=` | yes | The session split into rounds — one per real user message (command plumbing, tool results and the rows a CLI injects do not start one): index, times, message and tool-call counts, `failures` (tool results that reported an error or an interruption), `files` touched by any tool, `filesChanged` (write-kind calls that did not fail), whether the round ended interrupted. The scan covers the **latest** 20 000 messages — `partial` / `messagesScanned` / `messagesTotal` say when it is shorter than the session, and round numbering is over that tail |
+| `/sessions/<pattern>/brief?round=&at=&source=` | yes | A compact handoff brief (`text/markdown`, deterministic extraction, not a summary): the ask in the user's words, the files changed and the files touched, tools by category with how many failed, how the round ended, the state at the end, and the command that reopens the session in its own CLI (with the `cd` it needs) — with the same partial-scan note when it applies (the scan covers the latest messages; round numbering is over that tail). The rounds index marks a round with failures `✗` and an interrupted one `⚠`. Defaults to the latest round; `round=N` picks one, `at=<time>` briefs the round a timestamp falls in; `source` disambiguates when an id collides across sources |
+| `/sessions/<pattern>/export?order=desc&format=md` | yes | Export the session. **No `limit` means the whole session** (up to 20 000 messages), and tool output and thinking are carried whole, never cut to a preview; the header states what it covers, and says so when it is partial. A result says how it ended (`↳ Bash — failed · exit 1 · 2.3s`) and events between the turns are quoted. Four formats: |
 
 | `format` | Served as | For |
 |---|---|---|
@@ -94,11 +94,21 @@ pattern containing a colon needs URL encoding (`%3A`).
   into a command at all; and for `openclaw`, which can resume by session id but only over
   the last 50 sessions still inside its recent-activity window and only with its Gateway
   running, so the command would work for the newest handful and fail for the rest. Then per-source extras such as
-  `cwd` / `model` / `totalTokens` / `estimatedCostUsd` / `cliVersion`
+  `cwd` / `model` / `totalTokens` / `estimatedCostUsd` / `cliVersion`; a Grok session
+  the user archived (it lives under `archived_sessions/`) carries `archived: true`
 - Search: the list fields plus `matches` (`snippet` + `role` + `timestamp`) and `matchCount`
-- Messages: `content` is an array of blocks typed `text` / `thinking` / `toolCall`
-  (`name` + `arguments`) / `toolResult` (`toolName` + `content`). The `order` field echoes
-  which end the batch came from; either direction is returned chronologically
+- Messages: `content` is an array of blocks typed `text` / `thinking` / `toolCall` /
+  `toolResult` / `event`. A `toolCall` carries `id`, `name` and `arguments`; a `toolResult`
+  carries `callId` (the call it answers), `toolName`, `content`, and — when the source
+  recorded them — `status` (`ok` / `error` / `interrupted`), `exitCode` and `durationMs`. A
+  result without `status` is one whose writer did not record the outcome (Hermes), which is
+  not the same as success. An `event` is something that happened between the turns, with
+  `kind` (`compaction` / `interrupted` / `hook_error` / `model_change`) and `content`. Tool
+  output is cut to 500 characters and thinking to 1 000 unless `full=1` is given; a cut
+  block carries `truncated: true`. A user message the CLI assembled rather than the person
+  typed (Codex's AGENTS.md and environment rows) carries `injected: true` and does not start
+  a round. The `order` field echoes which end the batch came from; either direction is
+  returned chronologically
 - final: `isFinal` / `stopReason` / `text` / `thinking` / `toolCalls` / `usage` /
   `messageCount`. When the file does not exist you get `isFinal=false` plus an `error` field
   (the HTTP status is still 200)

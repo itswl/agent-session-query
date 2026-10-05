@@ -18,8 +18,8 @@ MCP server**。它不会修改任何会话数据。
 | Claude Code | `~/.claude/projects/<project>/*.jsonl` | 文件名（一个 uuid）/ `sessionId` 字段 |
 | Codex | `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl` | 元数据行上的 `payload.session_id` |
 | Gemini CLI | `~/.gemini/tmp/<project>/chats/session-*.jsonl` | 首行的 `sessionId` |
-| OpenCode | `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db`（SQLite；Windows 为 `%LOCALAPPDATA%\opencode`） | `session` 表的 `id` |
-| Grok CLI | `~/.grok/sessions/<url 编码的 cwd>/<session-id>/`（`summary.json` + `updates.jsonl`） | `summary.json` 里的 `info.id` |
+| OpenCode | `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db`（SQLite；Windows 为 `%LOCALAPPDATA%\opencode`；1.x 的 `session` 表与 2.x 的 `session_v2` / `session_message` 表都读） | `session` 或 `session_v2` 表的 `id` |
+| Grok CLI | `~/.grok/sessions/<url 编码的 cwd>/<session-id>/`（`summary.json` + `updates.jsonl`），以及 `~/.grok/archived_sessions/` | `summary.json` 里的 `info.id` |
 
 表中的 `~` 指向运行用户的家目录：Linux 和 macOS 上是 `$HOME`，Windows 上是 `%USERPROFILE%`
 （也就是 `C:\Users\<you>\.claude\projects` 之类）。各数据源的解析细节见
@@ -86,14 +86,19 @@ go build -o agent-session-query ./cmd/agent-session-query
   同时覆盖两边，不用切模式。<kbd>Enter</kbd> 只是免去等待。列表可以按时间或按项目分组，
   最近两分钟内有新消息的会话会有一个呼吸的绿点（表示最近有动静，不是进程存活检查，悬停可看具体多久之前）；项目分组标题可点击折叠。行上显示该会话的消息数——文件源会在
   首次列出时于后台统计，所以数字是页面出来之后稍晚一点出现，而不是让列表请求去等它
-- **中栏**：消息时间线（text / thinking / toolCall / toolResult 各类块）。默认打开最新 200 条，
-  **向上滚到顶会自动加载上一页**（从最早端阅读时则是滚到底加载下一页），头部的计数会告诉你已经
-  读到会话的哪个位置。也可以直接切换首尾，或只看 **user**（人的话）、**assistant**（模型的话）
-  或 **tools**（工具调用与结果）——三者是互不重叠的类别，而不是按角色字段判定，所以工具往来不会再混进发言者里。
-  工具块按类别着色（执行 / 读取 / 写入 / 搜索 / 网络 / 委派）
+- **中栏**：按轮阅读的对话——你提问，agent 干活，agent 回答。提问与回复之间的那段工作折叠成一行：
+  *72 steps · 61 commands · changed 2 files · 1 failed · 24m39s*。折叠时失败的步骤仍然留在视野里，
+  带着输出的开头；连续的读文件和搜索合并成一条「explored — read 4 files, searched twice」；每一步点开
+  能看到参数和输出，改动一律以 diff 形式展开，不管各家 CLI 怎么拼写这次编辑。结果会说明它是怎么结束的
+  （exit code、耗时），两轮之间发生的事（上下文压缩、用户中断、hook 失败）各自占一行。三种视图：
+  **all**、**conversation**（只看说了什么）和 **changes**（只看每轮改了什么）。工具栏下方是本窗口的
+  汇总：轮数、工具调用数、失败数、持续时长。默认打开最新 200 条，**向上滚到顶会自动加载上一页**
+  （从最早端阅读时则是滚到底加载下一页），头部的计数会告诉你已经读到会话的哪个位置。工具输出默认只给
+  预览，「Show full output」再取全文。步骤按类别着色（执行 / 读取 / 写入 / 搜索 / 网络 / 委派）
 - **右栏**：最终结果常驻——stopReason、答案、思考过程、用量与成本、会话元数据
-  （含文件路径——要丢进终端时复制的是它；一键导出——Markdown / JSONL / JSON / 独立 HTML 页面四种格式），以及**对话目录**：用户的每一轮提问按序号排列，
-  点击即可跳到消息流中的对应位置。目录覆盖当前加载的窗口，会话更长时会明确标注
+  （含文件路径——要丢进终端时复制的是它；一键导出——Markdown / JSONL / JSON / 独立 HTML 页面四种格式），以及**对话目录**：每轮两行——你问了什么、agent 得出了什么，
+  附上这一轮用了多少步，有失败或被中断时带红点；点哪一行就跳到消息流中的对应位置。目录覆盖当前加载的
+  窗口，会话更长时会明确标注
 
 它可以装成 Web 应用：手机上打开 `/ui`，用「添加到主屏幕」即可获得图标、名称，以及一个
 没有浏览器外壳的窗口，刘海和底部指示条也会自动避让。（图标由 `go run tools/icongen.go`
@@ -122,7 +127,7 @@ go build -o agent-session-query ./cmd/agent-session-query
 | `/` `/health` `/stats` | 否 | 服务信息与健康检查 |
 | `/ui` `/favicon.ico` | 否 | 内嵌页面（本身不含任何数据） |
 | `/sessions` | 是 | 列出全部会话（跨数据源合并，最新在前） |
-| `/sessions/<pattern>` | 是 | 单个会话；可接 `/messages`（支持 `order` / `limit` / `at`）、`/final` 或 `/export`（不带 `limit` 即全文，文件标明覆盖范围；`format=jsonl` 取结构化形式）|
+| `/sessions/<pattern>` | 是 | 单个会话；可接 `/messages`（支持 `order` / `limit` / `at`，`full=1` 让工具输出不截断）、`/final`、`/rounds`（按每条真实提问切轮，带每轮改了哪些文件、几次工具调用失败）、`/brief`（一轮的交接简报，附恢复命令）或 `/export`（不带 `limit` 即全文，文件标明覆盖范围；`format=jsonl` 取结构化形式）|
 | `/search?q=` | 是 | 跨全部数据源的**全文搜索**；`pattern` 限定在单个会话内，`role` 只看 user / assistant 的命中 |
 | `/projects` | 是 | 按项目（cwd）分组的会话数 |
 | `/export?project=&since=` | 是 | **把多个会话导出成一份文档**——每个会话问了什么、得出了什么，按时间从旧到新。`mode=full` 则把正文一并内联 |
@@ -133,8 +138,11 @@ go build -o agent-session-query ./cmd/agent-session-query
 ## MCP
 
 `--mcp` 走 stdio，HTTP 模式下另有 `POST /mcp`。这让 **agent 能查询自己的历史**——Claude Code
-可以去翻你上周用 Codex 解决过的同一个问题。五个工具：`search_sessions` / `list_sessions` /
-`list_projects` / `get_session` / `get_messages`。
+可以去翻你上周用 Codex 解决过的同一个问题。工具有：`search_sessions` / `list_sessions` /
+`list_projects` / `recent_project_activity` / `find_decisions` / `find_similar_question` /
+`get_session` / `get_messages` / `list_rounds` / `session_brief`。转写里的每个工具结果都带着它是
+怎么结束的（状态、exit code、耗时）以及它回答的是哪次调用；`list_rounds` 说明哪一轮有失败、改了哪些
+文件，`session_brief` 把一轮交接给另一个 agent，并附上恢复这个会话的命令。
 
 客户端配置和安全注意事项见 **[docs/mcp.md](docs/mcp.md)**。
 

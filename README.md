@@ -19,8 +19,8 @@ Eight sources; whichever exist are queried, and they can be merged in one query:
 | Claude Code | `~/.claude/projects/<project>/*.jsonl` | the filename (a uuid) / the `sessionId` field |
 | Codex | `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl` | `payload.session_id` on the metadata row |
 | Gemini CLI | `~/.gemini/tmp/<project>/chats/session-*.jsonl` | `sessionId` on the first line |
-| OpenCode | `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` (SQLite; `%LOCALAPPDATA%\opencode` on Windows) | `id` in the `session` table |
-| Grok CLI | `~/.grok/sessions/<url-encoded-cwd>/<session-id>/` (`summary.json` + `updates.jsonl`) | `info.id` in `summary.json` |
+| OpenCode | `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` (SQLite; `%LOCALAPPDATA%\opencode` on Windows; the 1.x `session` tables and the 2.x `session_v2` / `session_message` tables both) | `id` in the `session` or `session_v2` table |
+| Grok CLI | `~/.grok/sessions/<url-encoded-cwd>/<session-id>/` (`summary.json` + `updates.jsonl`), plus `~/.grok/archived_sessions/` | `info.id` in `summary.json` |
 
 The `~` in that table resolves to the running user's home: `$HOME` on Linux and macOS,
 `%USERPROFILE%` on Windows (so `C:\Users\<you>\.claude\projects` and the like). Per-source
@@ -93,20 +93,29 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   not a liveness check — hovering it says how long ago). Rows carry the session's message count
   — counted from the file in the background the first time it is listed, so the count
   appears a moment after the page does rather than being paid for on the request path
-- **Middle**: the message timeline (text / thinking / toolCall / toolResult blocks). It opens
-  on the latest 200 and **loads the previous page when you scroll to the top** (or the next
-  one at the bottom, when reading from the earliest) — the count in the header says how far
-  into the session you are. You can switch ends outright, and filter to **user** (the human's
-  words), **assistant** (the model's) or **tools** (tool calls and their results) — three
-  distinct categories rather than a role-field test, so tool traffic no longer shows up
-  under either speaker. Tool blocks are coloured by category (run / read / write / search
-  / network / delegate)
+- **Middle**: the conversation, read by rounds — you asked, the agent worked, the agent
+  answered. The work between an ask and its reply folds to one line: *72 steps · 61
+  commands · changed 2 files · 1 failed · 24m39s*. A failed step stays in view when the
+  rest is folded, with the start of its output; a run of reads and searches folds to
+  "explored — read 4 files, searched twice"; every step opens to its arguments and its
+  output, and a change opens as a diff, whichever way the CLI spelled the edit. A result
+  says how it ended — exit code, duration — and what happened between the turns (a
+  compaction, an interruption, a hook that failed) is a line of its own. Three views:
+  **all**, **conversation** (the words alone) and **changes** (the diffs alone, by round).
+  Under the toolbar, the window's sums: rounds, tool calls, failures, how long it ran. It
+  opens on the latest 200 messages and **loads the previous page when you scroll to the
+  top** (or the next one at the bottom, when reading from the earliest) — the count in the
+  header says how far into the session you are. Tool output comes cut to a preview, and
+  "Show full output" fetches the rest. Steps are coloured by category (run / read / write
+  / search / network / delegate)
 - **Right**: the final result stays visible — stopReason, the answer, the thinking, usage and
   cost, session metadata (the file path included — that is the one you paste into a
   terminal — and one click to export in any of the four formats: Markdown, JSONL, JSON or a
   standalone HTML page), and a
-  **conversation table of contents**: the user's turns, numbered, click to jump to one in
-  the stream. It covers the loaded window and says so when the session is longer
+  **conversation table of contents**: two lines a round — what you asked, and what the
+  agent concluded, with how many steps it took and a red mark when one failed or the round
+  was interrupted — click either to jump to it in the stream. It covers the loaded window
+  and says so when the session is longer
 
 It installs as a web app: open `/ui` on a phone and "Add to Home Screen" gives it an
 icon, a name and a window without browser chrome, and it honours the notch and home
@@ -145,7 +154,7 @@ marked "yes" require `Authorization: Bearer <token>`.
 | `/` `/health` `/stats` | no | Service info and health check |
 | `/ui` `/favicon.ico` | no | The embedded page (which holds no data) |
 | `/sessions` | yes | List every session (merged across sources, newest first) |
-| `/sessions/<pattern>` | yes | One session; add `/messages` (with `order` / `limit` / `at`), `/final`, or `/export` (no `limit` means the whole session; `format=jsonl` for the data form) |
+| `/sessions/<pattern>` | yes | One session; add `/messages` (with `order` / `limit` / `at`, and `full=1` for tool output whole rather than cut to a preview), `/final`, `/rounds` (the session split at each real user message, with files changed and tool calls failed per round), `/brief` (a handoff brief of one round, resume command included), or `/export` (no `limit` means the whole session; `format=jsonl` for the data form) |
 | `/search?q=` | yes | **Full-text search** across every source; `pattern` scopes it to one session, `role` to `user` or `assistant` hits |
 | `/projects` | yes | Session counts grouped by project (cwd) |
 | `/export?project=&since=` | yes | **A pack of several sessions as one document** — what was asked and what each concluded, oldest first. `mode=full` inlines the transcripts |
@@ -158,8 +167,12 @@ Full parameters, the `<pattern>` matching rules and every response field are in
 
 `--mcp` runs on stdio, and in HTTP mode there is also `POST /mcp`. That lets **an agent query
 its own history** — Claude Code can go looking for the same problem you solved with Codex
-last week. Five tools: `search_sessions` / `list_sessions` / `list_projects` / `get_session` /
-`get_messages`.
+last week. The tools: `search_sessions` / `list_sessions` / `list_projects` /
+`recent_project_activity` / `find_decisions` / `find_similar_question` / `get_session` /
+`get_messages` / `list_rounds` / `session_brief`. A tool result in a transcript carries how
+it ended (status, exit code, duration) and which call it answers; `list_rounds` says which
+round carried failures and which files it changed, and `session_brief` hands one round to
+another agent with the command that resumes the session.
 
 Client configuration, the security notes, and the Claude Code skill that ships with the
 repository are in **[docs/mcp.md](docs/mcp.md)**.

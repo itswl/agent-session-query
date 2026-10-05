@@ -8,7 +8,7 @@ The sources read the session directories the agent CLIs write by default:
 | claude | `~/.claude/projects` |
 | codex | `~/.codex/sessions` |
 | gemini | `~/.gemini/tmp` |
-| grok | `~/.grok/sessions` |
+| grok | `~/.grok/sessions`, plus `~/.grok/archived_sessions` beside it (listed with `archived: true`) |
 | hermes | `~/.hermes/sessions` (plus `state.db`) |
 | openclaw | `~/.openclaw/agents/*` |
 | opencode | XDG data dir, or `~/Library/Application Support` on macOS |

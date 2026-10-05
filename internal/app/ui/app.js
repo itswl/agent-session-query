@@ -3193,6 +3193,17 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener('scroll', pinDocument, { passive: true });
   window.visualViewport.addEventListener('resize', pinDocument);
 }
+// The document's scroll position is nothing to restore: it is never meant to have one, and
+// restoring a remembered one on the back gesture is one more way for the page to move
+if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+window.addEventListener('pageshow', pinDocument);
+window.addEventListener('popstate', pinDocument);
+// A keyboard going away is when iOS most often leaves the page where the keyboard pushed
+// it. The dismissal animates, so look once it is over as well as at once.
+document.addEventListener('focusout', () => {
+  setTimeout(pinDocument, 50);
+  setTimeout(pinDocument, 450);
+});
 
 $('fold-groups').addEventListener('click', foldAllGroups);
 
@@ -3326,6 +3337,7 @@ function showPane(name) {
   document.body.classList.toggle('nav-back', to < from);
   state.pane = name;
   document.body.dataset.pane = name;
+  pinDocument();
 }
 
 async function start() {

@@ -33,6 +33,7 @@ func TestCountersAgreeWithFinal(t *testing.T) {
 		`{"type":"model_change"}`,
 		`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"q"}]}}`,
 		`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"a"}]}}`,
+		`{ "type": "message", "message": { "role": "user", "content": [{"type":"text","text":"pretty"}] } }`,
 	)
 	pi := newPiSource(dir)
 	if got, want := piCountMessages(piPath), finalCount(pi.Final(recordOfPath(pi, piPath))); got != want {

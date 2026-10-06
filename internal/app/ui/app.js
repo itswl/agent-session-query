@@ -65,9 +65,12 @@ const state = {
   focusAt: '',         // when set, the stream window is anchored at this time (a search hit)
   exportFormat: 'md',  // md / jsonl / json / html
   loadingMore: false,  // a page is in flight
+  edgeLock: '',        // after mobile paging, move away from the edge before paging again
   noMore: { older: false, newer: false }, // an edge that came back empty
   collapsedGroups: new Set(), // project names folded away in By project grouping
   msgCounts: new Map(),       // sessionId → message count, learned as sessions are opened
+  countWarmTimer: null,       // short polling while background file counts warm
+  countWarmAttempts: 0,
   openBlocks: new Set(),
   timer: null,
   searchTimer: null,
@@ -553,10 +556,13 @@ function fillItem(item, session) {
   // the tooltip gives that fact rather than asserting the session is being written
   live.classList.toggle('on', !!session.isActive);
   live.title = session.isActive ? 'last message ' + relTime(session.updatedAt) : '';
-  // The SQLite sources report a true count; the file sources do not count on list (the
-  // list never reads file bodies), so their number is learned when the session is opened
-  const n = Number(session.messageCount) || state.msgCounts.get(session.sessionId) || 0;
-  setText(msgs, n ? n + (n === 1 ? ' msg' : ' msgs') : '');
+  // The server counts file-backed sessions in a background worker. Use that count as
+  // soon as it arrives; while the first list is warming, say so instead of leaving a
+  // misleading blank that only gets filled after opening the session.
+  const cached = state.msgCounts.get(session.sessionId);
+  const n = Number(session.messageCount) || Number(cached) || 0;
+  const countable = ['pi', 'claude', 'codex', 'gemini', 'grok'].includes(session.source);
+  setText(msgs, n ? n + (n === 1 ? ' msg' : ' msgs') : countable ? 'counting…' : '');
   setText(time, relTime(session.updatedAt));
   time.title = session.updatedAt || '';
 
@@ -945,6 +951,18 @@ function renderStreamHead(record) {
     // What the window amounts to — rounds, tool calls, failures, how long it ran — and
     // how much of the session it is, on one line
     box.appendChild(windowStats(detail, label));
+    const edge = state.order === 'desc' ? 'older' : 'newer';
+    if (total > shown && !state.noMore[edge]) {
+      const more = button(
+        'ghost tiny load-more',
+        state.loadingMore
+          ? 'Loading messages…'
+          : state.order === 'desc' ? 'Load earlier messages' : 'Load newer messages',
+        () => loadMore(edge),
+      );
+      more.disabled = state.loadingMore;
+      box.appendChild(more);
+    }
   }
 
   head.replaceChildren(box);
@@ -2960,8 +2978,10 @@ async function loadMore(edge) {
 
   const anchor = edge === 'older' ? msgs[0] : msgs[msgs.length - 1];
   const at = anchor && anchor.timestamp;
-  if (!at) {
-    state.noMore[edge] = true; // no anchor, so no way to ask for the neighbouring page
+  // Normal paging uses an offset and works even for sources whose rows have no
+  // timestamp. Only an anchored search window needs the timestamp.
+  if (state.focusAt && !at) {
+    state.noMore[edge] = true;
     return;
   }
 
@@ -2973,8 +2993,14 @@ async function loadMore(edge) {
   try {
     const id = encodeURIComponent(detail.sessionId);
     const order = edge === 'older' ? 'desc' : 'asc';
+    // Timestamp anchors are useful for search hits, but not for paging: many
+    // transcripts contain several rows with the same timestamp. Walk by the
+    // number of messages already loaded instead, which is stable for every source.
+    const cursor = state.focusAt
+      ? '&at=' + encodeURIComponent(at)
+      : '&offset=' + encodeURIComponent(msgs.length);
     const data = await api('/sessions/' + id + '/messages?limit=' + MESSAGE_LIMIT +
-      '&order=' + order + '&at=' + encodeURIComponent(at));
+      '&order=' + order + cursor);
     // The session may have changed while this was in flight
     if (state.detail === detail) {
       const got = (data.messages || []);
@@ -3010,8 +3036,16 @@ async function loadMore(edge) {
   renderStreamHead(record);
   renderSide(record);
   if (edge === 'older') {
-    // Prepending pushes everything down; hold the reader's place on the same message
-    scrollPaneTo(pane, before.top + (paneMetrics(pane).height - before.height));
+    // On a desktop pane, preserve the message that was under the reader's eyes.
+    // On a phone the user deliberately pulled to the edge to reveal history: keeping
+    // the old pixel position would jump hundreds of messages back down and look like
+    // the gesture did nothing. Leave the new history at the top instead.
+    if (isPhone()) {
+      state.edgeLock = 'older';
+      scrollPaneTo(pane, 0);
+    } else {
+      scrollPaneTo(pane, before.top + (paneMetrics(pane).height - before.height));
+    }
   }
 }
 
@@ -3036,7 +3070,10 @@ async function syncDetail(options) {
   if (!force && state.detail && state.detail.signature === signature) return;
   if (state.busy) return;
 
-  if (switched) state.noMore = { older: false, newer: false };
+  if (switched) {
+    state.noMore = { older: false, newer: false };
+    state.edgeLock = '';
+  }
   if (switched) {
     // Only clear when switching sessions; a plain refresh of the same session keeps the
     // old content on screen and avoids a flash
@@ -3108,6 +3145,22 @@ function serverChanged(version) {
   return true;
 }
 
+function scheduleCountWarmup() {
+  const missing = state.sessions.some((session) =>
+    ['pi', 'claude', 'codex', 'gemini', 'grok'].includes(session.source) &&
+    !Number(session.messageCount) && !state.msgCounts.has(session.sessionId));
+  if (!missing || state.countWarmAttempts >= 12) {
+    if (!missing) state.countWarmAttempts = 0;
+    return;
+  }
+  if (state.countWarmTimer) return;
+  state.countWarmAttempts++;
+  state.countWarmTimer = setTimeout(() => {
+    state.countWarmTimer = null;
+    refresh();
+  }, 700);
+}
+
 async function refresh() {
   try {
     const data = await api('/sessions');
@@ -3117,6 +3170,7 @@ async function refresh() {
     state.loadedAt = new Date().toLocaleTimeString();
     renderSources();
     renderList();
+    scheduleCountWarmup();
     await syncDetail({});
     setStatus(idleStatus());
   } catch (err) {
@@ -3284,11 +3338,19 @@ function onMessagesScroll() {
   const m = paneMetrics(pane);
   const nearTop = m.top < SCROLL_LOAD_PX;
   const nearBottom = m.height - m.top - m.visible < SCROLL_LOAD_PX;
-  if (state.order === 'desc') {
-    if (nearTop) loadMore('older');
-  } else if (nearBottom) {
-    loadMore('newer');
+  const edge = state.order === 'desc' ? 'older' : 'newer';
+  const nearEdge = edge === 'older' ? nearTop : nearBottom;
+  // A mobile prepend used to restore the old pixel position, which made an upward
+  // swipe appear to bounce back. The new page is left at the edge instead; do not
+  // immediately fetch every older page in a loop while the edge is still there.
+  if (state.edgeLock === edge) {
+    const movedAway = edge === 'older'
+      ? m.top > SCROLL_LOAD_PX + 80
+      : m.height - m.top - m.visible > SCROLL_LOAD_PX + 80;
+    if (movedAway) state.edgeLock = '';
+    else return;
   }
+  if (nearEdge) loadMore(edge);
 }
 $('messages').addEventListener('scroll', onMessagesScroll, { passive: true });
 window.addEventListener('scroll', () => { if (isPhone()) onMessagesScroll(); }, { passive: true });

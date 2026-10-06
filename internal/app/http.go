@@ -18,9 +18,10 @@ import (
 
 // defaultLimit / defaultMaxLimit: the default and the hard cap for ?limit=
 const (
-	defaultLimit    = 50
-	defaultMaxLimit = 1000
-	mcpPath         = "/mcp"
+	defaultLimit     = 50
+	defaultMaxLimit  = 1000
+	maxMessageOffset = 20000
+	mcpPath          = "/mcp"
 )
 
 // apiServer: routing, authentication, connection limiting and stats
@@ -622,14 +623,22 @@ func (s *apiServer) parseLimit(r *http.Request, ceiling int) int {
 	return limit
 }
 
-// parseMessageQuery reads ?limit=, ?order= (desc asks for the latest N) and ?full=
-// (tool output and thinking whole rather than cut to a preview)
+// parseMessageQuery reads ?limit=, ?order= (desc asks for the latest N), ?offset=
+// (stable page number from an end) and ?full= (tool output and thinking whole rather
+// than cut to a preview)
 func (s *apiServer) parseMessageQuery(r *http.Request, ceiling int) (messageQuery, error) {
 	order := strings.TrimSpace(r.URL.Query().Get("order"))
 	q := messageQuery{
 		limit:   s.parseLimit(r, ceiling),
 		fromEnd: strings.EqualFold(order, "desc"),
 		full:    queryFlag(r.URL.Query().Get("full")),
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		offset, err := strconv.Atoi(raw)
+		if err != nil || offset < 0 || offset > maxMessageOffset {
+			return messageQuery{}, fmt.Errorf("bad offset value: %q (want 0..%d)", raw, maxMessageOffset)
+		}
+		q.offset = offset
 	}
 	// ?at= positions the window at a point in time rather than at one end, which is how a
 	// caller lands on a specific message in a long session (a search hit, say). Absolute
@@ -640,6 +649,9 @@ func (s *apiServer) parseMessageQuery(r *http.Request, ceiling int) (messageQuer
 			return messageQuery{}, err
 		}
 		q.at = at
+		// Anchored windows are used for search hits. Offset paging is for walking
+		// from an end; accepting both would make the cursor ambiguous.
+		q.offset = 0
 	}
 	return q, nil
 }

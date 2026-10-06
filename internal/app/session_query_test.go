@@ -681,6 +681,14 @@ func TestHTTPMessagesOrder(t *testing.T) {
 	if desc["order"] != "desc" || firstID(desc) != "m7" || lastID(desc) != "m9" {
 		t.Fatalf("order=desc should take the latest 3 and still be chronological: %v", desc)
 	}
+	_, older := get(t, srv.URL+"/sessions/long/messages?limit=3&order=desc&offset=3", "")
+	if firstID(older) != "m4" || lastID(older) != "m6" {
+		t.Fatalf("descending offset should page to the older 3: %v", older)
+	}
+	_, newer := get(t, srv.URL+"/sessions/long/messages?limit=3&order=asc&offset=3", "")
+	if firstID(newer) != "m3" || lastID(newer) != "m5" {
+		t.Fatalf("ascending offset should page to the newer 3: %v", newer)
+	}
 	// With fewer messages than the limit, both ends agree
 	_, all := get(t, srv.URL+"/sessions/long/messages?limit=50&order=desc", "")
 	if all["total"] != float64(10) || firstID(all) != "m0" {

@@ -53,7 +53,10 @@ func claudeCountMessages(path string) int {
 func piCountMessages(path string) int {
 	n := 0
 	eachJSONLLine(path, func(line []byte) bool {
-		if !bytes.Contains(line, []byte(`"type":"message"`)) {
+		// Pi writes both compact JSON and pretty-printed JSON depending on the
+		// producer. The previous compact-only prefilter silently counted zero
+		// messages in the pretty form, leaving the list stuck on "counting…".
+		if !bytes.Contains(line, []byte(`"type"`)) || !bytes.Contains(line, []byte(`message`)) {
 			return true
 		}
 		var probe struct {

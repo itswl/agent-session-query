@@ -46,6 +46,11 @@ type messageQuery struct {
 	// a match in the middle of a 16 000-message session is in neither end's window.
 	// Zero means "no anchoring", the usual case.
 	at time.Time
+	// offset pages from an end without relying on timestamps. For a descending
+	// query it skips this many messages from the newest end; for ascending it
+	// skips this many from the oldest end. It is deliberately independent of at:
+	// timestamps are not unique enough to be a reliable paging cursor.
+	offset int
 	// full asks for tool output and thinking whole rather than cut to a preview (see
 	// blocks.go). The ordinary read cuts them, because a window of two hundred messages
 	// carrying every build log in full is megabytes; the export and a caller that wants
@@ -56,13 +61,15 @@ type messageQuery struct {
 // messageSink collects messages according to a messageQuery.
 //
 // Earliest N: stop as soon as there are enough (add returns false) and end the scan early.
-// Latest N: the scan has to run to the end of the file, so a ring buffer of capacity
-// limit holds the tail — memory tracks limit, not session length (a 16444-message
-// session still keeps only the last N).
+// Latest N: the scan has to run to the end of the file, so a ring buffer holds the
+// requested page plus any descending offset. The offset is bounded by the HTTP layer;
+// it is the price of a stable cursor for sources whose timestamps are not unique.
 type messageSink struct {
-	q     messageQuery
-	items []map[string]any
-	start int // ring buffer write position (only used when fromEnd)
+	q        messageQuery
+	items    []map[string]any
+	start    int // ring buffer write position (only used when fromEnd)
+	skipped  int // messages skipped from the oldest end (ascending offset)
+	capacity int // ring capacity, including a descending offset
 }
 
 func newMessageSink(q messageQuery) *messageSink {
@@ -70,10 +77,13 @@ func newMessageSink(q messageQuery) *messageSink {
 		q.limit = 0
 	}
 	capacity := q.limit
-	if capacity > 512 {
-		capacity = 512 // do not reserve a whole block up front for a limit=1000 request
+	if q.fromEnd && q.at.IsZero() {
+		capacity += q.offset
 	}
-	return &messageSink{q: q, items: make([]map[string]any, 0, capacity)}
+	if capacity > 20000 {
+		capacity = 20000
+	}
+	return &messageSink{q: q, items: make([]map[string]any, 0, capacity), capacity: capacity}
 }
 
 // add takes one more message; false means there are enough and the caller may stop.
@@ -94,30 +104,49 @@ func (s *messageSink) add(m map[string]any) bool {
 		}
 	}
 	if !s.q.fromEnd {
+		if s.q.at.IsZero() && s.skipped < s.q.offset {
+			s.skipped++
+			return true
+		}
+		if len(s.items) >= s.q.limit {
+			return false
+		}
 		s.items = append(s.items, m)
 		return len(s.items) < s.q.limit
 	}
-	if len(s.items) < s.q.limit {
+	if len(s.items) < s.capacity {
 		s.items = append(s.items, m)
 		return true
 	}
 	s.items[s.start] = m
-	s.start = (s.start + 1) % s.q.limit
+	s.start = (s.start + 1) % s.capacity
 	return true
 }
 
-// result returns the collected messages in chronological order
+// result returns the collected messages in chronological order. For a descending
+// offset, the ring contains [older page ... newer offset]; return only the older page.
 func (s *messageSink) result() []map[string]any {
 	if len(s.items) == 0 {
 		return []map[string]any{}
 	}
-	if !s.q.fromEnd || s.start == 0 {
-		return s.items
+	ordered := s.items
+	if s.q.fromEnd && s.start != 0 {
+		ordered = make([]map[string]any, 0, len(s.items))
+		ordered = append(ordered, s.items[s.start:]...)
+		ordered = append(ordered, s.items[:s.start]...)
 	}
-	out := make([]map[string]any, 0, len(s.items))
-	out = append(out, s.items[s.start:]...)
-	out = append(out, s.items[:s.start]...)
-	return out
+	if s.q.fromEnd && s.q.at.IsZero() && s.q.offset > 0 {
+		end := len(ordered) - s.q.offset
+		if end <= 0 {
+			return []map[string]any{}
+		}
+		start := end - s.q.limit
+		if start < 0 {
+			start = 0
+		}
+		return ordered[start:end]
+	}
+	return ordered
 }
 
 // Supported sources (the values --mode accepts); auto enables whichever exist

@@ -76,13 +76,16 @@ func newFileRecordCache(countFile func(path string) int) *fileRecordCache {
 }
 
 // countFor returns a cached count for exactly this version of the file, or queues the
-// file to be counted and reports false.
+// file to be counted. When a file is actively being written, return the previous count
+// as a stale-but-useful value while the new scan runs; otherwise the UI stays on
+// "counting…" forever for the session that is currently open.
 func (c *fileRecordCache) countFor(path string, mod time.Time, size int64) (int, bool) {
 	if c.countFile == nil {
 		return 0, false
 	}
 	c.countMu.Lock()
-	if hit, ok := c.counts[path]; ok && hit.size == size && hit.mod.Equal(mod) {
+	hit, have := c.counts[path]
+	if have && hit.size == size && hit.mod.Equal(mod) {
 		c.countMu.Unlock()
 		return hit.n, true
 	}
@@ -96,6 +99,9 @@ func (c *fileRecordCache) countFor(path string, mod time.Time, size int64) (int,
 
 	if start {
 		go c.countWorker()
+	}
+	if have {
+		return hit.n, true
 	}
 	return 0, false
 }

@@ -985,6 +985,7 @@ details > summary .fold-size { flex: none; font-size: 11px; font-variant-numeric
      finger could drag the page up into it, and code that put the page back oscillated
      with the system. A page that is meant to scroll has nothing to fight about. */
   html, body { height: auto; }
+  body[data-pane] { touch-action: pan-y; }
   /* On html alone, where it reaches the viewport. On body it would make body the scroll
      container, and the heads below would stick to a box that moves with the page. */
   html { overflow-x: hidden; }
@@ -1075,6 +1076,7 @@ details > summary .fold-size { flex: none; font-size: 11px; font-variant-numeric
   .toolbar .seg .seg-btn, .toolbar .expand-toggle { min-height: 32px; }
   .toolbar .expand-toggle { padding: 0 9px; }
   .stats { margin: 6px 0 0 10px; font-size: 11.5px; gap: 2px 10px; }
+  .load-more { margin: 6px 0 0 10px; }
 
   /* The details screen's head: the way back, and its name */
   .side-pane .pane-bar { display: flex; height: 44px; padding: 0 10px 0 6px; gap: 6px; }

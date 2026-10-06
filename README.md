@@ -28,9 +28,25 @@ parsing details are in [docs/internals.md](docs/internals.md).
 
 ## Quick start
 
-### Download a build
+### Install with one line
 
-No Go toolchain needed. Pushing a tag like `v0.1.0` triggers
+No Go toolchain needed, and **avoids macOS Gatekeeper / Windows SmartScreen quarantine blocks**:
+
+**macOS / Linux:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/itswl/agent-session-query/main/install.sh | sh
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/itswl/agent-session-query/main/install.ps1 | iex
+```
+
+The script automatically detects your OS/architecture (`darwin` / `linux` / `windows` × `amd64` / `arm64`), downloads the latest release, unpacks it, unblocks the binary, and configures your PATH.
+
+### Manual download
+
+Pushing a tag like `v0.1.0` triggers
 [GitHub Actions](.github/workflows/release.yml), which cross-compiles **six platforms**
 (`linux` / `darwin` / `windows` × `amd64` / `arm64`) and attaches the artifacts to the
 Releases page. Unpack and run. Unix gets `.tar.gz`, Windows `.zip`:

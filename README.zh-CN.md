@@ -27,9 +27,25 @@ MCP server**。它不会修改任何会话数据。
 
 ## 快速开始
 
-### 下载构建产物
+### 一行命令安装
 
-不需要 Go 工具链。推送一个形如 `v0.1.0` 的 tag 会触发
+不需要 Go 工具链，且通过命令行安装**自动解除隔离与信任阻拦（自动处理 macOS `xattr` / Windows SmartScreen）**：
+
+**macOS / Linux:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/itswl/agent-session-query/main/install.sh | sh
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/itswl/agent-session-query/main/install.ps1 | iex
+```
+
+脚本会自动检测系统与架构（`darwin` / `linux` / `windows` × `amd64` / `arm64`），拉取最新 Release 产物解压，自动解除系统拦截标记并配置环境变量 PATH。
+
+### 手动下载构建产物
+
+推送一个形如 `v0.1.0` 的 tag 会触发
 [GitHub Actions](.github/workflows/release.yml)，交叉编译 **六个平台**
 （`linux` / `darwin` / `windows` × `amd64` / `arm64`）并把产物挂到 Releases 页面。解压即用。
 Unix 是 `.tar.gz`，Windows 是 `.zip`：

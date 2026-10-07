@@ -30,22 +30,32 @@ services:
       # directory also holds Hermes config and credentials — keep the mount read-only and
       # keep the service off the public internet.
       - ~/.hermes:/root/.hermes:ro
-      - ~/.openclaw/agents/default/sessions:/root/.openclaw/agents/default/sessions:ro
+      # 2026.9 OpenClaw keeps its SQLite databases under agents/<id>/agent/; older installs
+      # keep sessions.json under agents/default/sessions/. Mount agents/ whole: both
+      # layouts are covered, and an empty one is harmless.
+      - ~/.openclaw/agents:/root/.openclaw/agents:ro
       - ~/.pi/agent/sessions:/root/.pi/agent/sessions:ro
       - ~/.claude/projects:/root/.claude/projects:ro
       - ~/.codex/sessions:/root/.codex/sessions:ro
       - ~/.gemini/tmp:/root/.gemini/tmp:ro
       - ~/.grok/sessions:/root/.grok/sessions:ro
+      # opencode keeps one database in its XDG data directory (~/.local/share/opencode on
+      # every Unix-like, macOS included)
+      - ~/.local/share/opencode:/root/.local/share/opencode:ro
       # Sessions outside the default home: mount the directory anywhere and name it with
       # --path in command below, e.g.
       #   - /srv/agents/box2/.claude/projects:/mnt/box2:ro
       # together with "--path" and "claude:box2=/mnt/box2" appended to command
     # The token travels in the environment, not on the command line — arguments show up in
-    # ps and docker inspect
+    # ps. (docker inspect can read a container's environment too, but anyone who can run
+    # docker can already read the mounted sessions; the rule is about argv and process
+    # listings, not about the daemon.)
     environment:
       HOOK_TOKEN: "${HOOK_TOKEN:-}"
     # The remaining arguments pass straight through; inside a container it has to bind
-    # 0.0.0.0 or the port mapping cannot reach it
+    # 0.0.0.0 or the port mapping cannot reach it. A non-loopback bind without a token
+    # refuses to start, so `docker compose up` without HOOK_TOKEN now fails fast with that
+    # message instead of serving the mounted sessions to the network.
     command:
       - "--host"
       - "0.0.0.0"

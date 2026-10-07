@@ -15,13 +15,47 @@ import (
 
 // record is the one session shape every source converges on.
 //
-// fields holds the public fields (source / key / sessionId / file / hasFile / status /
-// updatedAt, plus whatever each source adds). Everything else is derived, internal, and
-// never surfaces: sortAt / sortKey drive list ordering, lowerSID / lowerKey are the
-// lowercased forms used for matching — all computed once when the record is built, so a
-// lookup never has to ToLower every record again.
+// Typed fields rather than a field map: the sources disagree about everything — a jsonl
+// file, an SQLite database, a sessions.json entry — and a mistyped key in a map read as
+// an empty string (a session with no id, a search that finds nothing) with nothing on the
+// line to say why. A struct makes that contract the compiler's business.
+//
+// The base fields are always in the public shape; file is null when the session has none.
+// The optional ones are omitted rather than empty when the source does not record them:
+// an absent key says that, "" does not (see public). messageCount rides with hasCount for
+// the same reason — a source that does not count and a session with zero messages are
+// different facts.
+//
+// Everything else is derived, internal, and never surfaces: sortAt / sortKey drive list
+// ordering, lowerSID / lowerKey are the lowercased forms used for matching — all computed
+// once when the record is built, so a lookup never has to ToLower every record again.
 type record struct {
-	fields map[string]any
+	Source    string
+	Key       string
+	ShortKey  string
+	SessionID string
+	File      string // empty means none; the public shape renders that as null
+	HasFile   bool
+	Status    string
+	UpdatedAt string
+
+	CreatedAt   string
+	Cwd         string
+	Model       string
+	Branch      string
+	CliVersion  string
+	Project     string // gemini's own grouping field, used when cwd is not there
+	DisplayName string
+	Platform    string
+
+	TotalTokens      float64
+	EstimatedCostUsd float64
+	RuntimeMs        float64
+
+	MessageCount int
+	HasCount     bool
+	Archived     bool
+	Files        []string // the files one session spans when it spans several (gemini)
 
 	sortAt   time.Time // parsed update time; zero means this record's time would not parse
 	sortKey  string    // fallback when the time will not parse: the raw string
@@ -29,22 +63,20 @@ type record struct {
 	lowerKey string
 }
 
-// newRecord builds a record from its field map and the raw "update time" value.
+// newRecord finalizes a record: the raw "update time" value is parsed, and the derived
+// sort and match keys are computed once here.
 //
 // Sources spell time differently (2006-01-02T15:04:05 from mtime, RFC3339Nano from
 // Gemini, whatever sessions.json happens to hold for Hermes, epoch numbers, ...). They
 // are all parsed into a time.Time here before sorting: compare the strings
 // lexicographically instead and a single offset-bearing timestamp misorders the whole
 // cross-source list.
-func newRecord(fields map[string]any, updatedAt any) record {
-	at, _ := parseTimestampValue(updatedAt)
-	return record{
-		fields:   fields,
-		sortAt:   at,
-		sortKey:  toStr(updatedAt),
-		lowerSID: normalizeForMatch(toStr(fields["sessionId"])),
-		lowerKey: normalizeForMatch(toStr(fields["key"])),
-	}
+func newRecord(r record, updatedAt any) record {
+	r.sortAt, _ = parseTimestampValue(updatedAt)
+	r.sortKey = toStr(updatedAt)
+	r.lowerSID = normalizeForMatch(r.SessionID)
+	r.lowerKey = normalizeForMatch(r.Key)
+	return r
 }
 
 // normalizeForMatch folds a string to "lowercase + forward slashes" for matching.
@@ -56,10 +88,6 @@ func newRecord(fields map[string]any, updatedAt any) record {
 func normalizeForMatch(s string) string {
 	return strings.ToLower(strings.ReplaceAll(s, "\\", "/"))
 }
-
-func (r record) get(k string) any     { return r.fields[k] }
-func (r record) str(k string) string  { return toStr(r.fields[k]) }
-func (r record) truthy(k string) bool { return truthy(r.fields[k]) }
 
 // activeWindow bounds what isActive reports: the session's newest message carries a
 // timestamp inside this window.
@@ -80,25 +108,72 @@ func (r record) truthy(k string) bool { return truthy(r.fields[k]) }
 // stays, and the wording says what it measures.
 const activeWindow = 2 * time.Minute
 
-// public returns a copy of the public fields. Records are held by the list cache and
-// shared across goroutines; hand the internal map out directly and one careless
-// assignment by a caller poisons every later reader.
+// public assembles the JSON shape: a fresh map per call, because a record is shared by
+// the list cache and handing the caller anything the record still owns invites a write
+// through it.
+//
+// The optional fields are omitted rather than empty when the source has nothing to say:
+// an absent key says "this source does not record it", "" does not — a rule the branch
+// and resumeCommand fields always followed, now applied to all of them.
 //
 // isActive is computed here rather than at build time because it depends on what time
 // it is now. Freeze it at build time and a record scanned ten minutes ago keeps
 // reporting recent activity.
 func (r record) public() map[string]any {
-	out := make(map[string]any, len(r.fields)+2)
-	for k, v := range r.fields {
-		out[k] = v
+	out := map[string]any{
+		"source":    r.Source,
+		"key":       r.Key,
+		"shortKey":  r.ShortKey,
+		"sessionId": r.SessionID,
+		"file":      nil, // a string when the session has one; null says it is a database row
+		"hasFile":   r.HasFile,
+		"status":    r.Status,
+		"updatedAt": r.UpdatedAt,
+	}
+	if r.File != "" {
+		out["file"] = r.File
+	}
+	if r.CreatedAt != "" {
+		out["createdAt"] = r.CreatedAt
+	}
+	if r.Cwd != "" {
+		out["cwd"] = r.Cwd
+	}
+	if r.Model != "" {
+		out["model"] = r.Model
+	}
+	if r.Branch != "" {
+		out["branch"] = r.Branch
+	}
+	if r.CliVersion != "" {
+		out["cliVersion"] = r.CliVersion
+	}
+	if r.DisplayName != "" {
+		out["displayName"] = r.DisplayName
+	}
+	if r.Platform != "" {
+		out["platform"] = r.Platform
+	}
+	if r.TotalTokens != 0 {
+		out["totalTokens"] = r.TotalTokens
+	}
+	if r.EstimatedCostUsd != 0 {
+		out["estimatedCostUsd"] = r.EstimatedCostUsd
+	}
+	if r.RuntimeMs != 0 {
+		out["runtimeMs"] = r.RuntimeMs
+	}
+	if r.HasCount {
+		out["messageCount"] = r.MessageCount
+	}
+	if r.Archived {
+		out["archived"] = true
+	}
+	if len(r.Files) > 0 {
+		out["files"] = r.Files
 	}
 	out["isActive"] = !r.sortAt.IsZero() && time.Since(r.sortAt) < activeWindow
 	out["project"] = r.project()
-	// A session started outside a repository has no branch, and the sources that do not
-	// record one have nothing to say either: an absent key says that, "" does not
-	if out["branch"] == "" {
-		delete(out, "branch")
-	}
 	if resume := r.resumeCommand(); resume != "" {
 		// Omitted rather than empty for the sources that have none: a key that is
 		// sometimes a command and sometimes "" reads as a command that failed to build
@@ -110,10 +185,10 @@ func (r record) public() map[string]any {
 // project is the session's owning project: cwd first (every source but Hermes's jsonl
 // era carries one), then gemini's own project field.
 func (r record) project() string {
-	if cwd := r.str("cwd"); cwd != "" {
-		return cwd
+	if r.Cwd != "" {
+		return r.Cwd
 	}
-	return r.str("project")
+	return r.Project
 }
 
 // resumeCommands is the command that reopens one of a source's sessions by id, verified
@@ -155,7 +230,7 @@ var resumeCommands = map[string]string{
 // in — so a caller that means to carry on with the same files wants the record's cwd,
 // which the record already carries. The page prefixes the cd for that reason.
 func (r record) resumeCommand() string {
-	mode := r.str("source")
+	mode := r.Source
 	if i := strings.IndexByte(mode, ':'); i >= 0 {
 		mode = mode[:i] // a labeled instance (claude:box2) resumes with its base CLI
 	}
@@ -163,11 +238,10 @@ func (r record) resumeCommand() string {
 	if !ok {
 		return ""
 	}
-	sid := r.str("sessionId")
-	if sid == "" {
+	if r.SessionID == "" {
 		return ""
 	}
-	return command + " " + shellArg(sid)
+	return command + " " + shellArg(r.SessionID)
 }
 
 // shellArg quotes an id that is not plainly safe to paste into a shell. Ids are normally
@@ -541,6 +615,13 @@ func strOr(v any, def string) string {
 		return toStr(v)
 	}
 	return def
+}
+
+// floatOrZero reads a numeric field out of a json blob, folding anything else (a string,
+// a null, a nested object) to zero
+func floatOrZero(v any) float64 {
+	n, _ := toFloat(v)
+	return n
 }
 
 // getOr uses the stored value when the key exists (even if null), otherwise def.

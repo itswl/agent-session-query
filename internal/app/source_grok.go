@@ -132,22 +132,22 @@ func (s *GrokSource) List() []record {
 			grokUserTitle(updates),
 			sid,
 		)
-		fields := map[string]any{
-			"source":    "grok",
-			"key":       dir,
-			"shortKey":  title,
-			"sessionId": sid,
-			"file":      updates,
-			"hasFile":   fileExists(updates),
-			"status":    "done",
-			"cwd":       grokCwd(info, filepath.Dir(dir)),
-			"model":     strOr(meta["current_model_id"], ""),
-			"updatedAt": updated,
+		rec := record{
+			Source:    "grok",
+			Key:       dir,
+			ShortKey:  title,
+			SessionID: sid,
+			File:      updates,
+			HasFile:   fileExists(updates),
+			Status:    "done",
+			Cwd:       grokCwd(info, filepath.Dir(dir)),
+			Model:     strOr(meta["current_model_id"], ""),
+			UpdatedAt: updated,
 		}
 		if archived := s.archivedRoot(); archived != "" && strings.HasPrefix(path, archived+string(filepath.Separator)) {
-			fields["archived"] = true
+			rec.Archived = true
 		}
-		return newRecord(fields, updated)
+		return newRecord(rec, updated)
 	})
 }
 
@@ -409,7 +409,7 @@ func (g *grokGrouper) reset() {
 
 func (s *GrokSource) Messages(r record, q messageQuery) []map[string]any {
 	sink := newMessageSink(q)
-	path := r.str("file")
+	path := r.File
 	if path == "" {
 		return sink.result()
 	}
@@ -448,7 +448,7 @@ func grokCountMessages(summaryPath string, from int64) (int, bool) {
 }
 
 func (s *GrokSource) Final(r record) map[string]any {
-	path := r.str("file")
+	path := r.File
 	// A session that has been created but never prompted has a summary.json and no
 	// transcript at all; that is the "no session file yet" the interface means.
 	if path == "" || !fileExists(path) {
@@ -482,7 +482,7 @@ func (s *GrokSource) Final(r record) map[string]any {
 	})
 	g.flush()
 
-	model := r.str("model")
+	model := r.Model
 	if model == "" {
 		model = strOr(readJSONObject(filepath.Join(filepath.Dir(path), "summary.json"))["current_model_id"], "")
 	}

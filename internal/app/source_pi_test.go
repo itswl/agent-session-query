@@ -19,8 +19,8 @@ func TestPiSource(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("list = %d", len(list))
 	}
-	if list[0].str("sessionId") != "pi-1" || list[0].str("cwd") != "/home/imwl/proj" {
-		t.Fatalf("record = %v", list[0].fields)
+	if list[0].SessionID != "pi-1" || list[0].Cwd != "/home/imwl/proj" {
+		t.Fatalf("record = %v", list[0])
 	}
 
 	msgs := s.Messages(list[0], messageQuery{limit: 50})
@@ -65,10 +65,10 @@ func TestPiSessionLineNotFirst(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("list = %v", list)
 	}
-	if got := list[0].str("sessionId"); got != "pi-real" {
+	if got := list[0].SessionID; got != "pi-real" {
 		t.Fatalf("sessionId = %q; must not take model_change's id", got)
 	}
-	if got := list[0].str("cwd"); got != "/w/real" {
+	if got := list[0].Cwd; got != "/w/real" {
 		t.Fatalf("cwd = %q", got)
 	}
 }
@@ -83,10 +83,10 @@ func TestPiNoSessionLine(t *testing.T) {
 	)
 
 	list := newPiSource(root).List()
-	if got := list[0].str("sessionId"); got != "01a06baa-b9c1" {
+	if got := list[0].SessionID; got != "01a06baa-b9c1" {
 		t.Fatalf("sessionId = %q; should fall back to the uuid in the filename", got)
 	}
-	if got := list[0].str("cwd"); got != "" {
+	if got := list[0].Cwd; got != "" {
 		t.Fatalf("no session row should mean no cwd, got %q", got)
 	}
 }

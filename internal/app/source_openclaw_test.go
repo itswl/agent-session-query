@@ -68,7 +68,7 @@ func newOpenClawFixture(t *testing.T) *OpenClawSource {
 func recordOf(t *testing.T, s *OpenClawSource, id string) record {
 	t.Helper()
 	for _, rec := range s.List() {
-		if rec.str("sessionId") == id {
+		if rec.SessionID == id {
 			return rec
 		}
 	}
@@ -84,25 +84,25 @@ func TestOpenClawList(t *testing.T) {
 	}
 
 	chat := recordOf(t, s, "ses_chat")
-	if chat.str("shortKey") != "部署排障记录" {
-		t.Errorf("display_name must be the title, got %q", chat.str("shortKey"))
+	if chat.ShortKey != "部署排障记录" {
+		t.Errorf("display_name must be the title, got %q", chat.ShortKey)
 	}
-	if chat.str("cwd") != "" {
-		t.Errorf("a session without a type=session event has no cwd, got %q", chat.str("cwd"))
+	if chat.Cwd != "" {
+		t.Errorf("a session without a type=session event has no cwd, got %q", chat.Cwd)
 	}
 
 	cli := recordOf(t, s, "ses_cli")
-	if cli.str("shortKey") != "set up an Nginx reverse proxy" {
-		t.Errorf("without display_name the first user message is the title, got %q", cli.str("shortKey"))
+	if cli.ShortKey != "set up an Nginx reverse proxy" {
+		t.Errorf("without display_name the first user message is the title, got %q", cli.ShortKey)
 	}
-	if cli.str("cwd") != "/w/proj" {
-		t.Errorf("cwd from the type=session event = %q", cli.str("cwd"))
+	if cli.Cwd != "/w/proj" {
+		t.Errorf("cwd from the type=session event = %q", cli.Cwd)
 	}
-	if cli.str("model") != "deepseek/deepseek-chat" {
-		t.Errorf("model = %q", cli.str("model"))
+	if cli.Model != "deepseek/deepseek-chat" {
+		t.Errorf("model = %q", cli.Model)
 	}
-	if cli.str("status") != "running" {
-		t.Errorf("the table's own status must pass through, got %q", cli.str("status"))
+	if cli.Status != "running" {
+		t.Errorf("the table's own status must pass through, got %q", cli.Status)
 	}
 }
 

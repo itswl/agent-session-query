@@ -370,7 +370,7 @@ func TestSplitRoundsRespectsInjectedAndEvents(t *testing.T) {
 	}
 	// The rounds index marks a failed round distinctly from an interrupted one
 	failed := round{index: 1, failures: 2, asked: "x"}
-	brief := renderBrief(record{fields: map[string]any{"sessionId": "s"}}, []round{failed, {index: 2, interrupted: true, asked: "y"}}, []int{2}, 2, 2, "")
+	brief := renderBrief(record{SessionID: "s"}, []round{failed, {index: 2, interrupted: true, asked: "y"}}, []int{2}, 2, 2, "")
 	if !strings.Contains(brief, "✗ x · 2 failed") || !strings.Contains(brief, "⚠ y") {
 		t.Errorf("rounds index marks = \n%s", brief)
 	}

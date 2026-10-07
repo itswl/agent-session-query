@@ -47,27 +47,27 @@ func TestGrokSource(t *testing.T) {
 		t.Fatalf("list = %d records, want 1", len(list))
 	}
 	rec := list[0]
-	if rec.str("sessionId") != "01a0cbfb-8d46-70c0-a73c-d53201e0e77c" {
-		t.Errorf("sessionId = %q", rec.str("sessionId"))
+	if rec.SessionID != "01a0cbfb-8d46-70c0-a73c-d53201e0e77c" {
+		t.Errorf("sessionId = %q", rec.SessionID)
 	}
 	// cwd drives project grouping, and Grok states it outright rather than only encoding
 	// it into the directory name
-	if rec.str("cwd") != "/private/tmp/grok-probe" || rec.project() != "/private/tmp/grok-probe" {
-		t.Errorf("cwd = %q, project = %q", rec.str("cwd"), rec.project())
+	if rec.Cwd != "/private/tmp/grok-probe" || rec.project() != "/private/tmp/grok-probe" {
+		t.Errorf("cwd = %q, project = %q", rec.Cwd, rec.project())
 	}
 	// Grok titles a session itself, so its title wins over the opening prompt
-	if rec.str("shortKey") != "Reading sample.txt" {
-		t.Errorf("shortKey = %q", rec.str("shortKey"))
+	if rec.ShortKey != "Reading sample.txt" {
+		t.Errorf("shortKey = %q", rec.ShortKey)
 	}
-	if rec.str("updatedAt") != "2026-09-23T01:55:39.711040Z" {
-		t.Errorf("updatedAt = %q", rec.str("updatedAt"))
+	if rec.UpdatedAt != "2026-09-23T01:55:39.711040Z" {
+		t.Errorf("updatedAt = %q", rec.UpdatedAt)
 	}
-	if rec.str("model") != "gpt-5.6-luna" {
-		t.Errorf("model = %q", rec.str("model"))
+	if rec.Model != "gpt-5.6-luna" {
+		t.Errorf("model = %q", rec.Model)
 	}
 	// The record points at the transcript, not at the index file the list is keyed on
-	if filepath.Base(rec.str("file")) != "updates.jsonl" || !rec.truthy("hasFile") {
-		t.Errorf("file = %q, hasFile = %v", rec.str("file"), rec.get("hasFile"))
+	if filepath.Base(rec.File) != "updates.jsonl" || !rec.HasFile {
+		t.Errorf("file = %q, hasFile = %v", rec.File, rec.HasFile)
 	}
 
 	msgs := s.Messages(rec, messageQuery{limit: 50})
@@ -174,12 +174,12 @@ func TestGrokCwdFallbacks(t *testing.T) {
 
 	byID := map[string]record{}
 	for _, rec := range newGrokSource(root).List() {
-		byID[rec.str("sessionId")] = rec
+		byID[rec.SessionID] = rec
 	}
-	if got := byID["sid-1"].str("cwd"); got != "/Users/dev/some+project" {
+	if got := byID["sid-1"].Cwd; got != "/Users/dev/some+project" {
 		t.Errorf("decoded cwd = %q", got)
 	}
-	if got := byID["sid-2"].str("cwd"); got != "/Users/dev/some/very/long/path" {
+	if got := byID["sid-2"].Cwd; got != "/Users/dev/some/very/long/path" {
 		t.Errorf(".cwd cwd = %q", got)
 	}
 }
@@ -193,11 +193,11 @@ func TestGrokSessionWithoutTranscript(t *testing.T) {
 
 	s := newGrokSource(root)
 	list := s.List()
-	if len(list) != 1 || list[0].truthy("hasFile") {
+	if len(list) != 1 || list[0].HasFile {
 		t.Fatalf("a created-but-unprompted session must be listed with no file: %v", list)
 	}
-	if list[0].str("shortKey") != "sid-new" {
-		t.Errorf("shortKey = %q, want the session id as the last fallback", list[0].str("shortKey"))
+	if list[0].ShortKey != "sid-new" {
+		t.Errorf("shortKey = %q, want the session id as the last fallback", list[0].ShortKey)
 	}
 	if final := s.Final(list[0]); final != nil {
 		t.Errorf("Final must report a missing transcript as nil, got %v", final)
@@ -215,7 +215,7 @@ func TestGrokSearchHitsCarryARole(t *testing.T) {
 	rec := newGrokSource(root).List()[0]
 	ctx := context.Background()
 
-	all := searchFile(ctx, rec.str("file"), searchQuery{
+	all := searchFile(ctx, rec.File, searchQuery{
 		needle: "sample.txt", lowered: []byte("sample.txt"), perSession: 10,
 	})
 	if len(all) == 0 {
@@ -229,7 +229,7 @@ func TestGrokSearchHitsCarryARole(t *testing.T) {
 
 	roles := map[string]int{}
 	for _, want := range []string{"user", "assistant"} {
-		hits := searchFile(ctx, rec.str("file"), searchQuery{
+		hits := searchFile(ctx, rec.File, searchQuery{
 			needle: "sample.txt", lowered: []byte("sample.txt"), perSession: 10, role: want,
 		})
 		roles[want] = len(hits)
@@ -257,7 +257,7 @@ func TestGrokTitleJoinsChunkedPrompt(t *testing.T) {
 		`{"timestamp":1790128009,"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"on it"}}}}`,
 	)
 	rec := newGrokSource(root).List()[0]
-	if got := rec.str("shortKey"); got != "refactor the parser to handle OSC" {
+	if got := rec.ShortKey; got != "refactor the parser to handle OSC" {
 		t.Errorf("shortKey = %q, want the whole prompt", got)
 	}
 }
@@ -289,14 +289,14 @@ func TestGrokArchivedSessionsAndFailedTool(t *testing.T) {
 	}
 	var old record
 	for _, rec := range list {
-		switch rec.str("shortKey") {
+		switch rec.ShortKey {
 		case "Live one":
-			if truthy(rec.get("archived")) {
+			if rec.Archived {
 				t.Error("the live session must not be marked archived")
 			}
 		case "Archived one":
 			old = rec
-			if !truthy(rec.get("archived")) {
+			if !rec.Archived {
 				t.Error("the archived session must say so")
 			}
 		}

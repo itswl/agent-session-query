@@ -24,7 +24,7 @@ func TestHermesDisplayNameRedacted(t *testing.T) {
 	if len(recs) != 1 {
 		t.Fatalf("fixture listed %d sessions", len(recs))
 	}
-	if got := recs[0].str("displayName"); strings.Contains(got, packSecret) || !strings.Contains(got, "[redacted]") {
+	if got := recs[0].DisplayName; strings.Contains(got, packSecret) || !strings.Contains(got, "[redacted]") {
 		t.Fatalf("displayName = %q, want the key redacted", got)
 	}
 }
@@ -51,7 +51,7 @@ func TestOpenCodeTitleRedacted(t *testing.T) {
 	if len(recs) != 1 {
 		t.Fatalf("fixture listed %d sessions", len(recs))
 	}
-	if got := recs[0].str("shortKey"); strings.Contains(got, packSecret) || !strings.Contains(got, "[redacted]") {
+	if got := recs[0].ShortKey; strings.Contains(got, packSecret) || !strings.Contains(got, "[redacted]") {
 		t.Fatalf("shortKey = %q, want the key redacted", got)
 	}
 }

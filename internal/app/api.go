@@ -141,15 +141,15 @@ func listVersion(records []record, warnings []map[string]any) string {
 	_, _ = h.Write([]byte(buildVersion))
 	_, _ = h.Write([]byte{0x1e})
 	for _, r := range records {
-		for _, field := range []string{"source", "key", "updatedAt", "status"} {
-			_, _ = h.Write([]byte(r.str(field)))
+		for _, field := range []string{r.Source, r.Key, r.UpdatedAt, r.Status} {
+			_, _ = h.Write([]byte(field))
 			_, _ = h.Write([]byte{0})
 		}
 		// The background count arriving is a change like any other: without it in the
 		// tag, a revalidating page keeps its 304 and its count-less body — the one that
 		// renders "counting…" — until something unrelated moves.
-		if n, ok := toFloat(r.fields["messageCount"]); ok {
-			_, _ = h.Write([]byte(strconv.FormatInt(int64(n), 10)))
+		if r.HasCount {
+			_, _ = h.Write([]byte(strconv.FormatInt(int64(r.MessageCount), 10)))
 		}
 		_, _ = h.Write([]byte{0})
 		_, _ = h.Write([]byte{0x1e})
@@ -252,7 +252,7 @@ func (a *SessionQueryAPI) getFinalMessage(pattern, sourceWanted string) (map[str
 	})
 
 	if result == nil {
-		status := item.str("status")
+		status := item.Status
 		if status == "" {
 			status = "unknown"
 		}
@@ -261,7 +261,7 @@ func (a *SessionQueryAPI) getFinalMessage(pattern, sourceWanted string) (map[str
 			"isFinal":      false,
 			"isProcessing": status == "running",
 			"messageCount": 0,
-			"source":       item.get("source"),
+			"source":       item.Source,
 			"error":        "Session file not available yet (session may be still initializing)",
 		}
 	}
@@ -275,9 +275,10 @@ func (a *SessionQueryAPI) getFinalMessage(pattern, sourceWanted string) (map[str
 // Note that hermes / openclaw have neither cwd nor project and land in ungrouped.
 func (a *SessionQueryAPI) listProjects() ([]map[string]any, int) {
 	type bucket struct {
-		sessions int
-		sources  map[string]int
-		latest   record
+		sessions  int
+		sources   map[string]int
+		latest    record
+		hasLatest bool
 	}
 	order := []string{}
 	buckets := map[string]*bucket{}
@@ -297,9 +298,9 @@ func (a *SessionQueryAPI) listProjects() ([]map[string]any, int) {
 				order = append(order, name)
 			}
 			b.sessions++
-			b.sources[rec.str("source")]++
-			if b.latest.fields == nil || rec.newerThan(b.latest) {
-				b.latest = rec
+			b.sources[rec.Source]++
+			if !b.hasLatest || rec.newerThan(b.latest) {
+				b.latest, b.hasLatest = rec, true
 			}
 		}
 	}
@@ -318,8 +319,8 @@ func (a *SessionQueryAPI) listProjects() ([]map[string]any, int) {
 			"sessions":      b.sessions,
 			"sources":       sources,
 			"sourceCounts":  b.sources,
-			"updatedAt":     b.latest.str("updatedAt"),
-			"latestSession": b.latest.str("sessionId"),
+			"updatedAt":     b.latest.UpdatedAt,
+			"latestSession": b.latest.SessionID,
 			"isActive":      !b.latest.sortAt.IsZero() && time.Since(b.latest.sortAt) < activeWindow,
 		})
 	}

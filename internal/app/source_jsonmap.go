@@ -108,10 +108,10 @@ func (s *JsonMapSource) load() ([]kv, error) {
 
 // fileOf resolves the jsonl path belonging to a session record.
 func (s *JsonMapSource) fileOf(r record) string {
-	if path := r.str("file"); path != "" && fileExists(path) {
+	if path := r.File; path != "" && fileExists(path) {
 		return path
 	}
-	if sid := r.str("sessionId"); sid != "" {
+	if sid := r.SessionID; sid != "" {
 		if alt := filepath.Join(s.def.sessionsDir, sid+".jsonl"); fileExists(alt) {
 			return alt
 		}
@@ -137,15 +137,14 @@ func (s *JsonMapSource) List() []record {
 		}
 
 		file := strOr(info["sessionFile"], "")
-		var filePublic any
 		hasFile := file != "" && fileExists(file)
 		if !hasFile && sid != "" {
 			if alt := filepath.Join(s.def.sessionsDir, sid+".jsonl"); fileExists(alt) {
 				file, hasFile = alt, true
 			}
 		}
-		if hasFile {
-			filePublic = file
+		if !hasFile {
+			file = ""
 		}
 
 		shortKey := entry.Key
@@ -153,13 +152,13 @@ func (s *JsonMapSource) List() []record {
 			shortKey = strings.ReplaceAll(entry.Key, "agent:default:", "")
 		}
 
-		fields := map[string]any{
-			"source":    s.def.mode,
-			"key":       entry.Key,
-			"shortKey":  shortKey,
-			"sessionId": sid,
-			"file":      filePublic,
-			"hasFile":   hasFile,
+		rec := record{
+			Source:    s.def.mode,
+			Key:       entry.Key,
+			ShortKey:  shortKey,
+			SessionID: sid,
+			File:      file,
+			HasFile:   hasFile,
 		}
 		var updatedRaw any // handed to newRecord, which parses it into the sort time
 
@@ -175,26 +174,26 @@ func (s *JsonMapSource) List() []record {
 				}
 			}
 			updatedRaw = updated
-			fields["status"] = getOr(info, "status", "unknown")
-			fields["updatedAt"] = updatedStr
-			fields["model"] = getOr(info, "model", "")
-			fields["runtimeMs"] = getOr(info, "runtimeMs", float64(0))
-			fields["totalTokens"] = getOr(info, "totalTokens", float64(0))
+			rec.Status = strOr(getOr(info, "status", "unknown"), "unknown")
+			rec.UpdatedAt = updatedStr
+			rec.Model = strOr(getOr(info, "model", ""), "")
+			rec.RuntimeMs = floatOrZero(getOr(info, "runtimeMs", float64(0)))
+			rec.TotalTokens = floatOrZero(getOr(info, "totalTokens", float64(0)))
 		} else { // hermes
 			updatedRaw = info["updated_at"]
-			fields["status"] = "done"
-			fields["updatedAt"] = getOr(info, "updated_at", "")
-			fields["createdAt"] = getOr(info, "created_at", "")
+			rec.Status = "done"
+			rec.UpdatedAt = toStr(getOr(info, "updated_at", ""))
+			rec.CreatedAt = toStr(getOr(info, "created_at", ""))
 			// display_name is written by the CLI, so it is cleaned like every other
 			// assembled title (see redactSecrets) — a display name that quoted a key
 			// must not ride out through the list or a brief
-			fields["displayName"] = redactSecrets(stripTerminalControls(toStr(getOr(info, "display_name", ""))))
-			fields["platform"] = getOr(info, "platform", "")
-			fields["totalTokens"] = getOr(info, "total_tokens", float64(0))
-			fields["estimatedCostUsd"] = getOr(info, "estimated_cost_usd", float64(0))
+			rec.DisplayName = redactSecrets(stripTerminalControls(toStr(getOr(info, "display_name", ""))))
+			rec.Platform = strOr(getOr(info, "platform", ""), "")
+			rec.TotalTokens = floatOrZero(getOr(info, "total_tokens", float64(0)))
+			rec.EstimatedCostUsd = floatOrZero(getOr(info, "estimated_cost_usd", float64(0)))
 		}
 
-		out = append(out, newRecord(fields, updatedRaw))
+		out = append(out, newRecord(rec, updatedRaw))
 	}
 
 	// Newer Hermes keeps every session in state.db and may have no sessions.json at all.
@@ -204,7 +203,7 @@ func (s *JsonMapSource) List() []record {
 	if s.def.stateDB != "" && fileExists(s.def.stateDB) {
 		seen := map[string]bool{}
 		for _, r := range out {
-			if sid := r.str("sessionId"); sid != "" {
+			if sid := r.SessionID; sid != "" {
 				seen[sid] = true
 			}
 		}
@@ -230,7 +229,7 @@ func (s *JsonMapSource) Messages(r record, q messageQuery) []map[string]any {
 	if path == "" {
 		// No session file (newer Hermes is all SQLite): read the messages from state.db too
 		if s.def.stateDB != "" && fileExists(s.def.stateDB) {
-			return hermesSQLiteMessages(s.def.stateDB, r.str("sessionId"), q)
+			return hermesSQLiteMessages(s.def.stateDB, r.SessionID, q)
 		}
 		return sink.result()
 	}
@@ -254,7 +253,7 @@ func (s *JsonMapSource) Search(ctx context.Context, r record, q searchQuery) []m
 		return searchFile(ctx, path, q)
 	}
 	if s.def.stateDB != "" && fileExists(s.def.stateDB) {
-		return hermesSQLiteSearch(ctx, s.def.stateDB, r.str("sessionId"), q)
+		return hermesSQLiteSearch(ctx, s.def.stateDB, r.SessionID, q)
 	}
 	return nil
 }
@@ -332,11 +331,11 @@ type stopMessage struct {
 }
 
 func (s *JsonMapSource) Final(r record) map[string]any {
-	status := r.str("status")
+	status := r.Status
 	if status == "" {
 		status = "done"
 	}
-	sessionID := r.str("sessionId")
+	sessionID := r.SessionID
 	path := s.fileOf(r)
 
 	if path == "" {

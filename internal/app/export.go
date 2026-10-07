@@ -55,7 +55,7 @@ func (a *SessionQueryAPI) exportSession(pattern string, q messageQuery, format s
 		return source.Final(item)
 	})
 
-	name := strOr(item.get("shortKey"), item.str("sessionId"))
+	name := firstNonEmpty(item.ShortKey, item.SessionID)
 	stem := sanitizeFilename(name)
 
 	var rendered string
@@ -85,8 +85,8 @@ func (a *SessionQueryAPI) exportSession(pattern string, q messageQuery, format s
 // back.
 func exportCoverage(item record, final map[string]any, written int, which string) (coverage string, complete bool) {
 	total := int64(0)
-	if n, ok := toFloat(item.get("messageCount")); ok && n > 0 {
-		total = int64(n)
+	if item.HasCount && item.MessageCount > 0 {
+		total = int64(item.MessageCount)
 	} else if final != nil {
 		if n, ok := toFloat(final["messageCount"]); ok && n > 0 {
 			total = int64(n)
@@ -111,17 +111,17 @@ func renderExportMarkdown(item record, messages []map[string]any, final map[stri
 	coverage, _ := exportCoverage(item, final, len(messages), which)
 
 	var b strings.Builder
-	name := strOr(item.get("shortKey"), item.str("sessionId"))
+	name := firstNonEmpty(item.ShortKey, item.SessionID)
 	fmt.Fprintf(&b, "# %s\n\n", name)
 
 	// Metadata: only fields that actually have a value
 	for _, kv := range [][2]string{
-		{"Source", item.str("source")},
-		{"sessionId", item.str("sessionId")},
-		{"Updated", item.str("updatedAt")},
-		{"cwd", item.str("cwd")},
-		{"Model", item.str("model")},
-		{"File", item.str("file")},
+		{"Source", item.Source},
+		{"sessionId", item.SessionID},
+		{"Updated", item.UpdatedAt},
+		{"cwd", item.Cwd},
+		{"Model", item.Model},
+		{"File", item.File},
 		{"Messages", coverage},
 	} {
 		if kv[1] != "" {
@@ -173,12 +173,12 @@ func renderExportJSONL(item record, messages []map[string]any, final map[string]
 	var b strings.Builder
 	writeJSONLine(&b, map[string]any{
 		"type":      "session",
-		"source":    item.str("source"),
-		"sessionId": item.str("sessionId"),
-		"title":     item.str("shortKey"),
-		"cwd":       item.str("cwd"),
-		"model":     item.str("model"),
-		"updatedAt": item.str("updatedAt"),
+		"source":    item.Source,
+		"sessionId": item.SessionID,
+		"title":     item.ShortKey,
+		"cwd":       item.Cwd,
+		"model":     item.Model,
+		"updatedAt": item.UpdatedAt,
 		"order":     which,
 		"exported":  len(messages),
 		"coverage":  coverage,
@@ -230,12 +230,12 @@ func renderExportJSON(item record, messages []map[string]any, final map[string]a
 // exportHeader is the record both the jsonl and json forms put first
 func exportHeader(item record, exported int, coverage string, complete bool, which string) map[string]any {
 	return map[string]any{
-		"source":    item.str("source"),
-		"sessionId": item.str("sessionId"),
-		"title":     item.str("shortKey"),
-		"cwd":       item.str("cwd"),
-		"model":     item.str("model"),
-		"updatedAt": item.str("updatedAt"),
+		"source":    item.Source,
+		"sessionId": item.SessionID,
+		"title":     item.ShortKey,
+		"cwd":       item.Cwd,
+		"model":     item.Model,
+		"updatedAt": item.UpdatedAt,
 		"order":     which,
 		"exported":  exported,
 		"coverage":  coverage,
@@ -254,7 +254,7 @@ func renderExportHTML(item record, messages []map[string]any, final map[string]a
 		which = "latest"
 	}
 	coverage, _ := exportCoverage(item, final, len(messages), which)
-	name := strOr(item.get("shortKey"), item.str("sessionId"))
+	name := firstNonEmpty(item.ShortKey, item.SessionID)
 
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n")
@@ -265,12 +265,12 @@ func renderExportHTML(item record, messages []map[string]any, final map[string]a
 	b.WriteString("</head>\n<body>\n")
 	fmt.Fprintf(&b, "<h1>%s</h1>\n<dl class=\"meta\">\n", html.EscapeString(name))
 	for _, kv := range [][2]string{
-		{"Source", item.str("source")},
-		{"sessionId", item.str("sessionId")},
-		{"Updated", item.str("updatedAt")},
-		{"cwd", item.str("cwd")},
-		{"Model", item.str("model")},
-		{"File", item.str("file")},
+		{"Source", item.Source},
+		{"sessionId", item.SessionID},
+		{"Updated", item.UpdatedAt},
+		{"cwd", item.Cwd},
+		{"Model", item.Model},
+		{"File", item.File},
 		{"Messages", coverage},
 	} {
 		if kv[1] != "" {

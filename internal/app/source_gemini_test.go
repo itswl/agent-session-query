@@ -23,11 +23,11 @@ func TestGeminiSource(t *testing.T) {
 
 	s := newGeminiSource(root)
 	list := s.List()
-	if len(list) != 1 || list[0].str("sessionId") != "g-1" || list[0].str("project") != "projA" {
-		t.Fatalf("list = %v", list[0].fields)
+	if len(list) != 1 || list[0].SessionID != "g-1" || list[0].Project != "projA" {
+		t.Fatalf("list = %v", list[0])
 	}
-	if list[0].str("updatedAt") != "2026-09-13T12:55:00Z" { // uses the metadata time, never scans the whole file
-		t.Fatalf("updatedAt = %v", list[0].str("updatedAt"))
+	if list[0].UpdatedAt != "2026-09-13T12:55:00Z" { // uses the metadata time, never scans the whole file
+		t.Fatalf("updatedAt = %v", list[0].UpdatedAt)
 	}
 
 	msgs := s.Messages(list[0], messageQuery{limit: 50})
@@ -106,11 +106,11 @@ func TestGeminiMergesContinuationFiles(t *testing.T) {
 		t.Fatalf("two continuation files must be one session, got %d records", len(records))
 	}
 	rec := records[0]
-	if rec.str("sessionId") != "sid-80e8c90b" {
-		t.Errorf("sessionId = %q", rec.str("sessionId"))
+	if rec.SessionID != "sid-80e8c90b" {
+		t.Errorf("sessionId = %q", rec.SessionID)
 	}
-	if !strings.Contains(rec.str("file"), "03-16") {
-		t.Errorf("file must point at the earliest file, got %q", rec.str("file"))
+	if !strings.Contains(rec.File, "03-16") {
+		t.Errorf("file must point at the earliest file, got %q", rec.File)
 	}
 
 	msgs := s.Messages(rec, messageQuery{limit: 100})

@@ -18,7 +18,7 @@ func TestClaudeSource(t *testing.T) {
 
 	s := newClaudeSource(root)
 	list := s.List()
-	if len(list) != 1 || list[0].str("sessionId") != "cccc" || list[0].str("cwd") != "/home/imwl/proj" {
+	if len(list) != 1 || list[0].SessionID != "cccc" || list[0].Cwd != "/home/imwl/proj" {
 		t.Fatalf("list = %v", list)
 	}
 
@@ -66,10 +66,10 @@ func TestClaudeHeadMetadataBeyondFiveLines(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("list = %v", list)
 	}
-	if got := list[0].str("cwd"); got != "/deep/in/the/file" {
+	if got := list[0].Cwd; got != "/deep/in/the/file" {
 		t.Fatalf("the cwd on line 9 was not picked up: %q", got)
 	}
-	if got := list[0].str("sessionId"); got != "late-sid" {
+	if got := list[0].SessionID; got != "late-sid" {
 		t.Fatalf("sessionId = %q", got)
 	}
 	// project is derived from cwd, so losing cwd drops the session into ungrouped
@@ -90,7 +90,7 @@ func TestClaudeHeadStopsEarly(t *testing.T) {
 	write(t, filepath.Join(root, "proj", "cccc-dddd.jsonl"), lines...)
 
 	list := newClaudeSource(root).List()
-	if len(list) != 1 || list[0].str("cwd") != "/w" || list[0].str("sessionId") != "early" {
+	if len(list) != 1 || list[0].Cwd != "/w" || list[0].SessionID != "early" {
 		t.Fatalf("list = %v", list)
 	}
 }

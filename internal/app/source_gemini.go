@@ -260,17 +260,17 @@ func (s *GeminiSource) List() []record {
 			lastTs = modISO
 		}
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		return newRecord(map[string]any{
-			"source":    "gemini",
-			"key":       path,
-			"shortKey":  firstNonEmpty(geminiUserTitle(path), stem),
-			"sessionId": strOr(meta["sessionId"], stem),
-			"file":      path,
-			"files":     []string{path},
-			"hasFile":   true,
-			"status":    "done",
-			"project":   filepath.Base(filepath.Dir(filepath.Dir(path))),
-			"updatedAt": lastTs,
+		return newRecord(record{
+			Source:    "gemini",
+			Key:       path,
+			ShortKey:  firstNonEmpty(geminiUserTitle(path), stem),
+			SessionID: strOr(meta["sessionId"], stem),
+			File:      path,
+			Files:     []string{path},
+			HasFile:   true,
+			Status:    "done",
+			Project:   filepath.Base(filepath.Dir(filepath.Dir(path))),
+			UpdatedAt: toStr(lastTs),
 		}, lastTs)
 	})
 	return mergeGeminiSessions(records)
@@ -288,7 +288,7 @@ func mergeGeminiSessions(records []record) []record {
 	out := make([]record, 0, len(records))
 	index := map[string]int{}
 	for _, rec := range records {
-		id := rec.str("sessionId")
+		id := rec.SessionID
 		if id == "" {
 			out = append(out, rec)
 			continue
@@ -307,38 +307,35 @@ func mergeGeminiSessions(records []record) []record {
 // filename carries the timestamp, so that is chronological), the title comes from
 // whichever file has one, and updatedAt from whichever is newer.
 func mergeGeminiRecord(a, b record) record {
-	files := append(geminiFilesOf(a), geminiFilesOf(b)...)
+	// The merged list is its own slice: appending onto a's would write through to the
+	// record the cache still holds
+	files := append(append([]string{}, a.Files...), b.Files...)
 	sort.Strings(files)
-	fields := map[string]any{}
-	for k, v := range a.fields {
-		fields[k] = v
+	a.Files = files
+	if len(files) > 0 {
+		a.File = files[0]
 	}
-	fields["files"] = files
-	fields["file"] = files[0]
 	// A continuation file's messages belong to the same session, so the counts add —
 	// otherwise the list would report one file's worth while the session reports both
-	if aCount, ok := toFloat(fields["messageCount"]); ok {
-		if bCount, ok := toFloat(b.fields["messageCount"]); ok {
-			fields["messageCount"] = int(aCount) + int(bCount)
-		}
+	if a.HasCount && b.HasCount {
+		a.MessageCount += b.MessageCount
 	}
-	if toStr(fields["shortKey"]) == "" {
-		fields["shortKey"] = b.str("shortKey")
+	if a.ShortKey == "" {
+		a.ShortKey = b.ShortKey
 	}
-	updatedAt := a.str("updatedAt")
 	if b.sortAt.After(a.sortAt) {
-		updatedAt = b.str("updatedAt")
+		a.UpdatedAt = b.UpdatedAt
 	}
-	return newRecord(fields, updatedAt)
+	return newRecord(a, a.UpdatedAt)
 }
 
 // geminiFilesOf lists the files behind one record: the merged set, or the single file.
 func geminiFilesOf(r record) []string {
-	if raw, ok := r.fields["files"].([]string); ok && len(raw) > 0 {
-		return raw
+	if len(r.Files) > 0 {
+		return r.Files
 	}
-	if path := r.str("file"); path != "" {
-		return []string{path}
+	if r.File != "" {
+		return []string{r.File}
 	}
 	return nil
 }

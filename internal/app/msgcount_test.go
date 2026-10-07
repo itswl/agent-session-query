@@ -69,7 +69,7 @@ func TestCountersAgreeWithFinal(t *testing.T) {
 // recordOfPath finds the record a source built for one file
 func recordOfPath(s SessionSource, path string) record {
 	for _, rec := range s.List() {
-		if rec.str("file") == path {
+		if rec.File == path {
 			return rec
 		}
 	}

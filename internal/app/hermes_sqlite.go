@@ -239,27 +239,26 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) ([]record, erro
 		// display name that quoted a key does not ride out through the list, the brief
 		// or the page (see redactSecrets)
 		title := redactSecrets(stripTerminalControls(displayName.String))
-		out = append(out, newRecord(map[string]any{
-			"source": mode,
-			"key":    keyStr,
+		out = append(out, newRecord(record{
+			Source: mode,
+			Key:    keyStr,
 			// Hermes writes a real title (title_source marks who made it); the display
 			// name is the older field, and the key is the last resort
-			"shortKey":         firstNonEmpty(title, keyStr),
-			"sessionId":        sid.String,
-			"file":             nil,
-			"hasFile":          false,
-			"status":           "done",
-			"cwd":              cwd.String,
-			"updatedAt":        updatedAt,
-			"createdAt":        createdAt,
-			"displayName":      title,
-			"platform":         platform.String,
-			"model":            model.String,
-			"totalTokens":      totalTokens,
-			"estimatedCostUsd": nullFloatOrZero(cost),
+			ShortKey:         firstNonEmpty(title, keyStr),
+			SessionID:        sid.String,
+			Status:           "done",
+			Cwd:              cwd.String,
+			UpdatedAt:        updatedAt,
+			CreatedAt:        createdAt,
+			DisplayName:      title,
+			Platform:         platform.String,
+			Model:            model.String,
+			TotalTokens:      totalTokens,
+			EstimatedCostUsd: nullFloatOrZero(cost),
 			// Hermes maintains the count itself; the file sources have no such column
 			// and get theirs lazily in the page once a session is opened
-			"messageCount": nullIntOrZero(messageCount),
+			MessageCount: int(nullIntOrZero(messageCount)),
+			HasCount:     true,
 		}, updatedAt))
 	}
 	// The rows loop ends on an error too (a truncated read, a database replaced under us),

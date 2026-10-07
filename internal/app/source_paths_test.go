@@ -83,11 +83,11 @@ func TestBuildSourcesLabeledInstances(t *testing.T) {
 	if len(recs) != 1 {
 		t.Fatalf("claude:probe-a listed %d records", len(recs))
 	}
-	if recs[0].str("source") != "claude:probe-a" {
-		t.Fatalf("source = %q", recs[0].str("source"))
+	if recs[0].Source != "claude:probe-a" {
+		t.Fatalf("source = %q", recs[0].Source)
 	}
-	if recs[0].str("cwd") != "probe-a:/data" {
-		t.Fatalf("cwd = %q", recs[0].str("cwd"))
+	if recs[0].Cwd != "probe-a:/data" {
+		t.Fatalf("cwd = %q", recs[0].Cwd)
 	}
 	if recs[0].project() != "probe-a:/data" {
 		t.Fatalf("project = %q", recs[0].project())
@@ -98,8 +98,8 @@ func TestBuildSourcesLabeledInstances(t *testing.T) {
 	}
 	// The wrapped source caches its records, so a second List hands the same rows back:
 	// prefixing must be a copy, or the label accumulates
-	if again := a.List(); again[0].str("cwd") != "probe-a:/data" {
-		t.Fatalf("a second List double-prefixed the cwd: %q", again[0].str("cwd"))
+	if again := a.List(); again[0].Cwd != "probe-a:/data" {
+		t.Fatalf("a second List double-prefixed the cwd: %q", again[0].Cwd)
 	}
 }
 
@@ -168,8 +168,8 @@ func TestFindSessionMatchesBareModeOfLabeledInstance(t *testing.T) {
 		t.Fatal(err)
 	}
 	api := newSessionQueryAPI(sources, 0)
-	if _, rec, ok := api.findSession("cccc", "claude"); !ok || rec.str("sessionId") != "cccc" {
-		t.Fatalf("bare-mode lookup = %q %v", rec.str("sessionId"), ok)
+	if _, rec, ok := api.findSession("cccc", "claude"); !ok || rec.SessionID != "cccc" {
+		t.Fatalf("bare-mode lookup = %q %v", rec.SessionID, ok)
 	}
 	if _, _, ok := api.findSession("cccc", "claude:probe-a"); !ok {
 		t.Fatal("exact instance lookup failed")

@@ -28,8 +28,8 @@ func (secretSource) Final(record) map[string]any {
 // concluded field is the same assembled line — all of them must be cleaned. Full
 // transcripts (mode=full, /export) stay as stored, which is a separate path.
 func TestPackAssembledTextIsRedacted(t *testing.T) {
-	rec := newRecord(map[string]any{
-		"source": "pi", "key": "k1", "shortKey": "fix the deploy",
+	rec := newRecord(record{
+		Source: "pi", Key: "k1", ShortKey: "fix the deploy",
 	}, "")
 
 	if got := packQuote("conclusion: " + packSecret); strings.Contains(got, packSecret) {

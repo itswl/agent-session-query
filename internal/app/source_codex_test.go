@@ -21,7 +21,7 @@ func TestCodexSource(t *testing.T) {
 
 	s := newCodexSource(root)
 	list := s.List()
-	if len(list) != 1 || list[0].str("sessionId") != "codex-1" || list[0].str("cliVersion") != "0.154.0" {
+	if len(list) != 1 || list[0].SessionID != "codex-1" || list[0].CliVersion != "0.154.0" {
 		t.Fatalf("list = %v", list)
 	}
 
@@ -58,11 +58,11 @@ func TestCodexMetaNotFirstLine(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("list = %v", list)
 	}
-	if got := list[0].str("sessionId"); got != "codex-late" {
+	if got := list[0].SessionID; got != "codex-late" {
 		t.Fatalf("sessionId = %q; must not take a message row's id", got)
 	}
-	if list[0].str("cwd") != "/w/late" || list[0].str("cliVersion") != "9.9" {
-		t.Fatalf("record = %v", list[0].fields)
+	if list[0].Cwd != "/w/late" || list[0].CliVersion != "9.9" {
+		t.Fatalf("record = %v", list[0])
 	}
 }
 
@@ -78,10 +78,10 @@ func TestCodexMetaSalvage(t *testing.T) {
 		`{"type":"token_usage_record","payload":{"session_id":"codex-salvaged","usage":{"input_tokens":1}}}`,
 	)
 	r := newCodexSource(root).List()[0]
-	if got := r.str("sessionId"); got != "codex-salvaged" {
+	if got := r.SessionID; got != "codex-salvaged" {
 		t.Fatalf("sessionId = %q; must not take a message row's msg_ id", got)
 	}
-	if got := r.str("cwd"); got != "/w/shape" {
+	if got := r.Cwd; got != "/w/shape" {
 		t.Fatalf("cwd = %q", got)
 	}
 }
@@ -95,7 +95,7 @@ func TestCodexMessageIDNeverBecomesSessionID(t *testing.T) {
 		`{"type":"response_item","payload":{"type":"message","role":"assistant","id":"msg_bbb","content":[{"text":"yo"}]}}`,
 	)
 	r := newCodexSource(root).List()[0]
-	if got := r.str("sessionId"); got != "rollout-only-msgs" {
+	if got := r.SessionID; got != "rollout-only-msgs" {
 		t.Fatalf("sessionId = %q; should fall back to the filename", got)
 	}
 }
@@ -131,7 +131,7 @@ func TestCodexSubagentRolloutKeepsItsOwnID(t *testing.T) {
 	}
 	byID := map[string]string{}
 	for _, r := range list {
-		byID[r.str("sessionId")] = filepath.Base(r.str("file"))
+		byID[r.SessionID] = filepath.Base(r.File)
 	}
 	if file, ok := byID[child]; !ok {
 		t.Fatalf("the subagent must be listed under its own id %s, got %v", child, byID)
@@ -144,8 +144,8 @@ func TestCodexSubagentRolloutKeepsItsOwnID(t *testing.T) {
 
 	// cwd and cliVersion still come from the fork's own metadata row
 	for _, r := range list {
-		if r.str("sessionId") == child && r.str("cwd") != "/w/sub" {
-			t.Fatalf("cwd = %q", r.str("cwd"))
+		if r.SessionID == child && r.Cwd != "/w/sub" {
+			t.Fatalf("cwd = %q", r.Cwd)
 		}
 	}
 }
@@ -160,7 +160,7 @@ func TestCodexForkedMetaWithoutOwnID(t *testing.T) {
 			`"cwd":"/w/sub","cli_version":"0.9"}}`,
 	)
 	r := newCodexSource(root).List()[0]
-	if got := r.str("sessionId"); got != "rollout-2026-09-14T21-17-18-forked" {
+	if got := r.SessionID; got != "rollout-2026-09-14T21-17-18-forked" {
 		t.Fatalf("sessionId = %q; must not be the parent's", got)
 	}
 }
@@ -204,8 +204,8 @@ func TestCodexToolRows(t *testing.T) {
 
 	s := newCodexSource(root)
 	rec := s.List()[0]
-	if rec.str("model") != "gpt-6.1" {
-		t.Errorf("the model lives on turn_context and was not picked up: %q", rec.str("model"))
+	if rec.Model != "gpt-6.1" {
+		t.Errorf("the model lives on turn_context and was not picked up: %q", rec.Model)
 	}
 
 	msgs := s.Messages(rec, messageQuery{limit: 100})

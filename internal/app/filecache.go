@@ -51,8 +51,7 @@ type fileRecordCache struct {
 
 // hasCount reports whether the record already carries this count
 func (e fileRecordEntry) hasCount(n int) bool {
-	got, ok := toFloat(e.rec.fields["messageCount"])
-	return ok && int(got) == n
+	return e.rec.HasCount && e.rec.MessageCount == n
 }
 
 type fileCountEntry struct {
@@ -264,12 +263,9 @@ func (c *fileRecordCache) records(paths []string, build func(path, modISO string
 			// the field map rather than writing into it: the cached record is read by
 			// other requests, and mutating its map under them would be a data race.
 			if n, counted := c.countFor(path, mod, size); counted && !hit.hasCount(n) {
-				fields := make(map[string]any, len(hit.rec.fields)+1)
-				for k, v := range hit.rec.fields {
-					fields[k] = v
-				}
-				fields["messageCount"] = n
-				hit.rec.fields = fields
+				// hit.rec is this round's copy of the cached entry, so writing the count
+				// into it cannot race a reader holding the cached record
+				hit.rec.MessageCount, hit.rec.HasCount = n, true
 			}
 			fresh[path] = hit
 			out = append(out, hit.rec)
@@ -278,7 +274,7 @@ func (c *fileRecordCache) records(paths []string, build func(path, modISO string
 
 		rec := build(path, mod.UTC().Format("2006-01-02T15:04:05"))
 		if n, ok := c.countFor(path, mod, size); ok {
-			rec.fields["messageCount"] = n // freshly built, not shared yet
+			rec.MessageCount, rec.HasCount = n, true // freshly built, not shared yet
 		}
 		fresh[path] = fileRecordEntry{mod: mod, size: size, rec: rec}
 		out = append(out, rec)

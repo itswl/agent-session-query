@@ -147,8 +147,8 @@ func TestFinalUsesConfiguredDBPath(t *testing.T) {
 	def.stateDB = dbPath
 
 	source := newJsonMapSource(def)
-	final := source.Final(newRecord(map[string]any{
-		"source": "hermes", "sessionId": "h-elsewhere", "status": "done",
+	final := source.Final(newRecord(record{
+		Source: "hermes", SessionID: "h-elsewhere", Status: "done",
 	}, ""))
 	if final["text"] != "the answer in the other database" {
 		t.Fatalf("the configured state.db was not used: %v", final)
@@ -213,21 +213,21 @@ func TestHermesSQLiteOnlySource(t *testing.T) {
 		t.Fatalf("a list that worked must not leave a failure behind: %v", err)
 	}
 	r := list[0]
-	if r.str("sessionId") != "20260814_002606_1a7908" || r.str("key") != "20260814_002606_1a7908" {
-		t.Fatalf("record = %v", r.fields)
+	if r.SessionID != "20260814_002606_1a7908" || r.Key != "20260814_002606_1a7908" {
+		t.Fatalf("record = %v", r)
 	}
-	if r.str("platform") != "desktop" || r.str("model") != "deepseek-v4-pro" || r.str("displayName") != "desktop session" {
-		t.Fatalf("record = %v", r.fields)
+	if r.Platform != "desktop" || r.Model != "deepseek-v4-pro" || r.DisplayName != "desktop session" {
+		t.Fatalf("record = %v", r)
 	}
-	if r.get("totalTokens") != float64(1720) || r.get("estimatedCostUsd") != 0.0123 {
-		t.Fatalf("record = %v", r.fields)
+	if r.TotalTokens != 1720 || r.EstimatedCostUsd != 0.0123 {
+		t.Fatalf("record = %v", r)
 	}
-	if r.get("hasFile") != false || r.get("file") != nil {
-		t.Fatalf("record = %v", r.fields)
+	if r.HasFile || r.File != "" {
+		t.Fatalf("record = %v", r)
 	}
 	// updatedAt takes the time of the last active message (epoch seconds to UTC ISO)
-	if r.str("createdAt") != "2026-08-13T16:26:06" || r.str("updatedAt") != "2026-08-13T16:26:25" {
-		t.Fatalf("createdAt/updatedAt = %v / %v", r.str("createdAt"), r.str("updatedAt"))
+	if r.CreatedAt != "2026-08-13T16:26:06" || r.UpdatedAt != "2026-08-13T16:26:25" {
+		t.Fatalf("createdAt/updatedAt = %v / %v", r.CreatedAt, r.UpdatedAt)
 	}
 
 	msgs := source.Messages(r, messageQuery{limit: 50})
@@ -287,19 +287,19 @@ func TestHermesSQLiteListAndToolMessages(t *testing.T) {
 		// list staying in step with the Scan
 		t.Fatalf("the archived session must be skipped: %d records", len(records))
 	}
-	if n := records[0].get("messageCount"); n != int64(7) {
+	if n := records[0].MessageCount; !records[0].HasCount || n != 7 {
 		t.Errorf("messageCount = %v, want 7 (sessions.message_count)", n)
 	}
 	live := records[0] // newest first
-	if live.str("shortKey") != "排查接口 502" {
-		t.Errorf("title must be the display name: %q", live.str("shortKey"))
+	if live.ShortKey != "排查接口 502" {
+		t.Errorf("title must be the display name: %q", live.ShortKey)
 	}
-	if live.str("cwd") != "/w/proj" {
-		t.Errorf("cwd = %q", live.str("cwd"))
+	if live.Cwd != "/w/proj" {
+		t.Errorf("cwd = %q", live.Cwd)
 	}
 	named := records[1]
-	if named.str("shortKey") != "older session" {
-		t.Errorf("display_name is the fallback: %q", named.str("shortKey"))
+	if named.ShortKey != "older session" {
+		t.Errorf("display_name is the fallback: %q", named.ShortKey)
 	}
 
 	msgs := hermesSQLiteMessages(dbPath, "h-live", messageQuery{limit: 10})
@@ -372,7 +372,7 @@ func TestHermesSQLiteListLegacyHiddenColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listing failed: %v", err)
 	}
-	if len(records) != 1 || records[0].str("sessionId") != "h-visible" {
+	if len(records) != 1 || records[0].SessionID != "h-visible" {
 		t.Fatalf("the hidden session must be skipped: %v", records)
 	}
 }
@@ -391,7 +391,7 @@ func TestHermesSQLiteListWithoutVisibilityColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listing failed: %v", err)
 	}
-	if len(records) != 1 || records[0].str("sessionId") != "h-one" {
+	if len(records) != 1 || records[0].SessionID != "h-one" {
 		t.Fatalf("an unfiltered list must still return the session: %v", records)
 	}
 }

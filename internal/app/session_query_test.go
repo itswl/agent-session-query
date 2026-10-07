@@ -72,7 +72,7 @@ func TestContentText(t *testing.T) {
 
 func TestMatchRank(t *testing.T) {
 	// The lowercased forms are computed when the record is built (record.lowerSID / lowerKey)
-	r := newRecord(map[string]any{"sessionId": "abc-def", "key": "/r/proj/abc-def.jsonl"}, "")
+	r := newRecord(record{SessionID: "abc-def", Key: "/r/proj/abc-def.jsonl"}, "")
 	cases := []struct {
 		pattern string
 		want    int
@@ -91,13 +91,13 @@ func TestMatchRank(t *testing.T) {
 	}
 
 	// Absent from key, present only in sessionId: rank 4
-	r2 := newRecord(map[string]any{"sessionId": "uniq-sid-9", "key": "/r/other/file.jsonl"}, "")
+	r2 := newRecord(record{SessionID: "uniq-sid-9", Key: "/r/other/file.jsonl"}, "")
 	if got := r2.matchRank("sid-9"); got != 4 {
 		t.Errorf("matchRank(sid-9) = %d, want 4", got)
 	}
 
 	// Case-insensitive: the pattern arrives already lowercased
-	upper := newRecord(map[string]any{"sessionId": "ABC-DEF", "key": "/R/P.jsonl"}, "")
+	upper := newRecord(record{SessionID: "ABC-DEF", Key: "/R/P.jsonl"}, "")
 	if got := upper.matchRank("abc-def"); got != 0 {
 		t.Errorf("case-insensitive match = %d, want 0", got)
 	}
@@ -109,17 +109,17 @@ func TestMatchRank(t *testing.T) {
 // timezone offset lands in completely the wrong place.
 func TestRecordSortAcrossFormats(t *testing.T) {
 	records := []record{
-		newRecord(map[string]any{"key": "mtime"}, "2026-09-14T03:16:50"),        // UTC
-		newRecord(map[string]any{"key": "offset"}, "2026-09-14T11:20:00+08:00"), // = 03:20 UTC, the newest
-		newRecord(map[string]any{"key": "nano"}, "2026-09-14T03:16:50.601Z"),    //
-		newRecord(map[string]any{"key": "epochms"}, float64(1789197000000)),     // 2026-09-14T02:30 UTC
-		newRecord(map[string]any{"key": "bad"}, "not a time at all"),            // unparseable, sorts last
+		newRecord(record{Key: "mtime"}, "2026-09-14T03:16:50"),        // UTC
+		newRecord(record{Key: "offset"}, "2026-09-14T11:20:00+08:00"), // = 03:20 UTC, the newest
+		newRecord(record{Key: "nano"}, "2026-09-14T03:16:50.601Z"),    //
+		newRecord(record{Key: "epochms"}, float64(1789197000000)),     // 2026-09-14T02:30 UTC
+		newRecord(record{Key: "bad"}, "not a time at all"),            // unparseable, sorts last
 	}
 	sort.SliceStable(records, func(i, j int) bool { return records[i].newerThan(records[j]) })
 
 	want := []string{"offset", "nano", "mtime", "epochms", "bad"}
 	for i, key := range want {
-		if got := records[i].str("key"); got != key {
+		if got := records[i].Key; got != key {
 			t.Fatalf("position %d = %q, want %q (full order %v)", i, got, key, keysOf(records))
 		}
 	}
@@ -128,7 +128,7 @@ func TestRecordSortAcrossFormats(t *testing.T) {
 func keysOf(records []record) []string {
 	out := []string{}
 	for _, r := range records {
-		out = append(out, r.str("key"))
+		out = append(out, r.Key)
 	}
 	return out
 }
@@ -156,8 +156,8 @@ func TestFindSessionPrecedence(t *testing.T) {
 
 	// When both sources match the same sessionId exactly, the earlier source wins
 	source, rec, ok := api.findSession("shared-id", "")
-	if !ok || source.Mode() != "pi" || rec.str("sessionId") != "shared-id" {
-		t.Fatalf("find = %v %v %v", source, rec.fields, ok)
+	if !ok || source.Mode() != "pi" || rec.SessionID != "shared-id" {
+		t.Fatalf("find = %v %v %v", source, rec, ok)
 	}
 
 	// A fuzzy hit must not shadow an exact hit in another source
@@ -166,7 +166,7 @@ func TestFindSessionPrecedence(t *testing.T) {
 	)
 	source, rec, _ = api.findSession("shared-id", "")
 	if source.Mode() != "pi" {
-		t.Fatalf("the exact hit should win, got %s %v", source.Mode(), rec.fields)
+		t.Fatalf("the exact hit should win, got %s %v", source.Mode(), rec)
 	}
 
 	// The "Session: " prefix is stripped
@@ -214,11 +214,11 @@ func TestListSortAndCache(t *testing.T) {
 // TestPublicIsACopy: public() has to hand back a copy. Records are held by the list cache,
 // so one mutation of the map it returns leaves every later reader with dirty data.
 func TestPublicIsACopy(t *testing.T) {
-	r := newRecord(map[string]any{"sessionId": "s", "status": "done"}, "")
+	r := newRecord(record{SessionID: "s", Status: "done"}, "")
 	out := r.public()
 	out["status"] = "tampered"
-	if r.str("status") != "done" {
-		t.Fatalf("the internal field was changed to %q", r.str("status"))
+	if r.Status != "done" {
+		t.Fatalf("the internal field was changed to %q", r.Status)
 	}
 }
 
@@ -232,7 +232,7 @@ func TestFileRecordCacheReusesUnchanged(t *testing.T) {
 	builds := 0
 	build := func(p, modISO string) record {
 		builds++
-		return newRecord(map[string]any{"key": p, "sessionId": "cached"}, modISO)
+		return newRecord(record{Key: p, SessionID: "cached"}, modISO)
 	}
 
 	if got := cache.records([]string{path}, build); len(got) != 1 || builds != 1 {
@@ -724,7 +724,7 @@ func TestHTTPHealthAuthRequired(t *testing.T) {
 // substring hit and another source's fuzzy match can win the cross-source lookup.
 func TestMatchRankPathSeparators(t *testing.T) {
 	winKey := `C:\Users\dev\.claude\projects\proj\abc-def.jsonl`
-	rec := newRecord(map[string]any{"sessionId": "abc-def", "key": winKey}, "")
+	rec := newRecord(record{SessionID: "abc-def", Key: winKey}, "")
 
 	cases := []struct {
 		pattern string
@@ -944,7 +944,7 @@ func TestUpdatedAtPrefersContentTime(t *testing.T) {
 	}
 
 	r := newClaudeSource(root).List()[0]
-	if got := r.str("updatedAt"); got != "2026-09-11T11:25:29.029Z" {
+	if got := r.UpdatedAt; got != "2026-09-11T11:25:29.029Z" {
 		t.Fatalf("updatedAt = %q; it should use the time in the content, not mtime", got)
 	}
 	// And a file that was merely touched must not be mistaken for one being written
@@ -962,7 +962,7 @@ func TestUpdatedAtFallsBackToMtime(t *testing.T) {
 	write(t, path, `{"type":"queue-operation","sessionId":"sid"}`, `{"type":"mode"}`)
 
 	r := newClaudeSource(root).List()[0]
-	updated := r.str("updatedAt")
+	updated := r.UpdatedAt
 	if updated == "" {
 		t.Fatal("with no content time it should fall back to mtime, not stay empty")
 	}
@@ -1223,7 +1223,7 @@ func TestExportEveryFormat(t *testing.T) {
 func TestIsActiveIsRecencyNotLiveness(t *testing.T) {
 	activeAgo := func(d time.Duration) bool {
 		ts := time.Now().Add(-d).UTC().Format(time.RFC3339Nano)
-		r := newRecord(map[string]any{"sessionId": "s", "updatedAt": ts}, ts)
+		r := newRecord(record{SessionID: "s", UpdatedAt: ts}, ts)
 		return truthy(r.public()["isActive"])
 	}
 	if !activeAgo(5 * time.Second) {
@@ -1236,7 +1236,7 @@ func TestIsActiveIsRecencyNotLiveness(t *testing.T) {
 		t.Error("just outside the window must not report active: the window is the whole claim")
 	}
 	// No usable timestamp is not activity — it is the absence of evidence
-	if truthy(newRecord(map[string]any{"sessionId": "s"}, "").public()["isActive"]) {
+	if truthy(newRecord(record{SessionID: "s"}, "").public()["isActive"]) {
 		t.Error("a record with no parseable time must not report active")
 	}
 }
@@ -1262,7 +1262,7 @@ func TestResumeCommand(t *testing.T) {
 		{"claude", "", ""},
 		{"nosuchsource", "abc", ""},
 	} {
-		rec := newRecord(map[string]any{"source": c.source, "sessionId": c.sid}, "")
+		rec := newRecord(record{Source: c.source, SessionID: c.sid}, "")
 		if got := rec.resumeCommand(); got != c.want {
 			t.Errorf("%s/%q: got %q, want %q", c.source, c.sid, got, c.want)
 		}
@@ -1272,11 +1272,11 @@ func TestResumeCommand(t *testing.T) {
 // An id is normally a uuid and passes through untouched. The quoting exists so that an id
 // carrying a space or a quote cannot turn a pasted command into two commands.
 func TestResumeCommandQuotesUnsafeIds(t *testing.T) {
-	rec := newRecord(map[string]any{"source": "hermes", "sessionId": "a b; rm -rf /"}, "")
+	rec := newRecord(record{Source: "hermes", SessionID: "a b; rm -rf /"}, "")
 	if got := rec.resumeCommand(); got != `hermes --resume 'a b; rm -rf /'` {
 		t.Errorf("unsafe id = %q", got)
 	}
-	rec = newRecord(map[string]any{"source": "hermes", "sessionId": "it's"}, "")
+	rec = newRecord(record{Source: "hermes", SessionID: "it's"}, "")
 	if got := rec.resumeCommand(); got != `hermes --resume 'it'\''s'` {
 		t.Errorf("quoted id = %q", got)
 	}
@@ -1285,11 +1285,11 @@ func TestResumeCommandQuotesUnsafeIds(t *testing.T) {
 // Sources without a resume command omit the key rather than sending an empty one: a field
 // that is sometimes a command and sometimes "" reads as a command that failed to build.
 func TestPublicOmitsMissingResumeCommand(t *testing.T) {
-	with := newRecord(map[string]any{"source": "claude", "sessionId": "abc"}, "").public()
+	with := newRecord(record{Source: "claude", SessionID: "abc"}, "").public()
 	if with["resumeCommand"] != "claude --resume abc" {
 		t.Errorf("resumeCommand = %v", with["resumeCommand"])
 	}
-	without := newRecord(map[string]any{"source": "gemini", "sessionId": "g-1"}, "").public()
+	without := newRecord(record{Source: "gemini", SessionID: "g-1"}, "").public()
 	if _, present := without["resumeCommand"]; present {
 		t.Errorf("gemini must not carry the key at all: %v", without)
 	}

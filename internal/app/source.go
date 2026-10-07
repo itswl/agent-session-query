@@ -267,20 +267,15 @@ func (s labeledSource) List() []record {
 	recs := s.SessionSource.List()
 	label := s.mode[strings.IndexByte(s.mode, ':')+1:] + ":"
 	for i := range recs {
-		// The wrapped source caches its records across scans, so they are shared; prefix
-		// a copy instead of writing through to what the cache hands out next time
-		fields := make(map[string]any, len(recs[i].fields)+1)
-		for k, v := range recs[i].fields {
-			fields[k] = v
+		// List returns record values in a fresh slice, so writing to recs[i] cannot reach
+		// what the wrapped source's cache hands out next time
+		recs[i].Source = s.mode
+		if recs[i].Cwd != "" {
+			recs[i].Cwd = label + recs[i].Cwd
 		}
-		fields["source"] = s.mode
-		if cwd := toStr(fields["cwd"]); cwd != "" {
-			fields["cwd"] = label + cwd
+		if recs[i].Project != "" {
+			recs[i].Project = label + recs[i].Project
 		}
-		if project := toStr(fields["project"]); project != "" {
-			fields["project"] = label + project
-		}
-		recs[i].fields = fields
 	}
 	return recs
 }

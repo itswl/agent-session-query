@@ -124,18 +124,18 @@ func (s *CodexSource) List() []record {
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		// Use the time on the last record in the file, not the file's mtime (see updatedAtOf)
 		updated := updatedAtOf(path, modISO)
-		return newRecord(map[string]any{
-			"source":     "codex",
-			"key":        path,
-			"shortKey":   firstNonEmpty(codexUserTitle(path), stem),
-			"sessionId":  codexSessionID(payload, hasMeta, stem),
-			"file":       path,
-			"hasFile":    true,
-			"status":     "done",
-			"cwd":        getOr(payload, "cwd", ""),
-			"model":      model,
-			"cliVersion": getOr(payload, "cli_version", ""),
-			"updatedAt":  updated,
+		return newRecord(record{
+			Source:     "codex",
+			Key:        path,
+			ShortKey:   firstNonEmpty(codexUserTitle(path), stem),
+			SessionID:  codexSessionID(payload, hasMeta, stem),
+			File:       path,
+			HasFile:    true,
+			Status:     "done",
+			Cwd:        strOr(getOr(payload, "cwd", ""), ""),
+			Model:      model,
+			CliVersion: strOr(getOr(payload, "cli_version", ""), ""),
+			UpdatedAt:  updated,
 		}, updated)
 	})
 }
@@ -524,7 +524,7 @@ func codexHitRole(obj map[string]any) string {
 
 func (s *CodexSource) Messages(r record, q messageQuery) []map[string]any {
 	sink := newMessageSink(q)
-	path := r.str("file")
+	path := r.File
 	if path == "" {
 		return sink.result()
 	}
@@ -594,7 +594,7 @@ func codexReasoningHasText(raw json.RawMessage) bool {
 }
 
 func (s *CodexSource) Final(r record) map[string]any {
-	path := r.str("file")
+	path := r.File
 	if path == "" {
 		return nil
 	}

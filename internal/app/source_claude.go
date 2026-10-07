@@ -73,17 +73,17 @@ func (s *ClaudeCodeSource) List() []record {
 			return !(haveSID && haveCWD && haveBranch) && seen < claudeHeadLines
 		})
 		name := firstNonEmpty(claudeUserTitle(path), stem)
-		return newRecord(map[string]any{
-			"source":    "claude",
-			"key":       path,
-			"shortKey":  name,
-			"sessionId": sid,
-			"file":      path,
-			"hasFile":   true,
-			"status":    "done",
-			"cwd":       cwd,
-			"branch":    branch,
-			"updatedAt": updated,
+		return newRecord(record{
+			Source:    "claude",
+			Key:       path,
+			ShortKey:  name,
+			SessionID: sid,
+			File:      path,
+			HasFile:   true,
+			Status:    "done",
+			Cwd:       toStr(cwd),
+			Branch:    branch,
+			UpdatedAt: updated,
 		}, updated)
 	})
 }
@@ -246,7 +246,7 @@ func (p claudeProbe) counts() bool {
 
 func (s *ClaudeCodeSource) Messages(r record, q messageQuery) []map[string]any {
 	sink := newMessageSink(q)
-	path := r.str("file")
+	path := r.File
 	if path == "" {
 		return sink.result()
 	}
@@ -283,7 +283,7 @@ func (s *ClaudeCodeSource) Messages(r record, q messageQuery) []map[string]any {
 }
 
 func (s *ClaudeCodeSource) Final(r record) map[string]any {
-	path := r.str("file")
+	path := r.File
 	if path == "" {
 		return nil
 	}

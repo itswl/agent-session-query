@@ -127,8 +127,11 @@ pattern containing a colon needs URL encoding (`%3A`).
   addresses sessions by position rather than identity, so a session id cannot be turned
   into a command at all; and for `openclaw`, which can resume by session id but only over
   the last 50 sessions still inside its recent-activity window and only with its Gateway
-  running, so the command would work for the newest handful and fail for the rest. Then per-source extras such as
-  `cwd` / `model` / `totalTokens` / `estimatedCostUsd` / `cliVersion`; a Grok session
+  running, so the command would work for the newest handful and fail for the rest. The per-source extras — `cwd`, `model`,
+  `cliVersion`, `platform`, `displayName`, `createdAt`, `totalTokens`, `estimatedCostUsd`,
+  `runtimeMs`, `files`, `messageCount` — are omitted rather than empty when the source has
+  nothing to say (the same rule `branch` follows), so a missing `messageCount` means "not
+  counted yet", not zero. A Grok session
   the user archived (it lives under `archived_sessions/`) carries `archived: true`
 - Search: the list fields plus `matches` (`snippet` + `role` + `timestamp`) and `matchCount`
 - Messages: `content` is an array of blocks typed `text` / `thinking` / `toolCall` /

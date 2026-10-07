@@ -183,20 +183,19 @@ func (s *OpenCodeSource) listV2(db *sql.DB) ([]record, error) {
 		if lastMessage.Valid && lastMessage.Int64 > updated.Int64 {
 			updated = lastMessage
 		}
-		out = append(out, newRecord(map[string]any{
-			"source": "opencode",
-			"key":    s.dbPath + "#" + id.String,
+		out = append(out, newRecord(record{
+			Source: "opencode",
+			Key:    s.dbPath + "#" + id.String,
 			// opencode writes its own title, and it can quote anything the session
 			// touched; it is cleaned like every assembled title (see redactSecrets)
-			"shortKey":     firstNonEmpty(redactSecrets(stripTerminalControls(title.String)), id.String),
-			"sessionId":    id.String,
-			"file":         nil,
-			"hasFile":      false,
-			"status":       "done",
-			"cwd":          directory.String,
-			"messageCount": messageCount.Int64,
-			"updatedAt":    millisToISO(updated),
-			"createdAt":    millisToISO(created),
+			ShortKey:     firstNonEmpty(redactSecrets(stripTerminalControls(title.String)), id.String),
+			SessionID:    id.String,
+			Status:       "done",
+			Cwd:          directory.String,
+			MessageCount: int(messageCount.Int64),
+			HasCount:     true,
+			UpdatedAt:    millisToISO(updated),
+			CreatedAt:    millisToISO(created),
 		}, millisToISO(updated)))
 	}
 	if err := rows.Err(); err != nil {
@@ -234,20 +233,19 @@ func (s *OpenCodeSource) listV1(db *sql.DB, extra string) ([]record, error) {
 		// opencode wrote, so both are cleaned like every assembled title.
 		name := firstNonEmpty(redactSecrets(stripTerminalControls(firstNonEmpty(title.String, slug.String))), id.String)
 
-		out = append(out, newRecord(map[string]any{
-			"source":    "opencode",
-			"key":       s.dbPath + "#" + id.String,
-			"shortKey":  name,
-			"sessionId": id.String,
-			"file":      nil,
-			"hasFile":   false,
-			"status":    "done",
-			"cwd":       directory.String,
-			"model":     openCodeModelName(model.String),
+		out = append(out, newRecord(record{
+			Source:    "opencode",
+			Key:       s.dbPath + "#" + id.String,
+			ShortKey:  name,
+			SessionID: id.String,
+			Status:    "done",
+			Cwd:       directory.String,
+			Model:     openCodeModelName(model.String),
 			// message carries a (session_id, ...) index, so the count is an index scan
-			"messageCount": messageCount.Int64,
-			"updatedAt":    millisToISO(updated),
-			"createdAt":    millisToISO(created),
+			MessageCount: int(messageCount.Int64),
+			HasCount:     true,
+			UpdatedAt:    millisToISO(updated),
+			CreatedAt:    millisToISO(created),
 		}, millisToISO(updated)))
 	}
 	if err := rows.Err(); err != nil {
@@ -286,7 +284,7 @@ func millisToISO(ms sql.NullInt64) string {
 
 func (s *OpenCodeSource) Messages(r record, q messageQuery) []map[string]any {
 	sink := newMessageSink(q)
-	sessionID := r.str("sessionId")
+	sessionID := r.SessionID
 	if sessionID == "" {
 		return sink.result()
 	}
@@ -494,7 +492,7 @@ func openCodeBlocks(part map[string]any, full bool) []map[string]any {
 }
 
 func (s *OpenCodeSource) Final(r record) map[string]any {
-	sessionID := r.str("sessionId")
+	sessionID := r.SessionID
 	if sessionID == "" {
 		return nil
 	}
@@ -747,7 +745,7 @@ func openCodeMessageUsage(data map[string]any) map[string]any {
 // Search implements searchableSource: the bodies are in SQLite, so LIKE beats scanning
 // files that do not exist.
 func (s *OpenCodeSource) Search(ctx context.Context, r record, q searchQuery) []map[string]any {
-	sessionID := r.str("sessionId")
+	sessionID := r.SessionID
 	if sessionID == "" || len(q.lowered) == 0 {
 		return nil
 	}

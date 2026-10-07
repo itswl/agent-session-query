@@ -83,18 +83,27 @@ func TestOpenCodeList(t *testing.T) {
 		t.Fatalf("the archived session must be skipped: %d records", len(records))
 	}
 	rec := records[0]
-	for field, want := range map[string]string{
-		"sessionId": "ses_live",
-		"shortKey":  "询问模型身份", // the title, which is what opencode itself shows
-		"cwd":       "/w/proj",
-		"model":     "deepseek/deepseek-flash",
-		"updatedAt": "2026-09-18T02:07:42",
+	if rec.SessionID != "ses_live" {
+		t.Errorf("sessionId = %q", rec.SessionID)
+	}
+	// shortKey is the title, which is what opencode itself shows
+	if rec.ShortKey != "询问模型身份" {
+		t.Errorf("shortKey = %q", rec.ShortKey)
+	}
+	for field, got := range map[string]string{
+		"cwd":       rec.Cwd,
+		"model":     rec.Model,
+		"updatedAt": rec.UpdatedAt,
 	} {
-		if got := rec.str(field); got != want {
+		if want := map[string]string{
+			"cwd":       "/w/proj",
+			"model":     "deepseek/deepseek-flash",
+			"updatedAt": "2026-09-18T02:07:42",
+		}[field]; got != want {
 			t.Errorf("%s = %q, want %q", field, got, want)
 		}
 	}
-	if rec.truthy("hasFile") {
+	if rec.HasFile {
 		t.Error("an all-SQLite source has no session file")
 	}
 }
@@ -242,11 +251,11 @@ func TestOpenCodeV2(t *testing.T) {
 		t.Fatalf("list = %d", len(list))
 	}
 	rec := list[0]
-	if rec.str("sessionId") != "ses_v2" || rec.str("cwd") != "/w/new" || rec.str("shortKey") != "New layout" {
-		t.Fatalf("record = %v", rec.fields)
+	if rec.SessionID != "ses_v2" || rec.Cwd != "/w/new" || rec.ShortKey != "New layout" {
+		t.Fatalf("record = %v", rec)
 	}
-	if rec.get("messageCount") != int64(2) {
-		t.Errorf("messageCount = %v", rec.get("messageCount"))
+	if !rec.HasCount || rec.MessageCount != 2 {
+		t.Errorf("messageCount = %v", rec.MessageCount)
 	}
 
 	msgs := s.Messages(rec, messageQuery{limit: 10})
@@ -295,10 +304,15 @@ func TestOpenCodeMixedSchemas(t *testing.T) {
 	list := s.List()
 	ids := map[string]record{}
 	for _, rec := range list {
-		ids[rec.str("sessionId")] = rec
+		ids[rec.SessionID] = rec
 	}
-	if len(list) != 2 || ids["ses_v2"].fields == nil || ids["ses_old"].fields == nil {
+	if len(list) != 2 {
 		t.Fatalf("list = %v", list)
+	}
+	for _, want := range []string{"ses_v2", "ses_old"} {
+		if _, ok := ids[want]; !ok {
+			t.Fatalf("session %s is missing from the list: %v", want, list)
+		}
 	}
 	old := s.Messages(ids["ses_old"], messageQuery{limit: 10})
 	if len(old) != 1 || old[0]["content"].([]map[string]any)[0]["content"] != "hello v1" {

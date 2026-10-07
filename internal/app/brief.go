@@ -428,8 +428,8 @@ func (a *SessionQueryAPI) sessionRounds(pattern, sourceWanted string) (map[strin
 		})
 	}
 	return map[string]any{
-		"sessionId":       item.str("sessionId"),
-		"source":          item.str("source"),
+		"sessionId":       item.SessionID,
+		"source":          item.Source,
 		"total":           len(rounds),
 		"rounds":          list,
 		"messagesScanned": sr.scanned,
@@ -532,24 +532,24 @@ func renderBrief(item record, rounds []round, selected []int, scanned, total int
 	var b strings.Builder
 	// Most titles arrive through titleFromUserText, which already cleans them, but the
 	// SQLite sources take theirs straight from a column
-	name := redactSecrets(stripTerminalControls(item.str("shortKey")))
+	name := redactSecrets(stripTerminalControls(item.ShortKey))
 	if name == "" {
-		name = item.str("sessionId")
+		name = item.SessionID
 	}
 	fmt.Fprintf(&b, "# Session brief: %s\n\n", name)
-	fmt.Fprintf(&b, "- source %s · project %s\n", item.str("source"), item.str("cwd"))
-	if branch := item.str("branch"); branch != "" {
+	fmt.Fprintf(&b, "- source %s · project %s\n", item.Source, item.Cwd)
+	if branch := item.Branch; branch != "" {
 		fmt.Fprintf(&b, "- branch: %s (when the session opened)\n", branch)
 	}
-	fmt.Fprintf(&b, "- sessionId: %s\n", item.str("sessionId"))
-	if file := item.str("file"); file != "" {
+	fmt.Fprintf(&b, "- sessionId: %s\n", item.SessionID)
+	if file := item.File; file != "" {
 		fmt.Fprintf(&b, "- file: %s\n", file)
 	}
 	// The cheapest handoff of all is to reopen the session in the CLI that wrote it, so
 	// the brief says how, with the cd the page prepends for the same reason (see
 	// resumeCommand): the agent is found from anywhere, but it works where it is launched
 	if resume := item.resumeCommand(); resume != "" {
-		if cwd := item.str("cwd"); isAbsolutePath(cwd) {
+		if cwd := item.Cwd; isAbsolutePath(cwd) {
 			resume = "cd " + shellArg(cwd) + " && " + resume
 		}
 		fmt.Fprintf(&b, "- resume: %s\n", resume)
@@ -685,7 +685,7 @@ func renderBrief(item record, rounds []round, selected []int, scanned, total int
 	}
 	b.WriteString(capText(state, 400) + "\n")
 
-	if id := item.str("sessionId"); id != "" {
+	if id := item.SessionID; id != "" {
 		fmt.Fprintf(&b, "\nDig deeper: GET /sessions/%s/messages?limit=200 — or MCP get_messages with pattern=%q. session_brief takes round=/at= for another round, and since= for everything after a moment.\n", id, id)
 	}
 	return b.String()

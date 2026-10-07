@@ -166,7 +166,7 @@ func summarizePack(entries []packEntry, matching int, mode string) packSummary {
 		generated: time.Now().UTC(), mode: mode,
 	}
 	for i, entry := range entries {
-		summary.sources[entry.rec.str("source")]++
+		summary.sources[entry.rec.Source]++
 		at := entry.rec.sortAt
 		if at.IsZero() {
 			continue

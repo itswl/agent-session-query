@@ -40,17 +40,17 @@ func TestJsonMapOpenClaw(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("list = %v", list)
 	}
-	if list[0].str("shortKey") != "hook:alert:prometheus:b5123b01" {
-		t.Fatalf("shortKey = %v", list[0].str("shortKey"))
+	if list[0].ShortKey != "hook:alert:prometheus:b5123b01" {
+		t.Fatalf("shortKey = %v", list[0].ShortKey)
 	}
-	if list[0].str("updatedAt") != "2026-09-15 16:16:56" { // millisecond epoch to UTC, space separated
-		t.Fatalf("updatedAt = %v", list[0].str("updatedAt"))
+	if list[0].UpdatedAt != "2026-09-15 16:16:56" { // millisecond epoch to UTC, space separated
+		t.Fatalf("updatedAt = %v", list[0].UpdatedAt)
 	}
-	if list[0].get("runtimeMs") != float64(123) || list[0].get("totalTokens") != float64(9) {
-		t.Fatalf("record = %v", list[0].fields)
+	if list[0].RuntimeMs != 123 || list[0].TotalTokens != 9 {
+		t.Fatalf("record = %v", list[0])
 	}
-	if list[0].get("file") == nil || list[0].get("hasFile") != true {
-		t.Fatalf("file = %v", list[0].fields["file"])
+	if list[0].File == "" || !list[0].HasFile {
+		t.Fatalf("file = %v", list[0].File)
 	}
 
 	final := s.Final(list[0])
@@ -66,8 +66,8 @@ func TestJsonMapOpenClaw(t *testing.T) {
 		`{"k2":{"sessionId":"missing","updatedAt":0}}`,
 	)
 	list = s.List()
-	if len(list) != 1 || list[0].get("file") != nil || list[0].get("hasFile") != false {
-		t.Fatalf("list = %v", list[0].fields)
+	if len(list) != 1 || list[0].File != "" || list[0].HasFile {
+		t.Fatalf("list = %v", list[0])
 	}
 	final = s.Final(list[0])
 	if final["isFinal"] != false || final["error"] == nil {
@@ -90,8 +90,8 @@ func TestJsonMapHermes(t *testing.T) {
 	s := newJsonMapSource(def)
 
 	list := s.List()
-	if len(list) != 1 || list[0].str("status") != "done" || list[0].str("displayName") != "demo" {
-		t.Fatalf("list = %v", list[0].fields)
+	if len(list) != 1 || list[0].Status != "done" || list[0].DisplayName != "demo" {
+		t.Fatalf("list = %v", list[0])
 	}
 	msgs := s.Messages(list[0], messageQuery{limit: 50})
 	if len(msgs) != 1 || msgs[0]["timestamp"] != "2026-09-13T10:00:00Z" {

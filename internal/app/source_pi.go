@@ -100,23 +100,23 @@ func (s *PiSource) List() []record {
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		// Use the time on the last record in the file, not the file's mtime (see updatedAtOf)
 		updated := updatedAtOf(path, modISO)
-		return newRecord(map[string]any{
-			"source":    "pi",
-			"key":       path,
-			"shortKey":  firstNonEmpty(piUserTitle(path), stem),
-			"sessionId": strOr(meta["id"], piSessionID(stem)),
-			"file":      path,
-			"hasFile":   true,
-			"status":    "done",
-			"cwd":       getOr(meta, "cwd", ""),
-			"updatedAt": updated,
+		return newRecord(record{
+			Source:    "pi",
+			Key:       path,
+			ShortKey:  firstNonEmpty(piUserTitle(path), stem),
+			SessionID: strOr(meta["id"], piSessionID(stem)),
+			File:      path,
+			HasFile:   true,
+			Status:    "done",
+			Cwd:       strOr(getOr(meta, "cwd", ""), ""),
+			UpdatedAt: updated,
 		}, updated)
 	})
 }
 
 func (s *PiSource) Messages(r record, q messageQuery) []map[string]any {
 	sink := newMessageSink(q)
-	path := r.str("file")
+	path := r.File
 	if path == "" {
 		return sink.result()
 	}
@@ -171,7 +171,7 @@ func (s *PiSource) Messages(r record, q messageQuery) []map[string]any {
 }
 
 func (s *PiSource) Final(r record) map[string]any {
-	path := r.str("file")
+	path := r.File
 	if path == "" {
 		return nil
 	}

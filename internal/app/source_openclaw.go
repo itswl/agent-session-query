@@ -167,19 +167,18 @@ func (s *OpenClawSource) listOne(dbPath string) ([]record, error) {
 			fullModel = provider.String + "/" + fullModel
 		}
 
-		list = append(list, newRecord(map[string]any{
-			"source":    "openclaw",
-			"key":       dbPath + "#" + id.String,
-			"shortKey":  name,
-			"sessionId": id.String,
-			"file":      nil,
-			"hasFile":   false,
-			"status":    strOr(status.String, "done"),
-			"cwd":       cwd.String,
-			"model":     fullModel,
+		list = append(list, newRecord(record{
+			Source:    "openclaw",
+			Key:       dbPath + "#" + id.String,
+			ShortKey:  name,
+			SessionID: id.String,
+			Status:    strOr(status.String, "done"),
+			Cwd:       cwd.String,
+			Model:     fullModel,
 			// transcript_events is keyed (session_id, seq), so the count is an index scan
-			"messageCount": messageCount.Int64,
-			"updatedAt":    millisToISO(updated),
+			MessageCount: int(messageCount.Int64),
+			HasCount:     true,
+			UpdatedAt:    millisToISO(updated),
 		}, millisToISO(updated)))
 	}
 	if err := rows.Err(); err != nil {
@@ -190,7 +189,7 @@ func (s *OpenClawSource) listOne(dbPath string) ([]record, error) {
 
 func (s *OpenClawSource) Messages(r record, q messageQuery) []map[string]any {
 	sink := newMessageSink(q)
-	sessionID := r.str("sessionId")
+	sessionID := r.SessionID
 	if sessionID == "" {
 		return sink.result()
 	}
@@ -283,7 +282,7 @@ func openClawEventMillis(v any) string {
 }
 
 func (s *OpenClawSource) Final(r record) map[string]any {
-	sessionID := r.str("sessionId")
+	sessionID := r.SessionID
 	if sessionID == "" {
 		return nil
 	}
@@ -399,7 +398,7 @@ func (s *OpenClawSource) Final(r record) map[string]any {
 // Search implements searchableSource: the transcript is in SQLite, so LIKE over the
 // event bodies.
 func (s *OpenClawSource) Search(ctx context.Context, r record, q searchQuery) []map[string]any {
-	sessionID := r.str("sessionId")
+	sessionID := r.SessionID
 	if sessionID == "" || len(q.lowered) == 0 {
 		return nil
 	}
@@ -456,8 +455,8 @@ func (s *OpenClawSource) Search(ctx context.Context, r record, q searchQuery) []
 // querySession opens the database the record came from. The key is "<db>#<session>", so
 // cutting the suffix recovers the path; the returned closer must run after the rows.
 func (s *OpenClawSource) querySession(ctx context.Context, r record, query string, args ...any) (*sql.Rows, func(), error) {
-	key := r.str("key")
-	sessionID := r.str("sessionId")
+	key := r.Key
+	sessionID := r.SessionID
 	dbPath := strings.TrimSuffix(key, "#"+sessionID)
 	db, err := s.open(dbPath)
 	if err != nil {

@@ -234,7 +234,7 @@ func searchOne(ctx context.Context, source SessionSource, rec record, q searchQu
 	if s, ok := source.(searchableSource); ok {
 		return s.Search(ctx, rec, q)
 	}
-	return searchFile(ctx, rec.str("file"), q)
+	return searchFile(ctx, rec.File, q)
 }
 
 // searchFile scans one jsonl session file.

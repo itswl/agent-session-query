@@ -115,9 +115,12 @@ companions alongside it. The image's `CMD` passes `--host 0.0.0.0` explicitly (o
 port mapping cannot reach it), so a container deployment **must** set `HOOK_TOKEN` — that
 is enforced: without it the container exits immediately with a `[FATAL]` line in
 `docker logs` (and under a restart policy, restarts in a visible crash loop rather than
-serving). The image runs as root (scratch has no user database); the mount being `:ro` is
-the containment — the process can read the session directories and nothing else of the
-host.
+serving). The image runs as root on purpose: a mounted session file keeps its owner and
+mode — Claude's transcripts are `0600` — so a fixed non-root uid baked into the image would
+simply read nothing. The mount being `:ro` is the containment: the process can read the
+session directories and nothing else of the host. To run the process as yourself anyway,
+add `--user "$(id -u):$(id -g)"` to the `docker run` above; on Linux that is the one uid
+besides root the files' owner lets read them.
 
 Reach for `docker-compose.yml` only when the mounts stop fitting on one line: every source
 directory, sessions that live outside the default home (mount the directory and put

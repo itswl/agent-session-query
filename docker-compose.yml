@@ -63,4 +63,9 @@ services:
       - "8080"
       - "--mode"
       - "${SESSION_MODE:-auto}"
+    # The process runs as root on purpose (docs/deploy.md says why): the mounted
+    # transcripts are 0600, so a fixed non-root uid baked into the image would read
+    # nothing. To run it as yourself anyway, set the ids explicitly — compose does not
+    # expand $(id -u):
+    #   user: "1000:1000"
     restart: unless-stopped

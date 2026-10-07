@@ -45,6 +45,9 @@ COPY --from=build /out/healthcheck /healthcheck
 
 # Session data is mounted in; the image creates no directories in advance (an empty
 # directory would otherwise look like an existing data source).
+# No USER directive on purpose: the process reads session files that are 0600 on a Linux
+# host, and root is the one uid that can read any owner's. To drop the privilege at run
+# time, pass --user $(id -u):$(id -g) — a fixed uid baked in here would read nothing.
 # Source paths derive from $HOME, pinned to /root here to match the mount examples below.
 ENV HOME=/root
 

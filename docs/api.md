@@ -88,7 +88,10 @@ In the response, `matched` is how many of the scanned sessions matched, `total` 
 were returned, and `scanned` how many were examined. Once `limit` sessions have matched the
 scan stops — candidates are newest-first, so nothing unscanned could have reached the page
 — and `matched` is then a lower bound; `truncated.scan` says the scan stopped there, and
-`limit=0` is the count-only request that always scans everything. `truncated` carries the
+`limit=0` is the count-only request that always scans everything. The stop is a scheduling
+decision, so two identical requests can stop at different points: `scanned` and
+`truncated.scan` describe that run, while the results and the sessions they cover are
+exact either way. `truncated` carries the
 reasons results are short as separate booleans rather than one flag, because they are
 different knobs: `sessions` means the page was cut by `limit` (more sessions matched than
 `limit` returned, or the scan stopped there), `hits` means some session had more hits than

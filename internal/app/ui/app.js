@@ -23,8 +23,9 @@ const THEME_KEY = 'agent-session-query-theme';
 const MESSAGE_LIMIT = 200;
 const REFRESH_MS = 10000;
 const SEARCH_DEBOUNCE_MS = 150;
-// Content search keeps its own, slower beat: it scans every session file on the server,
-// so it waits for a real pause in typing and ignores queries too short to narrow anything.
+// Content search keeps its own, slower beat: it reads session files on the server (and
+// stops once the page has filled), so it waits for a real pause in typing and ignores
+// queries too short to narrow anything.
 const CONTENT_DEBOUNCE_MS = 300;
 const CONTENT_MIN_CHARS = 2;
 // Blocks fold past a threshold so one tool dump does not drown the conversation. The
@@ -57,8 +58,8 @@ const state = {
   hideList: false,     // wide screens: fold the session list away
   hideSide: false,     // wide screens: fold the details pane away
   content: null,       // content search for the current keyword:
-                       //   { query, searching, results, matched, tookMs,
-                       //     truncated: { sessions, hits } }
+                       //   { query, searching, results, matched, scanned, tookMs,
+                       //     truncated: { sessions, hits, scan } }
   contentTimer: null,
   contentAbort: null,  // AbortController for the search still in flight
   detail: null,        // { sessionId, signature, messages, final }

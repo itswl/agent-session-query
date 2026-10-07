@@ -142,10 +142,13 @@ session, because it carries the pair rather than the transcripts.
 
 ## Pagination
 
-`search_sessions`, `list_sessions` and `get_messages` paginate: when a page is not the
-last, the result carries `nextCursor`; pass it back as the `cursor` argument to continue.
-A cursor is only meaningful for the same tool and the same other arguments. Pages never
-overlap, and a past-the-end cursor yields an empty page.
+`list_sessions` and `get_messages` paginate: when a page is not the last, the result carries
+`nextCursor`; pass it back as the `cursor` argument to continue. A cursor is only meaningful
+for the same tool and the same other arguments. Pages never overlap, and a past-the-end
+cursor yields an empty page. `search_sessions` does not paginate — one call returns up to
+`limit` sessions, and a `cursor` argument is refused rather than ignored. `matched` (and
+`scanned`, when the scan stopped) is how much it saw beyond that page: raise `limit`, or
+pass `limit=0` for the count alone.
 
 On `get_messages`, `total` is how many messages the read produced — the source stops once
 the window (the page plus one proving message) is full, so it is "what was read", not the

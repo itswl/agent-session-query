@@ -175,26 +175,20 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			return nil, fmt.Errorf("role must be user or assistant, got %q", role)
 		}
 		q.Role = role
+		// search_sessions does not paginate: one call returns up to limit sessions, all of
+		// them (the search itself caps its results). A cursor would have no page to continue
+		// from, so one supplied anyway is refused rather than silently slicing the page away.
+		if argString(args, "cursor") != "" {
+			return nil, errors.New("search_sessions does not paginate; raise limit, or pass limit=0 for the count alone")
+		}
 		found := s.api.search(ctx, q)
-		offset := decodeCursor(argString(args, "cursor"))
-		if offset > len(found.results) {
-			offset = len(found.results)
-		}
-		results := found.results[offset:]
-		if len(results) > q.Limit {
-			results = results[:q.Limit]
-		}
-		out := map[string]any{
-			"results": results, "matched": found.matched,
+		return map[string]any{
+			"results": found.results, "matched": found.matched,
 			"scanned": found.scanned,
 			"truncated": map[string]any{
 				"sessions": found.sessionsCut, "hits": found.hitsCut, "scan": found.scanStopped,
 			},
-		}
-		if offset+len(results) < len(found.results) {
-			out["nextCursor"] = encodeCursor(offset + len(results))
-		}
-		return out, nil
+		}, nil
 
 	case "list_sessions":
 		sessions, _ := s.api.listSessions()
@@ -638,7 +632,6 @@ func mcpTools() []map[string]any {
 					"until":       strSchema("only search sessions updated before this, e.g. 7d (a week ago) / 2026-09-01"),
 					"pattern":     strSchema("limit the search to one session: a sessionId, a fragment of one, or a file path fragment — the way to ask \"where in this session did we discuss X\" without paging through it"),
 					"role":        strSchema("keep only hits from this role: user or assistant"),
-					"cursor":      cursorSchema(),
 				},
 				"required": []string{"query"},
 			},

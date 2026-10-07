@@ -6,6 +6,7 @@ import (
 	"github.com/itswl/agent-session-query/internal/source"
 	"net/http/httptest"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -348,6 +349,11 @@ func TestSearchHitsTruncationOnlyCountsReturnedSessions(t *testing.T) {
 // have matched, nothing still unscanned could have reached the results — the scan stops,
 // truncated.scan says so, and matched becomes "at least this many".
 func TestSearchStopsOnceLimitIsReached(t *testing.T) {
+	// The stop is a scheduling decision: with a worker per candidate the dispatcher can
+	// hand every session out before any scan completes and never observe the limit being
+	// reached. Pinning a small pool makes the stop deterministic, which is what this test
+	// is about; the results themselves never depend on it.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(2))
 	root := t.TempDir()
 	// Far more sessions than any worker pool hands out before the first two matches land
 	const sessions = 300

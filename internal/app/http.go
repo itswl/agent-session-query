@@ -1069,6 +1069,7 @@ var serverCapabilities = []string{
 	"rounds.lastAt",   // a round carries the end of its work and the end of its rows apart
 	"search.pattern",  // /search?pattern= — scoped to one session
 	"search.role",     // /search?role=
+	"search.scan",     // truncated.scan: matched is a lower bound when the scan stopped
 	"sessions.branch", // a session row carries the git branch it opened on
 	"sessions.etag",   // /sessions answers 304, and carries the server version
 	"usage",           // token usage on a final result

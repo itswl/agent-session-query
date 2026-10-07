@@ -3,6 +3,7 @@ package app
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -543,5 +544,102 @@ CREATE TABLE messages (
 	final := hermesSQLiteFinal(dbPath, "hermes", "h-comp", "done")
 	if final == nil || final["text"] != "the end" {
 		t.Fatalf("final = %v", final)
+	}
+}
+
+// TestHermesSQLiteMessagesStreamWinners: the read runs in two passes — identity and the
+// winning copy first (light references only), then the winners in chunks of 200 — so a
+// session larger than one chunk must come back in first-occurrence order under the same
+// dedupe the single-pass version had: a live copy replaces its archived original and keeps
+// the original's position, a later archived copy does not displace a live one, and the
+// window is still cut after the projection, not before it.
+func TestHermesSQLiteMessagesStreamWinners(t *testing.T) {
+	dbPath := newHermesFixture(t)
+	schema := `
+CREATE TABLE sessions (
+	id TEXT PRIMARY KEY, message_count INTEGER,
+	input_tokens INTEGER, output_tokens INTEGER,
+	cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+	reasoning_tokens INTEGER, estimated_cost_usd REAL,
+	session_key TEXT, display_name TEXT, source TEXT, model TEXT,
+	started_at REAL, ended_at REAL, title TEXT, cwd TEXT, archived INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE messages (
+	id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT,
+	finish_reason TEXT, reasoning TEXT, timestamp REAL,
+	active INTEGER DEFAULT 1, compacted INTEGER DEFAULT 0,
+	tool_calls TEXT, tool_name TEXT, tool_call_id TEXT, display_metadata TEXT
+);`
+	statements := []string{
+		`INSERT INTO sessions (id, session_key, title, cwd) VALUES ('h-big', 'cli', 'big one', '/w')`,
+	}
+	for i := 1; i <= 250; i++ {
+		active, compacted := 1, 0
+		if i == 1 {
+			active, compacted = 0, 1 // the archived original the live copy replaces
+		}
+		statements = append(statements, fmt.Sprintf(
+			`INSERT INTO messages (id, session_id, role, content, timestamp, active, compacted) VALUES (%d, 'h-big', 'user', 'note %d', %d, %d, %d)`,
+			i, i, 1000+i, active, compacted))
+	}
+	statements = append(statements,
+		// an archived re-insert of note 5 while note 5 itself is live: the live copy stays
+		`INSERT INTO messages (id, session_id, role, content, timestamp, active, compacted) VALUES (251, 'h-big', 'user', 'note 5', 1005, 0, 1)`,
+		// the live copy of note 1 replaces the archived original, at the original's position
+		`INSERT INTO messages (id, session_id, role, content, timestamp, active, compacted) VALUES (260, 'h-big', 'user', 'note 1', 1001, 1, 0)`,
+	)
+	makeHermesDB(t, dbPath, schema, statements)
+
+	msgs := hermesSQLiteMessages(dbPath, "h-big", messageQuery{limit: 1000})
+	if len(msgs) != 250 {
+		t.Fatalf("250 shown messages expected, got %d", len(msgs))
+	}
+	if msgs[0]["id"] != "260" {
+		t.Errorf("the live copy of note 1 must be shown at the first position, got id %v", msgs[0]["id"])
+	}
+	if text := msgs[0]["content"].([]map[string]any)[0]["content"]; text != "note 1" {
+		t.Errorf("first message text = %v", text)
+	}
+	// A message beyond the first fetch chunk (200) still comes back, in place
+	if msgs[205]["id"] != "206" {
+		t.Errorf("message 205 = %v, want id 206", msgs[205]["id"])
+	}
+	// The later archived copy of note 5 does not displace the live one
+	if msgs[4]["id"] != "5" {
+		t.Errorf("note 5 must keep the live row (id 5), got id %v", msgs[4]["id"])
+	}
+	// The window is still cut after the projection: the latest two are notes 249 and 250
+	tail := hermesSQLiteMessages(dbPath, "h-big", messageQuery{limit: 2, fromEnd: true})
+	if len(tail) != 2 || tail[0]["id"] != "249" || tail[1]["id"] != "250" {
+		t.Errorf("latest two = %v", tail)
+	}
+}
+
+// TestHermesSQLiteMessagesSameIDDistinctRows: nothing forces the id column to be unique in
+// every Hermes schema, so the second pass matches winners on id plus their identity hash —
+// two rows sharing an id but not their words must both come back.
+func TestHermesSQLiteMessagesSameIDDistinctRows(t *testing.T) {
+	dbPath := newHermesFixture(t)
+	schema := `
+CREATE TABLE sessions (id TEXT PRIMARY KEY, session_key TEXT, title TEXT, cwd TEXT);
+CREATE TABLE messages (
+	id TEXT, session_id TEXT, role TEXT, content TEXT, timestamp REAL,
+	active INTEGER DEFAULT 1, compacted INTEGER DEFAULT 0
+);`
+	makeHermesDB(t, dbPath, schema, []string{
+		`INSERT INTO sessions (id, session_key, title) VALUES ('h-dup', 'cli', 'dup')`,
+		`INSERT INTO messages (id, session_id, role, content, timestamp) VALUES ('dup', 'h-dup', 'user', 'first body', 10)`,
+		`INSERT INTO messages (id, session_id, role, content, timestamp) VALUES ('dup', 'h-dup', 'assistant', 'second body', 20)`,
+	})
+	msgs := hermesSQLiteMessages(dbPath, "h-dup", messageQuery{limit: 10})
+	if len(msgs) != 2 {
+		t.Fatalf("two rows sharing an id must both come back, got %d", len(msgs))
+	}
+	texts := map[string]bool{}
+	for _, m := range msgs {
+		texts[toStr(m["content"].([]map[string]any)[0]["content"])] = true
+	}
+	if !texts["first body"] || !texts["second body"] {
+		t.Fatalf("shown texts = %v", texts)
 	}
 }

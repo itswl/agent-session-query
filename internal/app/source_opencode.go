@@ -284,12 +284,6 @@ func millisToISO(ms sql.NullInt64) string {
 	return time.UnixMilli(ms.Int64).UTC().Format("2006-01-02T15:04:05")
 }
 
-// openCodeMessage is one message row plus its decoded payload.
-type openCodeMessage struct {
-	id   string
-	data map[string]any
-}
-
 func (s *OpenCodeSource) Messages(r record, q messageQuery) []map[string]any {
 	sink := newMessageSink(q)
 	sessionID := r.str("sessionId")
@@ -307,33 +301,76 @@ func (s *OpenCodeSource) Messages(r record, q messageQuery) []map[string]any {
 		return s.messagesV2(db, sessionID, q)
 	}
 
-	// Two queries rather than a join: parts are grouped per message, and the grouping is
-	// cheaper in a map than in ORDER BY--aware scanning. Message order follows the index
-	// on (session_id, time_created, id).
-	msgs, err := s.messages(db, sessionID)
+	// One query, streamed: messages and their parts joined in display order, emitted a
+	// message at a time. The earlier version read every message row and every part row into
+	// memory before the window was cut, so one request cost the whole session; here the
+	// sink holds the window and at most one message's parts are in flight.
+	//
+	// The join streams because both tables order by the same keys the two queries did —
+	// messages by (time_created, id), parts by (time_created, id) — so one message's rows
+	// arrive together and in order, and the message is complete exactly when the next
+	// message id appears. A message with no parts still arrives (LEFT JOIN); a part whose
+	// message row is gone is dropped, as before.
+	rows, err := db.Query(`
+		SELECT m.id, m.data, p.data
+		FROM message m
+		LEFT JOIN part p ON p.message_id = m.id AND p.session_id = m.session_id
+		WHERE m.session_id = ?
+		ORDER BY m.time_created, m.id, p.time_created, p.id`, sessionID)
 	if err != nil {
 		return sink.result()
 	}
-	parts, err := s.partsByMessage(db, sessionID)
-	if err != nil {
-		return sink.result()
-	}
+	defer rows.Close()
 
-	for _, m := range msgs {
-		role, _ := m.data["role"].(string)
+	var pending struct {
+		has    bool
+		ok     bool // the row parsed; data may still be nil (a JSON "null")
+		id     string
+		data   map[string]any
+		blocks []map[string]any
+	}
+	emit := func() bool {
+		role, _ := pending.data["role"].(string)
 		if role == "" {
 			role = "unknown"
 		}
-		blocks := []map[string]any{}
-		for _, p := range parts[m.id] {
-			blocks = append(blocks, openCodeBlocks(p, q.full)...)
-		}
-		sink.add(map[string]any{
-			"id":        m.id,
+		return sink.add(map[string]any{
+			"id":        pending.id,
 			"role":      role,
-			"timestamp": openCodeJSONMillis(m.data, "time", "created"),
-			"content":   blocks,
+			"timestamp": openCodeJSONMillis(pending.data, "time", "created"),
+			"content":   pending.blocks,
 		})
+	}
+	for rows.Next() {
+		var id, msgData string
+		var partData sql.NullString
+		if err := rows.Scan(&id, &msgData, &partData); err != nil {
+			return sink.result()
+		}
+		if !pending.has || pending.id != id {
+			if pending.has && pending.ok && !emit() {
+				return sink.result() // the sink is full; every later message is older still
+			}
+			pending.has, pending.id, pending.blocks = true, id, []map[string]any{}
+			// A message row that will not parse is skipped whole: its parts belong to a
+			// message that is not there to carry them, exactly as when the two queries
+			// skipped the row and never looked its parts up.
+			//
+			// data is cleared before the decode: json.Unmarshal into a non-nil map merges
+			// into it, so without this every message would inherit its predecessor's fields
+			pending.data = nil
+			pending.ok = json.Unmarshal([]byte(msgData), &pending.data) == nil
+		}
+		if !pending.ok || !partData.Valid {
+			continue
+		}
+		var part map[string]any
+		if json.Unmarshal([]byte(partData.String), &part) == nil && part != nil {
+			pending.blocks = append(pending.blocks, openCodeBlocks(part, q.full)...)
+		}
+	}
+	if pending.has && pending.ok {
+		emit()
 	}
 	return sink.result()
 }
@@ -396,58 +433,6 @@ func openCodeV2Blocks(kind string, data map[string]any, full bool) []map[string]
 		}
 	}
 	return blocks
-}
-
-func (s *OpenCodeSource) messages(db *sql.DB, sessionID string) ([]openCodeMessage, error) {
-	rows, err := db.Query(`
-		SELECT id, data FROM message
-		WHERE session_id = ?
-		ORDER BY time_created, id`, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := []openCodeMessage{}
-	for rows.Next() {
-		var id, data string
-		if err := rows.Scan(&id, &data); err != nil {
-			return out, err
-		}
-		var decoded map[string]any
-		if err := json.Unmarshal([]byte(data), &decoded); err != nil {
-			continue // one unparsable row must not hide the rest of the session
-		}
-		out = append(out, openCodeMessage{id: id, data: decoded})
-	}
-	return out, rows.Err()
-}
-
-// partsByMessage loads every part of a session, grouped by message and kept in the order
-// the index on (message_id, id) gives.
-func (s *OpenCodeSource) partsByMessage(db *sql.DB, sessionID string) (map[string][]map[string]any, error) {
-	rows, err := db.Query(`
-		SELECT message_id, data FROM part
-		WHERE session_id = ?
-		ORDER BY time_created, id`, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := map[string][]map[string]any{}
-	for rows.Next() {
-		var messageID, data string
-		if err := rows.Scan(&messageID, &data); err != nil {
-			return out, err
-		}
-		var decoded map[string]any
-		if err := json.Unmarshal([]byte(data), &decoded); err != nil {
-			continue
-		}
-		out[messageID] = append(out[messageID], decoded)
-	}
-	return out, rows.Err()
 }
 
 // openCodeBlocks maps one part onto the shared block shapes. step-start / step-finish

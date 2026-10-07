@@ -357,8 +357,11 @@ func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
 // as live copies of archived originals, so a row is one message whether the database holds
 // it once or twice; the first position is kept and the most live copy is shown. Rows the
 // model reads but nobody typed (display_metadata.model_only, a micro-compaction merge) are
-// left out. The whole projection is read and the window is cut afterwards: a LIMIT in SQL
-// would count duplicates and hidden rows as messages.
+// left out. The projection is read in two passes — one decides identity and the winning copy and
+// keeps only a light reference per message, the other fetches just the winners in
+// chunks — so a read costs the window plus one chunk rather than the whole session. A
+// LIMIT in SQL would count duplicates and hidden rows as messages; that is why the
+// window is cut here.
 func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string]any {
 	out := []map[string]any{}
 	if q.limit <= 0 {
@@ -397,12 +400,15 @@ func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string
 	}
 	defer rows.Close()
 
-	type shownRow struct {
-		id, role, content, reasoning, toolCalls, toolName, toolCallID string
-		active                                                        int64
-		timestamp                                                     any
+	// Pass one: decide which rows are shown and which copy of a duplicated row wins,
+	// keeping only a light reference per message — its id, its liveness and its identity
+	// hash. The content is read (it is part of the identity) and dropped here, so memory is
+	// one small record per message rather than the whole session's text.
+	type rowRef struct {
+		id, key string
+		active  int64
 	}
-	order := []shownRow{}
+	order := []rowRef{}
 	index := map[string]int{}
 	for rows.Next() {
 		var id, role, content, reasoning, toolCalls, toolName, toolCallID, active, displayMeta, timestamp any
@@ -413,67 +419,126 @@ func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string
 		if hermesModelOnly(displayMeta) {
 			continue
 		}
-		row := shownRow{
-			id: sqliteValueString(id), role: sqliteValueString(role), content: sqliteValueString(content),
-			reasoning: sqliteValueString(reasoning), toolCalls: sqliteValueString(toolCalls),
-			toolName: sqliteValueString(toolName), toolCallID: sqliteValueString(toolCallID),
-			active: 1, timestamp: timestamp,
-		}
+		ref := rowRef{id: sqliteValueString(id), active: 1}
 		if n, ok := toFloat(active); ok {
-			row.active = int64(n)
+			ref.active = int64(n)
 		}
-		// The dedupe identity as a hash: the index holds one entry per row for the whole
-		// session, and as a text key it kept every row's content a second time. SHA-256
-		// rather than something cheaper because a collision would merge two rows that are
-		// genuinely distinct.
-		keyHash := sha256.New()
-		for _, part := range []string{row.role, row.content, sqliteTimeString(timestamp), row.toolCallID, row.toolCalls, row.toolName} {
-			_, _ = keyHash.Write([]byte(part))
-			_, _ = keyHash.Write([]byte{0})
-		}
-		key := string(keyHash.Sum(nil))
-		if at, seen := index[key]; seen {
+		ref.key = hermesRowKey(sqliteValueString(role), sqliteValueString(content), timestamp,
+			sqliteValueString(toolCallID), sqliteValueString(toolCalls), sqliteValueString(toolName))
+		if at, seen := index[ref.key]; seen {
 			kept := order[at]
-			if row.active > kept.active || (row.active == kept.active && row.id > kept.id) {
-				order[at] = row
+			if ref.active > kept.active || (ref.active == kept.active && ref.id > kept.id) {
+				order[at] = ref
 			}
 			continue
 		}
-		index[key] = len(order)
-		order = append(order, row)
+		index[ref.key] = len(order)
+		order = append(order, ref)
 	}
+	if err := rows.Err(); err != nil {
+		warnHermesSQLite(sessionID, err)
+		return out
+	}
+	// The pool is one connection (SetMaxOpenConns in openHermesDB), so the first read has
+	// to be finished before the second pass can query
+	rows.Close()
 
+	// Pass two: fetch just the winning rows, in chunks and in shown order, and emit them
+	// through the sink. The chunk bounds what is resident: one page of rows plus the
+	// window, rather than the session.
 	sink := newMessageSink(q)
-	for _, row := range order {
-		parts := []map[string]any{}
-		switch row.role {
-		case "tool":
-			// One tool row is one result; the content is the tool's structured output,
-			// tool_name says which tool ran and tool_call_id which call it answers. Hermes
-			// does not record whether it succeeded, so the block carries no status.
-			parts = append(parts, toolResultBlock(row.toolCallID, row.toolName, row.content, q.full))
-		default:
-			if row.reasoning != "" {
-				parts = append(parts, thinkingBlock(row.reasoning, q.full))
-			}
-			parts = append(parts, hermesToolCallBlocks(row.toolCalls)...)
-			if row.content != "" {
-				parts = append(parts, textBlock(row.content))
-			}
+	const fetchChunk = 200
+	for start := 0; start < len(order); start += fetchChunk {
+		end := start + fetchChunk
+		if end > len(order) {
+			end = len(order)
 		}
-		if !sink.add(map[string]any{
-			"id":        row.id,
-			"role":      row.role,
-			"timestamp": sqliteTimeString(row.timestamp),
-			"content":   parts,
-		}) {
-			break
+		placeholders := make([]string, 0, end-start)
+		args := make([]any, 0, end-start+1)
+		args = append(args, sessionID)
+		for _, ref := range order[start:end] {
+			placeholders = append(placeholders, "?")
+			args = append(args, ref.id)
+		}
+		page, err := db.Query(`
+			SELECT id, role, content, `+col("reasoning")+`, `+col("tool_calls")+`, `+col("tool_name")+`,
+				   `+col("tool_call_id")+`, timestamp
+			FROM messages
+			WHERE session_id = ? AND id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+		if err != nil {
+			warnHermesSQLite(sessionID, err)
+			return sink.result()
+		}
+		type fullRow struct {
+			role, content, reasoning, toolCalls, toolName, toolCallID string
+			timestamp                                                 any
+		}
+		fetched := map[string]fullRow{}
+		for page.Next() {
+			var id, role, content, reasoning, toolCalls, toolName, toolCallID, timestamp any
+			if err := page.Scan(&id, &role, &content, &reasoning, &toolCalls, &toolName, &toolCallID, &timestamp); err != nil {
+				page.Close()
+				warnHermesSQLite(sessionID, err)
+				return sink.result()
+			}
+			row := fullRow{
+				role: sqliteValueString(role), content: sqliteValueString(content),
+				reasoning: sqliteValueString(reasoning), toolCalls: sqliteValueString(toolCalls),
+				toolName: sqliteValueString(toolName), toolCallID: sqliteValueString(toolCallID),
+				timestamp: timestamp,
+			}
+			// The id alone does not identify a row — nothing forces it to be unique in every
+			// Hermes schema — so the winner is matched on id plus its identity hash
+			key := hermesRowKey(row.role, row.content, timestamp, row.toolCallID, row.toolCalls, row.toolName)
+			fetched[sqliteValueString(id)+"\x00"+key] = row
+		}
+		page.Close()
+		for _, ref := range order[start:end] {
+			row, ok := fetched[ref.id+"\x00"+ref.key]
+			if !ok {
+				continue // the row changed between the passes; there is nothing to show
+			}
+			parts := []map[string]any{}
+			switch row.role {
+			case "tool":
+				// One tool row is one result; the content is the tool's structured output,
+				// tool_name says which tool ran and tool_call_id which call it answers. Hermes
+				// does not record whether it succeeded, so the block carries no status.
+				parts = append(parts, toolResultBlock(row.toolCallID, row.toolName, row.content, q.full))
+			default:
+				if row.reasoning != "" {
+					parts = append(parts, thinkingBlock(row.reasoning, q.full))
+				}
+				parts = append(parts, hermesToolCallBlocks(row.toolCalls)...)
+				if row.content != "" {
+					parts = append(parts, textBlock(row.content))
+				}
+			}
+			if !sink.add(map[string]any{
+				"id":        ref.id,
+				"role":      row.role,
+				"timestamp": sqliteTimeString(row.timestamp),
+				"content":   parts,
+			}) {
+				return sink.result()
+			}
 		}
 	}
 	return sink.result()
 }
 
-// hermesModelOnly reads display_metadata.model_only, the mark on rows Hermes shows the
+// hermesRowKey is the dedupe identity of one message row, as a hash: the index holds one
+// entry per row for the whole session, and as a text key it kept every row's content a
+// second time. SHA-256 rather than something cheaper because a collision would merge two
+// rows that are genuinely distinct.
+func hermesRowKey(role, content string, timestamp any, toolCallID, toolCalls, toolName string) string {
+	keyHash := sha256.New()
+	for _, part := range []string{role, content, sqliteTimeString(timestamp), toolCallID, toolCalls, toolName} {
+		_, _ = keyHash.Write([]byte(part))
+		_, _ = keyHash.Write([]byte{0})
+	}
+	return string(keyHash.Sum(nil))
+} // hermesModelOnly reads display_metadata.model_only, the mark on rows Hermes shows the
 // model but not the person. The column holds JSON, sometimes JSON-encoded twice.
 func hermesModelOnly(v any) bool {
 	raw := sqliteValueString(v)

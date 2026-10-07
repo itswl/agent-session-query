@@ -308,3 +308,73 @@ func TestOpenCodeMixedSchemas(t *testing.T) {
 		t.Error("the migrated session reads through V2")
 	}
 }
+
+// TestOpenCodeMessagesStreamed: the 1.x read joins messages and parts and streams the rows,
+// so everything the two-query version guaranteed must hold — message order by
+// (time_created, id) with the id breaking ties, parts in (time_created, id) order whatever
+// their insertion order, a message with no parts still arriving, an unparsable part skipped
+// while its message stays, an unparsable message skipped whole, and orphan parts dropped.
+func TestOpenCodeMessagesStreamed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.db")
+	db, err := sql.Open("sqlite", sqliteURI(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, stmt := range []string{openCodeSchema,
+		`INSERT INTO session VALUES ('ses_s', '/w/s', 'streamed', 's', NULL,
+			1789697128684, 1789697128684, NULL, 0, 0, 0, 0, 0, 0)`,
+		// same time_created for the first two: the id decides which comes first
+		`INSERT INTO message VALUES ('msg_b', 'ses_s', 2000, 2000, '{"role":"user"}')`,
+		`INSERT INTO message VALUES ('msg_a', 'ses_s', 2000, 2000, '{"role":"assistant"}')`,
+		// no parts and no role: one message, role unknown, empty content
+		`INSERT INTO message VALUES ('msg_c', 'ses_s', 3000, 3000, '{}')`,
+		// a part that will not parse is skipped; its message stays
+		`INSERT INTO message VALUES ('msg_d', 'ses_s', 4000, 4000, '{"role":"user"}')`,
+		`INSERT INTO part VALUES ('pd1', 'msg_d', 'ses_s', 4000, 4000, 'not json')`,
+		// a message that will not parse is skipped whole, parts included
+		`INSERT INTO message VALUES ('msg_e', 'ses_s', 5000, 5000, 'not json either')`,
+		`INSERT INTO part VALUES ('pe1', 'msg_e', 'ses_s', 5000, 5000, '{"type":"text","text":"never shown"}')`,
+		// parts inserted out of order: time_created decides
+		`INSERT INTO part VALUES ('pb2', 'msg_b', 'ses_s', 2002, 2002, '{"type":"text","text":"second"}')`,
+		`INSERT INTO part VALUES ('pb1', 'msg_b', 'ses_s', 2001, 2001, '{"type":"text","text":"first"}')`,
+		// an orphan part belongs to no message row
+		`INSERT INTO part VALUES ('px', 'ghost', 'ses_s', 1, 1, '{"type":"text","text":"orphan"}')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("executing %q failed: %v", stmt, err)
+		}
+	}
+	s := newOpenCodeSource(path)
+	rec := s.List()[0]
+
+	msgs := s.Messages(rec, messageQuery{limit: 100})
+	if len(msgs) != 4 {
+		t.Fatalf("4 messages expected, got %d: %v", len(msgs), msgs)
+	}
+	for i, want := range []string{"msg_a", "msg_b", "msg_c", "msg_d"} {
+		if msgs[i]["id"] != want {
+			t.Fatalf("message %d = %v, want %s (time_created ties break on id)", i, msgs[i]["id"], want)
+		}
+	}
+	if msgs[2]["role"] != "unknown" {
+		t.Errorf("a message without a role = %v", msgs[2]["role"])
+	}
+	if blocks := msgs[2]["content"].([]map[string]any); len(blocks) != 0 {
+		t.Errorf("a message with no parts must carry empty content: %v", blocks)
+	}
+	blocks := msgs[1]["content"].([]map[string]any)
+	if len(blocks) != 2 || blocks[0]["content"] != "first" || blocks[1]["content"] != "second" {
+		t.Errorf("parts must be in time_created order, not insertion order: %v", blocks)
+	}
+
+	// The window is cut on the streamed rows: the earliest two, and the latest two
+	head := s.Messages(rec, messageQuery{limit: 2})
+	if len(head) != 2 || head[0]["id"] != "msg_a" || head[1]["id"] != "msg_b" {
+		t.Errorf("earliest two = %v", head)
+	}
+	tail := s.Messages(rec, messageQuery{limit: 2, fromEnd: true})
+	if len(tail) != 2 || tail[0]["id"] != "msg_c" || tail[1]["id"] != "msg_d" {
+		t.Errorf("latest two = %v", tail)
+	}
+}

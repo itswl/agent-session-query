@@ -75,6 +75,7 @@ const state = {
   timer: null,
   searchTimer: null,
   busy: false,
+  pendingDetail: false,  // a selection arrived mid-fetch; re-run once the fetch settles
   loadedAt: '',
 };
 
@@ -3062,15 +3063,26 @@ async function syncDetail(options) {
   // Someone who has paged back is reading history. A background refresh refetches the
   // latest page and would replace everything they loaded — on an active session, every
   // ten seconds, which made paging feel like it kept snapping to the newest message.
-  // The left pane still updates; only the stream holds still. Refresh (r) still refetches.
+  // The left pane still updates; only the stream holds still. An explicit refresh
+  // (r, the button) passes force and refetches anyway.
   const paged = !switched && (state.detail.messages.messages || []).length > MESSAGE_LIMIT;
   if (!force && paged) return;
 
   const signature = [record.sessionId, record.updatedAt, record.status, state.order].join('|');
   if (!force && state.detail && state.detail.signature === signature) return;
-  if (state.busy) return;
+  if (state.busy) {
+    // A fetch is already in flight. Dropping this call used to lose the selection
+    // silently: the in-flight response then painted the previous session under the new
+    // highlight. Remember it instead, and re-run once the fetch settles.
+    state.pendingDetail = true;
+    return;
+  }
 
-  if (switched) {
+  // A forced refetch rebuilds the window from one page, exactly like a fresh open, so
+  // the paging state is reset with it — otherwise a reader who had paged to the end
+  // keeps noMore set over a window that no longer holds what they paged through, and
+  // the older history is unreachable until they switch sessions
+  if (switched || force) {
     state.noMore = { older: false, newer: false };
     state.edgeLock = '';
   }
@@ -3085,6 +3097,7 @@ async function syncDetail(options) {
   }
   renderStreamHead(record);
 
+  let painted = false;
   state.busy = true;
   try {
     const id = encodeURIComponent(record.sessionId);
@@ -3095,7 +3108,12 @@ async function syncDetail(options) {
       api('/sessions/' + id + '/messages?limit=' + MESSAGE_LIMIT + '&order=' + state.order + at),
       api('/sessions/' + id + '/final'),
     ]);
+    // Another session may have been picked while this was in flight; its own fetch (or
+    // the pending re-run below) owns the stream now, and painting this one would show
+    // the wrong session under the right highlight
+    if (state.selectedId !== record.sessionId) return;
     state.detail = { sessionId: record.sessionId, signature, messages, final };
+    painted = true;
     // Learn the count for sources that do not report one on list, and refresh the row's
     // badge — the incremental patch only touches what actually changed.
     // It comes from final, not from messages.total: that one is capped at the page size
@@ -3114,6 +3132,13 @@ async function syncDetail(options) {
     clearDetail('Failed to load: ' + err.message);
   } finally {
     state.busy = false;
+    // A queued call is only worth re-running when this fetch did not already paint the
+    // selection it belongs to — otherwise a double r fires the same request pair twice
+    // and rebuilds the stream (and any text selection) for no new data
+    if (state.pendingDetail) {
+      state.pendingDetail = false;
+      if (!painted) syncDetail({ force: true });
+    }
   }
 }
 
@@ -3161,7 +3186,12 @@ function scheduleCountWarmup() {
   }, 700);
 }
 
-async function refresh() {
+// refresh refetches the list, then updates the stream. force marks an explicit refresh
+// (r, the button): the stream is refetched even when the reader has paged back — a
+// background refresh must not replace a paged window under them, but a pressed key is a
+// deliberate "update this now".
+async function refresh(options) {
+  const force = !!(options && options.force);
   try {
     const data = await api('/sessions');
     if (serverChanged(data.version)) return;
@@ -3171,7 +3201,7 @@ async function refresh() {
     renderSources();
     renderList();
     scheduleCountWarmup();
-    await syncDetail({});
+    await syncDetail(force ? { force: true } : {});
     setStatus(idleStatus());
   } catch (err) {
     handleError(err);
@@ -3253,7 +3283,7 @@ document.addEventListener('keydown', (event) => {
       scrollMessages(true);
       break;
     case 'r':
-      refresh();
+      refresh({ force: true });
       break;
     case 'Escape':
       clearSearch();
@@ -3372,7 +3402,7 @@ $('toggle-side').addEventListener('click', () => {
   saveViewPrefs();
 });
 
-$('refresh').addEventListener('click', refresh);
+$('refresh').addEventListener('click', () => refresh({ force: true }));
 $('theme').addEventListener('click', toggleTheme);
 // Following the system, a change of system theme changes the page; only the button's
 // words and the chrome colour need telling

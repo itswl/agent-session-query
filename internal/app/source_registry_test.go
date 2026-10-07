@@ -20,7 +20,12 @@ import (
 func TestSourceRegistryConsistency(t *testing.T) {
 	home := t.TempDir()
 	setHome(t, home)
-	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg"))
+	// opencode resolves its data dir from XDG_DATA_HOME on Unix and %LOCALAPPDATA% on
+	// Windows (see openCodeDataDir); both must point at the fixture or a Windows run
+	// finds seven sources, not eight.
+	xdg := filepath.Join(home, "xdg")
+	t.Setenv("XDG_DATA_HOME", xdg)
+	t.Setenv("LOCALAPPDATA", xdg)
 
 	// One plausible default location per source
 	write(t, filepath.Join(home, ".pi", "agent", "sessions", "p", "x.jsonl"), `{"type":"session","id":"x"}`)
@@ -30,7 +35,7 @@ func TestSourceRegistryConsistency(t *testing.T) {
 	write(t, filepath.Join(home, ".grok", "sessions", "p", "s", "summary.json"), `{"info":{"id":"g"}}`)
 	write(t, filepath.Join(home, ".hermes", "sessions", "sessions.json"), `{}`)
 	write(t, filepath.Join(home, ".openclaw", "agents", "default", "agent", "openclaw-agent.sqlite"), ``)
-	write(t, filepath.Join(home, "xdg", "opencode", "opencode.db"), ``)
+	write(t, filepath.Join(xdg, "opencode", "opencode.db"), ``)
 
 	sources, err := buildSources("auto", nil)
 	if err != nil {

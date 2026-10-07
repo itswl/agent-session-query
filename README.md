@@ -42,7 +42,12 @@ curl -fsSL https://raw.githubusercontent.com/itswl/agent-session-query/main/inst
 irm https://raw.githubusercontent.com/itswl/agent-session-query/main/install.ps1 | iex
 ```
 
-The script automatically detects your OS/architecture (`darwin` / `linux` / `windows` × `amd64` / `arm64`), downloads the latest release, unpacks it, unblocks the binary, and configures your PATH.
+The script automatically detects your OS/architecture (`darwin` / `linux` / `windows` ×
+`amd64` / `arm64`), downloads the latest release, **verifies it against the release's
+published `SHA256SUMS`**, unpacks it, and installs it. On Windows it also clears the
+download's trust marking and adds the install directory to your user PATH; on macOS and
+Linux, `curl` downloads carry no quarantine attribute to clear, and the script prints a
+PATH note only when it had to fall back to `~/.local/bin`.
 
 ### Manual download
 
@@ -197,7 +202,10 @@ last week. The tools: `search_sessions` / `list_sessions` / `list_projects` /
 `get_messages` / `list_rounds` / `session_brief`. A tool result in a transcript carries how
 it ended (status, exit code, duration) and which call it answers; `list_rounds` says which
 round carried failures and which files it changed, and `session_brief` hands one round to
-another agent with the command that resumes the session.
+another agent with the command that resumes the session. Session text is untrusted input:
+transcripts are handed to calling agents as data, unmarked and unmodified — redaction
+covers secrets, not persuasion — so instructions found inside a session are content to
+report on, never commands to follow.
 
 Client configuration, the security notes, and the Claude Code skill that ships with the
 repository are in **[docs/mcp.md](docs/mcp.md)**.
@@ -206,7 +214,7 @@ repository are in **[docs/mcp.md](docs/mcp.md)**.
 
 | Flag | Default | What it does |
 |------|---------|--------------|
-| `--host` | `127.0.0.1` | Bind address; use `0.0.0.0` to expose it (and set `--hook_token`) |
+| `--host` | `127.0.0.1` | Bind address; use `0.0.0.0` to expose it (refused without `--hook_token`) |
 | `--port` | `8080` | Listen port |
 | `--mode` | `auto` | `auto` (enable whatever exists) / `all` (enable all eight) / `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` / `opencode` / `grok` |
 | `--path` | none | Relocate or duplicate a file-backed source (`pi`, `claude`, `codex`, `gemini`, `grok`): `--path claude=/mnt/disk/.claude/projects` points the source elsewhere; `--path claude:box2=/mnt/box2/.claude/projects` adds a second instance named `claude:box2` in the source list, the page's source filter and project grouping. Repeatable |
@@ -234,14 +242,22 @@ long-running.
 ## Security
 
 - It can read complete session content, tool output included, so **always set
-  `--hook_token`** before exposing it
-- It binds `127.0.0.1` and sends no CORS headers by default. Without a token, those two are
-  the only things standing between any web page you visit and a `fetch` of your local
-  `/sessions` — think it through before changing either
+  `--hook_token`** before exposing it. A non-loopback `--host` without a token is refused
+  at startup, not warned about
+- It binds `127.0.0.1` and sends no CORS headers by default; on top of that, `Origin` is
+  validated on every route except `OPTIONS` preflights, and with no token on a loopback
+  bind any request whose `Host`
+  is not a loopback name (`localhost`, `127.0.0.0/8`, `::1`) is refused — the shape a
+  DNS-rebinding page sends. A token, or a deliberate non-loopback bind, turns the `Host`
+  check off: behind a reverse proxy the forwarded `Host` is the public name, and the token
+  is what protects the data there
 - Put it behind an HTTPS reverse proxy (Nginx, Caddy) rather than on the public internet.
   `/ui` carries no data, but authenticate it at the proxy anyway
 - `/ui` ships a `Content-Security-Policy` (same-origin scripts and styles only, nothing
   inline, no framing) and renders exclusively through `textContent`
+- Release archives are covered by a published `SHA256SUMS`, and both install scripts verify
+  the download against it before installing anything (releases before v0.25.0 have no sums
+  file; the scripts say so and continue)
 - Rotate tokens; keep them out of images and repositories; mount session directories `:ro`
 
 ## Troubleshooting
@@ -249,11 +265,14 @@ long-running.
 1. **A source was not enabled** (it is missing from `sources` in `/health`): check the
    directory exists using the table above; `--mode all` prints which ones were missing.
    Hermes needs `sessions.json` **or** `state.db`, either is enough. In a container, confirm
-   the directory was actually mounted.
+   the directory was actually mounted. With nothing installed at all, `auto` (and `all`)
+   falls back to OpenClaw so the service still starts — `/health` lists it and it will
+   simply be empty.
 2. **The list is empty**: check `/health` for which sources are enabled, and that the process
    can read those directories. A `warnings` entry there names the source that could not be
    read and why — a source that broke and a source with nothing in it both answer with an
-   empty list, and only one of them is a problem.
+   empty list, and only one of them is a problem (with a token configured, `warnings` is
+   included only for an authenticated request).
 3. **401**: check that `Authorization: Bearer <token>` matches the `--hook_token` the server
    started with.
 4. **Port already in use**: pick another `--port`.
@@ -276,4 +295,4 @@ MIT, see [LICENSE](LICENSE).
 ---
 
 **Note**: this service is read-only. It never modifies the session data of Hermes, OpenClaw,
-Pi, Claude Code, Codex, Gemini or Grok.
+Pi, Claude Code, Codex, Gemini, OpenCode or Grok.

@@ -27,8 +27,23 @@ no alias.
 | `/mcp` | yes | MCP's Streamable HTTP transport, `POST`; see [mcp.md](mcp.md) |
 
 **Authentication**: once `--hook_token` is set, endpoints marked "yes" require
-`Authorization: Bearer <token>`. Without it everything is open (with a warning at startup).
-Tokens are compared in constant time. CORS is off by default, see `--cors-origin`.
+`Authorization: Bearer <token>`. Without it everything is open to whoever can reach the
+port — and a non-loopback `--host` without a token is refused at startup, not served with
+a warning. Tokens are compared in constant time. CORS is off by default, see
+`--cors-origin`.
+
+**DNS-rebinding guards**: every route except `OPTIONS` preflights (answered `200` before
+the guards, deliberately — a preflight asks nothing of its own) refuses a request carrying
+an `Origin` that does not match `--cors-origin` (`403 Origin not allowed`; native clients
+send no `Origin`). On top of that, when the server is bound to a loopback address (the
+default) **and** no token is configured, any request whose `Host` is not a loopback name
+(`localhost`, `127.0.0.0/8`, `::1`) is refused — that combination is the one where a web
+page could otherwise reach the data by resolving its own name to `127.0.0.1`. A configured
+token, or a deliberate non-loopback `--host`, turns the `Host` check off: behind a reverse
+proxy the forwarded `Host` is the public name, and the token is what protects the data
+there. A non-loopback bind without a token is refused at startup rather than warned about,
+and the bound socket itself is re-checked: a `--host` name that resolves off loopback is
+refused too.
 
 **Branch**: a session row carries `branch` when its CLI recorded one — the branch the
 session opened on, written down at the time, not what the checkout is on now. Claude Code
@@ -56,15 +71,18 @@ warm one 43-112 ms. Snippets are stripped of ANSI escape sequences and other con
 characters before being returned: tool output in a transcript is full of them, and a
 snippet is built for display rather than chosen by the caller. The same text is scanned for
 secret-shaped runs — a known key prefix followed by a long opaque tail, a JWT, a PEM header
-— and each is replaced with `[redacted]`. That covers snippets, session titles, and the
-`asked` and `outcome` lines of `/rounds` and the brief: everything this service assembles
-for someone to read. It is best effort by construction. It finds what announces itself and
-cannot find a password written in prose, so treat it as one less sharp edge rather than a
-guarantee.
+— and each is replaced with `[redacted]`. That covers everything this service assembles
+for someone to read: snippets, session titles (both the ones it synthesises and the ones
+the CLIs themselves wrote), the `asked` / `outcome` lines of `/rounds` and the brief, and
+a pack's `Asked` / `Concluded` lines in both `/export` formats. It is best effort by
+construction. It finds what announces itself and cannot find a password written in prose,
+so treat it as one less sharp edge rather than a guarantee.
 
-Message bodies from `/sessions/<id>/messages` and the output of `/export` are returned
-exactly as stored, redaction included. Those are the data; what to do with them is the
-caller's policy.
+Transcripts are the data and are returned exactly as stored: message bodies from
+`/sessions/<id>/messages`, a session's `/sessions/<id>/export`, and the transcripts a pack
+inlines under `mode=full`. What to do with them is the caller's policy — and note that a
+transcript can contain text shaped like instructions, which this service neither marks nor
+strips; see the injection note in [mcp.md](mcp.md).
 
 In the response, `matched` is how many sessions matched, `total` how many were returned,
 and `scanned` how many were examined. `truncated` carries the reasons results are short as
@@ -131,7 +149,9 @@ pattern containing a colon needs URL encoding (`%3A`).
   same whether you have none or the source broke — the list is empty either way, and the
   status is still 200. A source that is merely empty reports nothing. `/health` cannot scan
   (it answers without a token), so it shows the failure the last list hit; a server that has
-  not listed yet has nothing to report
+  not listed yet has nothing to report — and once a token is configured, the warnings
+  themselves require it (they can name filesystem paths), while the rest of `/health` stays
+  open for probes
 
 ## See also
 

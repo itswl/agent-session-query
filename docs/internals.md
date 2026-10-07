@@ -387,7 +387,14 @@ Implementation notes:
    is "stat plus read the head", not "read 208 MB"
 2. **File heads memoized by (mtime, size)** (`filecache.go`) — the first few lines only change
    when the file does, so a stat says whether last time's result still holds. In steady state
-   `List()` degrades to a round of stat calls and opens nothing
+   `List()` degrades to a round of stat calls and opens nothing. Message counts ride the same
+   cache, and an appended file is counted from where the previous count stopped — the
+   line-local counters resume, grok's grouping spans lines and recounts — so a long session
+   being written costs its growth per poll, not its whole length again. Two guards keep the
+   arithmetic honest: a scan is banked only when the file's (mtime, size) held still across
+   it, and a resume additionally requires the 256 bytes before the offset to fingerprint the
+   same as the ones that produced the previous count — a rewritten file falls back to a full
+   recount
 3. **Streaming reads** — `messages` stops once it has `limit`; `final` keeps only the last
    assistant message
 4. **`final` probes with a struct before materialising** — the whole-file scan decodes only
@@ -403,10 +410,15 @@ Implementation notes:
 7. **Responses stream out** — no buffering the whole JSON in memory, and `?limit=` is clamped to
    `--max-limit` (1000 by default) so a single request cannot spread into tens of megabytes
 8. **`/sessions` carries an ETag** — the page polls every 10 seconds, and an unchanged list ends
-   at a 304
+   at a 304. A background message count landing moves the tag too, so a revalidating page is
+   handed the counts instead of sitting on a 304 over a count-less body
 9. **`?order=desc` takes the tail with a ring buffer** — the latest N still means scanning to the
-   end of the file, but only the last N are retained, so memory tracks `limit` rather than
-   session length. Hermes's SQLite path simply queries in reverse and flips the result
+   end of the file, but only the window (`limit` plus any `offset`) is retained, so memory
+   tracks the query rather than session length. Two readers except themselves and materialise
+   before windowing: Hermes's SQLite reader (which also collapses duplicates on a SHA-256 of
+   each row's role, content, time and tool fields, so each survivor holds its content once)
+   and opencode's 1.x path, which loads every message and every part of the session before
+   the sink sees a row. For those two, memory tracks the session
 
 ### What listing actually costs
 
@@ -463,7 +475,9 @@ reading**:
   reaches what the map holds — the row would outlive every filter that should have removed it
 - The detail pane is only refetched when the selected session's `updatedAt` / `status` / chosen
   direction really changed; refreshing the same session leaves the old content on screen and
-  does not flash
+  does not flash — an explicit refresh (`r`, the button) passes `force` and refetches
+  anyway, which is also what replaces a paged-back window with the latest page (and
+  resets its paging state)
 - Before rebuilding the message stream it records which blocks are expanded (keyed stably by
   `message id:block index`) and the `scrollTop`, then restores both; if it was pinned to the
   bottom it stays pinned
@@ -547,6 +561,11 @@ newline delimiting naturally). Two points matter:
 - **Tool-level failures travel as `isError`, not as a JSON-RPC error.** A model needs to see
   what went wrong to retry with different arguments; only protocol errors (an unknown method)
   return `-32601`
+- **Pagination counts what the caller asked for.** `get_messages` applies the `role` filter
+  inside the source's sink, before the window is cut — so `limit`, `cursor` and the
+  one-message probe that decides `nextCursor` all speak of matching messages. A cursor past
+  the 20 000-message depth is refused out loud, and an anchored (`at`) window does not page
+  at all (cursor + at is an error, not a silent mix)
 
 ### Cross-platform
 

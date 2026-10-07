@@ -30,6 +30,7 @@
 go test -race ./...   # the full suite (no network, no dependency on what is installed here)
 gofmt -l .            # formatting check
 go vet ./...
+node --check internal/app/ui/app.js   # where node exists; the suite runs this too, and CI enforces it
 ```
 
 Releasing: [release.yml](../.github/workflows/release.yml) uses the tag annotation as the
@@ -42,8 +43,21 @@ git push origin v0.3.0
 ```
 
 Adding a data source: implement the `SessionSource` interface (`Mode` / `Location` /
-`Exists` / `List` / `Messages` / `Final`), register it in the `factories` map inside
-`buildSources()`, and add the mode name to `knownModes`. Build message content with the
+`Exists` / `List` / `Messages` / `Final`), then walk the lists a source's identity lives
+in. A ninth source is a sweep, not a patch — the two real additions touched seven and
+twelve files, and a source's name and abilities are spread across:
+
+- `knownModes` and the `factories` map in `buildSources()` (`source.go`), plus `movable`
+  and the whitelist inside `pathFlag.Set` if a single directory can relocate it
+- `resumeCommands` (`record.go`) if the CLI can reopen a session by id
+- an error path: implement `ListError` (see `listErrorReporter`) so a moved schema reads
+  as "could not be read" instead of "no sessions" — the SQLite sources show the shape
+- a counter in `msgcount.go` whose rule mirrors your `Final` (the list's count and the
+  session's final must agree), and usage aliases in `usage.go` if the CLI reports tokens
+- the UI's `SOURCE_CLASSES` and `countable` sets (`ui/app.js`)
+- `docs/sources.md`, the README's source table and `docs/internals.md`
+
+Build message content with the
 helpers in `blocks.go` — `toolCallBlock` with the call's id, `toolResultBlock` with the id it
 answers and a `toolOutcome` for how it ended, `thinkingBlock`, `eventBlock` — and honour
 `messageQuery.full`, so the page, the brief and the MCP tools read the new source like the

@@ -29,7 +29,8 @@ MCP server**。它不会修改任何会话数据。
 
 ### 一行命令安装
 
-不需要 Go 工具链，且通过命令行安装**自动解除隔离与信任阻拦（自动处理 macOS `xattr` / Windows SmartScreen）**：
+不需要 Go 工具链；下载**用发布页的 `SHA256SUMS` 校验**，Windows 上还会自动解除系统拦截标记
+（SmartScreen / Zone.Identifier）：
 
 **macOS / Linux:**
 ```bash
@@ -41,7 +42,10 @@ curl -fsSL https://raw.githubusercontent.com/itswl/agent-session-query/main/inst
 irm https://raw.githubusercontent.com/itswl/agent-session-query/main/install.ps1 | iex
 ```
 
-脚本会自动检测系统与架构（`darwin` / `linux` / `windows` × `amd64` / `arm64`），拉取最新 Release 产物解压，自动解除系统拦截标记并配置环境变量 PATH。
+脚本会自动检测系统与架构（`darwin` / `linux` / `windows` × `amd64` / `arm64`），拉取最新 Release
+产物、**用 `SHA256SUMS` 校验**、解压安装。Windows 上会解除下载文件的信任标记并把安装目录加进用户
+PATH；macOS / Linux 上 `curl` 下载不带隔离属性、无需解除，只有在回退安装到 `~/.local/bin` 时才会
+提示 PATH。（v0.25.0 之前的发布没有 `SHA256SUMS`，脚本会说明并跳过校验。）
 
 ### 手动下载构建产物
 
@@ -163,7 +167,9 @@ go build -o agent-session-query ./cmd/agent-session-query
 `list_projects` / `recent_project_activity` / `find_decisions` / `find_similar_question` /
 `get_session` / `get_messages` / `list_rounds` / `session_brief`。转写里的每个工具结果都带着它是
 怎么结束的（状态、exit code、耗时）以及它回答的是哪次调用；`list_rounds` 说明哪一轮有失败、改了哪些
-文件，`session_brief` 把一轮交接给另一个 agent，并附上恢复这个会话的命令。
+文件，`session_brief` 把一轮交接给另一个 agent，并附上恢复这个会话的命令。**会话正文是不可信输入**：
+转写原样（无标记、不删改，脱敏针对的是密钥而非诱导性文字）交给调用方 agent，因此会话里出现的
+"指令"只能当作内容来报告，绝不照做。
 
 客户端配置和安全注意事项见 **[docs/mcp.md](docs/mcp.md)**。
 
@@ -171,9 +177,10 @@ go build -o agent-session-query ./cmd/agent-session-query
 
 | 参数 | 默认值 | 作用 |
 |------|--------|------|
-| `--host` | `127.0.0.1` | 绑定地址；对外暴露用 `0.0.0.0`（同时务必设 `--hook_token`） |
+| `--host` | `127.0.0.1` | 绑定地址；对外暴露用 `0.0.0.0`（非回环且未设 `--hook_token` 时拒绝启动） |
 | `--port` | `8080` | 监听端口 |
 | `--mode` | `auto` | `auto`（存在哪个启用哪个）/ `all`（八个全启用）/ `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` / `opencode` / `grok` |
+| `--path` | 无 | 迁移或复制文件型数据源（`pi` / `claude` / `codex` / `gemini` / `grok`）：`--path claude=/mnt/disk/.claude/projects` 迁移；`--path claude:box2=/mnt/box2/.claude/projects` 增加一个名为 `claude:box2` 的实例，会出现在源过滤、项目分组和启动横幅里。可重复 |
 | `--hook_token` | 无 | Bearer token；不设则 API 不鉴权 |
 | `--max-connections` | `50` | 最大并发连接数，超出的排队 |
 | `--accept-queue` | `0`（自动） | 满载时的排队位；`0` 表示 `2 × max-connections`，且不低于 32。队列满则立即返回 503 |
@@ -193,23 +200,28 @@ Docker：每次发版都会把多架构镜像发布到 GitHub Container Registry
 
 ## 安全
 
-- 它能读到完整的会话内容，包括工具输出，所以**对外暴露前一定要设 `--hook_token`**
-- 默认绑定 `127.0.0.1` 且不发任何 CORS 头。在没有 token 的情况下，这两点是你访问的任意网页与
-  `fetch` 你本机 `/sessions` 之间仅有的屏障——改动之前想清楚
+- 它能读到完整的会话内容，包括工具输出，所以**对外暴露前一定要设 `--hook_token`**；非回环地址
+  且未设 token 时进程会**拒绝启动**，而不是只警告
+- 默认绑定 `127.0.0.1` 且不发任何 CORS 头；在此之上，除 `OPTIONS` 预检外，所有路由都校验 `Origin`，且在没有 token
+  且绑定回环时，`Host` 不是回环名字（`localhost`、`127.0.0.0/8`、`::1`）的请求一律 403——这正是
+  DNS rebinding 页面发出的形状。设了 token、或显式绑非回环地址时 Host 检查关闭：反代转发过来的
+  是公网名字，那里靠的是 token
 - 放在 HTTPS 反向代理（Nginx、Caddy）之后，而不是直接挂到公网。`/ui` 本身不含数据，但也请在代理
   层加上鉴权
 - `/ui` 带有 `Content-Security-Policy`（只允许同源脚本与样式，禁止内联，禁止被 frame），并且一律
   通过 `textContent` 渲染
+- 发布产物附带 `SHA256SUMS`，两个安装脚本装前都会校验；v0.25.0 之前的发布没有该文件，脚本会说明并跳过
 - 定期轮换 token；不要把它写进镜像和仓库；挂载会话目录时加 `:ro`
 
 ## 排查
 
 1. **某个数据源没被启用**（`/health` 的 `sources` 里没有它）：对照上面的表检查目录是否存在；
    `--mode all` 会打印哪些缺失。Hermes 有 `sessions.json` **或** `state.db` 之一即可。容器里
-   请确认目录真的挂进来了。
+   请确认目录真的挂进来了。若机器上什么都没装，`auto`（和 `all`）会回退启用 OpenClaw 让服务能起来，
+   `/health` 里会有它，只是内容为空。
 2. **列表是空的**：看 `/health` 里启用了哪些数据源，以及进程是否有权限读这些目录。如果某个
    数据源读不出来，`/health` 的 `warnings` 会指出是哪个源、报什么错——读不出来和本来就没数据
-   都表现为空列表，但只有前者是问题。
+   都表现为空列表，但只有前者是问题（设置了 token 时，`warnings` 只随带鉴权的请求返回）。
 3. **401**：检查 `Authorization: Bearer <token>` 与服务端启动时的 `--hook_token` 是否一致。
 4. **端口被占用**：换一个 `--port`。
 
@@ -222,6 +234,7 @@ Docker：每次发版都会把多架构镜像发布到 GitHub Container Registry
 | [docs/api.md](docs/api.md) | 完整 HTTP API：参数、匹配规则、响应字段 |
 | [docs/mcp.md](docs/mcp.md) | MCP：两种传输、客户端配置、工具表 |
 | [docs/deploy.md](docs/deploy.md) | 常驻部署：systemd / launchd / Windows 计划任务 / Docker |
+| [docs/sources.md](docs/sources.md) | 数据源与 `--path` 自定义路径 |
 | [docs/development.md](docs/development.md) | 目录结构、测试、发版、新增数据源 |
 | [docs/internals.md](docs/internals.md) | 实现细节：各源解析、性能、搜索、跨平台 |
 
@@ -231,5 +244,5 @@ MIT，见 [LICENSE](LICENSE)。
 
 ---
 
-**说明**：本服务是只读的。它不会修改 Hermes、OpenClaw、Pi、Claude Code、Codex、Gemini 或 Grok 的任何
-会话数据。
+**说明**：本服务是只读的。它不会修改 Hermes、OpenClaw、Pi、Claude Code、Codex、Gemini、OpenCode
+或 Grok 的任何会话数据。

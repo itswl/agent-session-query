@@ -112,12 +112,18 @@ Mount whichever source directories the host has; a source with nothing mounted i
 Inside the container `$HOME` is `/root`, so a directory mounts to the same place under
 `/root/...`. Mount the whole of `~/.hermes` for Hermes — `state.db` needs its `-wal`/`-shm`
 companions alongside it. The image's `CMD` passes `--host 0.0.0.0` explicitly (otherwise the
-port mapping cannot reach it), so a container deployment **must** set `HOOK_TOKEN`.
+port mapping cannot reach it), so a container deployment **must** set `HOOK_TOKEN` — that
+is enforced: without it the container exits immediately with a `[FATAL]` line in
+`docker logs` (and under a restart policy, restarts in a visible crash loop rather than
+serving). The image runs as root (scratch has no user database); the mount being `:ro` is
+the containment — the process can read the session directories and nothing else of the
+host.
 
 Reach for `docker-compose.yml` only when the mounts stop fitting on one line: every source
 directory, sessions that live outside the default home (mount the directory and put
 `--path` in `command:`, see below), or a local build against a registry mirror. The file
-lists every mount with the note each one needs:
+lists every source mount with the note each one needs (including OpenClaw's `agents/`
+tree and opencode's XDG data directory):
 
 ```bash
 HOOK_TOKEN=mysecrettoken docker compose up -d
@@ -138,7 +144,11 @@ The flags, their semantics and the label rules: [sources.md](sources.md).
 ## Applies to all of them
 
 - **Keep the token in the environment**: `HOOK_TOKEN` is read automatically. Command-line
-  arguments show up in `ps`, Task Manager and `docker inspect`; environment variables do not.
+  arguments show up in `ps` and Task Manager; environment variables do not. (Under Docker,
+  `docker inspect` can read a container's environment too — but anyone who can run docker
+  can already read the mounted sessions, so there the rule is about argv and process
+  listings, not about the daemon.)
 - **The default bind is `127.0.0.1`.** To share the service, pass `--host 0.0.0.0`
-  explicitly, set `--hook_token`, and put it behind a reverse proxy. The reasoning is in the
+  explicitly, set `--hook_token`, and put it behind a reverse proxy. A non-loopback bind
+  without a token is **refused at startup**, not warned about. The reasoning is in the
   [security section of the README](../README.md#security).

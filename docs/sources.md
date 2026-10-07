@@ -11,7 +11,7 @@ The sources read the session directories the agent CLIs write by default:
 | grok | `~/.grok/sessions`, plus `~/.grok/archived_sessions` beside it (listed with `archived: true`) |
 | hermes | `~/.hermes/sessions` (plus `state.db`) |
 | openclaw | `~/.openclaw/agents/*` |
-| opencode | XDG data dir, or `~/Library/Application Support` on macOS |
+| opencode | The XDG data dir — `${XDG_DATA_HOME:-~/.local/share}/opencode`, macOS included (`%LOCALAPPDATA%\opencode` on Windows) |
 
 ## `--path`
 

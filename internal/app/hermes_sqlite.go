@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -234,12 +235,16 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) ([]record, erro
 		totalTokens := float64(nullIntOrZero(inputTokens)) + float64(nullIntOrZero(outputTokens))
 
 		keyStr := key.String
+		// A title the CLI wrote is text like any other: cleaned on the way in, so a
+		// display name that quoted a key does not ride out through the list, the brief
+		// or the page (see redactSecrets)
+		title := redactSecrets(stripTerminalControls(displayName.String))
 		out = append(out, newRecord(map[string]any{
 			"source": mode,
 			"key":    keyStr,
 			// Hermes writes a real title (title_source marks who made it); the display
 			// name is the older field, and the key is the last resort
-			"shortKey":         firstNonEmpty(displayName.String, keyStr),
+			"shortKey":         firstNonEmpty(title, keyStr),
 			"sessionId":        sid.String,
 			"file":             nil,
 			"hasFile":          false,
@@ -247,7 +252,7 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) ([]record, erro
 			"cwd":              cwd.String,
 			"updatedAt":        updatedAt,
 			"createdAt":        createdAt,
-			"displayName":      displayName.String,
+			"displayName":      title,
 			"platform":         platform.String,
 			"model":            model.String,
 			"totalTokens":      totalTokens,
@@ -417,8 +422,16 @@ func hermesSQLiteMessages(dbPath, sessionID string, q messageQuery) []map[string
 		if n, ok := toFloat(active); ok {
 			row.active = int64(n)
 		}
-		key := row.role + "\x00" + row.content + "\x00" + sqliteTimeString(timestamp) + "\x00" +
-			row.toolCallID + "\x00" + row.toolCalls + "\x00" + row.toolName
+		// The dedupe identity as a hash: the index holds one entry per row for the whole
+		// session, and as a text key it kept every row's content a second time. SHA-256
+		// rather than something cheaper because a collision would merge two rows that are
+		// genuinely distinct.
+		keyHash := sha256.New()
+		for _, part := range []string{row.role, row.content, sqliteTimeString(timestamp), row.toolCallID, row.toolCalls, row.toolName} {
+			_, _ = keyHash.Write([]byte(part))
+			_, _ = keyHash.Write([]byte{0})
+		}
+		key := string(keyHash.Sum(nil))
 		if at, seen := index[key]; seen {
 			kept := order[at]
 			if row.active > kept.active || (row.active == kept.active && row.id > kept.id) {

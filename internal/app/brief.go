@@ -84,7 +84,7 @@ func isRoundStart(m map[string]any) bool {
 		}
 	}
 	// A message that is wholly one XML-style element is context a CLI injected, whatever
-	// the tag: a person does not type a question that way (the Codex rule, see wrappedInTag)
+	// the tag: a person does not type a question that way (the Codex rule, see WrappedInTag)
 	return !source.WrappedInTag(text)
 }
 
@@ -271,7 +271,7 @@ func appendUnique(list []string, s string) []string {
 func capText(s string, n int) string {
 	// A brief is assembled for a reader, and it is meant to be handed to another agent or
 	// pasted into a terminal, so the text it quotes is cleaned on the way in rather than
-	// passed through (see stripTerminalControls). Before the cut, so the cut cannot leave
+	// passed through (see StripTerminalControls). Before the cut, so the cut cannot leave
 	// half a sequence behind.
 	s = strings.TrimSpace(source.RedactSecrets(source.StripTerminalControls(s)))
 	runes := []rune(s)
@@ -454,7 +454,7 @@ func (a *SessionQueryAPI) sessionBrief(pattern, sourceWanted string, roundNo int
 	case atParam != "":
 		at, ok := source.ParseTimestamp(atParam)
 		if !ok {
-			return "", fmt.Errorf("At: unreadable time %q", atParam)
+			return "", fmt.Errorf("at: unreadable time %q", atParam)
 		}
 		for _, r := range rounds {
 			start, okStart := source.ParseTimestamp(r.startAt)
@@ -531,7 +531,7 @@ func nonNilStrings(list []string) []string {
 // moment, which is what a second handoff of the same session wants.
 func renderBrief(item source.Record, rounds []round, selected []int, scanned, total int, since string) string {
 	var b strings.Builder
-	// Most titles arrive through titleFromUserText, which already cleans them, but the
+	// Most titles arrive through TitleFromUserText, which already cleans them, but the
 	// SQLite sources take theirs straight from a column
 	name := source.RedactSecrets(source.StripTerminalControls(item.ShortKey))
 	if name == "" {

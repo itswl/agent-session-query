@@ -237,7 +237,7 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) ([]Record, erro
 		keyStr := key.String
 		// A title the CLI wrote is text like any other: cleaned on the way in, so a
 		// display name that quoted a key does not ride out through the list, the brief
-		// or the page (see redactSecrets)
+		// or the page (see RedactSecrets)
 		title := RedactSecrets(StripTerminalControls(displayName.String))
 		out = append(out, NewRecord(Record{
 			Source: mode,

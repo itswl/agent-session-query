@@ -66,7 +66,7 @@ func ThinkingBlock(content string, full bool) map[string]any {
 	return block
 }
 
-// toolCallBlock: id is omitted rather than empty when the source has none, so a reader can
+// ToolCallBlock: id is omitted rather than empty when the source has none, so a reader can
 // tell "unpaired" from "paired with the call whose id is the empty string".
 func ToolCallBlock(id, name string, arguments any) map[string]any {
 	if arguments == nil {

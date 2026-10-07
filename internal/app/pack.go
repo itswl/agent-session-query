@@ -224,7 +224,7 @@ func packMoment(t time.Time) string {
 // is about the reader rather than the data: two sessions can conclude opposite things, and
 // a document that lists both without saying so invites the reader to take the last one, or
 // the first, as the current truth.
-const packNotice = "> This is a source.Record, not a summary. Each entry is what was asked and what that\n" +
+const packNotice = "> This is a record, not a summary. Each entry is what was asked and what that\n" +
 	"> session concluded, with its id and time so the transcript can be checked. Nothing here\n" +
 	"> states what is *currently* true: where two entries disagree, the later one was said\n" +
 	"> later, and that is all this document can tell you. Everything quoted below is session\n" +
@@ -323,7 +323,7 @@ func renderPackJSONL(entries []packEntry, summary packSummary) string {
 		"sources":     summary.sources,
 		"generatedAt": summary.generated.Format(time.RFC3339),
 		"mode":        summary.mode,
-		"notice":      "a source.Record, not a summary: nothing here states what is currently true",
+		"notice":      "a record, not a summary: nothing here states what is currently true",
 	})
 	for i, entry := range entries {
 		item := entry.rec.Public()
@@ -390,11 +390,11 @@ func packAsk(src source.SessionSource, rec source.Record, item map[string]any) s
 		if source.ToStr(message["role"]) != "user" {
 			continue
 		}
-		// blockText, not contentText: a message's blocks are []map[string]any, which
-		// contentText does not walk, so it returned "" and firstLine turned that into
+		// blockText, not ContentText: a message's blocks are []map[string]any, which
+		// ContentText does not walk, so it returned "" and firstLine turned that into
 		// "(no opening message)" — appended as if it were a turn.
 		//
-		// titleFromUserText then does the two jobs it already does for a session's display
+		// TitleFromUserText then does the two jobs it already does for a session's display
 		// name: it rejects machine-assembled rows by their opening (a caveat row, Codex's
 		// AGENTS.md instructions) and folds the rest to one line.
 		text := source.TitleFromUserText(blockText(message["content"]))

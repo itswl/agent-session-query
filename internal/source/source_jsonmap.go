@@ -174,7 +174,13 @@ func (s *JsonMapSource) List() []Record {
 				}
 			}
 			updatedRaw = updated
-			rec.Status = StrOr(GetOr(info, "status", "unknown"), "unknown")
+			// status passes through as stored when the key exists — "" is a value the
+			// writer wrote, not a missing status — and only an absent key falls back
+			if v, ok := info["status"]; ok {
+				rec.Status = ToStr(v)
+			} else {
+				rec.Status = "unknown"
+			}
 			rec.UpdatedAt = updatedStr
 			rec.Model = StrOr(GetOr(info, "model", ""), "")
 			rec.RuntimeMs = floatOrZero(GetOr(info, "runtimeMs", float64(0)))
@@ -185,7 +191,7 @@ func (s *JsonMapSource) List() []Record {
 			rec.UpdatedAt = ToStr(GetOr(info, "updated_at", ""))
 			rec.CreatedAt = ToStr(GetOr(info, "created_at", ""))
 			// display_name is written by the CLI, so it is cleaned like every other
-			// assembled title (see redactSecrets) — a display name that quoted a key
+			// assembled title (see RedactSecrets) — a display name that quoted a key
 			// must not ride out through the list or a brief
 			rec.DisplayName = RedactSecrets(StripTerminalControls(ToStr(GetOr(info, "display_name", ""))))
 			rec.Platform = StrOr(GetOr(info, "platform", ""), "")

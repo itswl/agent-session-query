@@ -16,7 +16,7 @@ const (
 	CancelCheckLines = 512 // scan this many lines between cancellation checks
 )
 
-// cancelled reports whether the caller has walked away. A search holds every core it
+// Cancelled reports whether the caller has walked away. A search holds every core it
 // can get, so an abandoned one has to stop rather than run to completion: the page
 // fires a fresh search on every keystroke and only the last one is ever displayed.
 func Cancelled(ctx context.Context) bool {
@@ -28,7 +28,7 @@ func Cancelled(ctx context.Context) bool {
 	}
 }
 
-// searchFile scans one jsonl session file.
+// SearchFile scans one jsonl session file.
 func SearchFile(ctx context.Context, path string, q SearchQuery) []map[string]any {
 	if path == "" || len(q.Lowered) == 0 {
 		return nil
@@ -191,7 +191,7 @@ func hitTimestamp(v any) string {
 	return ToStr(v)
 }
 
-// appendLowerASCII appends src to dst with A-Z folded to lowercase.
+// AppendLowerASCII appends src to dst with A-Z folded to lowercase.
 // It works byte by byte, so UTF-8 multi-byte sequences (lead byte >= 0x80) pass through
 // untouched — scripts that have no case are unaffected.
 func AppendLowerASCII(dst, src []byte) []byte {

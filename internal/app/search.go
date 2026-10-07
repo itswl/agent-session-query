@@ -154,7 +154,7 @@ func (a *SessionQueryAPI) search(ctx context.Context, q source.SearchQuery) sear
 		if len(out.results) >= q.Limit {
 			continue // still counted: sessionsCut says the page cut these matches off
 		}
-		// The extra hit probeLimit asked for is the evidence, and it is dropped here so no
+		// The extra hit ProbeLimit asked for is the evidence, and it is dropped here so no
 		// caller ever sees more than it asked for.
 		//
 		// Counted only for sessions that reach the results. A session limit dropped

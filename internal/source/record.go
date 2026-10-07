@@ -79,7 +79,7 @@ func NewRecord(r Record, updatedAt any) Record {
 	return r
 }
 
-// normalizeForMatch folds a string to "lowercase + forward slashes" for matching.
+// NormalizeForMatch folds a string to "lowercase + forward slashes" for matching.
 //
 // A file-backed source's key is a full path, and the separator follows the OS — on
 // Windows that is `\`. Without folding, the same pattern drops from an exact suffix hit
@@ -170,7 +170,7 @@ func (r Record) Public() map[string]any {
 		out["archived"] = true
 	}
 	if len(r.Files) > 0 {
-		out["files"] = r.Files
+		out["files"] = append([]string(nil), r.Files...) // copied: the record's slice lives in the cache
 	}
 	out["isActive"] = r.IsActive()
 	out["project"] = r.ProjectName()
@@ -276,7 +276,7 @@ func ShellArg(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// newerThan drives list ordering: later update time comes first.
+// NewerThan drives list ordering: later update time comes first.
 // Records whose time would not parse (zero sortAt) always sort after those that have
 // one, and among themselves fall back to reverse string order.
 func (r Record) NewerThan(other Record) bool {
@@ -289,7 +289,7 @@ func (r Record) NewerThan(other Record) bool {
 	return r.sortKey > other.sortKey
 }
 
-// matchRank: see the free function of the same name. This uses the lowercased forms
+// MatchRank: see the free function of the same name. This uses the lowercased forms
 // computed when the record was built.
 func (r Record) MatchRank(patternLower string) int {
 	return MatchRank(patternLower, r.lowerSID, r.lowerKey)
@@ -524,8 +524,8 @@ func mtimeISO(path string) string {
 	return st.ModTime().UTC().Format("2006-01-02T15:04:05")
 }
 
-// matchRank scores how well a pattern matches a session: 0 is the most exact, -1 means
-// no match. pattern / sid / key must already have gone through normalizeForMatch
+// MatchRank scores how well a pattern matches a session: 0 is the most exact, -1 means
+// no match. pattern / sid / key must already have gone through NormalizeForMatch
 // (lowercase + forward slashes).
 func MatchRank(patternLower, sid, key string) int {
 	if sid != "" && patternLower == sid {

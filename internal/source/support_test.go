@@ -37,7 +37,7 @@ func jsonUnmarshalString(line string, into *map[string]any) error {
 }
 
 // packSecret is secret-shaped: a known key prefix followed by a long mixed-case,
-// digit-bearing run — what redactSecrets is built to catch.
+// digit-bearing run — what RedactSecrets is built to catch.
 var packSecret = "sk-" + strings.Repeat("aB3dE", 8)
 
 func containsString(list []string, s string) bool {

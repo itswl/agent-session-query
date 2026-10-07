@@ -18,7 +18,7 @@ import (
 // and display names their CLIs write, and the app layer cleans every snippet a search
 // returns.
 
-// indexFold finds needleLower case-insensitively (needleLower must already be lowercase)
+// IndexFold finds needleLower case-insensitively (needleLower must already be lowercase)
 // and returns -1 when absent. It does not copy all of s first, saving an allocation on
 // long lines.
 func IndexFold(s, needleLower string) int {
@@ -114,7 +114,7 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`),
 }
 
-// redactSecrets replaces the secret-shaped runs in text this service assembled.
+// RedactSecrets replaces the secret-shaped runs in text this service assembled.
 //
 // Run after stripTerminalControls, never before: a key with a colour code in the middle of
 // it is one string only once the escapes are gone.

@@ -187,7 +187,7 @@ func (s *OpenCodeSource) listV2(db *sql.DB) ([]Record, error) {
 			Source: "opencode",
 			Key:    s.dbPath + "#" + id.String,
 			// opencode writes its own title, and it can quote anything the session
-			// touched; it is cleaned like every assembled title (see redactSecrets)
+			// touched; it is cleaned like every assembled title (see RedactSecrets)
 			ShortKey:     FirstNonEmpty(RedactSecrets(StripTerminalControls(title.String)), id.String),
 			SessionID:    id.String,
 			Status:       "done",

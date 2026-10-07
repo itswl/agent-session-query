@@ -185,8 +185,10 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		}
 		out := map[string]any{
 			"results": results, "matched": found.matched,
-			"scanned":   found.scanned,
-			"truncated": map[string]any{"sessions": found.sessionsCut, "hits": found.hitsCut},
+			"scanned": found.scanned,
+			"truncated": map[string]any{
+				"sessions": found.sessionsCut, "hits": found.hitsCut, "scan": found.scanStopped,
+			},
 		}
 		if offset+len(results) < len(found.results) {
 			out["nextCursor"] = encodeCursor(offset + len(results))

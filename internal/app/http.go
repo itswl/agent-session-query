@@ -542,13 +542,15 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			return statusClientClosed
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"query":     query.needle,
-			"results":   found.results,
-			"total":     len(found.results),
-			"matched":   found.matched, // sessions with a hit, possibly more than total
-			"scanned":   found.scanned, // sessions actually scanned
-			"truncated": map[string]any{"sessions": found.sessionsCut, "hits": found.hitsCut},
-			"tookMs":    time.Since(started).Milliseconds(),
+			"query":   query.needle,
+			"results": found.results,
+			"total":   len(found.results),
+			"matched": found.matched, // sessions with a hit among those scanned; a lower bound when the scan stopped
+			"scanned": found.scanned, // sessions actually scanned
+			"truncated": map[string]any{
+				"sessions": found.sessionsCut, "hits": found.hitsCut, "scan": found.scanStopped,
+			},
+			"tookMs": time.Since(started).Milliseconds(),
 		})
 		return http.StatusOK
 	}

@@ -154,8 +154,11 @@ same holds for matching messages: the filter runs before the page is cut, so `li
 `cursor` and `total` all count messages of that role, and a page never mixes roles.
 `cursor` pages from an end and cannot be combined with `at`; cursors are capped at the same
 20 000-message depth as the HTTP `offset`, and a deeper one is refused rather than silently
-cut short. `list_sessions` and `search_sessions` report the true totals — `matched` /
-`total` cover everything before pagination.
+cut short. `list_sessions` reports the true total — `total` covers everything before pagination.
+`search_sessions` reports what it scanned: once `limit` sessions have matched the scan
+stops (candidates are newest-first, so nothing unscanned could reach the page), and
+`matched` is then a lower bound — `truncated.scan` says the scan stopped there, `scanned`
+says how far it got.
 
 ## Time bounds
 

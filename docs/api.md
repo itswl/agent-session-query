@@ -84,11 +84,15 @@ inlines under `mode=full`. What to do with them is the caller's policy — and n
 transcript can contain text shaped like instructions, which this service neither marks nor
 strips; see the injection note in [mcp.md](mcp.md).
 
-In the response, `matched` is how many sessions matched, `total` how many were returned,
-and `scanned` how many were examined. `truncated` carries the reasons results are short as
-two separate booleans rather than one flag, because they are two different knobs:
-`sessions` means more sessions matched than `limit` returned, and `hits` means some session
-had more hits than `per_session` returned.
+In the response, `matched` is how many of the scanned sessions matched, `total` how many
+were returned, and `scanned` how many were examined. Once `limit` sessions have matched the
+scan stops — candidates are newest-first, so nothing unscanned could have reached the page
+— and `matched` is then a lower bound; `truncated.scan` says the scan stopped there, and
+`limit=0` is the count-only request that always scans everything. `truncated` carries the
+reasons results are short as separate booleans rather than one flag, because they are
+different knobs: `sessions` means the page was cut by `limit` (more sessions matched than
+`limit` returned, or the scan stopped there), `hits` means some session had more hits than
+`per_session` returned, and `scan` means the scan stopped once `limit` was reached.
 
 With a lot of history, narrow the scan with `since=30d` (which also accepts `12h` or
 `2026-09-01`), `until` for the other end of that window, `pattern` to search inside one

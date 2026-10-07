@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -23,6 +24,10 @@ import (
 // The speed comes from ordering, not cleverness: run a case-insensitive Contains over the
 // raw bytes first and only JSON-decode a line once it matches. That skips decoding for
 // 99% of lines, and decoding is the expensive part of the scan.
+//
+// And the scan stops before the corpus runs out: once limit sessions have matched, the
+// dispatcher stops handing out work (see search). The numbers above therefore price the
+// worst case — a count-only limit=0 pass — rather than the usual page.
 const (
 	defaultSearchLimit      = 30  // how many sessions to return at most
 	defaultSearchPerSession = 3   // how many hits per session at most
@@ -89,15 +94,20 @@ type searchableSource interface {
 // caller still needs to know how much was left out.
 type searchOutcome struct {
 	results []map[string]any
-	scanned int  // sessions actually scanned
-	matched int  // sessions with a hit, possibly more than len(results)
+	scanned int // sessions actually scanned
+	// matched counts the scanned sessions with a hit: exact when the scan ran to the end
+	// of the corpus, a lower bound when it stopped at limit — scanStopped says which
+	matched int
 	stopped bool // the search was cancelled part-way; results are incomplete
 	// Why results are short, kept apart rather than as one flag. A caller that sees fewer
 	// hits than it asked for needs to know which knob to turn, and the two answers are
 	// different knobs: sessionsCut is limit, hitsCut is per_session. One boolean covering
 	// both says only "something was cut" and leaves the caller guessing.
-	sessionsCut bool // more sessions matched than limit returned
+	sessionsCut bool // the page was cut by limit: more sessions matched, or the scan stopped there
 	hitsCut     bool // some session had more hits than per_session returned
+	// scanStopped: the scan stopped once limit sessions had matched instead of walking the
+	// rest of the corpus, so an unscanned session may match too
+	scanStopped bool
 }
 
 // search looks through every enabled source, newest session first.
@@ -126,7 +136,8 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 			}
 		}
 	}
-	// Newest first, so truncating at limit keeps the most recent
+	// Newest first, so truncating at limit keeps the most recent — and so the scan can stop
+	// once limit sessions have matched without changing what the page would hold
 	sort.SliceStable(all, func(i, j int) bool { return all[i].rec.newerThan(all[j].rec) })
 
 	hits := make([][]map[string]any, len(all))
@@ -134,6 +145,10 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 	if workers > len(all) {
 		workers = len(all)
 	}
+	// The counters are read while the scans are still running: the dispatcher stops handing
+	// out sessions once limit of them have matched.
+	var scanned, found atomic.Int64
+	scanStopped := false
 	if workers > 0 {
 		jobs := make(chan int)
 		var wg sync.WaitGroup
@@ -146,14 +161,31 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 						continue // drain the channel without starting more work
 					}
 					c := all[i]
-					hits[i] = safeParse(c.source.Mode(), "search results", func() []map[string]any {
+					matches := safeParse(c.source.Mode(), "search results", func() []map[string]any {
 						return searchOne(ctx, c.source, c.rec, q)
 					})
+					hits[i] = matches
+					scanned.Add(1)
+					if len(matches) > 0 {
+						found.Add(1)
+					}
 				}
 			}()
 		}
 		for i := range all {
 			if cancelled(ctx) {
+				break
+			}
+			// Once limit sessions have matched, nothing further can reach the page:
+			// candidates are newest-first and jobs are handed out in that order, so every
+			// session still unscanned is older than every one that matched. What stopping
+			// gives up is the exact total, which is why matched is a lower bound whenever
+			// scanStopped says the scan ended here.
+			//
+			// limit=0 is the count-only request — it wants exactly the total this would
+			// give up — so it scans everything.
+			if q.limit > 0 && found.Load() >= int64(q.limit) {
+				scanStopped = true
 				break
 			}
 			jobs <- i
@@ -162,14 +194,19 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 		wg.Wait()
 	}
 
-	out := searchOutcome{results: []map[string]any{}, scanned: len(all), stopped: cancelled(ctx)}
+	out := searchOutcome{
+		results:     []map[string]any{},
+		scanned:     int(scanned.Load()),
+		stopped:     cancelled(ctx),
+		scanStopped: scanStopped,
+	}
 	for i, matches := range hits {
 		if len(matches) == 0 {
 			continue
 		}
 		out.matched++
 		if len(out.results) >= q.limit {
-			continue // keep counting matched so the caller learns how much was cut
+			continue // still counted: sessionsCut says the page cut these matches off
 		}
 		// The extra hit probeLimit asked for is the evidence, and it is dropped here so no
 		// caller ever sees more than it asked for.
@@ -187,7 +224,7 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 		item["matchCount"] = len(matches)
 		out.results = append(out.results, item)
 	}
-	out.sessionsCut = out.matched > len(out.results)
+	out.sessionsCut = out.matched > len(out.results) || out.scanStopped
 	return out
 }
 

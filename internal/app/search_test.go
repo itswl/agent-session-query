@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -146,15 +148,15 @@ func TestHTTPSearch(t *testing.T) {
 	if body["total"] != float64(0) || body["matched"] != float64(1) {
 		t.Fatalf("matched should still be reported after limit truncates: %v", body)
 	}
-	if cut := body["truncated"].(map[string]any); cut["sessions"] != true || cut["hits"] != false {
-		t.Fatalf("limit=0 cut sessions, not hits: %v", cut)
+	if cut := body["truncated"].(map[string]any); cut["sessions"] != true || cut["hits"] != false || cut["scan"] != false {
+		t.Fatalf("limit=0 is the count-only request; it cuts at the page but scans everything: %v", cut)
 	}
 	// Nothing found: neither reason is set
 	_, body = get(t, srv.URL+"/search?q=averyunlikelyneedle", "")
 	if body["total"] != float64(0) {
 		t.Fatalf("no match = %v", body)
 	}
-	if cut := body["truncated"].(map[string]any); cut["sessions"] != false || cut["hits"] != false {
+	if cut := body["truncated"].(map[string]any); cut["sessions"] != false || cut["hits"] != false || cut["scan"] != false {
 		t.Fatalf("nothing matched, so nothing was cut: %v", cut)
 	}
 	// q is required
@@ -510,7 +512,68 @@ func TestSearchHitsTruncationOnlyCountsReturnedSessions(t *testing.T) {
 	}
 }
 
-// A brief is copied and handed to another agent, and it quotes the prompt, so a key pasted
+// TestSearchStopsOnceLimitIsReached: the scan is bounded by the page, not by the corpus.
+// Candidates are newest-first and jobs are handed out in that order, so once limit sessions
+// have matched, nothing still unscanned could have reached the results — the scan stops,
+// truncated.scan says so, and matched becomes "at least this many".
+func TestSearchStopsOnceLimitIsReached(t *testing.T) {
+	root := t.TempDir()
+	// Far more sessions than any worker pool hands out before the first two matches land
+	const sessions = 300
+	for i := 0; i < sessions; i++ {
+		write(t, filepath.Join(root, "p", fmt.Sprintf("s%03d.jsonl", i)),
+			`{"type":"session","id":"sid-`+strconv.Itoa(i)+`","cwd":"/w"}`,
+			`{"type":"message","id":"m1","timestamp":"`+strconv.Itoa(1700000000+i)+`","message":{"role":"user","content":[{"type":"text","text":"the kafka question"}]}}`,
+		)
+	}
+	sources := []SessionSource{newPiSource(root)}
+	api := newSessionQueryAPI(sources, 0)
+	q := searchQuery{needle: "kafka", lowered: []byte("kafka"), limit: 2, perSession: 3}
+
+	out := api.search(context.Background(), q)
+	if len(out.results) != 2 {
+		t.Fatalf("limit=2 returned %d sessions", len(out.results))
+	}
+	if !out.scanStopped || !out.sessionsCut || out.stopped {
+		t.Fatalf("a filled page must report the scan stop: %+v", out)
+	}
+	if out.scanned < 2 || out.scanned >= sessions {
+		t.Fatalf("scanned %d of %d; the scan is not bounded by the page", out.scanned, sessions)
+	}
+	if out.matched < 2 {
+		t.Fatalf("matched %d, want at least the two returned", out.matched)
+	}
+	// Newest first still holds under the early stop: the page is the two newest sessions
+	if got := out.results[0]["sessionId"]; got != "sid-299" {
+		t.Fatalf("the page does not start at the newest session: %v", got)
+	}
+	if got := out.results[1]["sessionId"]; got != "sid-298" {
+		t.Fatalf("the second row is not the second newest: %v", got)
+	}
+
+	// limit=0 is the count-only request: it must keep scanning to the end
+	countOnly := q
+	countOnly.limit = 0
+	all := api.search(context.Background(), countOnly)
+	if all.scanStopped || all.matched != sessions || all.scanned != sessions {
+		t.Fatalf("limit=0 must count the whole corpus: matched %d scanned %d stopped %v",
+			all.matched, all.scanned, all.scanStopped)
+	}
+
+	// ... and the HTTP shape carries the reason: truncated.scan
+	srv := httptest.NewServer(newAPIServer(serverOptions{
+		mode: "auto", sources: sources, api: api, maxConnections: 50,
+	}))
+	t.Cleanup(srv.Close)
+	_, body := get(t, srv.URL+"/search?q=kafka&limit=2", "")
+	cut := body["truncated"].(map[string]any)
+	if cut["scan"] != true || cut["sessions"] != true {
+		t.Fatalf("a stopped scan must be reported: %v", cut)
+	}
+	if results := body["results"].([]any); len(results) != 2 {
+		t.Fatalf("limit=2 returned %d results over HTTP", len(results))
+	}
+} // A brief is copied and handed to another agent, and it quotes the prompt, so a key pasted
 // into a prompt rides along. Measured on a real brief here before this existed: one live
 // 51-character key, in full. Every value below is invented.
 func TestRedactSecrets(t *testing.T) {

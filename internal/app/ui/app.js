@@ -146,7 +146,9 @@ function setStatus(text) {
 function idleStatus() {
   const found = state.content;
   if (found && !found.searching && found.query === state.keyword) {
-    return '\u201c' + found.query + '\u201d · ' + found.matched + ' in message bodies · ' +
+    // A '+' when the scan stopped at the page size: matched is then a lower bound
+    const matched = found.truncated && found.truncated.scan ? found.matched + '+' : found.matched;
+    return '\u201c' + found.query + '\u201d · ' + matched + ' in message bodies · ' +
       found.scanned + ' scanned · ' + found.tookMs + ' ms';
   }
   return state.sessions.length + ' sessions · updated ' + state.loadedAt;
@@ -728,9 +730,17 @@ function fillContentHead(node, row) {
   setText(label, row.extra
     ? row.extra + ' more in message bodies'
     : 'Also in message bodies, all listed above');
-  // matched counts every session with a hit, including the ones already listed above
-  // truncated is an object, so it is always truthy — read the reason this note is about
-  setText(note, found.truncated?.sessions ? '(of ' + found.matched + ', showing the first 50)' : '');
+  // matched counts every scanned session with a hit, including the ones already listed
+  // above. truncated is an object, so it is always truthy: read the reason this note is
+  // about. When the scan itself stopped at the page size, matched is a lower bound, so the
+  // note says that rather than printing "(of 50)" for a number that is exactly 50.
+  let tail = '';
+  if (found.truncated?.sessions) {
+    tail = found.truncated.scan
+      ? '(showing the first 50 \u2014 the scan stopped there)'
+      : '(of ' + found.matched + ', showing the first 50)';
+  }
+  setText(note, tail);
 }
 
 function buildHit(rowId, sessionId) {

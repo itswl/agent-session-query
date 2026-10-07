@@ -371,6 +371,11 @@ func buildSources(mode string, paths []sourcePath) ([]SessionSource, error) {
 
 	enabled := []SessionSource{}
 	for _, name := range knownModes {
+		// knownModes and factories are two lists of the same thing; a mode in one and not
+		// the other is a wiring bug, and it surfaces as an error rather than a nil call
+		if factories[name] == nil {
+			return nil, fmt.Errorf("knownModes names %q but no factory exists for it", name)
+		}
 		source := at(name)
 		if source.Exists() {
 			enabled = append(enabled, source)

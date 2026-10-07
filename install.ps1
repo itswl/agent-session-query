@@ -40,6 +40,24 @@ try {
     Write-Host "Downloading agent-session-query $Version for windows-$Arch..."
     Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath -UseBasicParsing
 
+    # Verify against the release's SHA256SUMS (published since v0.25.0). Releases older
+    # than that have no sums asset and install with a warning; a mismatch is always fatal.
+    $SumsUrl = "https://github.com/$Repo/releases/download/$Version/SHA256SUMS"
+    $SumsPath = Join-Path $TempDir "SHA256SUMS"
+    try {
+        Invoke-WebRequest -Uri $SumsUrl -OutFile $SumsPath -UseBasicParsing
+    } catch {
+        Write-Warning "no SHA256SUMS published for $Version; installing without verification"
+    }
+    if (Test-Path $SumsPath) {
+        $Entry = Select-String -Path $SumsPath -Pattern ("\s" + [regex]::Escape($ZipName) + "$") | Select-Object -First 1
+        if (-not $Entry) { throw "SHA256SUMS has no entry for $ZipName" }
+        $Expected = ($Entry.Line -split '\s+')[0]
+        $Actual = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash
+        if ($Actual -ne $Expected) { throw "checksum mismatch for $ZipName (expected $Expected, got $Actual)" }
+        Write-Host "Checksum verified."
+    }
+
     Expand-Archive -Path $ZipPath -DestinationPath $TempDir -Force
     $SourceExe = Join-Path $TempDir $BinaryName
     if (-not (Test-Path $SourceExe)) {

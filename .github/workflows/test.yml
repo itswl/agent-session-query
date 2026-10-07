@@ -62,6 +62,14 @@ jobs:
             exit 1
           fi
 
+      # app.js is hand-written with no build step. The Go tests only grep the assets for
+      # forbidden sinks, so a syntax error in app.js shipped with every test green
+      # (verified by appending one) — this step is the parse they cannot do.
+      - name: JavaScript syntax
+        run: |
+          node --check internal/app/ui/app.js
+          node --check internal/app/ui/theme.js
+
       - name: go vet
         env:
           CGO_ENABLED: '0'

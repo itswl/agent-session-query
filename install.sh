@@ -72,6 +72,31 @@ trap cleanup EXIT INT TERM
 
 curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/$TARBALL"
 
+# Verify against the release's SHA256SUMS (published since v0.25.0). Releases older than
+# that have no sums asset and install with a warning; a mismatch is always fatal.
+SUMS_URL="https://github.com/$REPO/releases/download/$VERSION/SHA256SUMS"
+if curl -fsSL "$SUMS_URL" -o "$TMP_DIR/SHA256SUMS" 2>/dev/null; then
+  EXPECTED="$(awk -v name="$TARBALL" '$2 == name { print $1 }' "$TMP_DIR/SHA256SUMS")"
+  if [ -z "$EXPECTED" ]; then
+    echo "[ERROR] SHA256SUMS has no entry for $TARBALL" >&2
+    exit 1
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL="$(sha256sum "$TMP_DIR/$TARBALL" | awk '{print $1}')"
+  else
+    ACTUAL="$(shasum -a 256 "$TMP_DIR/$TARBALL" | awk '{print $1}')"
+  fi
+  if [ "$EXPECTED" != "$ACTUAL" ]; then
+    echo "[ERROR] checksum mismatch for $TARBALL" >&2
+    echo "  expected $EXPECTED" >&2
+    echo "  got      $ACTUAL" >&2
+    exit 1
+  fi
+  echo "Checksum verified."
+else
+  echo "[WARN] no SHA256SUMS published for $VERSION; installing without verification" >&2
+fi
+
 # Unpack
 tar -xzf "$TMP_DIR/$TARBALL" -C "$TMP_DIR"
 

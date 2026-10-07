@@ -193,6 +193,14 @@ jobs:
             } >> release-notes.md
           fi
 
+      # The one-line installers download and execute; a published digest is the one
+      # thing that lets them verify what they got. Names are relative to dist/, where
+      # the archives sit, so the check runs from that directory.
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum agent-session-query-*.tar.gz agent-session-query-*.zip > SHA256SUMS
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -200,4 +208,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --notes-file release-notes.md \
-            dist/agent-session-query-*.tar.gz dist/agent-session-query-*.zip
+            dist/agent-session-query-*.tar.gz dist/agent-session-query-*.zip dist/SHA256SUMS

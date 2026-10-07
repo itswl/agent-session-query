@@ -107,7 +107,19 @@ func Run(args []string) int {
 	// MCP mode: stdout belongs to JSON-RPC alone, so startup output must go to stderr
 	if *mcp {
 		mcpStartupBanner(*mode, sources)
-		return runMCP(&mcpServer{api: api, sources: sources, maxLimit: *maxLimit}, os.Stdin, os.Stdout)
+		return runMCP(&mcpServer{api: api, sources: sources, maxLimit: effectiveMaxLimit(*maxLimit)}, os.Stdin, os.Stdout)
+	}
+
+	// A non-loopback bind without a token hands every agent record on the machine to
+	// whoever can reach the port. The README has always said to set a token before
+	// exposing it; now the process insists. (The container's CMD passes --host 0.0.0.0,
+	// so a `docker run` without HOOK_TOKEN stops here with this message instead of
+	// serving the mounted sessions to the network.)
+	loopback := hostIsLoopback(*host)
+	if !loopback && *hookToken == "" {
+		fmt.Fprintf(os.Stderr, "[FATAL] refusing to serve on %s without a token: this service reads every agent session on this machine, tool output and all.\n", *host)
+		fmt.Fprintln(os.Stderr, "        Bind 127.0.0.1 (the default) or set --hook_token / HOOK_TOKEN — see the Security section of the README.")
+		return 2
 	}
 
 	fmt.Printf("Mode: %s\n", *mode)
@@ -137,6 +149,7 @@ func Run(args []string) int {
 		corsOrigin:     *corsOrigin,
 		maxConnections: *maxConnections,
 		maxLimit:       *maxLimit,
+		loopbackOnly:   loopback,
 	})
 
 	httpServer := &http.Server{
@@ -155,17 +168,29 @@ func Run(args []string) int {
 		fmt.Fprintf(os.Stderr, "[FATAL] failed to listen: %v\n", err)
 		return 1
 	}
+	// The socket is the ground truth: whatever the flag said, a --host *name* can resolve
+	// somewhere else ("localhost" through a poisoned hosts file, say). If this is meant
+	// to be the tokenless loopback posture, the bound address must actually be loopback.
+	if loopback && *hookToken == "" {
+		if tcp, ok := inner.Addr().(*net.TCPAddr); !ok || !tcp.IP.IsLoopback() {
+			fmt.Fprintf(os.Stderr, "[FATAL] --host %s resolved to %s, which is not a loopback address; refusing without a token.\n", *host, inner.Addr())
+			_ = inner.Close()
+			return 2
+		}
+	}
 	listener := newLimitListener(inner, *maxConnections, *acceptQueue)
 	listener.server = server
 
 	fmt.Println("\nSession API started")
 	fmt.Printf("Listening on: http://%s:%d\n", *host, *port)
+	// Rendered from rootEndpoints — the same table GET / serves and the route test holds
+	// against the router — so the banner cannot drift on its own. It used to name five
+	// routes while fifteen were served, /ui among the missing.
 	fmt.Println("\nEndpoints:")
-	fmt.Println("  GET /sessions                        - list every session")
-	fmt.Println("  GET /sessions/<pattern>              - one session")
-	fmt.Println("  GET /sessions/<pattern>/messages     - its messages")
-	fmt.Println("  GET /sessions/<pattern>/final        - its final result")
-	fmt.Println("  GET /health                          - health check (with stats)")
+	for _, line := range rootEndpointLines() {
+		fmt.Println("  " + line)
+	}
+	fmt.Printf("\nWeb UI: http://%s:%d/ui\n", *host, *port)
 	fmt.Println("\nExample:")
 	fmt.Printf("  curl -H 'Authorization: Bearer xxx' http://localhost:%d/sessions\n", *port)
 	fmt.Println("\nPress Ctrl+C to stop")

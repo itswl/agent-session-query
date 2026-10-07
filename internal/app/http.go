@@ -24,6 +24,17 @@ const (
 	mcpPath          = "/mcp"
 )
 
+// effectiveMaxLimit resolves --max-limit. A value below 1 is no cap at all, and both
+// query surfaces must resolve it the same way: the HTTP server always did, but the stdio
+// MCP path built its mcpServer from the raw flag — `--mcp --max-limit 0` left argInt with
+// no clamp, and a limit=1e12 tool call then asked the sink for a 1e12-message window.
+func effectiveMaxLimit(n int) int {
+	if n < 1 {
+		return defaultMaxLimit
+	}
+	return n
+}
+
 // apiServer: routing, authentication, connection limiting and stats
 type apiServer struct {
 	mode       string
@@ -33,6 +44,10 @@ type apiServer struct {
 	corsOrigin string
 	maxLimit   int
 	mcp        *mcpServer
+
+	// loopbackOnly: the listener is bound to a loopback address (the default). With no
+	// token configured this arms the Host check — see hostAllowed for why only then.
+	loopbackOnly bool
 
 	maxConnections int
 
@@ -50,12 +65,11 @@ type serverOptions struct {
 	corsOrigin     string
 	maxConnections int
 	maxLimit       int
+	loopbackOnly   bool
 }
 
 func newAPIServer(opts serverOptions) *apiServer {
-	if opts.maxLimit < 1 {
-		opts.maxLimit = defaultMaxLimit
-	}
+	opts.maxLimit = effectiveMaxLimit(opts.maxLimit)
 	return &apiServer{
 		mode:           opts.mode,
 		sources:        opts.sources,
@@ -64,6 +78,7 @@ func newAPIServer(opts serverOptions) *apiServer {
 		corsOrigin:     opts.corsOrigin,
 		maxLimit:       opts.maxLimit,
 		maxConnections: opts.maxConnections,
+		loopbackOnly:   opts.loopbackOnly,
 		mcp:            &mcpServer{api: opts.api, sources: opts.sources, maxLimit: opts.maxLimit},
 	}
 }
@@ -179,6 +194,74 @@ func (w *statusRecorder) Write(p []byte) (int, error) {
 	return w.ResponseWriter.Write(p)
 }
 
+// originAllowed is the Origin half of the DNS-rebinding defence, applied to every route.
+// A request carrying Origin came from a browser; native clients (the MCP transports, a
+// script, curl) never send that header. So "no Origin" passes, while an Origin that is
+// present must match --cors-origin or the request is refused. The MCP spec spells this
+// requirement out for /mcp; the data routes had exactly the same problem, and for a long
+// time only /mcp was guarded.
+func (s *apiServer) originAllowed(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	return s.corsOrigin == "*" || (s.corsOrigin != "" && s.corsOrigin == origin)
+}
+
+// hostAllowed is the Host half, and it is the one that actually stops DNS rebinding:
+// rebinding needs no cross-origin request at all — the page fetches its own origin, the
+// name resolves to 127.0.0.1, the browser sends Host: attacker.example and no Origin —
+// so the check has to be on Host.
+//
+// It arms only in the configuration the README's threat model is about: bound to loopback
+// (the default) and no token configured. With a token the attacker gains nothing, and
+// leaving the check off there keeps reverse proxies working — a proxy forwards the
+// client's Host (the public name), which is not a loopback name. Bound elsewhere, the
+// operator chose exposure explicitly and the token is the defence.
+func (s *apiServer) hostAllowed(r *http.Request) bool {
+	if !s.loopbackOnly || s.token != "" {
+		return true
+	}
+	host := r.Host
+	if host == "" {
+		// HTTP/1.1 with a bare "Host:" or HTTP/1.0 with none: not a loopback name, so it
+		// does not satisfy the invariant. (A browser always sends one, so refusing costs
+		// nothing a page could have used.)
+		return false
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.Trim(host, "[]"), ".")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// hostIsLoopback reports whether a --host value will bind a loopback address.
+//
+// It matches the string exactly — "localhost", or an IP that parses — deliberately: the
+// value goes to net.Listen as-is, and anything else (a trailing-dot spelling like
+// "127.0.0.1.", a bracketed form like "[::1]") is a *name* to the resolver, not the
+// literal address. Trimming decorations here once called such spellings loopback and
+// skipped the no-token refusal; net.Listen then resolved the name through DNS, which on
+// a machine whose resolver answers binds wherever DNS says — without a token. A spelling
+// this cannot verify refuses instead (fail closed), and run.go re-checks the bound socket
+// itself so even a resolvable "localhost" cannot land elsewhere unnoticed.
+func hostIsLoopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
@@ -193,8 +276,9 @@ func (s *apiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	s.applyCORS(w)
 
-	switch r.Method {
-	case http.MethodOptions:
+	// Preflights carry an Origin by definition and ask nothing of their own; the guards
+	// below are about the request that follows them
+	if r.Method == http.MethodOptions {
 		if s.corsOrigin != "" {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
@@ -203,6 +287,24 @@ func (s *apiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "0")
 		w.WriteHeader(http.StatusOK)
 		return
+	}
+
+	// DNS-rebinding guards, in front of every route that answers anything: a request a
+	// browser sent from another origin is refused, and — with no token on a loopback
+	// listener — so is a request whose Host is not a loopback name. See originAllowed
+	// and hostAllowed for what each one is worth.
+	if !s.originAllowed(r) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "Origin not allowed"})
+		logRequest(r, http.StatusForbidden)
+		return
+	}
+	if !s.hostAllowed(r) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "Host not allowed"})
+		logRequest(r, http.StatusForbidden)
+		return
+	}
+
+	switch r.Method {
 	case http.MethodGet, http.MethodHead:
 		// carry on
 	case http.MethodPost:
@@ -293,8 +395,13 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 		// The health check is unauthenticated, so it cannot scan the sources to find out —
 		// it reports the failure the last scan hit (see listWarnings). Without it the one
 		// failure worth knowing about looks like perfect health: an empty session list.
-		if warnings := s.api.listWarnings(); len(warnings) > 0 {
-			body["warnings"] = warnings
+		// The status itself stays open for probes, but the warnings can name filesystem
+		// paths, so once a token is configured they are shown only to a request that
+		// presents it.
+		if s.token == "" || s.checkAuth(r) {
+			if warnings := s.api.listWarnings(); len(warnings) > 0 {
+				body["warnings"] = warnings
+			}
 		}
 		writeJSON(w, http.StatusOK, body)
 		return http.StatusOK

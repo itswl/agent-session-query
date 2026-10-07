@@ -56,14 +56,20 @@ type messageQuery struct {
 	// carrying every build log in full is megabytes; the export and a caller that wants
 	// the end of the output the preview dropped ask for this.
 	full bool
+	// role keeps only messages with this role ("user" / "assistant"). The filter runs
+	// inside the sink, before the window and the offset are counted, so limit, offset and
+	// the page a cursor lands on all speak of matching messages rather than of whichever
+	// rows happened to come first. Empty is the ordinary case: no filtering.
+	role string
 }
 
 // messageSink collects messages according to a messageQuery.
 //
 // Earliest N: stop as soon as there are enough (add returns false) and end the scan early.
 // Latest N: the scan has to run to the end of the file, so a ring buffer holds the
-// requested page plus any descending offset. The offset is bounded by the HTTP layer;
-// it is the price of a stable cursor for sources whose timestamps are not unique.
+// requested page plus any descending offset — exactly limit+offset messages, never a
+// smaller cap. The offset is bounded by the HTTP layer; it is the price of a stable
+// cursor for sources whose timestamps are not unique.
 type messageSink struct {
 	q        messageQuery
 	items    []map[string]any
@@ -80,9 +86,12 @@ func newMessageSink(q messageQuery) *messageSink {
 	if q.fromEnd && q.at.IsZero() {
 		capacity += q.offset
 	}
-	if capacity > 20000 {
-		capacity = 20000
-	}
+	// No separate cap here. The ring has to hold exactly limit+offset: result() slices
+	// the ring by the offset, and a clamp below that cut the page short — or emptied it —
+	// with no error and no flag, at request sizes the HTTP layer explicitly accepts
+	// (offset up to maxMessageOffset, limit up to maxLimit). Both are clamped where they
+	// enter, so there is nothing to defend against here. The allocation is a slice of map
+	// pointers: even the deepest page the API accepts is a few hundred kilobytes.
 	return &messageSink{q: q, items: make([]map[string]any, 0, capacity), capacity: capacity}
 }
 
@@ -90,6 +99,11 @@ func newMessageSink(q messageQuery) *messageSink {
 func (s *messageSink) add(m map[string]any) bool {
 	if s.q.limit == 0 {
 		return false
+	}
+	// A role filter is a filter, not a stop: the scan keeps going so the offset and the
+	// "another page follows" probe below count matching messages only.
+	if s.q.role != "" && toStr(m["role"]) != s.q.role {
+		return true
 	}
 	if !s.q.at.IsZero() {
 		// A message with no readable timestamp is kept rather than dropped: silently

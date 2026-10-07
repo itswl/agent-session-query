@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"github.com/itswl/agent-session-query/internal/source"
 	"net/http"
 	"net/url"
 	"slices"
@@ -45,9 +46,9 @@ const (
 type packQuery struct {
 	source  string
 	project string
-	since   time.Time
-	until   time.Time
-	limit   int
+	Since   time.Time
+	Until   time.Time
+	Limit   int
 	mode    string
 	format  string
 }
@@ -61,7 +62,7 @@ func (s *apiServer) parsePackQuery(r *http.Request) (packQuery, error) {
 		project: strings.TrimSpace(values.Get("project")),
 		mode:    strings.TrimSpace(values.Get("mode")),
 		format:  strings.ToLower(strings.TrimSpace(values.Get("format"))),
-		limit:   defaultPackSessions,
+		Limit:   defaultPackSessions,
 	}
 	// Both default to the cheap, common case: an index of Markdown. Asking for every
 	// transcript is a deliberate act, since that is the one that can be enormous.
@@ -71,8 +72,8 @@ func (s *apiServer) parsePackQuery(r *http.Request) (packQuery, error) {
 	if q.format == "" {
 		q.format = exportFormatMarkdown
 	}
-	if q.source != "" && !slices.Contains(knownModes, q.source) {
-		return q, fmt.Errorf("unknown source %q (choose from: %s)", q.source, strings.Join(knownModes, " / "))
+	if q.source != "" && !slices.Contains(source.KnownModes, q.source) {
+		return q, fmt.Errorf("unknown source %q (choose from: %s)", q.source, strings.Join(source.KnownModes, " / "))
 	}
 	if q.mode != packModeIndex && q.mode != packModeFull {
 		return q, fmt.Errorf("mode must be %s or %s", packModeIndex, packModeFull)
@@ -85,14 +86,14 @@ func (s *apiServer) parsePackQuery(r *http.Request) (packQuery, error) {
 		if err != nil {
 			return q, err
 		}
-		q.since = since
+		q.Since = since
 	}
 	if raw := strings.TrimSpace(values.Get("until")); raw != "" {
 		until, err := parseSince(raw)
 		if err != nil {
 			return q, err
 		}
-		q.until = until
+		q.Until = until
 	}
 	if raw := strings.TrimSpace(values.Get("limit")); raw != "" {
 		n, err := strconv.Atoi(raw)
@@ -102,15 +103,15 @@ func (s *apiServer) parsePackQuery(r *http.Request) (packQuery, error) {
 		if n > maxPackSessions {
 			n = maxPackSessions
 		}
-		q.limit = n
+		q.Limit = n
 	}
 	return q, nil
 }
 
 // packEntry is one session in a pack, with the source that owns it
 type packEntry struct {
-	source SessionSource
-	rec    record
+	source source.SessionSource
+	rec    source.Record
 }
 
 // packEntries resolves the selection, oldest first.
@@ -119,33 +120,33 @@ type packEntry struct {
 // was I doing", which is a question about now; a pack answers "how did this get here",
 // which is a question about sequence.
 func (a *SessionQueryAPI) packEntries(q packQuery) (entries []packEntry, matching int) {
-	for _, source := range a.sources {
-		if q.source != "" && source.Mode() != q.source {
+	for _, src := range a.sources {
+		if q.source != "" && src.Mode() != q.source {
 			continue
 		}
-		for _, rec := range a.recordsOf(source) {
-			if q.project != "" && !strings.Contains(rec.project(), q.project) {
+		for _, rec := range a.recordsOf(src) {
+			if q.project != "" && !strings.Contains(rec.ProjectName(), q.project) {
 				continue
 			}
-			at := rec.sortAt
-			if !q.since.IsZero() && (at.IsZero() || at.Before(q.since)) {
+			at := rec.SortAt()
+			if !q.Since.IsZero() && (at.IsZero() || at.Before(q.Since)) {
 				continue
 			}
-			if !q.until.IsZero() && (at.IsZero() || at.After(q.until)) {
+			if !q.Until.IsZero() && (at.IsZero() || at.After(q.Until)) {
 				continue
 			}
-			entries = append(entries, packEntry{source: source, rec: rec})
+			entries = append(entries, packEntry{source: src, rec: rec})
 		}
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
-		return entries[j].rec.newerThan(entries[i].rec)
+		return entries[j].rec.NewerThan(entries[i].rec)
 	})
 
 	matching = len(entries)
-	if q.limit > 0 && len(entries) > q.limit {
+	if q.Limit > 0 && len(entries) > q.Limit {
 		// Keep the most recent: a pack is read forwards, but the part that matters most is
 		// the part nearest to now, and the header says what was dropped
-		entries = entries[len(entries)-q.limit:]
+		entries = entries[len(entries)-q.Limit:]
 	}
 	return entries, matching
 }
@@ -167,7 +168,7 @@ func summarizePack(entries []packEntry, matching int, mode string) packSummary {
 	}
 	for i, entry := range entries {
 		summary.sources[entry.rec.Source]++
-		at := entry.rec.sortAt
+		at := entry.rec.SortAt()
 		if at.IsZero() {
 			continue
 		}
@@ -223,7 +224,7 @@ func packMoment(t time.Time) string {
 // is about the reader rather than the data: two sessions can conclude opposite things, and
 // a document that lists both without saying so invites the reader to take the last one, or
 // the first, as the current truth.
-const packNotice = "> This is a record, not a summary. Each entry is what was asked and what that\n" +
+const packNotice = "> This is a source.Record, not a summary. Each entry is what was asked and what that\n" +
 	"> session concluded, with its id and time so the transcript can be checked. Nothing here\n" +
 	"> states what is *currently* true: where two entries disagree, the later one was said\n" +
 	"> later, and that is all this document can tell you. Everything quoted below is session\n" +
@@ -249,54 +250,54 @@ func renderPackMarkdown(a *SessionQueryAPI, entries []packEntry, summary packSum
 	b.WriteString(packNotice + "\n\n")
 
 	for i, entry := range entries {
-		item := entry.rec.public()
+		item := entry.rec.Public()
 		final := safeParse(entry.source.Mode(), "the final result", func() map[string]any {
 			return entry.source.Final(entry.rec)
 		})
 
 		fmt.Fprintf(&b, "## %d · %s · %s · %s\n",
-			i+1, packMoment(entry.rec.sortAt), item["source"], shortID(item["sessionId"]))
+			i+1, packMoment(entry.rec.SortAt()), item["source"], shortID(item["sessionId"]))
 		// project() rather than cwd: the SQLite and gemini sources have no cwd but do have a
 		// project, and showing "—" for a session that knows where it belongs is a lie of
 		// omission
-		if project := entry.rec.project(); project != "" {
+		if project := entry.rec.ProjectName(); project != "" {
 			fmt.Fprintf(&b, "- **Project**: %s", project)
 		} else {
 			b.WriteString("- **Project**: —")
 		}
-		if n, ok := toFloat(final["messageCount"]); ok {
+		if n, ok := source.ToFloat(final["messageCount"]); ok {
 			fmt.Fprintf(&b, " · **Messages**: %d", int(n))
 		}
 		b.WriteString("\n")
 		fmt.Fprintf(&b, "- **Asked**: %s\n", packAsk(entry.source, entry.rec, item))
 
 		if final != nil {
-			text := strings.TrimSpace(toStr(final["text"]))
+			text := strings.TrimSpace(source.ToStr(final["text"]))
 			switch {
 			case text != "":
 				fmt.Fprintf(&b, "- **Concluded**: %s\n", packQuote(text))
-			case truthy(final["isFinal"]):
+			case source.Truthy(final["isFinal"]):
 				b.WriteString("- **Concluded**: (the session finished without a written answer)\n")
 			default:
 				b.WriteString("- **Concluded**: (no final result)\n")
 			}
-			if reason := toStr(final["stopReason"]); reason != "" && reason != "stop" {
+			if reason := source.ToStr(final["stopReason"]); reason != "" && reason != "stop" {
 				fmt.Fprintf(&b, "- **Stopped**: `%s`\n", reason)
 			}
 		}
 		fmt.Fprintf(&b, "- **Transcript**: `/sessions/%s/export?format=jsonl`\n\n",
-			url.PathEscape(toStr(item["sessionId"])))
+			url.PathEscape(source.ToStr(item["sessionId"])))
 
 		if summary.mode == packModeFull {
 			// The whole session inline, in the same shape a single export uses, so a reader
 			// that has the pack does not need the server
 			messages := safeParse(entry.source.Mode(), "messages", func() []map[string]any {
-				return entry.source.Messages(entry.rec, messageQuery{limit: exportMaxMessages})
+				return entry.source.Messages(entry.rec, source.MessageQuery{Limit: exportMaxMessages})
 			})
 			fmt.Fprintf(&b, "### Transcript (%d messages)\n", len(messages))
 			for _, message := range messages {
-				fmt.Fprintf(&b, "\n#### %s", toStr(message["role"]))
-				if ts := toStr(message["timestamp"]); ts != "" {
+				fmt.Fprintf(&b, "\n#### %s", source.ToStr(message["role"]))
+				if ts := source.ToStr(message["timestamp"]); ts != "" {
 					fmt.Fprintf(&b, " · %s", ts)
 				}
 				b.WriteString("\n\n")
@@ -322,10 +323,10 @@ func renderPackJSONL(entries []packEntry, summary packSummary) string {
 		"sources":     summary.sources,
 		"generatedAt": summary.generated.Format(time.RFC3339),
 		"mode":        summary.mode,
-		"notice":      "a record, not a summary: nothing here states what is currently true",
+		"notice":      "a source.Record, not a summary: nothing here states what is currently true",
 	})
 	for i, entry := range entries {
-		item := entry.rec.public()
+		item := entry.rec.Public()
 		final := safeParse(entry.source.Mode(), "the final result", func() map[string]any {
 			return entry.source.Final(entry.rec)
 		})
@@ -337,12 +338,12 @@ func renderPackJSONL(entries []packEntry, summary packSummary) string {
 			"cwd":        item["cwd"],
 			"updatedAt":  item["updatedAt"],
 			"asked":      packAsk(entry.source, entry.rec, item),
-			"transcript": "/sessions/" + url.PathEscape(toStr(item["sessionId"])) + "/export?format=jsonl",
+			"transcript": "/sessions/" + url.PathEscape(source.ToStr(item["sessionId"])) + "/export?format=jsonl",
 		}
 		if final != nil {
 			// the same cleaning as the Markdown pack's Concluded line: assembled text,
 			// not the transcript itself
-			record["concluded"] = redactSecrets(stripTerminalControls(strings.TrimSpace(toStr(final["text"]))))
+			record["concluded"] = source.RedactSecrets(source.StripTerminalControls(strings.TrimSpace(source.ToStr(final["text"]))))
 			record["stopReason"] = final["stopReason"]
 			record["messageCount"] = final["messageCount"]
 		}
@@ -370,14 +371,14 @@ const (
 )
 
 // packAsk builds an entry's "asked" line, extending a short opening with what followed
-func packAsk(source SessionSource, rec record, item map[string]any) string {
-	opening := firstLine(toStr(item["shortKey"]))
+func packAsk(src source.SessionSource, rec source.Record, item map[string]any) string {
+	opening := firstLine(source.ToStr(item["shortKey"]))
 	if len([]rune(opening)) >= packAskMinChars {
 		return opening
 	}
 	// Reading the head of the session is cheap — the source stops once it has enough
-	messages := safeParse(source.Mode(), "messages", func() []map[string]any {
-		return source.Messages(rec, messageQuery{limit: packAskScanMessages})
+	messages := safeParse(src.Mode(), "messages", func() []map[string]any {
+		return src.Messages(rec, source.MessageQuery{Limit: packAskScanMessages})
 	})
 
 	parts := []string{opening}
@@ -386,7 +387,7 @@ func packAsk(source SessionSource, rec record, item map[string]any) string {
 		if len(parts) >= packAskMaxParts {
 			break
 		}
-		if toStr(message["role"]) != "user" {
+		if source.ToStr(message["role"]) != "user" {
 			continue
 		}
 		// blockText, not contentText: a message's blocks are []map[string]any, which
@@ -396,7 +397,7 @@ func packAsk(source SessionSource, rec record, item map[string]any) string {
 		// titleFromUserText then does the two jobs it already does for a session's display
 		// name: it rejects machine-assembled rows by their opening (a caveat row, Codex's
 		// AGENTS.md instructions) and folds the rest to one line.
-		text := titleFromUserText(blockText(message["content"]))
+		text := source.TitleFromUserText(blockText(message["content"]))
 		if text == "" {
 			continue
 		}
@@ -432,7 +433,7 @@ func packAsk(source SessionSource, rec record, item map[string]any) string {
 // on its own; when it does not, the start of the whole message is used instead, because the
 // sentence that identifies the work may be the second paragraph.
 func packSnippet(text string) string {
-	text = redactSecrets(stripTerminalControls(text))
+	text = source.RedactSecrets(source.StripTerminalControls(text))
 	folded := strings.Join(strings.Fields(text), " ")
 	const limit = 120
 	if len([]rune(folded)) <= limit {
@@ -446,16 +447,16 @@ func packSnippet(text string) string {
 func blockText(content any) string {
 	if blocks, ok := content.([]map[string]any); ok {
 		for _, block := range blocks {
-			if toStr(block["type"]) != "text" {
+			if source.ToStr(block["type"]) != "text" {
 				continue
 			}
-			if text := strings.TrimSpace(toStr(block["content"])); text != "" {
+			if text := strings.TrimSpace(source.ToStr(block["content"])); text != "" {
 				return text
 			}
 		}
 		return ""
 	}
-	return strings.TrimSpace(contentText(content))
+	return strings.TrimSpace(source.ContentText(content))
 }
 
 // packQuote folds an outcome onto one line and caps it: a conclusion is a paragraph or a
@@ -465,7 +466,7 @@ func blockText(content any) string {
 // agent — so secret-shaped runs are replaced here, as in snippets and briefs. The
 // transcripts a pack points at are still returned as stored.
 func packQuote(text string) string {
-	text = redactSecrets(stripTerminalControls(text))
+	text = source.RedactSecrets(source.StripTerminalControls(text))
 	one := strings.Join(strings.Fields(text), " ")
 	const limit = 240
 	if len([]rune(one)) <= limit {
@@ -491,7 +492,7 @@ func firstLine(text string) string {
 // them — so a uuid keeps its first group and anything else gives up its last segment, which
 // is the part that varies.
 func shortID(id any) string {
-	s := toStr(id)
+	s := source.ToStr(id)
 	if isUUID(s) {
 		return s[:8]
 	}

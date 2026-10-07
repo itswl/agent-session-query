@@ -1,17 +1,12 @@
 package app
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"regexp"
+	"github.com/itswl/agent-session-query/internal/source"
 	"runtime"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
-	"unicode/utf8"
 )
 
 // Content search.
@@ -29,64 +24,15 @@ import (
 // dispatcher stops handing out work (see search). The numbers above therefore price the
 // worst case — a count-only limit=0 pass — rather than the usual page.
 const (
-	defaultSearchLimit      = 30  // how many sessions to return at most
-	defaultSearchPerSession = 3   // how many hits per session at most
-	searchSnippetRadius     = 70  // characters kept on each side of a hit in a snippet
-	maxSearchDepth          = 8   // recursion depth cap when hunting for body text in JSON
-	cancelCheckLines        = 512 // scan this many lines between cancellation checks
+	defaultSearchLimit      = 30 // how many sessions to return at most
+	defaultSearchPerSession = 3  // how many hits per session at most
 )
-
-// cancelled reports whether the caller has walked away. A search holds every core it
-// can get, so an abandoned one has to stop rather than run to completion: the page
-// fires a fresh search on every keystroke and only the last one is ever displayed.
-func cancelled(ctx context.Context) bool {
-	select {
-	case <-ctx.Done():
-		return true
-	default:
-		return false
-	}
-}
-
-// searchQuery is one content search.
-type searchQuery struct {
-	needle     string    // kept verbatim, echoed back to the caller
-	lowered    []byte    // the needle lowercased (ASCII folding)
-	limit      int       // how many sessions to return at most
-	perSession int       // how many hits per session at most
-	since      time.Time // only search sessions updated after this; zero means no limit
-	until      time.Time // only search sessions updated before this; zero means no limit
-	// pattern limits the search to the one session it names, found the same way
-	// get_session finds it (a full id, a fragment, a path fragment). Without it a search
-	// spans every session; with it, "where in this session did we discuss X" is one call
-	// instead of paging a 16 000-message session fifty at a time.
-	pattern string
-	// role keeps only hits from messages with that role — the human's words rather than
-	// the answer that repeats them. Applied while collecting, not after, so per_session
-	// counts hits that match rather than hits that happen to come first.
-	role string
-}
-
-// probeLimit is what a source actually fetches per session: one hit more than the caller
-// asked for.
-//
-// That extra hit is how "there were more" is known. Without it a source that returns
-// exactly per_session hits is indistinguishable from one that ran out of file at exactly
-// that point, and the alternative — every source reporting a flag of its own — would mean
-// widening searchableSource and touching all five places that cap. The length says it
-// instead, and search() trims before anything leaves.
-func (q searchQuery) probeLimit() int {
-	if q.perSession <= 0 {
-		return 0
-	}
-	return q.perSession + 1
-}
 
 // searchableSource lets a source implement content search itself.
 // Anything that does not falls back to the generic path: scan the session file (nearly
 // every source is one jsonl per session).
 type searchableSource interface {
-	Search(ctx context.Context, r record, q searchQuery) []map[string]any
+	Search(ctx context.Context, r source.Record, q source.SearchQuery) []map[string]any
 }
 
 // searchOutcome is one search's results and its scale.
@@ -103,7 +49,7 @@ type searchOutcome struct {
 	// hits than it asked for needs to know which knob to turn, and the two answers are
 	// different knobs: sessionsCut is limit, hitsCut is per_session. One boolean covering
 	// both says only "something was cut" and leaves the caller guessing.
-	sessionsCut bool // the page was cut by limit: more sessions matched, or the scan stopped there
+	sessionsCut bool // the page was cut by Limit: more sessions matched, or the scan stopped there
 	hitsCut     bool // some session had more hits than per_session returned
 	// scanStopped: the scan stopped once limit sessions had matched instead of walking the
 	// rest of the corpus, so an unscanned session may match too
@@ -111,34 +57,34 @@ type searchOutcome struct {
 }
 
 // search looks through every enabled source, newest session first.
-func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutcome {
+func (a *SessionQueryAPI) search(ctx context.Context, q source.SearchQuery) searchOutcome {
 	type candidate struct {
-		source SessionSource
-		rec    record
+		source source.SessionSource
+		rec    source.Record
 	}
 
 	all := []candidate{}
-	if q.pattern != "" {
+	if q.Pattern != "" {
 		// Scoped: the pattern names one session, and only that one is searched
-		if source, rec, ok := a.findSession(q.pattern, ""); ok {
-			all = append(all, candidate{source: source, rec: rec})
+		if src, rec, ok := a.findSession(q.Pattern, ""); ok {
+			all = append(all, candidate{source: src, rec: rec})
 		}
 	} else {
-		for _, source := range a.sources {
-			for _, rec := range a.recordsOf(source) {
-				if !q.since.IsZero() && (rec.sortAt.IsZero() || rec.sortAt.Before(q.since)) {
+		for _, src := range a.sources {
+			for _, rec := range a.recordsOf(src) {
+				if !q.Since.IsZero() && (rec.SortAt().IsZero() || rec.SortAt().Before(q.Since)) {
 					continue
 				}
-				if !q.until.IsZero() && (rec.sortAt.IsZero() || rec.sortAt.After(q.until)) {
+				if !q.Until.IsZero() && (rec.SortAt().IsZero() || rec.SortAt().After(q.Until)) {
 					continue
 				}
-				all = append(all, candidate{source: source, rec: rec})
+				all = append(all, candidate{source: src, rec: rec})
 			}
 		}
 	}
 	// Newest first, so truncating at limit keeps the most recent — and so the scan can stop
 	// once limit sessions have matched without changing what the page would hold
-	sort.SliceStable(all, func(i, j int) bool { return all[i].rec.newerThan(all[j].rec) })
+	sort.SliceStable(all, func(i, j int) bool { return all[i].rec.NewerThan(all[j].rec) })
 
 	hits := make([][]map[string]any, len(all))
 	workers := runtime.GOMAXPROCS(0)
@@ -157,7 +103,7 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 			go func() {
 				defer wg.Done()
 				for i := range jobs {
-					if cancelled(ctx) {
+					if source.Cancelled(ctx) {
 						continue // drain the channel without starting more work
 					}
 					c := all[i]
@@ -173,7 +119,7 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 			}()
 		}
 		for i := range all {
-			if cancelled(ctx) {
+			if source.Cancelled(ctx) {
 				break
 			}
 			// Once limit sessions have matched, nothing further can reach the page:
@@ -184,7 +130,7 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 			//
 			// limit=0 is the count-only request — it wants exactly the total this would
 			// give up — so it scans everything.
-			if q.limit > 0 && found.Load() >= int64(q.limit) {
+			if q.Limit > 0 && found.Load() >= int64(q.Limit) {
 				scanStopped = true
 				break
 			}
@@ -197,7 +143,7 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 	out := searchOutcome{
 		results:     []map[string]any{},
 		scanned:     int(scanned.Load()),
-		stopped:     cancelled(ctx),
+		stopped:     source.Cancelled(ctx),
 		scanStopped: scanStopped,
 	}
 	for i, matches := range hits {
@@ -205,7 +151,7 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 			continue
 		}
 		out.matched++
-		if len(out.results) >= q.limit {
+		if len(out.results) >= q.Limit {
 			continue // still counted: sessionsCut says the page cut these matches off
 		}
 		// The extra hit probeLimit asked for is the evidence, and it is dropped here so no
@@ -215,11 +161,11 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 		// entirely is the sessions reason, not this one, and raising hits for it would send
 		// the caller to turn per_session — which changes nothing, because every session it
 		// can actually see came back whole.
-		if len(matches) > q.perSession {
-			matches = matches[:q.perSession]
+		if len(matches) > q.PerSession {
+			matches = matches[:q.PerSession]
 			out.hitsCut = true
 		}
-		item := all[i].rec.public()
+		item := all[i].rec.Public()
 		item["matches"] = matches
 		item["matchCount"] = len(matches)
 		out.results = append(out.results, item)
@@ -230,453 +176,9 @@ func (a *SessionQueryAPI) search(ctx context.Context, q searchQuery) searchOutco
 
 // searchOne searches inside one session, using the source's own implementation when it
 // has one and scanning the session file otherwise.
-func searchOne(ctx context.Context, source SessionSource, rec record, q searchQuery) []map[string]any {
-	if s, ok := source.(searchableSource); ok {
+func searchOne(ctx context.Context, src source.SessionSource, rec source.Record, q source.SearchQuery) []map[string]any {
+	if s, ok := src.(searchableSource); ok {
 		return s.Search(ctx, rec, q)
 	}
-	return searchFile(ctx, rec.File, q)
-}
-
-// searchFile scans one jsonl session file.
-func searchFile(ctx context.Context, path string, q searchQuery) []map[string]any {
-	if path == "" || len(q.lowered) == 0 {
-		return nil
-	}
-	var hits []map[string]any
-	var lower []byte // reused so each line costs no allocation
-	lines := 0
-	eachJSONLLine(path, func(line []byte) bool {
-		// Sampled rather than checked every line: a channel receive per line would cost
-		// more than the Contains that is the actual work here
-		lines++
-		if lines%cancelCheckLines == 0 && cancelled(ctx) {
-			return false
-		}
-		lower = appendLowerASCII(lower[:0], line)
-		if !bytes.Contains(lower, q.lowered) {
-			return true
-		}
-		if hit := buildHit(line, q); hit != nil {
-			// The role filter lives here rather than after the fact: filtering a
-			// per_session-sized slice would keep whichever hits came first in the file
-			// and could miss the one being asked for entirely.
-			if q.role == "" || strOr(hit["role"], "") == q.role {
-				hits = append(hits, hit)
-			}
-		}
-		return len(hits) < q.probeLimit()
-	})
-	return hits
-}
-
-// buildHit turns a matching line into a result; it returns nil when the match landed
-// only in a field name or an escape sequence.
-func buildHit(line []byte, q searchQuery) map[string]any {
-	var obj map[string]any
-	if json.Unmarshal(line, &obj) != nil || obj == nil {
-		return nil
-	}
-	text, ok := findMatchingText(obj, string(q.lowered), 0)
-	if !ok {
-		return nil
-	}
-	return map[string]any{
-		"snippet":   snippetAround(text, string(q.lowered), searchSnippetRadius),
-		"role":      hitRole(obj),
-		"timestamp": hitTimestamp(obj["timestamp"]),
-	}
-}
-
-// textFieldOrder lists the fields body text most likely lives in, searched in this order.
-// Go map iteration is randomised, so without a fixed order the same query could return a
-// different snippet on every run.
-var textFieldOrder = []string{"text", "content", "thinking", "reasoning", "message", "payload"}
-
-// metadataFieldSkip names fields whose values look like text when you squint but never
-// are: timestamps, ordinals, versions. A short or numeric needle ("502", "12") matches
-// inside them constantly — measured locally, searching "502" surfaced snippets that were
-// a timestamp's millisecond part (02:09:43.502Z) and a uuid's tail (...b7502fe).
-//
-// Anything id-shaped is handled by rule rather than by enumeration: a key that ends in
-// "id" after folding (sessionId / session_id / turnId / root_turn_id / callID ...) names
-// an identifier, never body text. The enumerated list covers the non-id shapes.
-//
-// Skipping these fields also means a match that landed nowhere else produces no hit at
-// all, which is exactly the wanted outcome: the row matched, but it had nothing to say.
-var metadataFieldSkip = map[string]bool{
-	"timestamp": true, "time": true, "createdat": true, "updatedat": true,
-	"starttime": true, "endtime": true, "lastupdated": true,
-	"timecreated": true, "timeupdated": true,
-	"ordinal": true, "seq": true, "version": true,
-}
-
-// isMetadataField folds camelCase and snake_case to the same form (sessionId and
-// session_id both become "sessionid") before applying the rule and the list.
-func isMetadataField(key string) bool {
-	folded := strings.ReplaceAll(strings.ToLower(key), "_", "")
-	return metadataFieldSkip[folded] || strings.HasSuffix(folded, "id")
-}
-
-func findMatchingText(v any, needleLower string, depth int) (string, bool) {
-	if depth > maxSearchDepth {
-		return "", false
-	}
-	switch t := v.(type) {
-	case string:
-		// Cleaned before the test, so a needle that exists only inside an escape sequence
-		// is not a match — it is not in the text a reader would see. Searching "38;2"
-		// otherwise hit every line coloured with a 24-bit sequence and returned a snippet
-		// with no occurrence of the needle in it, inflating matched and matchCount.
-		// Returning the cleaned string also means snippetAround has nothing left to strip.
-		if clean := stripTerminalControls(t); indexFold(clean, needleLower) >= 0 {
-			return clean, true
-		}
-	case []any:
-		for _, item := range t {
-			if s, ok := findMatchingText(item, needleLower, depth+1); ok {
-				return s, true
-			}
-		}
-	case map[string]any:
-		for _, key := range textFieldOrder {
-			if isMetadataField(key) {
-				continue
-			}
-			if inner, has := t[key]; has {
-				if s, ok := findMatchingText(inner, needleLower, depth+1); ok {
-					return s, true
-				}
-			}
-		}
-		keys := make([]string, 0, len(t))
-		for key := range t {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys) // remaining fields go in key order so results stay stable
-		for _, key := range keys {
-			if isMetadataField(key) {
-				continue // ids and timestamps are not body text
-			}
-			if s, ok := findMatchingText(t[key], needleLower, depth+1); ok {
-				return s, true
-			}
-		}
-	}
-	return "", false
-}
-
-// hitRole does its best to recover the role of a hit (sources put it in different places)
-func hitRole(obj map[string]any) string {
-	if role := strOr(obj["role"], ""); role != "" {
-		return role
-	}
-	for _, key := range []string{"message", "payload"} {
-		if inner, ok := obj[key].(map[string]any); ok {
-			if role := strOr(inner["role"], ""); role != "" {
-				return role
-			}
-		}
-	}
-	if role := grokHitRole(obj); role != "" {
-		return role
-	}
-	if role := codexHitRole(obj); role != "" {
-		return role
-	}
-	return strOr(obj["type"], "")
-}
-
-// hitTimestamp renders a hit's time the way a message spells one. Most sources write an
-// ISO string and it passes straight through; Grok writes epoch seconds, and a bare integer
-// in the field every other source fills with text is not something a caller should have to
-// special-case.
-func hitTimestamp(v any) string {
-	if s, ok := v.(string); ok {
-		return s
-	}
-	if iso := grokTimestamp(v); iso != "" {
-		return iso
-	}
-	return toStr(v)
-}
-
-// appendLowerASCII appends src to dst with A-Z folded to lowercase.
-// It works byte by byte, so UTF-8 multi-byte sequences (lead byte >= 0x80) pass through
-// untouched — scripts that have no case are unaffected.
-func appendLowerASCII(dst, src []byte) []byte {
-	for _, c := range src {
-		if 'A' <= c && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		dst = append(dst, c)
-	}
-	return dst
-}
-
-// indexFold finds needleLower case-insensitively (needleLower must already be lowercase)
-// and returns -1 when absent. It does not copy all of s first, saving an allocation on
-// long lines.
-func indexFold(s, needleLower string) int {
-	n := len(needleLower)
-	if n == 0 {
-		return 0
-	}
-	for i := 0; i+n <= len(s); i++ {
-		hit := true
-		for j := 0; j < n; j++ {
-			c := s[i+j]
-			if 'A' <= c && c <= 'Z' {
-				c += 'a' - 'A'
-			}
-			if c != needleLower[j] {
-				hit = false
-				break
-			}
-		}
-		if hit {
-			return i
-		}
-	}
-	return -1
-}
-
-// snippetAround cuts radius characters either side of the hit, marking each end it had
-// to trim.
-
-// stripTerminalControls removes ANSI escape sequences and other control characters.
-//
-// A transcript records what a tool printed, and tool output is full of colour codes.
-// Measured on this machine: 24 of 157 Claude sessions carry escape sequences, all of them
-// on the rows that hold tool results, and searching a word inside that output returned 5
-// snippets in 111 with a raw ESC still in them.
-//
-// Two things go wrong when that reaches a caller. The mild one is display: the snippet
-// renders as mojibake anywhere that is not a terminal. The other is that a snippet is
-// content the caller never chose to run. An OSC 52 in a tool log drives the clipboard of
-// whoever prints it, and a cursor sequence moves their cursor.
-//
-// Only snippets are cleaned. A message body is returned exactly as stored, because that is
-// the data and what to do with it is the caller's policy; a snippet is ours, cut for
-// display, so it is ours to make safe.
-func stripTerminalControls(s string) string {
-	if strings.IndexFunc(s, isTerminalControl) < 0 {
-		return s // the overwhelmingly common case, and it allocates nothing
-	}
-	out := make([]byte, 0, len(s))
-	for i := 0; i < len(s); {
-		switch c := s[i]; {
-		case c == 0x1b:
-			i += escapeSequenceLen(s[i:])
-		case c < utf8.RuneSelf && isTerminalControl(rune(c)):
-			i++
-		default:
-			_, size := utf8.DecodeRuneInString(s[i:])
-			out = append(out, s[i:i+size]...)
-			i += size
-		}
-	}
-	return string(out)
-}
-
-// isTerminalControl reports whether a rune is a control character worth removing.
-// Tab and newline stay: they are layout inside the text, not instructions to a terminal.
-// Carriage return goes, because on a terminal it rewrites the line already printed.
-func isTerminalControl(r rune) bool {
-	return (r < 0x20 && r != '\t' && r != '\n') || r == 0x7f
-}
-
-// Secrets in text this service assembles.
-//
-// The rule stripTerminalControls follows applies here too: a message body is the data and
-// goes back as stored, but a snippet, a title and a brief are built here for someone to
-// read, and a brief exists to be copied and handed to another agent. Measured on this
-// machine, one real brief carried a live 51-character API key, a private hostname and two
-// home paths, because the user had pasted the key into a prompt and the brief quotes the
-// prompt.
-//
-// This is best effort and is documented as such. It recognises the shapes that announce
-// themselves — a known prefix followed by a long opaque run, a JWT, a PEM header — and
-// nothing else. A password in prose is not detectable and is not claimed to be.
-var secretPatterns = []*regexp.Regexp{
-	// Provider keys: a known prefix and a long tail. The tail is checked for entropy
-	// below, because a kebab-case name can start with sk- too.
-	regexp.MustCompile(`\b[sprk]k-[A-Za-z0-9_-]{16,}`),
-	regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}`),
-	regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{20,}`),
-	regexp.MustCompile(`\bxox[abprs]-[A-Za-z0-9-]{10,}`),
-	regexp.MustCompile(`\bAIza[A-Za-z0-9_-]{30,}`),
-	// AWS key ids are a fixed shape, so they need no entropy check
-	regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`),
-	// A JWT: three base64url runs, the first one starting with the encoded "{"
-	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`),
-	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`),
-}
-
-// redactSecrets replaces the secret-shaped runs in text this service assembled.
-//
-// Run after stripTerminalControls, never before: a key with a colour code in the middle of
-// it is one string only once the escapes are gone.
-func redactSecrets(s string) string {
-	if s == "" {
-		return s
-	}
-	for _, re := range secretPatterns {
-		s = re.ReplaceAllStringFunc(s, func(match string) string {
-			if !secretLike(match) {
-				return match
-			}
-			return "[redacted]"
-		})
-	}
-	return s
-}
-
-// secretLike rejects what a prefix alone would let through. A generated key packs digits
-// and mixed case into one unbroken run; an identifier that happens to start with sk- is
-// words joined by dashes and has neither.
-func secretLike(match string) bool {
-	if !strings.HasPrefix(match, "sk-") && !strings.HasPrefix(match, "pk-") &&
-		!strings.HasPrefix(match, "rk-") && !strings.HasPrefix(match, "kk-") {
-		return true // the other shapes are distinctive enough on their own
-	}
-	digit, upper := false, false
-	for _, r := range match[3:] {
-		switch {
-		case r >= '0' && r <= '9':
-			digit = true
-		case r >= 'A' && r <= 'Z':
-			upper = true
-		}
-	}
-	return digit && upper
-}
-
-// escapeSequenceLen is the length of the escape sequence starting at s[0], which the
-// caller has already established is ESC.
-//
-// The shape of what follows the ESC decides the length, and getting this wrong is not
-// cosmetic: returning too few leaves the tail of a sequence in the output as text, and
-// returning too many eats text that was never part of one.
-//
-//	[                 CSI: parameters and intermediates, then one final byte in @..~
-//	] P X ^ _         a string sequence, run to BEL or to ST (ESC backslash)
-//	0x20..0x2f        nF: more intermediates, then one final byte in 0..~
-//	0x30..0x7e        a complete two-byte escape (ESC M, ESC 7, ESC c, ...)
-//	anything else     not a sequence at all
-//
-// The nF row is the one this got wrong at first, and it is not exotic: ESC ( B is what
-// tput sgr0 writes, so it is in anything ncurses, less, vim or git coloured. Treating it
-// as a two-byte escape left its final byte behind as a stray "B".
-//
-// The last row matters as much. A second ESC starts a new sequence rather than ending
-// this one, and a byte at or above 0x80 is the lead byte of a rune. Consuming either
-// along with the ESC would swallow a real sequence, or cut a rune in half and leave its
-// continuation bytes behind as invalid UTF-8. Consuming the ESC alone lets the next pass
-// see the byte whole.
-//
-// An unterminated sequence still takes the rest of the string, since leaving the tail of
-// a half-written CSI behind would put back the bytes this removes.
-func escapeSequenceLen(s string) int {
-	if len(s) < 2 {
-		return len(s)
-	}
-	switch c := s[1]; {
-	case c == '[':
-		for i := 2; i < len(s); i++ {
-			if b := s[i]; b >= 0x40 && b <= 0x7e {
-				return i + 1
-			}
-		}
-		return len(s)
-	case c == ']', c == 'P', c == 'X', c == '^', c == '_':
-		for i := 2; i < len(s); i++ {
-			if s[i] == 0x07 {
-				return i + 1
-			}
-			if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\' {
-				return i + 2
-			}
-		}
-		return len(s)
-	case c >= 0x20 && c <= 0x2f:
-		for i := 2; i < len(s); i++ {
-			b := s[i]
-			if b >= 0x30 && b <= 0x7e {
-				return i + 1
-			}
-			if b < 0x20 || b > 0x2f {
-				return i // not a continuation; whatever this is, it is not part of the sequence
-			}
-		}
-		return len(s)
-	case c >= 0x30 && c <= 0x7e:
-		return 2
-	default:
-		return 1
-	}
-}
-
-func snippetAround(text, needleLower string, radius int) string {
-	// Cleaned before the window is cut, not after: an escape sequence counted toward the
-	// radius would spend the snippet's budget on bytes nobody sees, and cutting inside one
-	// would leave its tail behind.
-	text = redactSecrets(stripTerminalControls(text))
-	idx := indexFold(text, needleLower)
-	if idx < 0 {
-		return truncate(text, radius*2, "…")
-	}
-
-	// Open a generous byte window first (UTF-8 is at most 4 bytes per character), then
-	// narrow it down to a character count
-	lo, hi := idx-radius*4, idx+len(needleLower)+radius*4
-	if lo < 0 {
-		lo = 0
-	}
-	if hi > len(text) {
-		hi = len(text)
-	}
-	for lo > 0 && !utf8.RuneStart(text[lo]) { // align to a character boundary
-		lo--
-	}
-	for hi < len(text) && !utf8.RuneStart(text[hi]) {
-		hi++
-	}
-
-	head := trimRunesFromLeft(text[lo:idx], radius)
-	tail := trimRunesFromRight(text[idx:hi], radius+utf8.RuneCountInString(needleLower))
-	out := head + tail
-	if lo > 0 || len(head) < idx-lo {
-		out = "…" + out
-	}
-	if hi < len(text) || len(tail) < hi-idx {
-		out += "…"
-	}
-	return out
-}
-
-// trimRunesFromLeft keeps only the last n characters
-func trimRunesFromLeft(s string, n int) string {
-	if utf8.RuneCountInString(s) <= n {
-		return s
-	}
-	drop := utf8.RuneCountInString(s) - n
-	for i := range s {
-		if drop == 0 {
-			return s[i:]
-		}
-		drop--
-	}
-	return ""
-}
-
-// trimRunesFromRight keeps only the first n characters
-func trimRunesFromRight(s string, n int) string {
-	count := 0
-	for i := range s {
-		if count == n {
-			return s[:i]
-		}
-		count++
-	}
-	return s
+	return source.SearchFile(ctx, rec.File, q)
 }

@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/itswl/agent-session-query/internal/source"
 	"html"
 	"strconv"
 	"strings"
@@ -43,19 +44,19 @@ func exportContentType(format string) string {
 }
 
 // exportSession resolves one session and renders it in the requested format.
-func (a *SessionQueryAPI) exportSession(pattern string, q messageQuery, format string) (body, filename, contentType string, ok bool) {
-	source, item, found := a.findSession(pattern, "")
+func (a *SessionQueryAPI) exportSession(pattern string, q source.MessageQuery, format string) (body, filename, contentType string, ok bool) {
+	src, item, found := a.findSession(pattern, "")
 	if !found {
 		return "", "", "", false
 	}
-	messages := safeParse(source.Mode(), "messages", func() []map[string]any {
-		return source.Messages(item, q)
+	messages := safeParse(src.Mode(), "messages", func() []map[string]any {
+		return src.Messages(item, q)
 	})
-	final := safeParse(source.Mode(), "the final result", func() map[string]any {
-		return source.Final(item)
+	final := safeParse(src.Mode(), "the final result", func() map[string]any {
+		return src.Final(item)
 	})
 
-	name := firstNonEmpty(item.ShortKey, item.SessionID)
+	name := source.FirstNonEmpty(item.ShortKey, item.SessionID)
 	stem := sanitizeFilename(name)
 
 	var rendered string
@@ -83,12 +84,12 @@ func (a *SessionQueryAPI) exportSession(pattern string, q messageQuery, format s
 // disagree — a source that counts a message differently from the way it lists one — the
 // document says how many it holds and no more, rather than announcing a total it cannot
 // back.
-func exportCoverage(item record, final map[string]any, written int, which string) (coverage string, complete bool) {
+func exportCoverage(item source.Record, final map[string]any, written int, which string) (coverage string, complete bool) {
 	total := int64(0)
 	if item.HasCount && item.MessageCount > 0 {
 		total = int64(item.MessageCount)
 	} else if final != nil {
-		if n, ok := toFloat(final["messageCount"]); ok && n > 0 {
+		if n, ok := source.ToFloat(final["messageCount"]); ok && n > 0 {
 			total = int64(n)
 		}
 	}
@@ -103,15 +104,15 @@ func exportCoverage(item record, final map[string]any, written int, which string
 }
 
 // renderExportMarkdown is the document form: something to read, or to paste into an issue.
-func renderExportMarkdown(item record, messages []map[string]any, final map[string]any, q messageQuery) string {
+func renderExportMarkdown(item source.Record, messages []map[string]any, final map[string]any, q source.MessageQuery) string {
 	which := "earliest"
-	if q.fromEnd {
+	if q.FromEnd {
 		which = "latest"
 	}
 	coverage, _ := exportCoverage(item, final, len(messages), which)
 
 	var b strings.Builder
-	name := firstNonEmpty(item.ShortKey, item.SessionID)
+	name := source.FirstNonEmpty(item.ShortKey, item.SessionID)
 	fmt.Fprintf(&b, "# %s\n\n", name)
 
 	// Metadata: only fields that actually have a value
@@ -131,24 +132,24 @@ func renderExportMarkdown(item record, messages []map[string]any, final map[stri
 
 	if final != nil {
 		b.WriteString("\n## Final result\n\n")
-		if truthy(final["isFinal"]) {
+		if source.Truthy(final["isFinal"]) {
 			b.WriteString("> Complete")
 		} else {
 			b.WriteString("> Incomplete")
 		}
-		if reason := strOr(final["stopReason"], ""); reason != "" {
+		if reason := source.StrOr(final["stopReason"], ""); reason != "" {
 			fmt.Fprintf(&b, " · `%s`", reason)
 		}
 		b.WriteString("\n\n")
-		if text := strOr(final["text"], ""); text != "" {
+		if text := source.StrOr(final["text"], ""); text != "" {
 			b.WriteString(text + "\n")
 		}
 	}
 
 	fmt.Fprintf(&b, "\n## Messages (%s %d)\n", which, len(messages))
 	for _, message := range messages {
-		fmt.Fprintf(&b, "\n### %s", strOr(message["role"], "unknown"))
-		if ts := strOr(message["timestamp"], ""); ts != "" {
+		fmt.Fprintf(&b, "\n### %s", source.StrOr(message["role"], "unknown"))
+		if ts := source.StrOr(message["timestamp"], ""); ts != "" {
 			fmt.Fprintf(&b, " · %s", ts)
 		}
 		b.WriteString("\n\n")
@@ -163,9 +164,9 @@ func renderExportMarkdown(item record, messages []map[string]any, final map[stri
 //	{"type":"session", ...}   the session, and how much of it this file holds
 //	{"type":"message", ...}   one message, in the shape /messages returns
 //	{"type":"final",   ...}   the session's final result
-func renderExportJSONL(item record, messages []map[string]any, final map[string]any, q messageQuery) string {
+func renderExportJSONL(item source.Record, messages []map[string]any, final map[string]any, q source.MessageQuery) string {
 	which := "earliest"
-	if q.fromEnd {
+	if q.FromEnd {
 		which = "latest"
 	}
 	coverage, complete := exportCoverage(item, final, len(messages), which)
@@ -203,9 +204,9 @@ func renderExportJSONL(item record, messages []map[string]any, final map[string]
 
 // renderExportJSON is the same data as jsonl, as one document. Some consumers want a
 // single parse; the content is identical, only the framing differs.
-func renderExportJSON(item record, messages []map[string]any, final map[string]any, q messageQuery) string {
+func renderExportJSON(item source.Record, messages []map[string]any, final map[string]any, q source.MessageQuery) string {
 	which := "earliest"
-	if q.fromEnd {
+	if q.FromEnd {
 		which = "latest"
 	}
 	coverage, complete := exportCoverage(item, final, len(messages), which)
@@ -228,7 +229,7 @@ func renderExportJSON(item record, messages []map[string]any, final map[string]a
 }
 
 // exportHeader is the record both the jsonl and json forms put first
-func exportHeader(item record, exported int, coverage string, complete bool, which string) map[string]any {
+func exportHeader(item source.Record, exported int, coverage string, complete bool, which string) map[string]any {
 	return map[string]any{
 		"source":    item.Source,
 		"sessionId": item.SessionID,
@@ -248,13 +249,13 @@ func exportHeader(item record, exported int, coverage string, complete bool, whi
 // content is untrusted input — a session file holds whatever its writer put there — so
 // every value goes through template escaping, and the CSP meta says no script may run even
 // if one were smuggled in.
-func renderExportHTML(item record, messages []map[string]any, final map[string]any, q messageQuery) string {
+func renderExportHTML(item source.Record, messages []map[string]any, final map[string]any, q source.MessageQuery) string {
 	which := "earliest"
-	if q.fromEnd {
+	if q.FromEnd {
 		which = "latest"
 	}
 	coverage, _ := exportCoverage(item, final, len(messages), which)
-	name := firstNonEmpty(item.ShortKey, item.SessionID)
+	name := source.FirstNonEmpty(item.ShortKey, item.SessionID)
 
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n")
@@ -282,15 +283,15 @@ func renderExportHTML(item record, messages []map[string]any, final map[string]a
 	if final != nil {
 		b.WriteString("<section class=\"final\"><h2>Final result</h2>\n")
 		state := "Incomplete"
-		if truthy(final["isFinal"]) {
+		if source.Truthy(final["isFinal"]) {
 			state = "Complete"
 		}
 		fmt.Fprintf(&b, "<p class=\"state\">%s", html.EscapeString(state))
-		if reason := strOr(final["stopReason"], ""); reason != "" {
+		if reason := source.StrOr(final["stopReason"], ""); reason != "" {
 			fmt.Fprintf(&b, " · <code>%s</code>", html.EscapeString(reason))
 		}
 		b.WriteString("</p>\n")
-		if text := strOr(final["text"], ""); text != "" {
+		if text := source.StrOr(final["text"], ""); text != "" {
 			fmt.Fprintf(&b, "<p>%s</p>\n", html.EscapeString(text))
 		}
 		b.WriteString("</section>\n")
@@ -299,9 +300,9 @@ func renderExportHTML(item record, messages []map[string]any, final map[string]a
 	fmt.Fprintf(&b, "<h2>Messages <span class=\"dim\">(%s %d)</span></h2>\n", which, len(messages))
 	for _, message := range messages {
 		fmt.Fprintf(&b, "<article class=\"msg %s\"><header>%s",
-			html.EscapeString(strOr(message["role"], "unknown")),
-			html.EscapeString(strOr(message["role"], "unknown")))
-		if ts := strOr(message["timestamp"], ""); ts != "" {
+			html.EscapeString(source.StrOr(message["role"], "unknown")),
+			html.EscapeString(source.StrOr(message["role"], "unknown")))
+		if ts := source.StrOr(message["timestamp"], ""); ts != "" {
 			fmt.Fprintf(&b, "<time>%s</time>", html.EscapeString(ts))
 		}
 		b.WriteString("</header>\n")
@@ -322,7 +323,7 @@ func writeHTMLBlocks(b *strings.Builder, content any) {
 		return
 	}
 	for _, block := range blocks {
-		text := strOr(block["content"], "")
+		text := source.StrOr(block["content"], "")
 		switch block["type"] {
 		case "text":
 			if text != "" {
@@ -336,14 +337,14 @@ func writeHTMLBlocks(b *strings.Builder, content any) {
 		case "toolCall":
 			args, _ := json.MarshalIndent(block["arguments"], "", "  ")
 			fmt.Fprintf(b, "<details class=\"tool\"><summary>⚙ %s</summary><pre>%s</pre></details>\n",
-				html.EscapeString(strOr(block["name"], "(unnamed tool)")), html.EscapeString(string(args)))
+				html.EscapeString(source.StrOr(block["name"], "(unnamed tool)")), html.EscapeString(string(args)))
 		case "toolResult":
 			class := "result"
-			if isFailedResult(block) {
+			if source.IsFailedResult(block) {
 				class += " failed"
 			}
 			fmt.Fprintf(b, "<details class=\"%s\"><summary>↳ %s%s</summary><pre>%s</pre></details>\n",
-				class, html.EscapeString(strOr(block["toolName"], "result")),
+				class, html.EscapeString(source.StrOr(block["toolName"], "result")),
 				html.EscapeString(resultOutcomeText(block)), html.EscapeString(text))
 		case "event":
 			fmt.Fprintf(b, "<p class=\"event\">%s</p>\n", html.EscapeString(eventText(block)))
@@ -359,16 +360,16 @@ func writeHTMLBlocks(b *strings.Builder, content any) {
 // reader scans for — " — failed · exit 1 · 2.3s". Nothing when the source recorded nothing.
 func resultOutcomeText(block map[string]any) string {
 	parts := []string{}
-	switch toStr(block["status"]) {
-	case statusError:
+	switch source.ToStr(block["status"]) {
+	case source.StatusError:
 		parts = append(parts, "failed")
-	case statusInterrupted:
+	case source.StatusInterrupted:
 		parts = append(parts, "interrupted")
 	}
-	if code, ok := toFloat(block["exitCode"]); ok && (code != 0 || len(parts) > 0) {
+	if code, ok := source.ToFloat(block["exitCode"]); ok && (code != 0 || len(parts) > 0) {
 		parts = append(parts, fmt.Sprintf("exit %d", int(code)))
 	}
-	if ms, ok := toFloat(block["durationMs"]); ok && ms > 0 {
+	if ms, ok := source.ToFloat(block["durationMs"]); ok && ms > 0 {
 		parts = append(parts, formatDurationMs(int64(ms)))
 	}
 	if len(parts) == 0 {
@@ -380,15 +381,15 @@ func resultOutcomeText(block map[string]any) string {
 // eventText names an event the way the page does
 func eventText(block map[string]any) string {
 	label := map[string]string{
-		eventCompaction:  "context compacted",
-		eventInterrupted: "interrupted",
-		eventHookError:   "hook failed",
-		eventModelChange: "model changed",
-	}[toStr(block["kind"])]
+		source.EventCompaction:  "context compacted",
+		source.EventInterrupted: "interrupted",
+		source.EventHookError:   "hook failed",
+		source.EventModelChange: "model changed",
+	}[source.ToStr(block["kind"])]
 	if label == "" {
-		label = toStr(block["kind"])
+		label = source.ToStr(block["kind"])
 	}
-	if text := strOr(block["content"], ""); text != "" && text != label {
+	if text := source.StrOr(block["content"], ""); text != "" && text != label {
 		return label + ": " + text
 	}
 	return label
@@ -455,8 +456,8 @@ details.result.failed summary { color: #dc2626; }
 // writeJSONLine emits one JSONL record. A value that cannot be marshalled — a session file
 // holds whatever its writer put there — becomes an error record rather than a half-written
 // line, so the file stays parseable.
-func writeJSONLine(b *strings.Builder, record map[string]any) {
-	encoded, err := json.Marshal(record)
+func writeJSONLine(b *strings.Builder, rec map[string]any) {
+	encoded, err := json.Marshal(rec)
 	if err != nil {
 		encoded, _ = json.Marshal(map[string]any{"type": "error", "error": err.Error()})
 	}
@@ -474,20 +475,20 @@ func writeBlocks(b *strings.Builder, content any) {
 	for _, block := range blocks {
 		switch block["type"] {
 		case "text":
-			if text := strOr(block["content"], ""); text != "" {
+			if text := source.StrOr(block["content"], ""); text != "" {
 				b.WriteString(text + "\n\n")
 			}
 		case "thinking":
-			if text := strOr(block["content"], ""); text != "" {
+			if text := source.StrOr(block["content"], ""); text != "" {
 				// Fold the thinking away so it does not drown the actual answer
 				fmt.Fprintf(b, "<details><summary>Thinking</summary>\n\n%s\n\n</details>\n\n", text)
 			}
 		case "toolCall":
-			args, _ := json.MarshalIndent(getOr(block, "arguments", map[string]any{}), "", "  ")
-			fmt.Fprintf(b, "**⚙ %s**\n\n```json\n%s\n```\n\n", strOr(block["name"], "(unnamed tool)"), args)
+			args, _ := json.MarshalIndent(source.GetOr(block, "arguments", map[string]any{}), "", "  ")
+			fmt.Fprintf(b, "**⚙ %s**\n\n```json\n%s\n```\n\n", source.StrOr(block["name"], "(unnamed tool)"), args)
 		case "toolResult":
-			label := strOr(block["toolName"], "result")
-			fmt.Fprintf(b, "↳ %s%s\n\n```\n%s\n```\n\n", label, resultOutcomeText(block), strOr(block["content"], ""))
+			label := source.StrOr(block["toolName"], "result")
+			fmt.Fprintf(b, "↳ %s%s\n\n```\n%s\n```\n\n", label, resultOutcomeText(block), source.StrOr(block["content"], ""))
 		case "event":
 			fmt.Fprintf(b, "> %s\n\n", eventText(block))
 		}
@@ -515,5 +516,5 @@ func sanitizeFilename(name string) string {
 	if cleaned == "" {
 		return "session"
 	}
-	return truncate(cleaned, 100, "")
+	return source.Truncate(cleaned, 100, "")
 }

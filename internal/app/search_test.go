@@ -3,91 +3,13 @@ package app
 import (
 	"context"
 	"fmt"
+	"github.com/itswl/agent-session-query/internal/source"
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
-	"unicode/utf8"
 )
-
-func TestIndexFold(t *testing.T) {
-	cases := []struct {
-		text, needle string
-		want         int
-	}{
-		{"Hello World", "world", 6},
-		{"HELLO", "hello", 0},
-		{"nginx.conf", "NGINX", -1}, // the needle must already be lowercase; that is the caller's job
-		{"配置 Nginx 反代", "nginx", 7}, // deliberately non-ASCII: "配置 " is 7 bytes, so this
-		//                                pins the byte offset against multibyte text
-		{"abc", "", 0},
-		{"abc", "abcd", -1},
-	}
-	for _, c := range cases {
-		if got := indexFold(c.text, c.needle); got != c.want {
-			t.Errorf("indexFold(%q, %q) = %d, want %d", c.text, c.needle, got, c.want)
-		}
-	}
-}
-
-func TestSnippetAround(t *testing.T) {
-	// The hit sits in the middle, so both ends need an ellipsis — and the snippet must not
-	// slice a UTF-8 sequence in half. These fixtures are deliberately non-ASCII: that is
-	// precisely what they test.
-	long := strings.Repeat("一二三四五", 60) + "关键词" + strings.Repeat("六七八九十", 60)
-	got := snippetAround(long, "关键词", 10)
-	if !strings.Contains(got, "关键词") {
-		t.Fatalf("the snippet does not contain the needle: %q", got)
-	}
-	if !strings.HasPrefix(got, "…") || !strings.HasSuffix(got, "…") {
-		t.Fatalf("both ends were trimmed but carry no ellipsis: %q", got)
-	}
-	if !utf8Valid(got) {
-		t.Fatalf("the snippet broke a UTF-8 sequence: %q", got)
-	}
-	if n := len([]rune(got)); n > 40 {
-		t.Fatalf("the snippet is too long: %d characters", n)
-	}
-
-	// Short text is returned as-is, with no ellipsis
-	if got := snippetAround("就这么短", "这么", 20); got != "就这么短" {
-		t.Fatalf("short text = %q", got)
-	}
-	// The hit is at the start, so only the tail should carry an ellipsis
-	head := snippetAround("开头命中"+strings.Repeat("填充", 100), "开头", 5)
-	if strings.HasPrefix(head, "…") || !strings.HasSuffix(head, "…") {
-		t.Fatalf("hit at the start = %q", head)
-	}
-}
-
-func utf8Valid(s string) bool {
-	for _, r := range s {
-		if r == '�' {
-			return false
-		}
-	}
-	return true
-}
-
-func TestFindMatchingTextPrefersBody(t *testing.T) {
-	// When the needle appears in both a field name and the body, return the body
-	obj := map[string]any{
-		"snippetish": "unrelated",
-		"message": map[string]any{
-			"role":    "assistant",
-			"content": []any{map[string]any{"type": "text", "text": "changed the nginx timeout"}},
-		},
-	}
-	got, ok := findMatchingText(obj, "nginx", 0)
-	if !ok || got != "changed the nginx timeout" {
-		t.Fatalf("findMatchingText = %q %v", got, ok)
-	}
-	// Appearing only in a key name is not a match
-	if _, ok := findMatchingText(map[string]any{"nginx": 1}, "nginx", 0); ok {
-		t.Fatal("a key name must not count as a match")
-	}
-}
 
 func newSearchServer(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -102,7 +24,7 @@ func newSearchServer(t *testing.T) *httptest.Server {
 		`{"type":"session","id":"s-miss","cwd":"/w/b"}`,
 		`{"type":"message","id":"n1","message":{"role":"user","content":[{"type":"text","text":"something else entirely"}]}}`,
 	)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	srv := httptest.NewServer(newAPIServer(serverOptions{
 		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 2), maxConnections: 50,
 	}))
@@ -189,25 +111,15 @@ func TestParseSince(t *testing.T) {
 	}
 }
 
-func TestEscapeLike(t *testing.T) {
-	// Searching for "100%" must not turn into matching anything
-	if got := escapeLike("100%"); got != `100\%` {
-		t.Fatalf("escapeLike = %q", got)
-	}
-	if got := escapeLike("a_b"); got != `a\_b` {
-		t.Fatalf("escapeLike = %q", got)
-	}
-}
-
 func TestSearchStopsWhenCancelled(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_a.jsonl"),
 		`{"type":"session","id":"s-hit","cwd":"/w/a"}`,
 		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"nginx"}]}}`,
 	)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	api := newSessionQueryAPI(sources, 2)
-	q := searchQuery{needle: "nginx", lowered: []byte("nginx"), limit: 10, perSession: 3}
+	q := source.SearchQuery{Needle: "nginx", Lowered: []byte("nginx"), Limit: 10, PerSession: 3}
 
 	if live := api.search(context.Background(), q); live.matched != 1 || live.stopped {
 		t.Fatalf("a live search should match and not report stopped: %+v", live)
@@ -221,30 +133,6 @@ func TestSearchStopsWhenCancelled(t *testing.T) {
 	}
 	if len(got.results) != 0 {
 		t.Fatalf("a cancelled search should produce no results, got %d", len(got.results))
-	}
-}
-
-func TestSearchFileStopsMidFile(t *testing.T) {
-	// Every line matches, so an uncancelled scan necessarily runs to the end. Cancellation
-	// is sampled every cancelCheckLines rather than tested per line, so the scan stops
-	// within one sample window instead of at an exact line.
-	path := filepath.Join(t.TempDir(), "big.jsonl")
-	total := 4 * cancelCheckLines
-	lines := make([]string, 0, total)
-	for i := 0; i < total; i++ {
-		lines = append(lines, `{"type":"message","message":{"role":"user","content":[{"type":"text","text":"nginx"}]}}`)
-	}
-	write(t, path, lines...)
-
-	q := searchQuery{needle: "nginx", lowered: []byte("nginx"), perSession: total + 1}
-	if full := searchFile(context.Background(), path, q); len(full) != total {
-		t.Fatalf("an uncancelled scan should read the whole file: %d hits, want %d", len(full), total)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if stopped := searchFile(ctx, path, q); len(stopped) > cancelCheckLines {
-		t.Fatalf("a cancelled scan should stop within one sample window, got %d hits", len(stopped))
 	}
 }
 
@@ -262,9 +150,9 @@ func TestSearchSkipsMetadataFields(t *testing.T) {
 		// codex nests ids under payload
 		`{"type":"response_item","payload":{"turn_id":"01a0b047-d043-7502-8","type":"message","role":"user","content":[{"type":"input_text","text":"another unrelated line"}]}}`,
 	)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	api := newSessionQueryAPI(sources, 2)
-	q := searchQuery{needle: "502", lowered: []byte("502"), limit: 10, perSession: 5}
+	q := source.SearchQuery{Needle: "502", Lowered: []byte("502"), Limit: 10, PerSession: 5}
 
 	out := api.search(context.Background(), q)
 	if len(out.results) != 1 {
@@ -289,7 +177,7 @@ func TestMessagesAnchoredAt(t *testing.T) {
 		`{"type":"message","id":"a4","timestamp":"2026-09-04T00:00:00Z","message":{"role":"user","content":[{"type":"text","text":"fourth"}]}}`,
 		`{"type":"message","id":"a5","timestamp":"2026-09-05T00:00:00Z","message":{"role":"user","content":[{"type":"text","text":"newest"}]}}`,
 	)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	srv := httptest.NewServer(newAPIServer(serverOptions{
 		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 0), maxConnections: 50,
 	}))
@@ -362,9 +250,9 @@ func TestSearchScopedAndByRole(t *testing.T) {
 		`{"type":"message","id":"b1","timestamp":"2026-09-02T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"nginx elsewhere"}]}}`,
 	)
 
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	api := newSessionQueryAPI(sources, 0)
-	base := searchQuery{needle: "nginx", lowered: []byte("nginx"), limit: 10, perSession: 10}
+	base := source.SearchQuery{Needle: "nginx", Lowered: []byte("nginx"), Limit: 10, PerSession: 10}
 
 	// Global: both sessions
 	if out := api.search(context.Background(), base); out.matched != 2 {
@@ -373,7 +261,7 @@ func TestSearchScopedAndByRole(t *testing.T) {
 
 	// Scoped: one session, and only it is scanned
 	scoped := base
-	scoped.pattern = "s-target"
+	scoped.Pattern = "s-target"
 	out := api.search(context.Background(), scoped)
 	if out.matched != 1 || out.scanned != 1 {
 		t.Fatalf("scoped search matched %d / scanned %d, want 1/1", out.matched, out.scanned)
@@ -384,7 +272,7 @@ func TestSearchScopedAndByRole(t *testing.T) {
 
 	// A pattern that names nothing searches nothing, rather than falling back to everything
 	missing := base
-	missing.pattern = "no-such-session"
+	missing.Pattern = "no-such-session"
 	if out := api.search(context.Background(), missing); out.matched != 0 || out.scanned != 0 {
 		t.Fatalf("an unmatched pattern scanned %d and matched %d", out.scanned, out.matched)
 	}
@@ -392,16 +280,16 @@ func TestSearchScopedAndByRole(t *testing.T) {
 	// Role, with a per_session small enough that filtering afterwards would miss the
 	// user hit behind three assistant ones
 	byRole := base
-	byRole.pattern = "s-target"
-	byRole.perSession = 1
-	byRole.role = "assistant"
+	byRole.Pattern = "s-target"
+	byRole.PerSession = 1
+	byRole.Role = "assistant"
 	if out := api.search(context.Background(), byRole); len(out.results) != 1 {
 		t.Fatalf("role=assistant found %d sessions", len(out.results))
 	} else if hit := out.results[0]["matches"].([]map[string]any)[0]; hit["role"] != "assistant" {
 		t.Fatalf("role=assistant returned a %v hit", hit["role"])
 	}
 
-	byRole.role = "user"
+	byRole.Role = "user"
 	out = api.search(context.Background(), byRole)
 	if len(out.results) != 1 {
 		t.Fatalf("role=user found %d sessions; the filter is cutting after per_session", len(out.results))
@@ -409,63 +297,6 @@ func TestSearchScopedAndByRole(t *testing.T) {
 	hit := out.results[0]["matches"].([]map[string]any)[0]
 	if hit["role"] != "user" || !strings.Contains(hit["snippet"].(string), "nginx proxy") {
 		t.Fatalf("role=user returned %v", hit)
-	}
-}
-
-// A snippet is cut for display, so it must not carry instructions to whatever prints it.
-// Measured on a real corpus: 24 of 157 Claude sessions hold escape sequences, all on the
-// rows that carry tool results.
-func TestStripTerminalControls(t *testing.T) {
-	cases := []struct{ name, in, want string }{
-		{"colour codes", "\x1b[1;32mpassed\x1b[0m", "passed"},
-		{"24-bit colour", "\x1b[38;2;153;153;153mdim\x1b[39m", "dim"},
-		{"osc 52 clipboard, BEL terminated", "a\x1b]52;c;cGF5bG9hZA==\x07b", "ab"},
-		{"osc terminated by ST", "a\x1b]0;title\x1b\\b", "ab"},
-		{"cursor move", "a\x1b[2Jb", "ab"},
-		{"bare two-byte escape", "a\x1bMb", "ab"},
-		{"carriage return rewrites the line", "done\rFAKE", "doneFAKE"},
-		{"tab and newline are layout, and stay", "a\tb\nc", "a\tb\nc"},
-		{"unterminated CSI takes the rest", "keep\x1b[38;2;1", "keep"},
-		// The nF class: ESC, one or more intermediates in 0x20..0x2f, then a final byte.
-		// ESC ( B is what tput sgr0 writes, so it rides along in anything ncurses, less,
-		// vim or git coloured. Read as a two-byte escape it leaves a stray "B" behind.
-		{"nF escape, the tput sgr0 reset", "test \x1b[32mok\x1b(B\x1b[m done", "test ok done"},
-		{"nF escape, select UTF-8", "prefix \x1b%G tail", "prefix  tail"},
-		// A second ESC opens a new sequence rather than closing this one
-		{"doubled ESC does not hide the second", "\x1b\x1b[0mvisible", "visible"},
-		// ESC before a multibyte rune must take only itself, or the rune's continuation
-		// bytes are left behind as invalid UTF-8
-		{"ESC before a rune keeps the rune whole", "a\x1b中b", "a中b"},
-		{"no controls is returned unchanged", "plain 文本 text", "plain 文本 text"},
-		{"multibyte survives", "\x1b[31m北京\x1b[0m", "北京"},
-	}
-	for _, c := range cases {
-		got := stripTerminalControls(c.in)
-		if got != c.want {
-			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
-		}
-		// Whatever it removes, what it returns must still be text
-		if utf8.ValidString(c.in) && !utf8.ValidString(got) {
-			t.Errorf("%s: valid input produced invalid UTF-8: %q", c.name, []byte(got))
-		}
-	}
-}
-
-// The cleaning happens inside snippetAround, which is the one place all three snippet
-// callers go through, so a match sitting next to colour codes comes back readable.
-func TestSnippetAroundStripsControls(t *testing.T) {
-	text := "build \x1b[1;32mpassed\x1b[0m every check"
-	got := snippetAround(text, "passed", 70)
-	if strings.ContainsRune(got, 0x1b) {
-		t.Fatalf("snippet still carries an escape: %q", got)
-	}
-	if got != "build passed every check" {
-		t.Errorf("snippet = %q", got)
-	}
-	// Stripping first also repairs a needle that colour codes had split in the stored text
-	split := "pas\x1b[0msed the check"
-	if s := snippetAround(split, "passed", 70); s != "passed the check" {
-		t.Errorf("split needle snippet = %q", s)
 	}
 }
 
@@ -487,7 +318,7 @@ func TestSearchHitsTruncationOnlyCountsReturnedSessions(t *testing.T) {
 		`{"type":"message","id":"b2","timestamp":"2026-02-01T00:00:02Z","message":{"role":"user","content":[{"type":"text","text":"kafka two"}]}}`,
 		`{"type":"message","id":"b3","timestamp":"2026-02-01T00:00:03Z","message":{"role":"user","content":[{"type":"text","text":"kafka three"}]}}`,
 	)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	srv := httptest.NewServer(newAPIServer(serverOptions{
 		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 2), maxConnections: 50,
 	}))
@@ -526,9 +357,9 @@ func TestSearchStopsOnceLimitIsReached(t *testing.T) {
 			`{"type":"message","id":"m1","timestamp":"`+strconv.Itoa(1700000000+i)+`","message":{"role":"user","content":[{"type":"text","text":"the kafka question"}]}}`,
 		)
 	}
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	api := newSessionQueryAPI(sources, 0)
-	q := searchQuery{needle: "kafka", lowered: []byte("kafka"), limit: 2, perSession: 3}
+	q := source.SearchQuery{Needle: "kafka", Lowered: []byte("kafka"), Limit: 2, PerSession: 3}
 
 	out := api.search(context.Background(), q)
 	if len(out.results) != 2 {
@@ -553,7 +384,7 @@ func TestSearchStopsOnceLimitIsReached(t *testing.T) {
 
 	// limit=0 is the count-only request: it must keep scanning to the end
 	countOnly := q
-	countOnly.limit = 0
+	countOnly.Limit = 0
 	all := api.search(context.Background(), countOnly)
 	if all.scanStopped || all.matched != sessions || all.scanned != sessions {
 		t.Fatalf("limit=0 must count the whole corpus: matched %d scanned %d stopped %v",
@@ -572,33 +403,5 @@ func TestSearchStopsOnceLimitIsReached(t *testing.T) {
 	}
 	if results := body["results"].([]any); len(results) != 2 {
 		t.Fatalf("limit=2 returned %d results over HTTP", len(results))
-	}
-} // A brief is copied and handed to another agent, and it quotes the prompt, so a key pasted
-// into a prompt rides along. Measured on a real brief here before this existed: one live
-// 51-character key, in full. Every value below is invented.
-func TestRedactSecrets(t *testing.T) {
-	for _, c := range []struct{ name, in, want string }{
-		{"provider key", "use sk-Ab3xQ9zK7mN2pR5tV8wY1cE4gH6jL0sD as the token", "use [redacted] as the token"},
-		{"github token", "export GH=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "export GH=[redacted]"},
-		{"aws key id", "AKIAJ7PQ3MZX2WVTKL4A is the id", "[redacted] is the id"},
-		{"jwt", "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.dBjftJeZ4CVPmB92K27u", "Bearer [redacted]"},
-		{"pem header", "-----BEGIN RSA PRIVATE KEY-----\nMIIE", "[redacted]\nMIIE"},
-		// A name that merely starts with a key prefix is words joined by dashes: no digits,
-		// no mixed case, and redacting it would mangle ordinary text
-		{"a kebab name is not a key", "see sk-migration-runner-config for that", "see sk-migration-runner-config for that"},
-		{"ordinary text is untouched", "把数据库迁移脚本跑一遍 then commit a1b2c3d", "把数据库迁移脚本跑一遍 then commit a1b2c3d"},
-		{"a git sha is not a key", "fixed in 9f8e7d6c5b4a3210fedcba9876543210abcdef12", "fixed in 9f8e7d6c5b4a3210fedcba9876543210abcdef12"},
-	} {
-		if got := redactSecrets(c.in); got != c.want {
-			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
-		}
-	}
-}
-
-// Colour codes inside a key would hide it from a pattern, so the escapes come off first
-func TestRedactAfterStripping(t *testing.T) {
-	split := "token \x1b[32msk-Ab3xQ9zK7mN2pR5tV8wY1cE4gH6jL0sD\x1b[0m ok"
-	if got := redactSecrets(stripTerminalControls(split)); got != "token [redacted] ok" {
-		t.Errorf("got %q", got)
 	}
 }

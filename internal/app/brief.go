@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"github.com/itswl/agent-session-query/internal/source"
 	"sort"
 	"strconv"
 	"strings"
@@ -70,7 +71,7 @@ type round struct {
 // isRoundStart: a user message carrying human words that is not command plumbing, and
 // not one the CLI assembled (a Codex AGENTS.md or environment row carries injected: true)
 func isRoundStart(m map[string]any) bool {
-	if toStr(m["role"]) != "user" || truthy(m["injected"]) {
+	if source.ToStr(m["role"]) != "user" || source.Truthy(m["injected"]) {
 		return false
 	}
 	text := strings.TrimSpace(messageText(m["content"]))
@@ -84,7 +85,7 @@ func isRoundStart(m map[string]any) bool {
 	}
 	// A message that is wholly one XML-style element is context a CLI injected, whatever
 	// the tag: a person does not type a question that way (the Codex rule, see wrappedInTag)
-	return !wrappedInTag(text)
+	return !source.WrappedInTag(text)
 }
 
 // contentBlocks folds a message's content field into blocks, whatever the transport did
@@ -113,8 +114,8 @@ func messageText(content any) string {
 	}
 	var b strings.Builder
 	for _, block := range contentBlocks(content) {
-		if toStr(block["type"]) == "text" {
-			b.WriteString(toStr(block["content"]))
+		if source.ToStr(block["type"]) == "text" {
+			b.WriteString(source.ToStr(block["content"]))
 		}
 	}
 	return b.String()
@@ -134,7 +135,7 @@ func appendFilePath(files []string, arguments any) []string {
 			if !strings.EqualFold(key, want) {
 				continue
 			}
-			if s := toStr(value); s != "" && !containsString(files, s) {
+			if s := source.ToStr(value); s != "" && !containsString(files, s) {
 				return append(files, s)
 			}
 		}
@@ -163,7 +164,7 @@ func splitRounds(messages []map[string]any) []round {
 	var cur *round
 	humanLast := false
 	for _, m := range messages {
-		role := toStr(m["role"])
+		role := source.ToStr(m["role"])
 		starting := isRoundStart(m)
 		if starting {
 			if cur != nil {
@@ -172,7 +173,7 @@ func splitRounds(messages []map[string]any) []round {
 			}
 			cur = &round{
 				index:   len(rounds) + 1,
-				startAt: toStr(m["timestamp"]),
+				startAt: source.ToStr(m["timestamp"]),
 				asked:   strings.TrimSpace(messageText(m["content"])),
 				kinds:   map[string]int{},
 				pending: map[string]string{},
@@ -180,7 +181,7 @@ func splitRounds(messages []map[string]any) []round {
 		} else if cur == nil {
 			continue
 		}
-		at := toStr(m["timestamp"])
+		at := source.ToStr(m["timestamp"])
 		if at != "" {
 			cur.lastAt = at
 		}
@@ -190,28 +191,28 @@ func splitRounds(messages []map[string]any) []round {
 		cur.messages++
 		humanLast = starting
 		for _, block := range contentBlocks(m["content"]) {
-			switch toStr(block["type"]) {
+			switch source.ToStr(block["type"]) {
 			case "toolCall":
 				work = true
 				cur.toolCalls++
 				cur.files = appendFilePath(cur.files, block["arguments"])
-				kind := toolKindOf(toStr(block["name"]))
+				kind := toolKindOf(source.ToStr(block["name"]))
 				cur.kinds[kind]++
 				if kind == "write" {
-					cur.noteWrite(toStr(block["id"]), block["arguments"])
+					cur.noteWrite(source.ToStr(block["id"]), block["arguments"])
 				}
 			case "toolResult":
 				work = true
-				failed := isFailedResult(block)
+				failed := source.IsFailedResult(block)
 				if failed {
 					cur.failures++
 				}
-				cur.settleWrite(toStr(block["callId"]), failed)
+				cur.settleWrite(source.ToStr(block["callId"]), failed)
 			case "event":
 				work = true
 				// The user stopping the turn is recorded as an event by the sources that
 				// know it happened; the ask-after-ask heuristic below catches the rest
-				if toStr(block["kind"]) == eventInterrupted {
+				if source.ToStr(block["kind"]) == source.EventInterrupted {
 					cur.interrupted = true
 				}
 			}
@@ -272,7 +273,7 @@ func capText(s string, n int) string {
 	// pasted into a terminal, so the text it quotes is cleaned on the way in rather than
 	// passed through (see stripTerminalControls). Before the cut, so the cut cannot leave
 	// half a sequence behind.
-	s = strings.TrimSpace(redactSecrets(stripTerminalControls(s)))
+	s = strings.TrimSpace(source.RedactSecrets(source.StripTerminalControls(s)))
 	runes := []rune(s)
 	if n <= 0 || len(runes) <= n {
 		return s
@@ -342,7 +343,7 @@ func toolNameTokens(name string) []string {
 }
 
 func shortTime(ts string) string {
-	if t, ok := parseTimestamp(ts); ok {
+	if t, ok := source.ParseTimestamp(ts); ok {
 		return t.Format("01-02 15:04")
 	}
 	if len(ts) > 16 {
@@ -355,8 +356,8 @@ func shortTime(ts string) string {
 // when the final result knows the session ran longer than the export cap: the caller
 // says so (partial / messagesScanned) instead of quietly claiming completeness.
 type sessionRoundsRead struct {
-	source  SessionSource
-	item    record
+	source  source.SessionSource
+	item    source.Record
 	rounds  []round
 	scanned int
 	total   int
@@ -371,15 +372,15 @@ var briefScanCap = exportMaxMessages
 // session ran longer than the cap, total exceeds scanned and everything downstream says
 // partial; an at= older than the tail then falls in no round, and says so.
 func (a *SessionQueryAPI) roundsOf(pattern, sourceWanted string) (sessionRoundsRead, error) {
-	source, item, found := a.findSession(pattern, sourceWanted)
+	src, item, found := a.findSession(pattern, sourceWanted)
 	if !found {
 		return sessionRoundsRead{}, errNoSession
 	}
-	messages := safeParse(source.Mode(), "messages", func() []map[string]any {
-		return source.Messages(item, messageQuery{limit: briefScanCap, fromEnd: true})
+	messages := safeParse(src.Mode(), "messages", func() []map[string]any {
+		return src.Messages(item, source.MessageQuery{Limit: briefScanCap, FromEnd: true})
 	})
-	final := safeParse(source.Mode(), "the final result", func() map[string]any {
-		return source.Final(item)
+	final := safeParse(src.Mode(), "the final result", func() map[string]any {
+		return src.Final(item)
 	})
 	scanned, total := len(messages), len(messages)
 	if final != nil {
@@ -387,7 +388,7 @@ func (a *SessionQueryAPI) roundsOf(pattern, sourceWanted string) (sessionRoundsR
 			total = n
 		}
 	}
-	return sessionRoundsRead{source, item, splitRounds(messages), scanned, total}, nil
+	return sessionRoundsRead{src, item, splitRounds(messages), scanned, total}, nil
 }
 
 // asCount reads a message count without assuming which integer shape a source used
@@ -451,13 +452,13 @@ func (a *SessionQueryAPI) sessionBrief(pattern, sourceWanted string, roundNo int
 	since := ""
 	switch {
 	case atParam != "":
-		at, ok := parseTimestamp(atParam)
+		at, ok := source.ParseTimestamp(atParam)
 		if !ok {
-			return "", fmt.Errorf("at: unreadable time %q", atParam)
+			return "", fmt.Errorf("At: unreadable time %q", atParam)
 		}
 		for _, r := range rounds {
-			start, okStart := parseTimestamp(r.startAt)
-			end, okEnd := parseTimestamp(r.spanEnd())
+			start, okStart := source.ParseTimestamp(r.startAt)
+			end, okEnd := source.ParseTimestamp(r.spanEnd())
 			if okStart && okEnd && !at.Before(start) && !at.After(end) {
 				selected = []int{r.index}
 				break
@@ -481,7 +482,7 @@ func (a *SessionQueryAPI) sessionBrief(pattern, sourceWanted string, roundNo int
 		}
 		since = cut.UTC().Format(time.RFC3339)
 		for _, r := range rounds {
-			end, ok := parseTimestamp(r.spanEnd())
+			end, ok := source.ParseTimestamp(r.spanEnd())
 			if !ok || !end.Before(cut) {
 				selected = append(selected, r.index)
 			}
@@ -528,11 +529,11 @@ func nonNilStrings(list []string) []string {
 // receiving side prompts around, not decoration. selected names the rounds to render in
 // full — one for a round chosen by number or by timestamp, several for a delta since a
 // moment, which is what a second handoff of the same session wants.
-func renderBrief(item record, rounds []round, selected []int, scanned, total int, since string) string {
+func renderBrief(item source.Record, rounds []round, selected []int, scanned, total int, since string) string {
 	var b strings.Builder
 	// Most titles arrive through titleFromUserText, which already cleans them, but the
 	// SQLite sources take theirs straight from a column
-	name := redactSecrets(stripTerminalControls(item.ShortKey))
+	name := source.RedactSecrets(source.StripTerminalControls(item.ShortKey))
 	if name == "" {
 		name = item.SessionID
 	}
@@ -548,9 +549,9 @@ func renderBrief(item record, rounds []round, selected []int, scanned, total int
 	// The cheapest handoff of all is to reopen the session in the CLI that wrote it, so
 	// the brief says how, with the cd the page prepends for the same reason (see
 	// resumeCommand): the agent is found from anywhere, but it works where it is launched
-	if resume := item.resumeCommand(); resume != "" {
+	if resume := item.ResumeCommand(); resume != "" {
 		if cwd := item.Cwd; isAbsolutePath(cwd) {
-			resume = "cd " + shellArg(cwd) + " && " + resume
+			resume = "cd " + source.ShellArg(cwd) + " && " + resume
 		}
 		fmt.Fprintf(&b, "- resume: %s\n", resume)
 	}

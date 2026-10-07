@@ -1,0 +1,479 @@
+package source
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+)
+
+// JsonMapSource: OpenClaw / Hermes — one sessions.json index plus one jsonl per session.
+type JsonMapSource struct {
+	def jsonMapDef
+
+	// listErr is the failure the last List() hit, kept so that a source which could not be
+	// read is not reported as a source with nothing in it (see ListErrorReporter). The lock
+	// is for the whole-list-is-empty case: a scan can be running on one request's goroutine
+	// while /health reads this from another.
+	mu      sync.Mutex
+	listErr error
+}
+
+func newJsonMapSource(def jsonMapDef) *JsonMapSource { return &JsonMapSource{def: def} }
+
+func (s *JsonMapSource) Mode() string { return s.def.mode }
+
+// setListError records how the last list went; nil means it went fine, so this also clears
+// a failure the way the next successful scan should.
+func (s *JsonMapSource) setListError(err error) {
+	s.mu.Lock()
+	s.listErr = err
+	s.mu.Unlock()
+}
+
+// ListError implements ListErrorReporter
+func (s *JsonMapSource) ListError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listErr
+}
+
+// Location returns whichever index actually exists (sessions.json wins; newer Hermes
+// has only state.db)
+func (s *JsonMapSource) Location() string {
+	if !fileExists(s.def.sessionsJSON) && s.def.stateDB != "" && fileExists(s.def.stateDB) {
+		return s.def.stateDB
+	}
+	return s.def.sessionsJSON
+}
+
+func (s *JsonMapSource) Exists() bool {
+	return fileExists(s.def.sessionsJSON) || (s.def.stateDB != "" && fileExists(s.def.stateDB))
+}
+
+// kv preserves sessions.json's original order (Go maps do not, and order decides which
+// of two equally ranked records wins)
+type kv struct {
+	Key string
+	Val any
+}
+
+// load reads sessions.json; anything that is not a JSON object yields nothing.
+//
+// The error is returned rather than only implied by an empty result: a file that exists
+// but cannot be read — corrupt, truncated mid-write by the process that owns it,
+// permission denied — is a source that failed, not a source with nothing in it, and List
+// records it as such (see ListErrorReporter). A missing file is not an error: the source
+// is simply empty until the CLI writes its first session.
+func (s *JsonMapSource) load() ([]kv, error) {
+	raw, err := os.ReadFile(s.def.sessionsJSON)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading %s: %w", s.def.sessionsJSON, err)
+	}
+	if !json.Valid(raw) {
+		return nil, fmt.Errorf("%s is not valid JSON (truncated or corrupt)", s.def.sessionsJSON)
+	}
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", s.def.sessionsJSON, err)
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return nil, fmt.Errorf("%s is not a JSON object", s.def.sessionsJSON)
+	}
+	out := []kv{}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			break
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			break
+		}
+		var val any
+		if err := dec.Decode(&val); err != nil {
+			break
+		}
+		out = append(out, kv{Key: key, Val: val})
+	}
+	return out, nil
+}
+
+// fileOf resolves the jsonl path belonging to a session record.
+func (s *JsonMapSource) fileOf(r Record) string {
+	if path := r.File; path != "" && fileExists(path) {
+		return path
+	}
+	if sid := r.SessionID; sid != "" {
+		if alt := filepath.Join(s.def.sessionsDir, sid+".jsonl"); fileExists(alt) {
+			return alt
+		}
+	}
+	return ""
+}
+
+func (s *JsonMapSource) List() []Record {
+	// this scan's verdict, recorded on the way out (see ListError); the index load leads
+	// it, because "could not even read the index" is the loudest thing a scan can say
+	entries, listErr := s.load()
+	isOpenClaw := s.def.mode == "openclaw"
+	out := []Record{}
+
+	for _, entry := range entries {
+		info, ok := entry.Val.(map[string]any)
+		if !ok || info == nil {
+			continue
+		}
+		sid := StrOr(info[s.def.sessionIDField], "")
+		if sid == "" {
+			sid = StrOr(info["sessionId"], StrOr(info["session_id"], ""))
+		}
+
+		file := StrOr(info["sessionFile"], "")
+		hasFile := file != "" && fileExists(file)
+		if !hasFile && sid != "" {
+			if alt := filepath.Join(s.def.sessionsDir, sid+".jsonl"); fileExists(alt) {
+				file, hasFile = alt, true
+			}
+		}
+		if !hasFile {
+			file = ""
+		}
+
+		shortKey := entry.Key
+		if isOpenClaw {
+			shortKey = strings.ReplaceAll(entry.Key, "agent:default:", "")
+		}
+
+		rec := Record{
+			Source:    s.def.mode,
+			Key:       entry.Key,
+			ShortKey:  shortKey,
+			SessionID: sid,
+			File:      file,
+			HasFile:   hasFile,
+		}
+		var updatedRaw any // handed to NewRecord, which parses it into the sort time
+
+		if isOpenClaw {
+			updated := info["updatedAt"] // epoch milliseconds
+			updatedStr := ""
+			if Truthy(updated) {
+				updatedStr = ToStr(updated)
+				if ms, ok := ToFloat(updated); ok {
+					if dashed, _, ok := utcFromSeconds(ms / 1000); ok {
+						updatedStr = dashed
+					}
+				}
+			}
+			updatedRaw = updated
+			rec.Status = StrOr(GetOr(info, "status", "unknown"), "unknown")
+			rec.UpdatedAt = updatedStr
+			rec.Model = StrOr(GetOr(info, "model", ""), "")
+			rec.RuntimeMs = floatOrZero(GetOr(info, "runtimeMs", float64(0)))
+			rec.TotalTokens = floatOrZero(GetOr(info, "totalTokens", float64(0)))
+		} else { // hermes
+			updatedRaw = info["updated_at"]
+			rec.Status = "done"
+			rec.UpdatedAt = ToStr(GetOr(info, "updated_at", ""))
+			rec.CreatedAt = ToStr(GetOr(info, "created_at", ""))
+			// display_name is written by the CLI, so it is cleaned like every other
+			// assembled title (see redactSecrets) — a display name that quoted a key
+			// must not ride out through the list or a brief
+			rec.DisplayName = RedactSecrets(StripTerminalControls(ToStr(GetOr(info, "display_name", ""))))
+			rec.Platform = StrOr(GetOr(info, "platform", ""), "")
+			rec.TotalTokens = floatOrZero(GetOr(info, "total_tokens", float64(0)))
+			rec.EstimatedCostUsd = floatOrZero(GetOr(info, "estimated_cost_usd", float64(0)))
+		}
+
+		out = append(out, NewRecord(rec, updatedRaw))
+	}
+
+	// Newer Hermes keeps every session in state.db and may have no sessions.json at all.
+	// Session IDs already listed are skipped so nothing shows up twice.
+	// stat first: with no database there is no point opening a connection and logging an
+	// error on every single list call.
+	if s.def.stateDB != "" && fileExists(s.def.stateDB) {
+		seen := map[string]bool{}
+		for _, r := range out {
+			if sid := r.SessionID; sid != "" {
+				seen[sid] = true
+			}
+		}
+		var records []Record
+		var hermesErr error
+		records, hermesErr = hermesSQLiteList(s.def.stateDB, s.def.mode, seen)
+		out = append(out, records...)
+		if listErr == nil {
+			listErr = hermesErr
+		}
+	}
+	// Every scan replaces the last one's verdict, including when the database it used to
+	// fail on is simply gone now
+	s.setListError(listErr)
+	return out
+}
+
+// Messages: OpenClaw / Hermes message rows identify themselves by content
+// (type=message, or role=user/assistant).
+func (s *JsonMapSource) Messages(r Record, q MessageQuery) []map[string]any {
+	sink := newMessageSink(q)
+	path := s.fileOf(r)
+	if path == "" {
+		// No session file (newer Hermes is all SQLite): read the messages from state.db too
+		if s.def.stateDB != "" && fileExists(s.def.stateDB) {
+			return hermesSQLiteMessages(s.def.stateDB, r.SessionID, q)
+		}
+		return sink.result()
+	}
+	eachJSONL(path, func(obj map[string]any) bool {
+		if obj["type"] == "message" {
+			return sink.add(s.formatMessage(obj, q.Full))
+		}
+		if role := obj["role"]; role == "user" || role == "assistant" {
+			return sink.add(s.formatMessage(obj, q.Full))
+		}
+		return true
+	})
+	return sink.result()
+}
+
+// Search scans the jsonl when there is one; without it (newer Hermes is all SQLite) it
+// queries the database. This is the only searchableSource implementation — every other
+// source has nothing but files, so the generic path suffices.
+func (s *JsonMapSource) Search(ctx context.Context, r Record, q SearchQuery) []map[string]any {
+	if path := s.fileOf(r); path != "" {
+		return SearchFile(ctx, path, q)
+	}
+	if s.def.stateDB != "" && fileExists(s.def.stateDB) {
+		return hermesSQLiteSearch(ctx, s.def.stateDB, r.SessionID, q)
+	}
+	return nil
+}
+
+// formatMessage renders one message (OpenClaw's content array / Hermes's string).
+func (s *JsonMapSource) formatMessage(msg map[string]any, full bool) map[string]any {
+	var content any
+	var role string
+	if msg["type"] == "message" {
+		inner := getMap(msg, "message")
+		content = inner["content"]
+		if content == nil {
+			content = []any{}
+		}
+		role = StrOr(inner["role"], "unknown")
+	} else {
+		content = msg["content"]
+		if content == nil {
+			content = ""
+		}
+		role = StrOr(msg["role"], "unknown")
+	}
+
+	parts := []map[string]any{}
+	switch c := content.(type) {
+	case []any:
+		for _, item := range c {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			switch m["type"] {
+			case "text":
+				parts = append(parts, TextBlock(strField(m, "text")))
+			case "thinking":
+				parts = append(parts, ThinkingBlock(strField(m, "thinking"), full))
+			case "toolCall":
+				parts = append(parts, ToolCallBlock(strField(m, "id"), strField(m, "name"), GetOr(m, "arguments", map[string]any{})))
+			case "toolResult":
+				resultText := ""
+				for _, raw := range getSlice(m, "content") {
+					if rm, ok := raw.(map[string]any); ok && rm["type"] == "text" {
+						resultText = strField(rm, "text")
+					}
+				}
+				block := ToolResultBlock(strField(m, "toolCallId"), strField(m, "toolName"), resultText, full)
+				if _, has := m["isError"]; has {
+					block = ToolOutcome{Status: statusFromError(Truthy(m["isError"]))}.Apply(block)
+				}
+				parts = append(parts, block)
+			}
+		}
+	case string:
+		if role == "assistant" {
+			if reasoning := strField(msg, "reasoning"); reasoning != "" {
+				parts = append(parts, ThinkingBlock(reasoning, full))
+			}
+		}
+		parts = append(parts, TextBlock(c))
+	}
+
+	return map[string]any{
+		"id":        GetOr(msg, "id", ""),
+		"role":      role,
+		"timestamp": GetOr(msg, "timestamp", ""),
+		"content":   parts,
+	}
+}
+
+// stopMessage holds the first assistant message with stopReason=stop, plus the
+// stopReason parsed out of it
+type stopMessage struct {
+	line   map[string]any
+	reason string
+}
+
+func (s *JsonMapSource) Final(r Record) map[string]any {
+	status := r.Status
+	if status == "" {
+		status = "done"
+	}
+	sessionID := r.SessionID
+	path := s.fileOf(r)
+
+	if path == "" {
+		if result := hermesSQLiteFallback(s.def, sessionID, status); result != nil {
+			return result
+		}
+		return map[string]any{
+			"status":       status,
+			"isFinal":      false,
+			"isProcessing": status == "running",
+			"messageCount": 0,
+			"source":       s.def.mode,
+			"error":        "Session file not available yet (session may be still initializing)",
+		}
+	}
+
+	allMessages := []map[string]any{}
+	var firstStop *stopMessage
+	toolResultParents := map[string]bool{}
+
+	eachJSONL(path, func(obj map[string]any) bool {
+		stopField := s.def.stopReasonField
+		if obj["type"] == "message" {
+			msg := getMap(obj, "message")
+			switch msg["role"] {
+			case "assistant":
+				stopReason := StrOr(msg[stopField], StrOr(obj[stopField], ""))
+				allMessages = append(allMessages, obj)
+				if firstStop == nil && stopReason == "stop" {
+					firstStop = &stopMessage{line: obj, reason: stopReason}
+				}
+			case "toolResult":
+				if parent := StrOr(obj["parentId"], ""); parent != "" {
+					toolResultParents[parent] = true
+				}
+			}
+		} else if obj["role"] == "assistant" {
+			stopReason := StrOr(obj[stopField], "")
+			allMessages = append(allMessages, obj)
+			if firstStop == nil && stopReason == "stop" {
+				firstStop = &stopMessage{line: obj, reason: stopReason}
+			}
+		}
+		return true
+	})
+
+	// A toolResult pointing back at the first stop message means work may still be running
+	isProcessing := false
+	if firstStop != nil && status == "running" && toolResultParents[strField(firstStop.line, "id")] {
+		isProcessing = true
+	}
+
+	if firstStop == nil {
+		if result := hermesSQLiteFallback(s.def, sessionID, status); result != nil {
+			return result
+		}
+		return map[string]any{
+			"status":       status,
+			"isFinal":      false,
+			"isProcessing": status == "running",
+			"messageCount": len(allMessages),
+			"source":       s.def.mode,
+			"text":         "",
+			"thinking":     "",
+		}
+	}
+
+	last := firstStop
+	var content any
+	stopReason := ""
+	if last.line["type"] == "message" {
+		msgData := getMap(last.line, "message")
+		content = msgData["content"]
+		stopReason = StrOr(last.reason, StrOr(msgData[s.def.stopReasonField], StrOr(last.line[s.def.stopReasonField], "")))
+	} else {
+		content = last.line["content"]
+		stopReason = last.reason
+	}
+
+	isStopped := stopReason == "stop"
+	isDone := status == "done" || isStopped
+
+	usage := GetOr(last.line, "usage", map[string]any{})
+	result := map[string]any{
+		"status":       status,
+		"isFinal":      isDone && !isProcessing,
+		"isProcessing": isProcessing || (status == "running" && !isStopped),
+		"messageCount": len(allMessages),
+		"source":       s.def.mode,
+		"id":           GetOr(last.line, "id", ""),
+		"timestamp":    GetOr(last.line, "timestamp", ""),
+		"stopReason":   stopReason,
+		"text":         "",
+		"thinking":     "",
+		"toolCalls":    []any{},
+		"usage":        usage,
+	}
+
+	switch c := content.(type) {
+	case []any:
+		for _, item := range c {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			switch m["type"] {
+			case "text":
+				result["text"] = strField(m, "text")
+			case "thinking":
+				result["thinking"] = strField(m, "thinking")
+			case "toolCall":
+				args := m["arguments"]
+				if args == nil {
+					args = map[string]any{}
+				}
+				result["toolCalls"] = append(result["toolCalls"].([]any), map[string]any{
+					"name": strField(m, "name"), "arguments": args,
+				})
+			}
+		}
+	case string:
+		result["text"] = c
+		result["thinking"] = strField(last.line, "reasoning")
+	}
+
+	return result
+}
+
+// hermesSQLiteFallback: Hermes webhook sessions sometimes land their final message only
+// in state.db with nothing in the jsonl, leaving SQLite as the only place to find it
+// (see hermes_sqlite.go).
+//
+// It uses the stateDB path the source was configured with — the same one List and
+// Messages have always used — rather than re-deriving it from $HOME, which would
+// silently query the wrong database whenever the two disagree.
+func hermesSQLiteFallback(def jsonMapDef, sessionID, status string) map[string]any {
+	if def.stateDB == "" {
+		return nil
+	}
+	return hermesSQLiteFinal(def.stateDB, def.mode, sessionID, status)
+}

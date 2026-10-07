@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/itswl/agent-session-query/internal/source"
 	"io"
 	"net/http"
 	"os"
@@ -50,7 +51,7 @@ type rpcResponse struct {
 
 type mcpServer struct {
 	api      *SessionQueryAPI
-	sources  []SessionSource
+	sources  []source.SessionSource
 	maxLimit int
 }
 
@@ -148,40 +149,40 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if query == "" {
 			return nil, errors.New("missing argument: query")
 		}
-		q := searchQuery{
-			needle:     query,
-			lowered:    appendLowerASCII(nil, []byte(query)),
-			limit:      argInt(args, "limit", mcpDefaultLimit, s.maxLimit),
-			perSession: argInt(args, "per_session", defaultSearchPerSession, s.maxLimit),
+		q := source.SearchQuery{
+			Needle:     query,
+			Lowered:    source.AppendLowerASCII(nil, []byte(query)),
+			Limit:      argInt(args, "limit", mcpDefaultLimit, s.maxLimit),
+			PerSession: argInt(args, "per_session", defaultSearchPerSession, s.maxLimit),
 		}
 		if raw := strings.TrimSpace(argString(args, "since")); raw != "" {
 			since, err := parseSince(raw)
 			if err != nil {
 				return nil, err
 			}
-			q.since = since
+			q.Since = since
 		}
 		if raw := strings.TrimSpace(argString(args, "until")); raw != "" {
 			until, err := parseSince(raw)
 			if err != nil {
 				return nil, fmt.Errorf("bad until value: %w", err)
 			}
-			q.until = until
+			q.Until = until
 		}
-		q.pattern = strings.TrimSpace(argString(args, "pattern"))
+		q.Pattern = strings.TrimSpace(argString(args, "pattern"))
 		role := strings.TrimSpace(argString(args, "role"))
 		if role != "" && role != "user" && role != "assistant" {
 			return nil, fmt.Errorf("role must be user or assistant, got %q", role)
 		}
-		q.role = role
+		q.Role = role
 		found := s.api.search(ctx, q)
 		offset := decodeCursor(argString(args, "cursor"))
 		if offset > len(found.results) {
 			offset = len(found.results)
 		}
 		results := found.results[offset:]
-		if len(results) > q.limit {
-			results = results[:q.limit]
+		if len(results) > q.Limit {
+			results = results[:q.Limit]
 		}
 		out := map[string]any{
 			"results": results, "matched": found.matched,
@@ -206,7 +207,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			// invisible to the list call that should have found it
 			filtered := sessions[:0:0]
 			for _, item := range sessions {
-				if sourceMatchesWanted(toStr(item["source"]), want) {
+				if sourceMatchesWanted(source.ToStr(item["source"]), want) {
 					filtered = append(filtered, item)
 				}
 			}
@@ -215,7 +216,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if project := strings.TrimSpace(argString(args, "project")); project != "" {
 			filtered := sessions[:0:0]
 			for _, item := range sessions {
-				if strings.Contains(toStr(item["project"]), project) {
+				if strings.Contains(source.ToStr(item["project"]), project) {
 					filtered = append(filtered, item)
 				}
 			}
@@ -226,7 +227,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if branch := strings.TrimSpace(argString(args, "branch")); branch != "" {
 			filtered := sessions[:0:0]
 			for _, item := range sessions {
-				if strings.Contains(toStr(item["branch"]), branch) {
+				if strings.Contains(source.ToStr(item["branch"]), branch) {
 					filtered = append(filtered, item)
 				}
 			}
@@ -241,7 +242,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if !window.since.IsZero() || !window.until.IsZero() {
 			filtered := sessions[:0:0]
 			for _, item := range sessions {
-				at, ok := parseTimestamp(toStr(item["updatedAt"]))
+				at, ok := source.ParseTimestamp(source.ToStr(item["updatedAt"]))
 				if !ok {
 					continue
 				}
@@ -289,7 +290,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		limit := argInt(args, "limit", mcpDefaultLimit, s.maxLimit)
 		activity := make([]map[string]any, 0)
 		for _, item := range sessions {
-			if !strings.Contains(toStr(item["project"]), project) {
+			if !strings.Contains(source.ToStr(item["project"]), project) {
 				continue
 			}
 			activity = append(activity, item)
@@ -315,10 +316,10 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			if term == "" {
 				continue
 			}
-			q := searchQuery{needle: term, lowered: appendLowerASCII(nil, []byte(term)), limit: limit, perSession: 5, role: "assistant"}
+			q := source.SearchQuery{Needle: term, Lowered: source.AppendLowerASCII(nil, []byte(term)), Limit: limit, PerSession: 5, Role: "assistant"}
 			found := s.api.search(ctx, q)
 			for _, item := range found.results {
-				key := toStr(item["source"]) + "\x00" + toStr(item["sessionId"])
+				key := source.ToStr(item["source"]) + "\x00" + source.ToStr(item["sessionId"])
 				if _, exists := merged[key]; !exists {
 					merged[key] = item
 					order = append(order, key)
@@ -377,13 +378,13 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		// once its window is full, so the extra message is the only way to know another
 		// page follows. It used to clamp this fetch to --max-limit, which both truncated
 		// a legal deep page to nothing and made "more pages?" answer itself wrongly.
-		q := messageQuery{
-			limit:   offset + limit + 1,
-			fromEnd: strings.EqualFold(argString(args, "order"), "desc"),
+		q := source.MessageQuery{
+			Limit:   offset + limit + 1,
+			FromEnd: strings.EqualFold(argString(args, "order"), "desc"),
 			// Tool output and thinking are cut to a preview unless asked for whole: an
 			// agent reading why a command failed wants the end of its output, which is
 			// the part a preview drops
-			full: argBool(args, "full"),
+			Full: argBool(args, "full"),
 		}
 		// Anchoring is how a search hit in the middle of a long session is reachable:
 		// without it the window only ever comes from one end
@@ -392,7 +393,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			if err != nil {
 				return nil, err
 			}
-			q.at = at
+			q.At = at
 		}
 		// The role filter runs inside the sink, before the fetch is cut to a window:
 		// filtering the already-truncated slice kept "N of everything, then whatever
@@ -402,7 +403,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if role != "" && role != "user" && role != "assistant" {
 			return nil, fmt.Errorf("role must be user or assistant, got %q", role)
 		}
-		q.role = role
+		q.Role = role
 		fetched, ok := s.api.getMessages(pattern, sourceWanted, q)
 		if !ok {
 			return nil, fmt.Errorf("no session matches %q", pattern)
@@ -411,15 +412,15 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		// the source stops once the window is full, so it is "the window", not the
 		// session's count — nextCursor is what says whether more follow.
 		total := len(fetched)
-		messages := pageMessages(fetched, offset, limit, q.fromEnd)
-		out := map[string]any{"messages": messages, "total": total, "order": orderName(q.fromEnd)}
+		messages := pageMessages(fetched, offset, limit, q.FromEnd)
+		out := map[string]any{"messages": messages, "total": total, "order": orderName(q.FromEnd)}
 		if role != "" {
 			out["role"] = role
 		}
 		// A full page whose read reached past it means at least one more message exists
 		// beyond this one. An anchored window deliberately does not page: its cursor would
 		// be ambiguous the moment timestamps repeat.
-		if limit > 0 && q.at.IsZero() && len(messages) == limit && total > offset+len(messages) {
+		if limit > 0 && q.At.IsZero() && len(messages) == limit && total > offset+len(messages) {
 			out["nextCursor"] = encodeCursor(offset + len(messages))
 		}
 		return out, nil
@@ -461,14 +462,14 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 }
 
 func toFloatDefault(value any, fallback float64) float64 {
-	if n, ok := toFloat(value); ok {
+	if n, ok := source.ToFloat(value); ok {
 		return n
 	}
 	return fallback
 }
 
 // pageMessages slices one page out of the fetched window. With fromEnd the fetch holds
-// the newest q.limit messages in chronological order, so page k counts back from the end;
+// the newest q.Limit messages in chronological order, so page k counts back from the end;
 // ascending pages count forward from the start.
 func pageMessages(fetched []map[string]any, offset, limit int, fromEnd bool) []map[string]any {
 	if fromEnd {
@@ -499,12 +500,12 @@ func wantedSource(args map[string]any) (string, error) {
 	if want == "" {
 		return "", nil
 	}
-	for _, source := range knownModes {
-		if source == want {
+	for _, src := range source.KnownModes {
+		if src == want {
 			return want, nil
 		}
 	}
-	return "", fmt.Errorf("unknown source %q (choose from: %s)", want, strings.Join(knownModes, " / "))
+	return "", fmt.Errorf("unknown source %q (choose from: %s)", want, strings.Join(source.KnownModes, " / "))
 }
 
 // parseTimeWindow reads the since/until pair off a tool call. Both use the same relative
@@ -536,7 +537,7 @@ func argString(args map[string]any, key string) string {
 	if args == nil {
 		return ""
 	}
-	return toStr(args[key])
+	return source.ToStr(args[key])
 }
 
 // argBool reads a boolean argument; a string "true" is accepted too, since not every
@@ -557,7 +558,7 @@ func argBool(args map[string]any, key string) bool {
 func argInt(args map[string]any, key string, def, max int) int {
 	n := def
 	if args != nil {
-		if v, ok := toFloat(args[key]); ok && v >= 0 {
+		if v, ok := source.ToFloat(args[key]); ok && v >= 0 {
 			n = int(v)
 		}
 	}
@@ -624,7 +625,7 @@ func mcpTools() []map[string]any {
 			// The source list is derived, not written out: it had already drifted once,
 			// still naming six sources after the seventh was added.
 			"description": "Full-text search across the session history of every agent CLI on this " +
-				"machine (" + strings.Join(knownModes, ", ") + "). Answers " +
+				"machine (" + strings.Join(source.KnownModes, ", ") + "). Answers " +
 				"\"which session did I deal with X in?\". Case-insensitive.",
 			"annotations": readOnlyAnnotations("Search sessions"),
 			"inputSchema": map[string]any{
@@ -649,7 +650,7 @@ func mcpTools() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"source":  strSchema("restrict to one source: " + strings.Join(knownModes, " / ")),
+					"source":  strSchema("restrict to one source: " + strings.Join(source.KnownModes, " / ")),
 					"project": strSchema("filter by project path (cwd), substring match"),
 					"branch":  strSchema("filter by the git branch the session opened on, substring match"),
 					"since":   strSchema("only sessions updated after this, e.g. 30d / 12h / 2026-09-01"),
@@ -697,7 +698,7 @@ func mcpTools() []map[string]any {
 				"type": "object",
 				"properties": map[string]any{
 					"pattern": strSchema("a sessionId, a fragment of one, or a file path fragment"),
-					"source":  strSchema("restrict the match to one source (ids are not unique across sources): " + strings.Join(knownModes, " / ")),
+					"source":  strSchema("restrict the match to one source (ids are not unique across sources): " + strings.Join(source.KnownModes, " / ")),
 				},
 				"required": []string{"pattern"},
 			},
@@ -710,7 +711,7 @@ func mcpTools() []map[string]any {
 				"type": "object",
 				"properties": map[string]any{
 					"pattern": strSchema("a sessionId, a fragment of one, or a file path fragment"),
-					"source":  strSchema("restrict the match to one source (ids are not unique across sources): " + strings.Join(knownModes, " / ")),
+					"source":  strSchema("restrict the match to one source (ids are not unique across sources): " + strings.Join(source.KnownModes, " / ")),
 					"limit":   intSchema("how many to return at most, default 50"),
 					"order":   strSchema("asc for the earliest N (default), desc for the latest N"),
 					"role":    strSchema("keep only this role: user or assistant"),
@@ -733,7 +734,7 @@ func mcpTools() []map[string]any {
 				"type": "object",
 				"properties": map[string]any{
 					"pattern": strSchema("a sessionId, a fragment of one, or a file path fragment"),
-					"source":  strSchema("restrict the match to one source: " + strings.Join(knownModes, " / ")),
+					"source":  strSchema("restrict the match to one source: " + strings.Join(source.KnownModes, " / ")),
 				},
 				"required": []string{"pattern"},
 			},
@@ -746,7 +747,7 @@ func mcpTools() []map[string]any {
 				"type": "object",
 				"properties": map[string]any{
 					"pattern": strSchema("a sessionId, a fragment of one, or a file path fragment"),
-					"source":  strSchema("restrict the match to one source: " + strings.Join(knownModes, " / ")),
+					"source":  strSchema("restrict the match to one source: " + strings.Join(source.KnownModes, " / ")),
 					"round":   intSchema("1-based round number; default the latest"),
 					"at":      strSchema("brief the round this timestamp falls in, e.g. a hit's timestamp from search_sessions"),
 					"since":   strSchema("brief every round that ran after this moment instead of one, e.g. 2h / 2026-10-05T08:00:00Z — the delta for a second handoff of the same session"),
@@ -758,10 +759,10 @@ func mcpTools() []map[string]any {
 }
 
 // mcpStartupBanner: in MCP mode the startup output can only go to stderr
-func mcpStartupBanner(mode string, sources []SessionSource) {
+func mcpStartupBanner(mode string, sources []source.SessionSource) {
 	fmt.Fprintf(os.Stderr, "MCP server (stdio) ready · mode %s · sources:", mode)
-	for _, source := range sources {
-		fmt.Fprintf(os.Stderr, " %s", source.Mode())
+	for _, src := range sources {
+		fmt.Fprintf(os.Stderr, " %s", src.Mode())
 	}
 	fmt.Fprintf(os.Stderr, "\nstarted at %s\n", time.Now().Format(time.RFC3339))
 }

@@ -4,17 +4,21 @@
 .
 ├── cmd/agent-session-query/   # entry point (the implementation lives in internal/app)
 ├── cmd/healthcheck/           # the container liveness probe
-├── internal/app/              # everything: run.go (flags and startup), http.go (routing,
-│                              #   auth, rate limiting), api.go (merging, matching, caching),
-│                              #   record.go, blocks.go (the one block shape every source
-│                              #   produces), source*.go (the data sources),
-│                              #   brief.go (rounds and the handoff brief),
-│                              #   search.go (full-text search), export.go (Markdown export),
-│                              #   mcp.go (the MCP server),
+├── internal/source/           # the data layer: source.go (registry, --path handling),
+│                              #   source_*.go (one adapter per CLI), record.go (the one
+│                              #   session shape), blocks.go (the one block shape every
+│                              #   source produces), cleantext.go (redaction, snippets),
+│                              #   searchfile.go / searchquery.go (the per-file scan),
+│                              #   title.go, usage.go, msgcount.go,
 │                              #   filecache.go (file-head cache keyed by mtime),
-│                              #   hermes_sqlite.go, ui.go + ui/ (go:embed three-pane page),
-│                              #   console_{windows,other}.go (Windows console code page).
-│                              #   Tests sit alongside their source (source_*_test.go, ...)
+│                              #   hermes_sqlite.go; tests sit alongside their source
+├── internal/app/              # the query and serving layer: run.go (flags and startup),
+│                              #   http.go (routing, auth, rate limiting), api.go (merging,
+│                              #   matching, caching), search.go (full-text search),
+│                              #   brief.go (rounds and the handoff brief),
+│                              #   export.go, pack.go, mcp.go (the MCP server),
+│                              #   ui.go + ui/ (go:embed three-pane page),
+│                              #   console_{windows,other}.go (Windows console code page)
 ├── docs/internals.md          # parsing details and performance
 ├── docs/sources.md            # data sources and --path overrides
 ├── .github/workflows/test.yml     # push / PR: tests on three platforms, gofmt/vet, and a
@@ -47,10 +51,11 @@ Adding a data source: implement the `SessionSource` interface (`Mode` / `Locatio
 in. A ninth source is a sweep, not a patch — the two real additions touched seven and
 twelve files, and a source's name and abilities are spread across:
 
-- `knownModes` and the `factories` map in `buildSources()` (`source.go`), plus `movable`
-  and the whitelist inside `pathFlag.Set` if a single directory can relocate it
+- `KnownModes` and the `factories` map in `BuildSources()` (`internal/source/source.go`),
+  plus `movable` and the whitelist inside `PathFlag.Set` if a single directory can
+  relocate it
 - `resumeCommands` (`record.go`) if the CLI can reopen a session by id
-- an error path: implement `ListError` (see `listErrorReporter`) so a moved schema reads
+- an error path: implement `ListError` (see `ListErrorReporter`) so a moved schema reads
   as "could not be read" instead of "no sessions" — the SQLite sources show the shape
 - a counter in `msgcount.go` whose rule mirrors your `Final` (the list's count and the
   session's final must agree), and usage aliases in `usage.go` if the CLI reports tokens
@@ -58,9 +63,9 @@ twelve files, and a source's name and abilities are spread across:
 - `docs/sources.md`, the README's source table and `docs/internals.md`
 
 Build message content with the
-helpers in `blocks.go` — `toolCallBlock` with the call's id, `toolResultBlock` with the id it
-answers and a `toolOutcome` for how it ended, `thinkingBlock`, `eventBlock` — and honour
-`messageQuery.full`, so the page, the brief and the MCP tools read the new source like the
+helpers in `blocks.go` — `ToolCallBlock` with the call's id, `ToolResultBlock` with the id
+it answers and a `ToolOutcome` for how it ended, `ThinkingBlock`, `EventBlock` — and honour
+`MessageQuery.Full`, so the page, the brief and the MCP tools read the new source like the
 others. Merging across sources, match
 ranking, full-text search, project grouping and the `source` tag are all handled once by the
 framework. A source whose sessions do not live in files (Hermes when it is all SQLite, for

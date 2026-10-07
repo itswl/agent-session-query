@@ -1,17 +1,21 @@
 package app
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/itswl/agent-session-query/internal/source"
+)
 
 // TestListVersionIncludesMessageCounts: the background count landing must move the
 // list's ETag, or a revalidating page keeps its 304 and the count-less body — the one
 // that renders "counting…" — until something unrelated changes.
 func TestListVersionIncludesMessageCounts(t *testing.T) {
-	base := []record{newRecord(record{
+	base := []source.Record{source.NewRecord(source.Record{
 		Source: "pi", Key: "k", UpdatedAt: "2026-01-01T00:00:00",
 	}, "")}
 	without := listVersion(base, nil)
 
-	counted := []record{newRecord(record{
+	counted := []source.Record{source.NewRecord(source.Record{
 		Source: "pi", Key: "k", UpdatedAt: "2026-01-01T00:00:00",
 		MessageCount: 12, HasCount: true,
 	}, "")}

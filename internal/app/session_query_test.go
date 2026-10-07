@@ -3,13 +3,12 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/itswl/agent-session-query/internal/source"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -42,11 +41,11 @@ func write(t *testing.T, path string, lines ...string) {
 func TestTruncateRuneSafe(t *testing.T) {
 	// Deliberately non-ASCII: truncation must count code points, not bytes, and must never
 	// slice a UTF-8 sequence in half
-	got := truncate(strings.Repeat("好", 10), 3, "...[truncated]")
+	got := source.Truncate(strings.Repeat("好", 10), 3, "...[truncated]")
 	if got != "好好好...[truncated]" {
 		t.Fatalf("truncate = %q", got)
 	}
-	if truncate("abc", 3, "!") != "abc" {
+	if source.Truncate("abc", 3, "!") != "abc" {
 		t.Fatal("an exact-length string should not be truncated")
 	}
 }
@@ -64,15 +63,15 @@ func TestContentText(t *testing.T) {
 		{42, ""},
 	}
 	for _, c := range cases {
-		if got := contentText(c.in); got != c.want {
-			t.Errorf("contentText(%v) = %q, want %q", c.in, got, c.want)
+		if got := source.ContentText(c.in); got != c.want {
+			t.Errorf("source.ContentText(%v) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
 
 func TestMatchRank(t *testing.T) {
 	// The lowercased forms are computed when the record is built (record.lowerSID / lowerKey)
-	r := newRecord(record{SessionID: "abc-def", Key: "/r/proj/abc-def.jsonl"}, "")
+	r := source.NewRecord(source.Record{SessionID: "abc-def", Key: "/r/proj/abc-def.jsonl"}, "")
 	cases := []struct {
 		pattern string
 		want    int
@@ -85,20 +84,20 @@ func TestMatchRank(t *testing.T) {
 		{"zzz", -1},
 	}
 	for _, c := range cases {
-		if got := r.matchRank(c.pattern); got != c.want {
+		if got := r.MatchRank(c.pattern); got != c.want {
 			t.Errorf("matchRank(%q) = %d, want %d", c.pattern, got, c.want)
 		}
 	}
 
 	// Absent from key, present only in sessionId: rank 4
-	r2 := newRecord(record{SessionID: "uniq-sid-9", Key: "/r/other/file.jsonl"}, "")
-	if got := r2.matchRank("sid-9"); got != 4 {
+	r2 := source.NewRecord(source.Record{SessionID: "uniq-sid-9", Key: "/r/other/file.jsonl"}, "")
+	if got := r2.MatchRank("sid-9"); got != 4 {
 		t.Errorf("matchRank(sid-9) = %d, want 4", got)
 	}
 
 	// Case-insensitive: the pattern arrives already lowercased
-	upper := newRecord(record{SessionID: "ABC-DEF", Key: "/R/P.jsonl"}, "")
-	if got := upper.matchRank("abc-def"); got != 0 {
+	upper := source.NewRecord(source.Record{SessionID: "ABC-DEF", Key: "/R/P.jsonl"}, "")
+	if got := upper.MatchRank("abc-def"); got != 0 {
 		t.Errorf("case-insensitive match = %d, want 0", got)
 	}
 }
@@ -108,14 +107,14 @@ func TestMatchRank(t *testing.T) {
 // mtime, and OpenClaw uses epoch milliseconds — compare the strings and the one carrying a
 // timezone offset lands in completely the wrong place.
 func TestRecordSortAcrossFormats(t *testing.T) {
-	records := []record{
-		newRecord(record{Key: "mtime"}, "2026-09-14T03:16:50"),        // UTC
-		newRecord(record{Key: "offset"}, "2026-09-14T11:20:00+08:00"), // = 03:20 UTC, the newest
-		newRecord(record{Key: "nano"}, "2026-09-14T03:16:50.601Z"),    //
-		newRecord(record{Key: "epochms"}, float64(1789197000000)),     // 2026-09-14T02:30 UTC
-		newRecord(record{Key: "bad"}, "not a time at all"),            // unparseable, sorts last
+	records := []source.Record{
+		source.NewRecord(source.Record{Key: "mtime"}, "2026-09-14T03:16:50"),        // UTC
+		source.NewRecord(source.Record{Key: "offset"}, "2026-09-14T11:20:00+08:00"), // = 03:20 UTC, the newest
+		source.NewRecord(source.Record{Key: "nano"}, "2026-09-14T03:16:50.601Z"),    //
+		source.NewRecord(source.Record{Key: "epochms"}, float64(1789197000000)),     // 2026-09-14T02:30 UTC
+		source.NewRecord(source.Record{Key: "bad"}, "not a time at all"),            // unparseable, sorts last
 	}
-	sort.SliceStable(records, func(i, j int) bool { return records[i].newerThan(records[j]) })
+	sort.SliceStable(records, func(i, j int) bool { return records[i].NewerThan(records[j]) })
 
 	want := []string{"offset", "nano", "mtime", "epochms", "bad"}
 	for i, key := range want {
@@ -125,7 +124,7 @@ func TestRecordSortAcrossFormats(t *testing.T) {
 	}
 }
 
-func keysOf(records []record) []string {
+func keysOf(records []source.Record) []string {
 	out := []string{}
 	for _, r := range records {
 		out = append(out, r.Key)
@@ -149,24 +148,24 @@ func TestFindSessionPrecedence(t *testing.T) {
 		`{"type":"user","uuid":"u","sessionId":"shared-id","timestamp":"t","message":{"role":"user","content":"hi"}}`,
 	)
 
-	api := newSessionQueryAPI([]SessionSource{
-		newPiSource(piRoot),
-		newClaudeSource(claudeRoot),
+	api := newSessionQueryAPI([]source.SessionSource{
+		source.NewPiSource(piRoot),
+		source.NewClaudeSource(claudeRoot),
 	}, 2)
 
 	// When both sources match the same sessionId exactly, the earlier source wins
-	source, rec, ok := api.findSession("shared-id", "")
-	if !ok || source.Mode() != "pi" || rec.SessionID != "shared-id" {
-		t.Fatalf("find = %v %v %v", source, rec, ok)
+	src, rec, ok := api.findSession("shared-id", "")
+	if !ok || src.Mode() != "pi" || rec.SessionID != "shared-id" {
+		t.Fatalf("find = %v %v %v", src, rec, ok)
 	}
 
 	// A fuzzy hit must not shadow an exact hit in another source
 	write(t, filepath.Join(claudeRoot, "c", "session-y.jsonl"),
 		`{"type":"user","uuid":"u","sessionId":"deadbeef-shared-id-x","timestamp":"t","message":{"role":"user","content":"hi"}}`,
 	)
-	source, rec, _ = api.findSession("shared-id", "")
-	if source.Mode() != "pi" {
-		t.Fatalf("the exact hit should win, got %s %v", source.Mode(), rec)
+	src, rec, _ = api.findSession("shared-id", "")
+	if src.Mode() != "pi" {
+		t.Fatalf("the exact hit should win, got %s %v", src.Mode(), rec)
 	}
 
 	// The "Session: " prefix is stripped
@@ -188,7 +187,7 @@ func TestListSortAndCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	api := newSessionQueryAPI([]SessionSource{newPiSource(root)}, 60)
+	api := newSessionQueryAPI([]source.SessionSource{source.NewPiSource(root)}, 60)
 	sessions, etag := api.listSessions()
 	if len(sessions) != 2 || sessions[0]["sessionId"] != "new" {
 		t.Fatalf("sessions = %v", sessions)
@@ -201,7 +200,7 @@ func TestListSortAndCache(t *testing.T) {
 	if got, again := api.listSessions(); len(got) != 2 || again != etag {
 		t.Fatalf("the cache should have hit, got %d entries etag=%s", len(got), again)
 	}
-	uncached := newSessionQueryAPI([]SessionSource{newPiSource(root)}, 0)
+	uncached := newSessionQueryAPI([]source.SessionSource{source.NewPiSource(root)}, 0)
 	got, newETag := uncached.listSessions()
 	if len(got) != 3 {
 		t.Fatalf("TTL=0 should show 3 entries immediately, got %d", len(got))
@@ -214,49 +213,11 @@ func TestListSortAndCache(t *testing.T) {
 // TestPublicIsACopy: public() has to hand back a copy. Records are held by the list cache,
 // so one mutation of the map it returns leaves every later reader with dirty data.
 func TestPublicIsACopy(t *testing.T) {
-	r := newRecord(record{SessionID: "s", Status: "done"}, "")
-	out := r.public()
+	r := source.NewRecord(source.Record{SessionID: "s", Status: "done"}, "")
+	out := r.Public()
 	out["status"] = "tampered"
 	if r.Status != "done" {
 		t.Fatalf("the internal field was changed to %q", r.Status)
-	}
-}
-
-// TestFileRecordCacheReusesUnchanged: an unchanged file must not have its head reparsed.
-func TestFileRecordCacheReusesUnchanged(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "p", "a.jsonl")
-	write(t, path, `{"type":"session","id":"cached"}`)
-
-	cache := newFileRecordCache(nil) // no counter: this test is about record reuse
-	builds := 0
-	build := func(p, modISO string) record {
-		builds++
-		return newRecord(record{Key: p, SessionID: "cached"}, modISO)
-	}
-
-	if got := cache.records([]string{path}, build); len(got) != 1 || builds != 1 {
-		t.Fatalf("first pass = %d entries / %d parses", len(got), builds)
-	}
-	if got := cache.records([]string{path}, build); len(got) != 1 || builds != 1 {
-		t.Fatalf("the file did not change yet it was parsed again: %d times", builds)
-	}
-
-	// Changed content (and therefore size) must trigger a reparse
-	write(t, path, `{"type":"session","id":"cached"}`, `{"type":"message"}`)
-	if cache.records([]string{path}, build); builds != 2 {
-		t.Fatalf("a changed file should be reparsed, got %d parses", builds)
-	}
-
-	// A deleted file drops out of the listing and its cache entry goes with it
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if got := cache.records([]string{path}, build); len(got) != 0 {
-		t.Fatalf("the file is gone but %d entries were still listed", len(got))
-	}
-	if len(cache.entries) != 0 {
-		t.Fatalf("the cache was not cleaned up: %v", cache.entries)
 	}
 }
 
@@ -273,7 +234,7 @@ func newTestServerFixture(t *testing.T, token, sessionID string) (*httptest.Serv
 		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"question"}]}}`,
 		`{"type":"message","id":"m2","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"answer"}]}}`,
 	)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	api := newSessionQueryAPI(sources, 2)
 	srv := httptest.NewServer(newAPIServer(serverOptions{
 		mode: "auto", sources: sources, api: api, token: token, maxConnections: 50,
@@ -318,7 +279,7 @@ func TestHTTPRoutes(t *testing.T) {
 		}
 		found := map[string]bool{}
 		for _, c := range caps {
-			found[toStr(c)] = true
+			found[source.ToStr(c)] = true
 		}
 		for _, want := range []string{"brief.since", "messages.full", "rounds.lastAt"} {
 			if !found[want] {
@@ -455,7 +416,7 @@ func TestHTTPOptionsAndMethods(t *testing.T) {
 func TestHTTPCORSOptIn(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, "p", "a.jsonl"), `{"type":"session","id":"s"}`)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	srv := httptest.NewServer(newAPIServer(serverOptions{
 		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 2),
 		token: "secret", corsOrigin: "https://ops.example", maxConnections: 50,
@@ -487,7 +448,7 @@ func TestHTTPLimitClamped(t *testing.T) {
 		lines = append(lines, `{"type":"message","id":"m","message":{"role":"user","content":[{"type":"text","text":"x"}]}}`)
 	}
 	write(t, filepath.Join(root, "p", "big.jsonl"), lines...)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	srv := httptest.NewServer(newAPIServer(serverOptions{
 		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 2),
 		maxConnections: 50, maxLimit: 5,
@@ -560,29 +521,29 @@ func TestBuildSourcesModes(t *testing.T) {
 	// With no source detected, fall back to OpenClaw (the same for all and auto)
 	home := t.TempDir()
 	setHome(t, home)
-	if sources, err := buildSources("auto", nil); err != nil || len(sources) != 1 || sources[0].Mode() != "openclaw" {
+	if sources, err := source.BuildSources("auto", nil); err != nil || len(sources) != 1 || sources[0].Mode() != "openclaw" {
 		t.Fatalf("auto fallback = %v %v", sources, err)
 	}
-	if sources, err := buildSources("all", nil); err != nil || len(sources) != 1 || sources[0].Mode() != "openclaw" {
+	if sources, err := source.BuildSources("all", nil); err != nil || len(sources) != 1 || sources[0].Mode() != "openclaw" {
 		t.Fatalf("all fallback = %v %v", sources, err)
 	}
 
 	// Create the pi and claude sources: auto enables only those that exist, and so does all
 	write(t, filepath.Join(home, ".pi", "agent", "sessions", "p", "x.jsonl"), `{"type":"session","id":"x"}`)
 	write(t, filepath.Join(home, ".claude", "projects", "p", "y.jsonl"), `{"type":"user","uuid":"u","message":{"role":"user","content":"hi"}}`)
-	if sources, err := buildSources("auto", nil); err != nil || len(sources) != 2 ||
+	if sources, err := source.BuildSources("auto", nil); err != nil || len(sources) != 2 ||
 		sources[0].Mode() != "pi" || sources[1].Mode() != "claude" {
 		t.Fatalf("auto = %v %v", sources, err)
 	}
-	if sources, err := buildSources("all", nil); err != nil || len(sources) != 2 {
+	if sources, err := source.BuildSources("all", nil); err != nil || len(sources) != 2 {
 		t.Fatalf("all = %v %v", sources, err)
 	}
 
 	// A single named mode enables it whether or not the directory exists
-	if sources, err := buildSources("pi", nil); err != nil || len(sources) != 1 || sources[0].Mode() != "pi" {
+	if sources, err := source.BuildSources("pi", nil); err != nil || len(sources) != 1 || sources[0].Mode() != "pi" {
 		t.Fatalf("pi = %v %v", sources, err)
 	}
-	if _, err := buildSources("nope", nil); err == nil {
+	if _, err := source.BuildSources("nope", nil); err == nil {
 		t.Fatal("an unknown mode should error")
 	}
 }
@@ -604,61 +565,6 @@ func TestAcceptQueueDepth(t *testing.T) {
 	}
 }
 
-// TestMessageSink: the earliest N must stop early, and the latest N must run to the end
-// while keeping memory tied to limit
-func TestMessageSink(t *testing.T) {
-	feed := func(sink *messageSink, n int) int {
-		fed := 0
-		for i := 0; i < n; i++ {
-			fed++
-			if !sink.add(map[string]any{"id": i}) {
-				break
-			}
-		}
-		return fed
-	}
-	ids := func(items []map[string]any) []int {
-		out := []int{}
-		for _, m := range items {
-			out = append(out, m["id"].(int))
-		}
-		return out
-	}
-
-	// Earliest 3: it should stop after the third
-	head := newMessageSink(messageQuery{limit: 3})
-	if fed := feed(head, 100); fed != 3 {
-		t.Fatalf("the earliest N should stop at the third, but %d were fed", fed)
-	}
-	if got := ids(head.result()); !reflect.DeepEqual(got, []int{0, 1, 2}) {
-		t.Fatalf("earliest 3 = %v", got)
-	}
-
-	// Latest 3: it has to scan all the way, and the result comes back chronological
-	tail := newMessageSink(messageQuery{limit: 3, fromEnd: true})
-	if fed := feed(tail, 100); fed != 100 {
-		t.Fatalf("the latest N must scan everything, but only %d were fed", fed)
-	}
-	if got := ids(tail.result()); !reflect.DeepEqual(got, []int{97, 98, 99}) {
-		t.Fatalf("latest 3 = %v", got)
-	}
-	if len(tail.items) != 3 {
-		t.Fatalf("the ring buffer should hold only 3, got %d", len(tail.items))
-	}
-
-	// Fewer than limit comes back as-is
-	few := newMessageSink(messageQuery{limit: 10, fromEnd: true})
-	feed(few, 2)
-	if got := ids(few.result()); !reflect.DeepEqual(got, []int{0, 1}) {
-		t.Fatalf("below limit = %v", got)
-	}
-	// limit=0 takes nothing at all
-	zero := newMessageSink(messageQuery{limit: 0})
-	if fed := feed(zero, 5); fed != 1 || len(zero.result()) != 0 {
-		t.Fatalf("limit=0 should stop immediately and stay empty: fed=%d len=%d", fed, len(zero.result()))
-	}
-}
-
 // TestHTTPMessagesOrder: ?order=desc returns the latest N (the end of a session is the
 // interesting part)
 func TestHTTPMessagesOrder(t *testing.T) {
@@ -669,7 +575,7 @@ func TestHTTPMessagesOrder(t *testing.T) {
 			`{"type":"message","id":"m%d","message":{"role":"user","content":[{"type":"text","text":"message %d"}]}}`, i, i))
 	}
 	write(t, filepath.Join(root, "p", "long.jsonl"), lines...)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	srv := httptest.NewServer(newAPIServer(serverOptions{
 		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 2), maxConnections: 50,
 	}))
@@ -724,7 +630,7 @@ func TestHTTPHealthAuthRequired(t *testing.T) {
 // substring hit and another source's fuzzy match can win the cross-source lookup.
 func TestMatchRankPathSeparators(t *testing.T) {
 	winKey := `C:\Users\dev\.claude\projects\proj\abc-def.jsonl`
-	rec := newRecord(record{SessionID: "abc-def", Key: winKey}, "")
+	rec := source.NewRecord(source.Record{SessionID: "abc-def", Key: winKey}, "")
 
 	cases := []struct {
 		pattern string
@@ -740,24 +646,9 @@ func TestMatchRankPathSeparators(t *testing.T) {
 	}
 	for _, c := range cases {
 		// this is exactly what findSession does to the pattern
-		if got := rec.matchRank(normalizeForMatch(c.pattern)); got != c.want {
+		if got := rec.MatchRank(source.NormalizeForMatch(c.pattern)); got != c.want {
 			t.Errorf("matchRank(%q) = %d, want %d", c.pattern, got, c.want)
 		}
-	}
-}
-
-// TestSQLiteURIWindowsPath: backslashes inside SQLite's file: URI are ambiguous with escapes
-func TestSQLiteURIWindowsPath(t *testing.T) {
-	got := sqliteURI(`C:\Users\dev\.hermes\state.db`)
-	if runtime.GOOS == "windows" {
-		if got != "file:C:/Users/dev/.hermes/state.db" {
-			t.Fatalf("a Windows path should be converted to forward slashes: %q", got)
-		}
-		return
-	}
-	// Off Windows a backslash is a legal filename character and filepath.ToSlash leaves it be
-	if got != `file:C:\Users\dev\.hermes\state.db` {
-		t.Fatalf("paths should not be rewritten off Windows: %q", got)
 	}
 }
 
@@ -780,13 +671,13 @@ func TestProjectsAndActive(t *testing.T) {
 		}
 	}
 
-	api := newSessionQueryAPI([]SessionSource{newPiSource(root)}, 0)
+	api := newSessionQueryAPI([]source.SessionSource{source.NewPiSource(root)}, 0)
 
 	sessions, _ := api.listSessions()
 	active := map[string]bool{}
 	for _, s := range sessions {
-		active[toStr(s["sessionId"])] = truthy(s["isActive"])
-		if toStr(s["project"]) == "" {
+		active[source.ToStr(s["sessionId"])] = source.Truthy(s["isActive"])
+		if source.ToStr(s["project"]) == "" {
 			t.Fatalf("a session with a cwd should carry a project: %v", s)
 		}
 	}
@@ -805,10 +696,10 @@ func TestProjectsAndActive(t *testing.T) {
 	if projects[0]["project"] != "/w/alpha" || projects[0]["sessions"] != 2 {
 		t.Fatalf("first project = %v", projects[0])
 	}
-	if projects[0]["shortName"] != "alpha" || !truthy(projects[0]["isActive"]) {
+	if projects[0]["shortName"] != "alpha" || !source.Truthy(projects[0]["isActive"]) {
 		t.Fatalf("the project fields are wrong: %v", projects[0])
 	}
-	if projects[1]["project"] != "/w/beta" || truthy(projects[1]["isActive"]) {
+	if projects[1]["project"] != "/w/beta" || source.Truthy(projects[1]["isActive"]) {
 		t.Fatalf("second project = %v", projects[1])
 	}
 }
@@ -881,52 +772,6 @@ func TestHTTPProjects(t *testing.T) {
 	}
 }
 
-// TestLastRecordTime: read the last record's time from the tail of the file, accepting all
-// three placements
-func TestLastRecordTime(t *testing.T) {
-	dir := t.TempDir()
-	cases := []struct{ name, content, want string }{
-		{"top-level timestamp", `{"type":"a","timestamp":"2026-09-01T01:00:00Z"}
-{"type":"b","timestamp":"2026-09-02T02:00:00Z"}`, "2026-09-02T02:00:00Z"},
-		{"inside message", `{"type":"message","message":{"timestamp":"2026-09-03T03:00:00Z"}}`, "2026-09-03T03:00:00Z"},
-		{"a $set patch row", `{"sessionId":"g","lastUpdated":"2026-09-01T00:00:00Z"}
-{"$set":{"lastUpdated":"2026-09-04T04:00:00Z"}}`, "2026-09-04T04:00:00Z"},
-		{"trailing rows with no time", `{"type":"a","timestamp":"2026-09-05T05:00:00Z"}
-{"type":"mode"}
-{"type":"atis-latch"}`, "2026-09-05T05:00:00Z"},
-		{"no time anywhere", `{"type":"mode"}
-{"type":"atis-latch"}`, ""},
-		{"empty file", "", ""},
-	}
-	for _, c := range cases {
-		path := filepath.Join(dir, sanitizeFilename(c.name)+".jsonl")
-		if err := os.WriteFile(path, []byte(c.content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if got := lastRecordTime(path); got != c.want {
-			t.Errorf("lastRecordTime(%s) = %q, want %q", c.name, got, c.want)
-		}
-	}
-}
-
-// TestLastRecordTimeGrowsWindow: when the first tail window holds no complete record, the
-// window has to grow
-func TestLastRecordTimeGrowsWindow(t *testing.T) {
-	saved := tailWindows
-	tailWindows = []int64{64, 512, 4 << 20} // shrunk so the case is easy to construct
-	defer func() { tailWindows = saved }()
-
-	path := filepath.Join(t.TempDir(), "big.jsonl")
-	// The last line is long: a 64-byte window cuts it in half, so it takes a larger one
-	long := `{"type":"a","timestamp":"2026-09-06T06:00:00Z","pad":"` + strings.Repeat("x", 300) + `"}`
-	if err := os.WriteFile(path, []byte("{\"type\":\"head\"}\n"+long+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := lastRecordTime(path); got != "2026-09-06T06:00:00Z" {
-		t.Fatalf("the window did not grow: %q", got)
-	}
-}
-
 // TestUpdatedAtPrefersContentTime: the list time has to be when the conversation actually
 // happened, not the file's mtime. Something rewrites session files without appending
 // anything: measured over 174 real Claude sessions, 43 differed by more than an hour and
@@ -943,12 +788,12 @@ func TestUpdatedAtPrefersContentTime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := newClaudeSource(root).List()[0]
+	r := source.NewClaudeSource(root).List()[0]
 	if got := r.UpdatedAt; got != "2026-09-11T11:25:29.029Z" {
 		t.Fatalf("updatedAt = %q; it should use the time in the content, not mtime", got)
 	}
 	// And a file that was merely touched must not be mistaken for one being written
-	if truthy(r.public()["isActive"]) {
+	if source.Truthy(r.Public()["isActive"]) {
 		t.Fatal("a six-day-old session must not count as active just because mtime is recent")
 	}
 }
@@ -961,12 +806,12 @@ func TestUpdatedAtFallsBackToMtime(t *testing.T) {
 	path := filepath.Join(root, "proj", "cccc-dddd.jsonl")
 	write(t, path, `{"type":"queue-operation","sessionId":"sid"}`, `{"type":"mode"}`)
 
-	r := newClaudeSource(root).List()[0]
+	r := source.NewClaudeSource(root).List()[0]
 	updated := r.UpdatedAt
 	if updated == "" {
 		t.Fatal("with no content time it should fall back to mtime, not stay empty")
 	}
-	if _, ok := parseTimestamp(updated); !ok {
+	if _, ok := source.ParseTimestamp(updated); !ok {
 		t.Fatalf("the mtime fallback does not parse: %q", updated)
 	}
 }
@@ -979,7 +824,7 @@ func TestFindSessionScopedBySource(t *testing.T) {
 		`{"type":"session","id":"dup-id","cwd":"/w"}`,
 		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}`,
 	)
-	api := newSessionQueryAPI([]SessionSource{newPiSource(root)}, 2)
+	api := newSessionQueryAPI([]source.SessionSource{source.NewPiSource(root)}, 2)
 
 	if _, _, ok := api.findSession("dup-id", "pi"); !ok {
 		t.Fatal("the scoped lookup must find its own source")
@@ -1006,7 +851,7 @@ func TestExportCoversTheWholeSession(t *testing.T) {
 	}
 	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_export.jsonl"), lines...)
 
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	srv := httptest.NewServer(newAPIServer(serverOptions{
 		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 0), maxConnections: 50,
 	}))
@@ -1024,7 +869,7 @@ func TestExportCoversTheWholeSession(t *testing.T) {
 		return readBody(t, resp)
 	}
 
-	// No limit: the whole session, and the file says so
+	// No Limit: the whole session, and the file says so
 	full := fetch("")
 	if n := strings.Count(full, "\n### "); n != 250 {
 		t.Fatalf("an unqualified export holds %d messages, want all 250", n)
@@ -1063,7 +908,7 @@ func TestExportJSONL(t *testing.T) {
 		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"first"}]}}`,
 		`{"type":"message","id":"m2","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"second"}]}}`,
 	)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	srv := httptest.NewServer(newAPIServer(serverOptions{
 		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 0), maxConnections: 50,
 	}))
@@ -1150,7 +995,7 @@ func TestExportEveryFormat(t *testing.T) {
 		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"a <script>alert(1)</script> question"}]}}`,
 		`{"type":"message","id":"m2","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"an answer"},{"type":"thinking","thinking":"a thought"},{"type":"toolCall","name":"bash","arguments":{"command":"ls"}}]}}`,
 	)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	srv := httptest.NewServer(newAPIServer(serverOptions{
 		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 0), maxConnections: 50,
 	}))
@@ -1223,20 +1068,20 @@ func TestExportEveryFormat(t *testing.T) {
 func TestIsActiveIsRecencyNotLiveness(t *testing.T) {
 	activeAgo := func(d time.Duration) bool {
 		ts := time.Now().Add(-d).UTC().Format(time.RFC3339Nano)
-		r := newRecord(record{SessionID: "s", UpdatedAt: ts}, ts)
-		return truthy(r.public()["isActive"])
+		r := source.NewRecord(source.Record{SessionID: "s", UpdatedAt: ts}, ts)
+		return source.Truthy(r.Public()["isActive"])
 	}
 	if !activeAgo(5 * time.Second) {
 		t.Error("a newest message seconds old should report active")
 	}
-	if !activeAgo(activeWindow - 15*time.Second) {
+	if !activeAgo(source.ActiveWindow - 15*time.Second) {
 		t.Error("just inside the window should report active")
 	}
-	if activeAgo(activeWindow + 15*time.Second) {
+	if activeAgo(source.ActiveWindow + 15*time.Second) {
 		t.Error("just outside the window must not report active: the window is the whole claim")
 	}
 	// No usable timestamp is not activity — it is the absence of evidence
-	if truthy(newRecord(record{SessionID: "s"}, "").public()["isActive"]) {
+	if source.Truthy(source.NewRecord(source.Record{SessionID: "s"}, "").Public()["isActive"]) {
 		t.Error("a record with no parseable time must not report active")
 	}
 }
@@ -1262,8 +1107,8 @@ func TestResumeCommand(t *testing.T) {
 		{"claude", "", ""},
 		{"nosuchsource", "abc", ""},
 	} {
-		rec := newRecord(record{Source: c.source, SessionID: c.sid}, "")
-		if got := rec.resumeCommand(); got != c.want {
+		rec := source.NewRecord(source.Record{Source: c.source, SessionID: c.sid}, "")
+		if got := rec.ResumeCommand(); got != c.want {
 			t.Errorf("%s/%q: got %q, want %q", c.source, c.sid, got, c.want)
 		}
 	}
@@ -1272,12 +1117,12 @@ func TestResumeCommand(t *testing.T) {
 // An id is normally a uuid and passes through untouched. The quoting exists so that an id
 // carrying a space or a quote cannot turn a pasted command into two commands.
 func TestResumeCommandQuotesUnsafeIds(t *testing.T) {
-	rec := newRecord(record{Source: "hermes", SessionID: "a b; rm -rf /"}, "")
-	if got := rec.resumeCommand(); got != `hermes --resume 'a b; rm -rf /'` {
+	rec := source.NewRecord(source.Record{Source: "hermes", SessionID: "a b; rm -rf /"}, "")
+	if got := rec.ResumeCommand(); got != `hermes --resume 'a b; rm -rf /'` {
 		t.Errorf("unsafe id = %q", got)
 	}
-	rec = newRecord(record{Source: "hermes", SessionID: "it's"}, "")
-	if got := rec.resumeCommand(); got != `hermes --resume 'it'\''s'` {
+	rec = source.NewRecord(source.Record{Source: "hermes", SessionID: "it's"}, "")
+	if got := rec.ResumeCommand(); got != `hermes --resume 'it'\''s'` {
 		t.Errorf("quoted id = %q", got)
 	}
 }
@@ -1285,19 +1130,14 @@ func TestResumeCommandQuotesUnsafeIds(t *testing.T) {
 // Sources without a resume command omit the key rather than sending an empty one: a field
 // that is sometimes a command and sometimes "" reads as a command that failed to build.
 func TestPublicOmitsMissingResumeCommand(t *testing.T) {
-	with := newRecord(record{Source: "claude", SessionID: "abc"}, "").public()
+	with := source.NewRecord(source.Record{Source: "claude", SessionID: "abc"}, "").Public()
 	if with["resumeCommand"] != "claude --resume abc" {
 		t.Errorf("resumeCommand = %v", with["resumeCommand"])
 	}
-	without := newRecord(record{Source: "gemini", SessionID: "g-1"}, "").public()
+	without := source.NewRecord(source.Record{Source: "gemini", SessionID: "g-1"}, "").Public()
 	if _, present := without["resumeCommand"]; present {
 		t.Errorf("gemini must not carry the key at all: %v", without)
 	}
-}
-
-// jsonUnmarshalString decodes one JSON line into a map, for fixtures written inline
-func jsonUnmarshalString(line string, into *map[string]any) error {
-	return json.Unmarshal([]byte(line), into)
 }
 
 // TestHTTPMessagesFull: the ordinary read cuts tool output to a preview and marks it; ?full=1
@@ -1313,7 +1153,7 @@ func TestHTTPMessagesFull(t *testing.T) {
 		`{"type":"message","id":"m3","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash","content":[{"type":"text","text":"`+long+`"}],"isError":false}}`,
 		`{"type":"message","id":"m4","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"done"}]}}`,
 	)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	api := newSessionQueryAPI(sources, 0)
 	srv := httptest.NewServer(newAPIServer(serverOptions{mode: "auto", sources: sources, api: api, maxConnections: 50}))
 	defer srv.Close()
@@ -1345,10 +1185,10 @@ func TestHTTPMessagesFull(t *testing.T) {
 // between the turns, in words a reader scans for
 func TestExportRendersOutcomes(t *testing.T) {
 	blocks := []map[string]any{
-		toolCallBlock("c1", "Bash", map[string]any{"command": "make"}),
-		toolOutcome{status: statusError, exitCode: 2, hasExit: true, durationMs: 2300}.apply(toolResultBlock("c1", "Bash", "no rule", false)),
-		eventBlock(eventCompaction, "Conversation compacted"),
-		toolOutcome{status: statusInterrupted}.apply(toolResultBlock("c2", "Bash", "", false)),
+		source.ToolCallBlock("c1", "Bash", map[string]any{"command": "make"}),
+		source.ToolOutcome{Status: source.StatusError, ExitCode: 2, HasExit: true, DurationMs: 2300}.Apply(source.ToolResultBlock("c1", "Bash", "no rule", false)),
+		source.EventBlock(source.EventCompaction, "Conversation compacted"),
+		source.ToolOutcome{Status: source.StatusInterrupted}.Apply(source.ToolResultBlock("c2", "Bash", "", false)),
 	}
 	var md strings.Builder
 	writeBlocks(&md, blocks)

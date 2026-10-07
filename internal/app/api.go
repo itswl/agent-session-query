@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"github.com/itswl/agent-session-query/internal/source"
 	"hash/fnv"
 	"os"
 	"path/filepath"
@@ -19,7 +20,7 @@ import (
 // request never has to rescan every session file. Messages and final results always read
 // from disk; the cache only covers the "which sessions exist" layer of metadata.
 type SessionQueryAPI struct {
-	sources  []SessionSource
+	sources  []source.SessionSource
 	cacheTTL time.Duration
 
 	mu    sync.Mutex
@@ -34,10 +35,10 @@ type SessionQueryAPI struct {
 type cachedRecords struct {
 	scan    sync.Mutex
 	at      time.Time
-	records []record
+	records []source.Record
 }
 
-func newSessionQueryAPI(sources []SessionSource, cacheTTLSeconds float64) *SessionQueryAPI {
+func newSessionQueryAPI(sources []source.SessionSource, cacheTTLSeconds float64) *SessionQueryAPI {
 	if cacheTTLSeconds < 0 {
 		cacheTTLSeconds = 0
 	}
@@ -49,16 +50,16 @@ func newSessionQueryAPI(sources []SessionSource, cacheTTLSeconds float64) *Sessi
 }
 
 // recordsOf returns one source's session list (TTL cached)
-func (a *SessionQueryAPI) recordsOf(source SessionSource) []record {
+func (a *SessionQueryAPI) recordsOf(src source.SessionSource) []source.Record {
 	if a.cacheTTL <= 0 {
-		return safeList(source)
+		return safeList(src)
 	}
 
 	a.mu.Lock()
-	entry, ok := a.cache[source.Mode()]
+	entry, ok := a.cache[src.Mode()]
 	if !ok {
 		entry = &cachedRecords{}
-		a.cache[source.Mode()] = entry
+		a.cache[src.Mode()] = entry
 	}
 	a.mu.Unlock()
 
@@ -67,20 +68,20 @@ func (a *SessionQueryAPI) recordsOf(source SessionSource) []record {
 	if !entry.at.IsZero() && time.Since(entry.at) < a.cacheTTL {
 		return entry.records
 	}
-	entry.records = safeList(source)
+	entry.records = safeList(src)
 	entry.at = time.Now()
 	return entry.records
 }
 
 // safeList keeps one failing source from taking down the whole list
-func safeList(source SessionSource) (out []record) {
+func safeList(src source.SessionSource) (out []source.Record) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			fmt.Fprintf(os.Stderr, "[WARN] %s failed to list sessions: %v\n", source.Mode(), rec)
+			fmt.Fprintf(os.Stderr, "[WARN] %s failed to list sessions: %v\n", src.Mode(), rec)
 			out = nil
 		}
 	}()
-	return source.List()
+	return src.List()
 }
 
 // listSessions returns the merged session list plus a weak validator (used as the ETag).
@@ -89,16 +90,16 @@ func safeList(source SessionSource) (out []record) {
 // ETag those polls end at a 304, instead of serialising and transferring the entire list
 // again every time.
 func (a *SessionQueryAPI) listSessions() ([]map[string]any, string) {
-	all := []record{}
-	for _, source := range a.sources {
-		all = append(all, a.recordsOf(source)...)
+	all := []source.Record{}
+	for _, src := range a.sources {
+		all = append(all, a.recordsOf(src)...)
 	}
 	// Newest update time first; equal times keep source order (stable sort)
-	sort.SliceStable(all, func(i, j int) bool { return all[i].newerThan(all[j]) })
+	sort.SliceStable(all, func(i, j int) bool { return all[i].NewerThan(all[j]) })
 
 	out := make([]map[string]any, 0, len(all))
 	for _, item := range all {
-		out = append(out, item.public())
+		out = append(out, item.Public())
 	}
 	return out, listVersion(all, a.listWarnings())
 }
@@ -111,14 +112,14 @@ func (a *SessionQueryAPI) listSessions() ([]map[string]any, string) {
 // /sessions and the MCP tools do).
 func (a *SessionQueryAPI) listWarnings() []map[string]any {
 	out := []map[string]any{}
-	for _, source := range a.sources {
-		reporter, ok := source.(listErrorReporter)
+	for _, src := range a.sources {
+		reporter, ok := src.(source.ListErrorReporter)
 		if !ok {
 			continue
 		}
 		if err := reporter.ListError(); err != nil {
 			out = append(out, map[string]any{
-				"source": source.Mode(),
+				"source": src.Mode(),
 				"error":  err.Error(),
 			})
 		}
@@ -132,7 +133,7 @@ func (a *SessionQueryAPI) listWarnings() []map[string]any {
 // The warnings go in as well. A source that stops being readable changes none of the
 // records — it just stops contributing any — and a 304 would then hide the one thing that
 // did change.
-func listVersion(records []record, warnings []map[string]any) string {
+func listVersion(records []source.Record, warnings []map[string]any) string {
 	h := fnv.New64a()
 	// The server's own version is part of it: after an upgrade every page's stored tag
 	// stops matching, its next poll gets a full answer carrying the new version, and the
@@ -155,9 +156,9 @@ func listVersion(records []record, warnings []map[string]any) string {
 		_, _ = h.Write([]byte{0x1e})
 	}
 	for _, w := range warnings {
-		_, _ = h.Write([]byte(toStr(w["source"])))
+		_, _ = h.Write([]byte(source.ToStr(w["source"])))
 		_, _ = h.Write([]byte{0})
-		_, _ = h.Write([]byte(toStr(w["error"])))
+		_, _ = h.Write([]byte(source.ToStr(w["error"])))
 		_, _ = h.Write([]byte{0x1e})
 	}
 	return `W/"` + strconv.FormatUint(h.Sum64(), 16) + `"`
@@ -168,7 +169,7 @@ func listVersion(records []record, warnings []map[string]any) string {
 // findSession locates the one session a pattern names. sourceWanted, when not empty,
 // restricts the search to that source — an MCP client can hold a sessionId from
 // list_sessions and the mode name, and ids alone are not unique across sources.
-func (a *SessionQueryAPI) findSession(pattern, sourceWanted string) (SessionSource, record, bool) {
+func (a *SessionQueryAPI) findSession(pattern, sourceWanted string) (source.SessionSource, source.Record, bool) {
 	pattern = strings.TrimSpace(pattern)
 	if strings.HasPrefix(pattern, "Run: ") {
 		pattern = pattern[len("Run: "):]
@@ -177,29 +178,29 @@ func (a *SessionQueryAPI) findSession(pattern, sourceWanted string) (SessionSour
 		pattern = pattern[len("Session: "):]
 	}
 	if pattern == "" {
-		return nil, record{}, false
+		return nil, source.Record{}, false
 	}
-	patternLower := normalizeForMatch(pattern)
+	patternLower := source.NormalizeForMatch(pattern)
 
-	var bestSource SessionSource
-	var bestRecord record
+	var bestSource source.SessionSource
+	var bestRecord source.Record
 	bestRank := -1
-	for _, source := range a.sources {
-		if !sourceMatchesWanted(source.Mode(), sourceWanted) {
+	for _, src := range a.sources {
+		if !sourceMatchesWanted(src.Mode(), sourceWanted) {
 			continue
 		}
-		for _, item := range a.recordsOf(source) {
-			rank := item.matchRank(patternLower)
+		for _, item := range a.recordsOf(src) {
+			rank := item.MatchRank(patternLower)
 			if rank == -1 {
 				continue
 			}
 			if bestRank == -1 || rank < bestRank {
-				bestSource, bestRecord, bestRank = source, item, rank
+				bestSource, bestRecord, bestRank = src, item, rank
 			}
 		}
 	}
 	if bestSource == nil {
-		return nil, record{}, false
+		return nil, source.Record{}, false
 	}
 	return bestSource, bestRecord, true
 }
@@ -209,7 +210,7 @@ func (a *SessionQueryAPI) getSession(pattern, sourceWanted string) (map[string]a
 	if !ok {
 		return nil, false
 	}
-	return item.public(), true
+	return item.Public(), true
 }
 
 // safeParse keeps one session's parse blowing up from turning the request into a 500:
@@ -227,13 +228,13 @@ func safeParse[T any](mode, what string, parse func() T) (out T) {
 	return parse()
 }
 
-func (a *SessionQueryAPI) getMessages(pattern, sourceWanted string, q messageQuery) ([]map[string]any, bool) {
-	source, item, ok := a.findSession(pattern, sourceWanted)
+func (a *SessionQueryAPI) getMessages(pattern, sourceWanted string, q source.MessageQuery) ([]map[string]any, bool) {
+	src, item, ok := a.findSession(pattern, sourceWanted)
 	if !ok {
 		return nil, false
 	}
-	messages := safeParse(source.Mode(), "messages", func() []map[string]any {
-		return source.Messages(item, q)
+	messages := safeParse(src.Mode(), "messages", func() []map[string]any {
+		return src.Messages(item, q)
 	})
 	if messages == nil {
 		messages = []map[string]any{}
@@ -242,13 +243,13 @@ func (a *SessionQueryAPI) getMessages(pattern, sourceWanted string, q messageQue
 }
 
 func (a *SessionQueryAPI) getFinalMessage(pattern, sourceWanted string) (map[string]any, bool) {
-	source, item, ok := a.findSession(pattern, sourceWanted)
+	src, item, ok := a.findSession(pattern, sourceWanted)
 	if !ok {
 		return nil, false
 	}
 
-	result := safeParse(source.Mode(), "the final result", func() map[string]any {
-		return source.Final(item)
+	result := safeParse(src.Mode(), "the final result", func() map[string]any {
+		return src.Final(item)
 	})
 
 	if result == nil {
@@ -277,16 +278,16 @@ func (a *SessionQueryAPI) listProjects() ([]map[string]any, int) {
 	type bucket struct {
 		sessions  int
 		sources   map[string]int
-		latest    record
+		latest    source.Record
 		hasLatest bool
 	}
 	order := []string{}
 	buckets := map[string]*bucket{}
 	ungrouped := 0
 
-	for _, source := range a.sources {
-		for _, rec := range a.recordsOf(source) {
-			name := rec.project()
+	for _, src := range a.sources {
+		for _, rec := range a.recordsOf(src) {
+			name := rec.ProjectName()
 			if name == "" {
 				ungrouped++
 				continue
@@ -299,7 +300,7 @@ func (a *SessionQueryAPI) listProjects() ([]map[string]any, int) {
 			}
 			b.sessions++
 			b.sources[rec.Source]++
-			if !b.hasLatest || rec.newerThan(b.latest) {
+			if !b.hasLatest || rec.NewerThan(b.latest) {
 				b.latest, b.hasLatest = rec, true
 			}
 		}
@@ -321,17 +322,17 @@ func (a *SessionQueryAPI) listProjects() ([]map[string]any, int) {
 			"sourceCounts":  b.sources,
 			"updatedAt":     b.latest.UpdatedAt,
 			"latestSession": b.latest.SessionID,
-			"isActive":      !b.latest.sortAt.IsZero() && time.Since(b.latest.sortAt) < activeWindow,
+			"isActive":      b.latest.IsActive(),
 		})
 	}
 	// Most recently touched projects first
 	sort.SliceStable(out, func(i, j int) bool {
-		return toStr(out[i]["updatedAt"]) > toStr(out[j]["updatedAt"])
+		return source.ToStr(out[i]["updatedAt"]) > source.ToStr(out[j]["updatedAt"])
 	})
 	return out, ungrouped
 }
 
-func sourceModes(sources []SessionSource) []string {
+func sourceModes(sources []source.SessionSource) []string {
 	out := make([]string, 0, len(sources))
 	for _, s := range sources {
 		out = append(out, s.Mode())

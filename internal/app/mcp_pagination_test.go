@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"github.com/itswl/agent-session-query/internal/source"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -12,7 +13,7 @@ import (
 // directly — the same code path a tools/call takes, without the JSON-RPC frame around it.
 func newMCPToolServer(t *testing.T, root string) *mcpServer {
 	t.Helper()
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	return &mcpServer{api: newSessionQueryAPI(sources, 2), sources: sources, maxLimit: defaultMaxLimit}
 }
 
@@ -139,7 +140,7 @@ func TestMCPListSessionsLabeledSource(t *testing.T) {
 		`{"type":"session","id":"s1","cwd":"/w/proj"}`,
 		`{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}`,
 	)
-	sources := []SessionSource{labeledSource{SessionSource: newPiSource(root), mode: "pi:box2"}}
+	sources := []source.SessionSource{source.Label(source.NewPiSource(root), "pi:box2")}
 	s := &mcpServer{api: newSessionQueryAPI(sources, 2), sources: sources, maxLimit: defaultMaxLimit}
 
 	out, err := mcpTool(t, s, "list_sessions", map[string]any{"source": "pi"})

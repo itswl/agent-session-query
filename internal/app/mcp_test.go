@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/itswl/agent-session-query/internal/source"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -47,7 +48,7 @@ func newMCPServer(t *testing.T) *mcpServer {
 		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"how do I set up an Nginx reverse proxy"}]}}`,
 		`{"type":"message","id":"m2","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"use proxy_pass"}]}}`,
 	)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	return &mcpServer{api: newSessionQueryAPI(sources, 2), sources: sources, maxLimit: defaultMaxLimit}
 }
 
@@ -61,7 +62,7 @@ func toolText(t *testing.T, resp rpcResponse) (string, bool) {
 	}
 	content := result["content"].([]any)
 	text := content[0].(map[string]any)["text"].(string)
-	return text, truthy(result["isError"])
+	return text, source.Truthy(result["isError"])
 }
 
 func TestMCPHandshakeAndTools(t *testing.T) {
@@ -174,7 +175,7 @@ func newMCPHTTPServer(t *testing.T, token, corsOrigin string) *httptest.Server {
 		`{"type":"session","id":"http-1","cwd":"/w/x"}`,
 		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"about Nginx"}]}}`,
 	)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	srv := httptest.NewServer(newAPIServer(serverOptions{
 		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 2),
 		token: token, corsOrigin: corsOrigin, maxConnections: 50,
@@ -301,7 +302,7 @@ func newMCPWindowServer(t *testing.T) *mcpServer {
 		`{"type":"message","id":"n1","message":{"role":"user","content":[{"type":"text","text":"a question about nginx"}],"timestamp":"2026-09-17T10:00:00Z"}}`,
 		`{"type":"message","id":"n2","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"an answer"}],"timestamp":"2026-09-17T10:01:00Z"}}`,
 	)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	return &mcpServer{api: newSessionQueryAPI(sources, 2), sources: sources, maxLimit: defaultMaxLimit}
 }
 
@@ -584,7 +585,7 @@ func TestMCPListRounds(t *testing.T) {
 	})
 	text, isErr := toolText(t, bad[0])
 	if !isErr || !strings.Contains(text, "pattern") {
-		t.Errorf("list_rounds without a pattern: isError=%v text=%q", isErr, text)
+		t.Errorf("list_rounds without a Pattern: isError=%v text=%q", isErr, text)
 	}
 	if bad[0].Error != nil {
 		t.Errorf("a tool failure must not become a JSON-RPC error: %v", bad[0].Error)
@@ -602,7 +603,7 @@ func TestMCPGetMessagesFull(t *testing.T) {
 		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"run"}]}}`,
 		`{"type":"message","id":"m2","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash","content":[{"type":"text","text":"`+long+`"}],"isError":true}}`,
 	)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	s := &mcpServer{api: newSessionQueryAPI(sources, 0), sources: sources, maxLimit: 1000}
 	call := func(args map[string]any) map[string]any {
 		t.Helper()
@@ -624,7 +625,7 @@ func TestMCPGetMessagesFull(t *testing.T) {
 		return out["messages"].([]any)[1].(map[string]any)["content"].([]any)[0].(map[string]any)
 	}
 	cut := result(call(map[string]any{"pattern": "mcp-full"}))
-	if cut["truncated"] != true || cut["status"] != statusError || cut["callId"] != "c1" {
+	if cut["truncated"] != true || cut["status"] != source.StatusError || cut["callId"] != "c1" {
 		t.Fatalf("the preview must be cut, marked, and still carry the outcome: %v", cut)
 	}
 	whole := result(call(map[string]any{"pattern": "mcp-full", "full": true}))

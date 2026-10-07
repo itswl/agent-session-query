@@ -1,6 +1,7 @@
 package app
 
 import (
+	"github.com/itswl/agent-session-query/internal/source"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -23,7 +24,7 @@ func briefFixture(t *testing.T) *SessionQueryAPI {
 		`{"type":"assistant","timestamp":"2026-09-21T08:03:00Z","message":{"role":"assistant","content":[{"type":"text","text":"round one finished"}]}}`,
 		`{"type":"user","sessionId":"rrrr","cwd":"/w","timestamp":"2026-09-21T09:00:00Z","message":{"role":"user","content":"ask two"}}`,
 	)
-	api := newSessionQueryAPI([]SessionSource{newClaudeSource(root)}, 0)
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
 	return api
 }
 
@@ -191,10 +192,10 @@ func TestToolKindOf(t *testing.T) {
 // inflatedCountSource lies about the session's length the way a real final result does
 // when the session ran past the scan cap.
 type inflatedCountSource struct {
-	SessionSource
+	source.SessionSource
 }
 
-func (s inflatedCountSource) Final(r record) map[string]any {
+func (s inflatedCountSource) Final(r source.Record) map[string]any {
 	out := s.SessionSource.Final(r)
 	out["messageCount"] = 999999
 	return out
@@ -206,7 +207,7 @@ func TestSessionRoundsSurfacesPartialScan(t *testing.T) {
 		`{"type":"user","sessionId":"rrrr","cwd":"/w","message":{"role":"user","content":"ask"}}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`,
 	)
-	api := newSessionQueryAPI([]SessionSource{inflatedCountSource{newClaudeSource(root)}}, 0)
+	api := newSessionQueryAPI([]source.SessionSource{inflatedCountSource{source.NewClaudeSource(root)}}, 0)
 	out, err := api.sessionRounds("rrrr", "")
 	if err != nil {
 		t.Fatal(err)
@@ -227,20 +228,20 @@ func TestSessionBriefSourceDisambiguation(t *testing.T) {
 	dirA, dirB := t.TempDir(), t.TempDir()
 	writeClaudeFixture(t, dirA, "proj", "cccc", "/w")
 	writeClaudeFixture(t, dirB, "proj", "cccc", "/w")
-	api := newSessionQueryAPI([]SessionSource{
-		labeledSource{SessionSource: newClaudeSource(dirA), mode: "claude:a"},
-		labeledSource{SessionSource: newClaudeSource(dirB), mode: "claude:b"},
+	api := newSessionQueryAPI([]source.SessionSource{
+		source.Label(source.NewClaudeSource(dirA), "claude:a"),
+		source.Label(source.NewClaudeSource(dirB), "claude:b"),
 	}, 0)
-	for _, source := range []string{"claude:a", "claude:b"} {
-		brief, err := api.sessionBrief("cccc", source, 0, "", "")
+	for _, src := range []string{"claude:a", "claude:b"} {
+		brief, err := api.sessionBrief("cccc", src, 0, "", "")
 		if err != nil {
-			t.Fatalf("%s: %v", source, err)
+			t.Fatalf("%s: %v", src, err)
 		}
-		if !strings.Contains(brief, "source "+source) {
-			t.Errorf("%s brief names the wrong source:\n%s", source, brief)
+		if !strings.Contains(brief, "source "+src) {
+			t.Errorf("%s brief names the wrong source:\n%s", src, brief)
 		}
-		if !strings.Contains(brief, strings.TrimPrefix(source, "claude:")+":/w") {
-			t.Errorf("%s brief lost the label prefix on the project:\n%s", source, brief)
+		if !strings.Contains(brief, strings.TrimPrefix(src, "claude:")+":/w") {
+			t.Errorf("%s brief lost the label prefix on the project:\n%s", src, brief)
 		}
 	}
 }
@@ -262,7 +263,7 @@ func TestBriefReadsTheTailNotTheHead(t *testing.T) {
 	briefScanCap = 4
 	defer func() { briefScanCap = previous }()
 
-	api := newSessionQueryAPI([]SessionSource{newClaudeSource(root)}, 0)
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
 	out, err := api.sessionRounds("tail", "")
 	if err != nil {
 		t.Fatal(err)
@@ -308,7 +309,7 @@ func TestRoundFailuresAndChanges(t *testing.T) {
 		`{"type":"user","timestamp":"2026-10-01T10:00:06Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"w1","content":"ok"}]}}`,
 		`{"type":"assistant","timestamp":"2026-10-01T10:00:07Z","message":{"role":"assistant","content":[{"type":"text","text":"wrote b.go, a.go did not match"}]}}`,
 	)
-	api := newSessionQueryAPI([]SessionSource{newClaudeSource(root)}, 0)
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
 	sr, err := api.roundsOf("ffff", "")
 	if err != nil {
 		t.Fatal(err)
@@ -351,7 +352,7 @@ func TestRoundFailuresAndChanges(t *testing.T) {
 // not open a round, and a recorded interruption event marks the round interrupted even
 // when the next ask has not come yet
 func TestSplitRoundsRespectsInjectedAndEvents(t *testing.T) {
-	text := func(s string) []map[string]any { return []map[string]any{textBlock(s)} }
+	text := func(s string) []map[string]any { return []map[string]any{source.TextBlock(s)} }
 	rounds := splitRounds([]map[string]any{
 		{"role": "user", "injected": true, "timestamp": "2026-10-01T10:00:00Z", "content": text("# AGENTS.md instructions")},
 		{"role": "user", "timestamp": "2026-10-01T10:00:01Z", "content": text("real ask")},
@@ -359,8 +360,8 @@ func TestSplitRoundsRespectsInjectedAndEvents(t *testing.T) {
 		// row that is wholly one XML element is injected whatever its tag
 		{"role": "user", "timestamp": "2026-10-01T10:00:01Z", "content": text("<task-notification>\n<task-id>x</task-id>\n</task-notification>")},
 		{"role": "user", "timestamp": "2026-10-01T10:00:01Z", "content": text("<teammate-message from=\"a\">done</teammate-message>")},
-		{"role": "assistant", "timestamp": "2026-10-01T10:00:02Z", "content": []map[string]any{toolCallBlock("c1", "shell", map[string]any{"command": "sleep"})}},
-		{"role": "system", "timestamp": "2026-10-01T10:00:03Z", "content": []map[string]any{eventBlock(eventInterrupted, "Turn aborted: interrupted")}},
+		{"role": "assistant", "timestamp": "2026-10-01T10:00:02Z", "content": []map[string]any{source.ToolCallBlock("c1", "shell", map[string]any{"command": "sleep"})}},
+		{"role": "system", "timestamp": "2026-10-01T10:00:03Z", "content": []map[string]any{source.EventBlock(source.EventInterrupted, "Turn aborted: interrupted")}},
 	})
 	if len(rounds) != 1 {
 		t.Fatalf("rounds = %d, want 1 (the injected row starts nothing)", len(rounds))
@@ -370,7 +371,7 @@ func TestSplitRoundsRespectsInjectedAndEvents(t *testing.T) {
 	}
 	// The rounds index marks a failed round distinctly from an interrupted one
 	failed := round{index: 1, failures: 2, asked: "x"}
-	brief := renderBrief(record{SessionID: "s"}, []round{failed, {index: 2, interrupted: true, asked: "y"}}, []int{2}, 2, 2, "")
+	brief := renderBrief(source.Record{SessionID: "s"}, []round{failed, {index: 2, interrupted: true, asked: "y"}}, []int{2}, 2, 2, "")
 	if !strings.Contains(brief, "✗ x · 2 failed") || !strings.Contains(brief, "⚠ y") {
 		t.Errorf("rounds index marks = \n%s", brief)
 	}
@@ -391,7 +392,7 @@ func TestRoundEndIgnoresLateRows(t *testing.T) {
 		`{"type":"user","timestamp":"2026-09-25T06:00:00Z","message":{"role":"user","content":"<task-notification>a background task finished</task-notification>"}}`,
 		`{"type":"user","timestamp":"2026-09-25T06:00:10Z","message":{"role":"user","content":"<system-reminder>a reminder</system-reminder>"}}`,
 	)
-	api := newSessionQueryAPI([]SessionSource{newClaudeSource(root)}, 0)
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
 	sr, err := api.roundsOf("late", "")
 	if err != nil {
 		t.Fatal(err)
@@ -436,7 +437,7 @@ func TestBriefSince(t *testing.T) {
 		`{"type":"user","sessionId":"delta","cwd":"/w","timestamp":"2026-09-21T11:00:00Z","message":{"role":"user","content":"ask three"}}`,
 		`{"type":"assistant","timestamp":"2026-09-21T11:02:00Z","message":{"role":"assistant","content":[{"type":"text","text":"third done"}]}}`,
 	)
-	api := newSessionQueryAPI([]SessionSource{newClaudeSource(root)}, 0)
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
 
 	brief, err := api.sessionBrief("delta", "", 0, "", "2026-09-21T09:00:00Z")
 	if err != nil {
@@ -479,5 +480,51 @@ func TestBriefSince(t *testing.T) {
 	}
 	if strings.Contains(one, "## Since") || strings.Contains(one, "## Round 3") {
 		t.Errorf("round= should pick exactly one round:\n%s", one)
+	}
+}
+
+// writeClaudeFixture lays down one minimal claude session: two lines, enough for List to
+// pick up the id and the cwd and for the file to count as one session.
+func writeClaudeFixture(t *testing.T, root, project, sessionID, cwd string) {
+	t.Helper()
+	write(t, filepath.Join(root, project, sessionID+".jsonl"),
+		`{"type":"user","sessionId":"`+sessionID+`","cwd":"`+cwd+`","message":{"role":"user","content":"hello"}}`,
+		`{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"hi"}]}}`,
+	)
+}
+
+// TestClaudeBranch: Claude Code writes gitBranch on nearly every row, and a session is
+// worth knowing the branch of. A session started outside a repository has none, and the
+// key is then absent rather than empty — "" would read as a branch that failed to load.
+func TestClaudeBranch(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "proj", "onbranch.jsonl"),
+		`{"type":"queue-operation","timestamp":"2026-09-21T07:58:00Z"}`,
+		`{"type":"user","sessionId":"onbranch","cwd":"/w","gitBranch":"feature/rounds","timestamp":"2026-09-21T08:00:00Z","message":{"role":"user","content":"ask"}}`,
+		`{"type":"assistant","gitBranch":"feature/rounds","timestamp":"2026-09-21T08:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`,
+	)
+	write(t, filepath.Join(root, "proj", "nobranch.jsonl"),
+		`{"type":"user","sessionId":"nobranch","cwd":"/tmp/scratch","timestamp":"2026-09-21T09:00:00Z","message":{"role":"user","content":"ask"}}`,
+		`{"type":"assistant","timestamp":"2026-09-21T09:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`,
+	)
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
+	sessions, _ := api.listSessions()
+	got := map[string]map[string]any{}
+	for _, s := range sessions {
+		got[source.ToStr(s["sessionId"])] = s
+	}
+	if b := source.ToStr(got["onbranch"]["branch"]); b != "feature/rounds" {
+		t.Errorf("branch = %q, want feature/rounds", b)
+	}
+	if _, present := got["nobranch"]["branch"]; present {
+		t.Errorf("a session outside a repository should carry no branch key: %v", got["nobranch"]["branch"])
+	}
+	// and the brief says which branch the work was on, for whoever picks it up
+	brief, err := api.sessionBrief("onbranch", "", 0, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(brief, "- branch: feature/rounds") {
+		t.Errorf("brief does not name the branch:\n%s", brief)
 	}
 }

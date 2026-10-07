@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"github.com/itswl/agent-session-query/internal/source"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,7 @@ func newGuardServer(t *testing.T, token, corsOrigin string, loopbackOnly bool) *
 		`{"type":"session","id":"s1","cwd":"/w/proj"}`,
 		`{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}`,
 	)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	srv := httptest.NewServer(newAPIServer(serverOptions{
 		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 2),
 		token: token, corsOrigin: corsOrigin, maxConnections: 50, loopbackOnly: loopbackOnly,

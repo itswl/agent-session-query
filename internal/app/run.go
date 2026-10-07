@@ -23,6 +23,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/itswl/agent-session-query/internal/source"
 	"log"
 	"net"
 	"net/http"
@@ -51,8 +52,8 @@ func Run(args []string) int {
 	// the Dockerfile CMD does).
 	host := fs.String("host", "127.0.0.1", "bind address (default: 127.0.0.1, local only; use 0.0.0.0 to expose it)")
 	port := fs.Int("port", 8080, "listen port (default: 8080)")
-	mode := fs.String("mode", "auto", "mode: auto to detect, all to enable everything, or one of "+joinModes())
-	var paths pathFlag
+	mode := fs.String("mode", "auto", "mode: auto to detect, all to enable everything, or one of "+source.JoinModes())
+	var paths source.PathFlag
 	fs.Var(&paths, "path", "relocate or duplicate a file-backed source, mode[:label]=dir; repeatable, e.g. --path claude:box2=/mnt/box2/.claude/projects (supports pi, claude, codex, gemini, grok)")
 	hookToken := fs.String("hook_token", "", "Bearer token; once set, every /sessions endpoint requires it")
 	maxConnections := fs.Int("max-connections", 50, "maximum concurrent connections (default: 50)")
@@ -76,8 +77,8 @@ func Run(args []string) int {
 		fmt.Println(buildVersion)
 		return 0
 	}
-	if !validMode(*mode) {
-		fmt.Fprintf(os.Stderr, "invalid --mode: %q (choose from: auto, all, %s)\n", *mode, joinModes())
+	if !source.ValidMode(*mode) {
+		fmt.Fprintf(os.Stderr, "invalid --mode: %q (choose from: auto, all, %s)\n", *mode, source.JoinModes())
 		return 2
 	}
 	if *daemon && *mcp {
@@ -96,7 +97,7 @@ func Run(args []string) int {
 		*hookToken = os.Getenv("HOOK_TOKEN")
 	}
 
-	sources, err := buildSources(*mode, paths)
+	sources, err := source.BuildSources(*mode, paths)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[FATAL] %v\n", err)
 		return 1
@@ -123,8 +124,8 @@ func Run(args []string) int {
 	}
 
 	fmt.Printf("Mode: %s\n", *mode)
-	for _, source := range sources {
-		fmt.Printf("Source [%s]: %s\n", source.Mode(), source.Location())
+	for _, src := range sources {
+		fmt.Printf("Source [%s]: %s\n", src.Mode(), src.Location())
 	}
 	if *hookToken != "" {
 		fmt.Println("Authentication enabled (Bearer hook_token is set; not echoed)")
@@ -192,6 +193,7 @@ func Run(args []string) int {
 	}
 	fmt.Printf("\nWeb UI: http://%s:%d/ui\n", *host, *port)
 	fmt.Println("\nExample:")
+
 	fmt.Printf("  curl -H 'Authorization: Bearer xxx' http://localhost:%d/sessions\n", *port)
 	fmt.Println("\nPress Ctrl+C to stop")
 
@@ -210,16 +212,4 @@ func Run(args []string) int {
 		return 1
 	}
 	return 0
-}
-
-func validMode(mode string) bool {
-	if mode == "auto" || mode == "all" {
-		return true
-	}
-	for _, m := range knownModes {
-		if mode == m {
-			return true
-		}
-	}
-	return false
 }

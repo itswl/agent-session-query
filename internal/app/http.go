@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/itswl/agent-session-query/internal/source"
 	"net"
 	"net/http"
 	"net/url"
@@ -38,7 +39,7 @@ func effectiveMaxLimit(n int) int {
 // apiServer: routing, authentication, connection limiting and stats
 type apiServer struct {
 	mode       string
-	sources    []SessionSource
+	sources    []source.SessionSource
 	api        *SessionQueryAPI
 	token      string
 	corsOrigin string
@@ -59,7 +60,7 @@ type apiServer struct {
 
 type serverOptions struct {
 	mode           string
-	sources        []SessionSource
+	sources        []source.SessionSource
 	api            *SessionQueryAPI
 	token          string
 	corsOrigin     string
@@ -542,7 +543,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			return statusClientClosed
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"query":   query.needle,
+			"query":   query.Needle,
 			"results": found.results,
 			"total":   len(found.results),
 			"matched": found.matched, // sessions with a hit among those scanned; a lower bound when the scan stopped
@@ -584,7 +585,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"messages": messages,
 				"total":    len(messages),
-				"order":    orderName(query.fromEnd),
+				"order":    orderName(query.FromEnd),
 			})
 			return http.StatusOK
 
@@ -636,9 +637,9 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			// every tool output: a document that cut each one at five hundred characters
 			// was not the session, it was a preview of it.
 			if _, given := r.URL.Query()["limit"]; !given {
-				exportQuery.limit = exportMaxMessages
+				exportQuery.Limit = exportMaxMessages
 			}
-			exportQuery.full = true
+			exportQuery.Full = true
 			format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
 			if format == "" {
 				format = exportFormatMarkdown
@@ -735,19 +736,19 @@ func (s *apiServer) parseLimit(r *http.Request, ceiling int) int {
 // parseMessageQuery reads ?limit=, ?order= (desc asks for the latest N), ?offset=
 // (stable page number from an end) and ?full= (tool output and thinking whole rather
 // than cut to a preview)
-func (s *apiServer) parseMessageQuery(r *http.Request, ceiling int) (messageQuery, error) {
+func (s *apiServer) parseMessageQuery(r *http.Request, ceiling int) (source.MessageQuery, error) {
 	order := strings.TrimSpace(r.URL.Query().Get("order"))
-	q := messageQuery{
-		limit:   s.parseLimit(r, ceiling),
-		fromEnd: strings.EqualFold(order, "desc"),
-		full:    queryFlag(r.URL.Query().Get("full")),
+	q := source.MessageQuery{
+		Limit:   s.parseLimit(r, ceiling),
+		FromEnd: strings.EqualFold(order, "desc"),
+		Full:    queryFlag(r.URL.Query().Get("full")),
 	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
 		offset, err := strconv.Atoi(raw)
 		if err != nil || offset < 0 || offset > maxMessageOffset {
-			return messageQuery{}, fmt.Errorf("bad offset value: %q (want 0..%d)", raw, maxMessageOffset)
+			return source.MessageQuery{}, fmt.Errorf("bad offset value: %q (want 0..%d)", raw, maxMessageOffset)
 		}
-		q.offset = offset
+		q.Offset = offset
 	}
 	// ?at= positions the window at a point in time rather than at one end, which is how a
 	// caller lands on a specific message in a long session (a search hit, say). Absolute
@@ -755,12 +756,12 @@ func (s *apiServer) parseMessageQuery(r *http.Request, ceiling int) (messageQuer
 	if raw := strings.TrimSpace(r.URL.Query().Get("at")); raw != "" {
 		at, err := parseAt(raw)
 		if err != nil {
-			return messageQuery{}, err
+			return source.MessageQuery{}, err
 		}
-		q.at = at
+		q.At = at
 		// Anchored windows are used for search hits. Offset paging is for walking
 		// from an end; accepting both would make the cursor ambiguous.
-		q.offset = 0
+		q.Offset = 0
 	}
 	return q, nil
 }
@@ -795,52 +796,52 @@ func parseAt(raw string) (time.Time, error) {
 // parseSearchQuery reads the /search parameters: q is required, limit is how many
 // sessions come back, per_session is how many hits each session may contribute, and since
 // narrows the scan (useful on machines with a lot of history).
-func (s *apiServer) parseSearchQuery(r *http.Request) (searchQuery, error) {
+func (s *apiServer) parseSearchQuery(r *http.Request) (source.SearchQuery, error) {
 	values := r.URL.Query()
 	needle := strings.TrimSpace(values.Get("q"))
 	if needle == "" {
-		return searchQuery{}, errors.New("missing query parameter: q")
+		return source.SearchQuery{}, errors.New("missing query parameter: q")
 	}
 
-	q := searchQuery{
-		needle:     needle,
-		lowered:    appendLowerASCII(nil, []byte(needle)),
-		pattern:    strings.TrimSpace(values.Get("pattern")),
-		limit:      defaultSearchLimit,
-		perSession: defaultSearchPerSession,
+	q := source.SearchQuery{
+		Needle:     needle,
+		Lowered:    source.AppendLowerASCII(nil, []byte(needle)),
+		Pattern:    strings.TrimSpace(values.Get("pattern")),
+		Limit:      defaultSearchLimit,
+		PerSession: defaultSearchPerSession,
 	}
 	// limit=0 is legitimate: useful when you only want the hit count, not the bodies
 	if n, err := strconv.Atoi(strings.TrimSpace(values.Get("limit"))); err == nil && n >= 0 {
-		q.limit = n
+		q.Limit = n
 	}
-	if q.limit > s.maxLimit {
-		q.limit = s.maxLimit
+	if q.Limit > s.maxLimit {
+		q.Limit = s.maxLimit
 	}
 	if n, err := strconv.Atoi(strings.TrimSpace(values.Get("per_session"))); err == nil && n > 0 {
-		q.perSession = n
+		q.PerSession = n
 	}
-	if q.perSession > s.maxLimit {
-		q.perSession = s.maxLimit
+	if q.PerSession > s.maxLimit {
+		q.PerSession = s.maxLimit
 	}
 	if raw := strings.TrimSpace(values.Get("since")); raw != "" {
 		since, err := parseSince(raw)
 		if err != nil {
-			return searchQuery{}, err
+			return source.SearchQuery{}, err
 		}
-		q.since = since
+		q.Since = since
 	}
 	if raw := strings.TrimSpace(values.Get("until")); raw != "" {
 		until, err := parseSince(raw)
 		if err != nil {
-			return searchQuery{}, err
+			return source.SearchQuery{}, err
 		}
-		q.until = until
+		q.Until = until
 	}
 	role, err := parseSearchRole(values.Get("role"))
 	if err != nil {
-		return searchQuery{}, err
+		return source.SearchQuery{}, err
 	}
-	q.role = role
+	q.Role = role
 	return q, nil
 }
 

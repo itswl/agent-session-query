@@ -1,6 +1,7 @@
 package app
 
 import (
+	"github.com/itswl/agent-session-query/internal/source"
 	"strings"
 	"testing"
 )
@@ -9,16 +10,16 @@ import (
 // digit-bearing run — what redactSecrets is built to catch.
 var packSecret = "sk-" + strings.Repeat("aB3dE", 8)
 
-// secretSource is a minimal SessionSource whose final result quotes a key, so the pack's
+// secretSource is a minimal source.SessionSource whose final result quotes a key, so the pack's
 // redaction is pinned without depending on one CLI's file format.
 type secretSource struct{}
 
-func (secretSource) Mode() string                                   { return "pi" }
-func (secretSource) Location() string                               { return "test" }
-func (secretSource) Exists() bool                                   { return true }
-func (secretSource) List() []record                                 { return nil }
-func (secretSource) Messages(record, messageQuery) []map[string]any { return nil }
-func (secretSource) Final(record) map[string]any {
+func (secretSource) Mode() string                                                 { return "pi" }
+func (secretSource) Location() string                                             { return "test" }
+func (secretSource) Exists() bool                                                 { return true }
+func (secretSource) List() []source.Record                                        { return nil }
+func (secretSource) Messages(source.Record, source.MessageQuery) []map[string]any { return nil }
+func (secretSource) Final(source.Record) map[string]any {
 	return map[string]any{"text": "done — token " + packSecret, "isFinal": true, "stopReason": "stop"}
 }
 
@@ -28,7 +29,7 @@ func (secretSource) Final(record) map[string]any {
 // concluded field is the same assembled line — all of them must be cleaned. Full
 // transcripts (mode=full, /export) stay as stored, which is a separate path.
 func TestPackAssembledTextIsRedacted(t *testing.T) {
-	rec := newRecord(record{
+	rec := source.NewRecord(source.Record{
 		Source: "pi", Key: "k1", ShortKey: "fix the deploy",
 	}, "")
 

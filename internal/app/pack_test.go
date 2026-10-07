@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"github.com/itswl/agent-session-query/internal/source"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -27,7 +28,7 @@ func newPackServer(t *testing.T) *httptest.Server {
 		`{"type":"session","id":"pack-c","cwd":"/w/other"}`,
 		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"unrelated"}],"timestamp":"2026-09-03T10:00:00Z"}}`,
 	)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	srv := httptest.NewServer(newAPIServer(serverOptions{
 		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 0), maxConnections: 50,
 	}))
@@ -112,7 +113,7 @@ func TestPackFiltersAndLimits(t *testing.T) {
 	}
 }
 
-// TestPackJSONL: the index as data — a header record, then one per session, each carrying
+// TestPackJSONL: the index as data — a header source.Record, then one per session, each carrying
 // the id a program follows to the transcript rather than the transcript itself.
 func TestPackJSONL(t *testing.T) {
 	srv := newPackServer(t)
@@ -175,7 +176,7 @@ func TestPackExtendsAShortOpening(t *testing.T) {
 		`{"type":"message","id":"m1","timestamp":"2026-09-02T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"把 auth 模块的重试逻辑改成指数退避，最大 30 秒"}]}}`,
 		`{"type":"message","id":"m2","timestamp":"2026-09-02T10:01:00Z","message":{"role":"user","content":[{"type":"text","text":"另外记得补测试"}]}}`,
 	)
-	sources := []SessionSource{newPiSource(root)}
+	sources := []source.SessionSource{source.NewPiSource(root)}
 	srv := httptest.NewServer(newAPIServer(serverOptions{
 		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 0), maxConnections: 50,
 	}))

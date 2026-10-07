@@ -2,15 +2,15 @@
 
 ```
 .
-├── cmd/agent-session-query/   # entry point (the implementation lives in internal/app)
+├── cmd/agent-session-query/   # entry point (the implementation lives in internal/app and internal/source)
 ├── cmd/healthcheck/           # the container liveness probe
 ├── internal/source/           # the data layer: source.go (registry, --path handling),
 │                              #   source_*.go (one adapter per CLI), record.go (the one
 │                              #   session shape), blocks.go (the one block shape every
 │                              #   source produces), cleantext.go (redaction, snippets),
 │                              #   searchfile.go / searchquery.go (the per-file scan),
-│                              #   title.go, usage.go, msgcount.go,
-│                              #   filecache.go (file-head cache keyed by mtime),
+│                              #   title.go, usage.go, msgcount.go, registry.go,
+│                              #   filecache.go (file-head cache keyed by mtime+size),
 │                              #   hermes_sqlite.go; tests sit alongside their source
 ├── internal/app/              # the query and serving layer: run.go (flags and startup),
 │                              #   http.go (routing, auth, rate limiting), api.go (merging,
@@ -18,7 +18,7 @@
 │                              #   brief.go (rounds and the handoff brief),
 │                              #   export.go, pack.go, mcp.go (the MCP server),
 │                              #   ui.go + ui/ (go:embed three-pane page),
-│                              #   console_{windows,other}.go (Windows console code page)
+│                              #   console_{windows,other}.go, daemon*.go (background mode)
 ├── docs/internals.md          # parsing details and performance
 ├── docs/sources.md            # data sources and --path overrides
 ├── .github/workflows/test.yml     # push / PR: tests on three platforms, gofmt/vet, and a

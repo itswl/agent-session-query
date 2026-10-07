@@ -349,7 +349,7 @@ var rootEndpoints = []rootEndpoint{
 	{"GET", "/ui", true, "the web page"},
 	{"GET", "/sessions", false, "list every session"},
 	{"GET", "/sessions/<pattern>", false, "one session"},
-	{"GET", "/sessions/<pattern>/messages?limit=50&full=1", false, "its messages, newest first by default; full=1 keeps tool output and thinking whole instead of cut to a preview"},
+	{"GET", "/sessions/<pattern>/messages?limit=50&full=1", false, "its messages, earliest first unless ?order=desc; full=1 keeps tool output and thinking whole instead of cut to a preview"},
 	{"GET", "/sessions/<pattern>/final", false, "its final result"},
 	{"GET", "/sessions/<pattern>/export?format=", false, "one session as a document: md, jsonl, json or html"},
 	{"GET", "/sessions/<pattern>/rounds", false, "the session split into rounds — one per real user message"},

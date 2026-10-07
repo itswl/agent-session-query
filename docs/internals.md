@@ -253,7 +253,7 @@ side last looked, rather than one round again.
 Claude Code writes `gitBranch` on nearly every row, so `List()` picks it up in the head
 scan it already runs for the session id and the cwd, and stops as soon as all three are in
 place. A session started outside a repository has none, which is the one case that scan
-runs to `claudeHeadLines` — the cap exists for it. An empty value is dropped in `public()`
+runs to `claudeHeadLines` — the cap exists for it. An empty value is dropped in `Public()`
 rather than carried: a key that is sometimes a branch and sometimes `""` reads as a branch
 that failed to load. No other source on this machine records one.
 
@@ -263,7 +263,7 @@ and resolving it live would answer a question nobody asked.
 ### When a source cannot be read
 
 A source that returns no records and no error is empty; a source that could not be read at
-all says so, through `listErrorReporter` in `source.go`. Everything else follows from keeping
+all says so, through `ListErrorReporter` in `source.go`. Everything else follows from keeping
 those two apart, because they answer a caller identically: an empty list.
 
 `JsonMapSource` is the one that can fail this way today (both its Hermes databases are other
@@ -308,7 +308,7 @@ source's head scan now also picks up the first user message, and the title lands
 
 Not every first user row is a question: Claude Code opens with command plumbing and
 caveat rows, Codex with AGENTS.md instructions and environment context — all of them
-`role=user` but machine-assembled. `titleFromUserText` rejects them by their openings
+`role=user` but machine-assembled. `TitleFromUserText` rejects them by their openings
 (each prefix was seen in real local data), takes the first line of what survives, and
 truncates to 80 runes. Coverage measured locally: 190/192 Claude sessions, 31/33 Gemini,
 2/2 Pi, 2/2 Codex come out with a title.
@@ -414,11 +414,12 @@ Implementation notes:
    handed the counts instead of sitting on a 304 over a count-less body
 9. **`?order=desc` takes the tail with a ring buffer** — the latest N still means scanning to the
    end of the file, but only the window (`limit` plus any `offset`) is retained, so memory
-   tracks the query rather than session length. Two readers except themselves and materialise
-   before windowing: Hermes's SQLite reader (which also collapses duplicates on a SHA-256 of
-   each row's role, content, time and tool fields, so each survivor holds its content once)
-   and opencode's 1.x path, which loads every message and every part of the session before
-   the sink sees a row. For those two, memory tracks the session
+   tracks the query rather than session length. The two database readers follow the same rule:
+   opencode's 1.x path streams a message-and-parts join into the sink, and Hermes's SQLite
+   reader decides identity in a first pass that keeps only a light reference per message (id,
+   liveness, and a SHA-256 of role/content/time/tool fields — never the content) and
+   re-fetches the winning rows in chunks of 200. For every reader, what stays resident is the
+   window rather than the session's text; the scan itself still reads every row once
 
 ### What listing actually costs
 
@@ -499,7 +500,7 @@ and measurement says it is not needed:
 The speed comes from ordering, not from the algorithm:
 
 1. **Filter on raw bytes first** — `bytes.Contains` runs on the bare bytes from
-   `eachJSONLLine`, and only a match gets `json.Unmarshal`. That skips decoding for 99% of
+   `EachJSONLLine`, and only a match gets `json.Unmarshal`. That skips decoding for 99% of
    lines, and decoding is the expensive part of the scan
 2. **Case folding allocates nothing** — `appendLowerASCII` overwrites one reused buffer per
    line, folding `A-Z` byte by byte, while UTF-8 multi-byte sequences (lead byte ≥ 0x80) pass
@@ -514,7 +515,7 @@ The speed comes from ordering, not from the algorithm:
 5. **Cancellable** — the page searches on every keystroke and only ever displays the last
    result, so an abandoned scan has to stop rather than run to completion. `search` takes the
    request context; workers stop picking up sessions once it is done, and inside a file the
-   check is sampled every `cancelCheckLines` lines (a channel receive per line would cost more
+   check is sampled every `CancelCheckLines` lines (a channel receive per line would cost more
    than the `Contains` that is the actual work). A cancelled request logs 499 and writes no
    body. Without this, typing five characters would leave four full scans competing for every
    core — measured at 20 ms → 384 ms per search with five in flight
@@ -532,8 +533,9 @@ nowhere else produces no hit at all: the row matched, but it had nothing to say.
 
 Newer Hermes sessions live entirely in SQLite with no jsonl, so `JsonMapSource` implements the
 optional `searchableSource` interface and uses `LIKE` (SQLite's LIKE is already
-case-insensitive for ASCII). The other five sources have nothing but files, so the generic path
-suffices.
+case-insensitive for ASCII). Sources whose sessions are not one file each — Gemini's split
+conversations, opencode's and openclaw's databases, the Hermes json-map entries — implement
+`Search` themselves; the rest take the generic per-file scan described above.
 
 ### Running in the background
 
@@ -579,7 +581,7 @@ is simply not released). The only dependency is a pure-Go SQLite driver, ported 
 What needed specific attention for Windows:
 
 - **Path separators**: a file-backed source's `key` is a full path, which on Windows is
-  `C:\...\abc.jsonl`. Everything goes through `normalizeForMatch` (lowercase + forward slashes)
+  `C:\...\abc.jsonl`. Everything goes through `NormalizeForMatch` (lowercase + forward slashes)
   before matching, or a user typing the habitual `proj/abc.jsonl` matches nothing, and an exact
   suffix hit degrades into a substring hit
 - **SQLite's file: URI**: backslashes inside a URI are ambiguous with escapes, so `sqliteURI`
@@ -600,7 +602,7 @@ it means releasing blind.
 
 Sources spell their update times differently (`2006-01-02T15:04:05` derived from mtime, Gemini's
 RFC3339Nano, whatever string `sessions.json` holds for Hermes, OpenClaw's epoch milliseconds),
-and they are all parsed into a `time.Time` in `newRecord` before comparison. Compare the strings
+and they are all parsed into a `time.Time` in `NewRecord` before comparison. Compare the strings
 lexicographically instead and a single offset-bearing timestamp misorders the whole cross-source
 list. Records whose time will not parse sort after those that have one, falling back to reverse
 string order among themselves.

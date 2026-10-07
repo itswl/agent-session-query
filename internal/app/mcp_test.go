@@ -342,7 +342,8 @@ func TestMCPEveryArgumentIsAdvertised(t *testing.T) {
 
 	// The arguments each tool's implementation reads out of args
 	read := map[string][]string{
-		"search_sessions": {"query", "limit", "per_session", "since", "until", "cursor"},
+		// cursor is read on search_sessions only to be refused: it does not paginate
+		"search_sessions": {"query", "limit", "per_session", "since", "until"},
 		"list_sessions":   {"source", "project", "since", "until", "limit", "cursor"},
 		"get_session":     {"pattern", "source"},
 		"get_messages":    {"pattern", "source", "limit", "order", "role", "at", "full", "cursor"},

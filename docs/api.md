@@ -95,7 +95,9 @@ exact either way. `truncated` carries the
 reasons results are short as separate booleans rather than one flag, because they are
 different knobs: `sessions` means the page was cut by `limit` (more sessions matched than
 `limit` returned, or the scan stopped there), `hits` means some session had more hits than
-`per_session` returned, and `scan` means the scan stopped once `limit` was reached.
+`per_session` returned, and `scan` means the scan stopped once `limit` was reached. With `limit=0` no page was asked
+for, so `sessions` reads true by definition (more matched than the zero returned) — `matched`
+is already the exact count there, and it is not a reason to raise the limit.
 
 With a lot of history, narrow the scan with `since=30d` (which also accepts `12h` or
 `2026-09-01`), `until` for the other end of that window, `pattern` to search inside one
@@ -133,8 +135,9 @@ pattern containing a colon needs URL encoding (`%3A`).
   running, so the command would work for the newest handful and fail for the rest. The per-source extras — `cwd`, `model`,
   `cliVersion`, `platform`, `displayName`, `createdAt`, `totalTokens`, `estimatedCostUsd`,
   `runtimeMs`, `files`, `messageCount` — are omitted rather than empty when the source has
-  nothing to say (the same rule `branch` follows), so a missing `messageCount` means "not
-  counted yet", not zero. A Grok session
+  nothing to say (the same rule `branch` follows). `messageCount`, `totalTokens`,
+  `estimatedCostUsd` and `runtimeMs` stay present whenever the source recorded them — a
+  recorded zero stays — so a missing one means "not recorded", not zero. A Grok session
   the user archived (it lives under `archived_sessions/`) carries `archived: true`
 - Search: the list fields plus `matches` (`snippet` + `role` + `timestamp`) and `matchCount`
 - Messages: `content` is an array of blocks typed `text` / `thinking` / `toolCall` /

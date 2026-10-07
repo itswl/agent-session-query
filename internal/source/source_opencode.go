@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -309,10 +310,15 @@ func (s *OpenCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 	// arrive together and in order, and the message is complete exactly when the next
 	// message id appears. A message with no parts still arrives (LEFT JOIN); a part whose
 	// message row is gone is dropped, as before.
+	//
+	// message_id alone joins the parts: a part belongs to the message it names, whatever
+	// its own session_id column happens to hold. Matching on p.session_id as well invited
+	// the planner to drive the join from a session-wide part index instead — measured on a
+	// 2 000-message / 20 000-part database, 2.96 s with that plan against 0.02 s without.
 	rows, err := db.Query(`
 		SELECT m.id, m.data, p.data
 		FROM message m
-		LEFT JOIN part p ON p.message_id = m.id AND p.session_id = m.session_id
+		LEFT JOIN part p ON p.message_id = m.id
 		WHERE m.session_id = ?
 		ORDER BY m.time_created, m.id, p.time_created, p.id`, sessionID)
 	if err != nil {
@@ -343,6 +349,13 @@ func (s *OpenCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 		var id, msgData string
 		var partData sql.NullString
 		if err := rows.Scan(&id, &msgData, &partData); err != nil {
+			// A row that will not scan (a corrupt page, a database replaced under us) ends
+			// the read; the message already read in full still goes out, and the warning
+			// says the rest is missing rather than letting the prefix pass for the session
+			fmt.Fprintf(os.Stderr, "[WARN] opencode: reading %s stopped; the rest of the messages were not read: %v\n", sessionID, err)
+			if pending.has && pending.ok {
+				emit()
+			}
 			return sink.result()
 		}
 		if !pending.has || pending.id != id {
@@ -366,6 +379,11 @@ func (s *OpenCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 		if json.Unmarshal([]byte(partData.String), &part) == nil && part != nil {
 			pending.blocks = append(pending.blocks, openCodeBlocks(part, q.Full)...)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		// The rest of the session is unreachable; say so, the way the jsonl reader does for
+		// a file it could not finish
+		fmt.Fprintf(os.Stderr, "[WARN] opencode: reading %s stopped; the rest of the messages were not read: %v\n", sessionID, err)
 	}
 	if pending.has && pending.ok {
 		emit()

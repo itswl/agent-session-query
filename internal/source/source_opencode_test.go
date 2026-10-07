@@ -25,7 +25,11 @@ CREATE TABLE message (
 	time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
 CREATE TABLE part (
 	id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL,
-	time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);`
+	time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+-- the two indexes the real 1.x tables carry: with them the join streams, without them
+-- SQLite materializes it and every test here would pass under the wrong plan
+CREATE INDEX message_session_time_created_id_idx ON message (session_id, time_created, id);
+CREATE INDEX part_message_id_id_idx ON part (message_id, id);`
 
 // newOpenCodeFixture builds a database with rows copied from the real thing — ids,
 // JSON payloads and the unix-millisecond times included.

@@ -54,8 +54,13 @@ type Record struct {
 
 	MessageCount int
 	HasCount     bool
-	Archived     bool
-	Files        []string // the files one session spans when it spans several (gemini)
+	// The numeric extras follow HasCount's rule: a source that recorded a zero keeps the
+	// key, and only a source that does not report the figure omits it
+	HasTotalTokens   bool
+	HasEstimatedCost bool
+	HasRuntime       bool
+	Archived         bool
+	Files            []string // the files one session spans when it spans several (gemini)
 
 	sortAt   time.Time // parsed update time; zero means this record's time would not parse
 	sortKey  string    // fallback when the time will not parse: the raw string
@@ -154,13 +159,13 @@ func (r Record) Public() map[string]any {
 	if r.Platform != "" {
 		out["platform"] = r.Platform
 	}
-	if r.TotalTokens != 0 {
+	if r.HasTotalTokens {
 		out["totalTokens"] = r.TotalTokens
 	}
-	if r.EstimatedCostUsd != 0 {
+	if r.HasEstimatedCost {
 		out["estimatedCostUsd"] = r.EstimatedCostUsd
 	}
-	if r.RuntimeMs != 0 {
+	if r.HasRuntime {
 		out["runtimeMs"] = r.RuntimeMs
 	}
 	if r.HasCount {

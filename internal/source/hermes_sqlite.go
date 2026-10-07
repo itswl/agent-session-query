@@ -254,7 +254,9 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) ([]Record, erro
 			Platform:         platform.String,
 			Model:            model.String,
 			TotalTokens:      totalTokens,
+			HasTotalTokens:   true,
 			EstimatedCostUsd: nullFloatOrZero(cost),
+			HasEstimatedCost: true,
 			// Hermes maintains the count itself; the file sources have no such column
 			// and get theirs lazily in the page once a session is opened
 			MessageCount: int(nullIntOrZero(messageCount)),
@@ -443,8 +445,9 @@ func hermesSQLiteMessages(dbPath, sessionID string, q MessageQuery) []map[string
 	rows.Close()
 
 	// Pass two: fetch just the winning rows, in chunks and in shown order, and emit them
-	// through the sink. The chunk bounds what is resident: one page of rows plus the
-	// window, rather than the session.
+	// through the sink. Pass one only read; what stays resident is the window plus one
+	// chunk of rows, not the session's text (identity needs every row read once, so the
+	// scan itself is still one pass over the session).
 	sink := newMessageSink(q)
 	const fetchChunk = 200
 	for start := 0; start < len(order); start += fetchChunk {
@@ -455,15 +458,24 @@ func hermesSQLiteMessages(dbPath, sessionID string, q MessageQuery) []map[string
 		placeholders := make([]string, 0, end-start)
 		args := make([]any, 0, end-start+1)
 		args = append(args, sessionID)
+		nullIDs := false
 		for _, ref := range order[start:end] {
 			placeholders = append(placeholders, "?")
 			args = append(args, ref.id)
+			if ref.id == "" {
+				nullIDs = true // a NULL id column, which IN (?) can never match
+			}
+		}
+		nullClause := ""
+		if nullIDs {
+			// SQLite allows NULL under PRIMARY KEY; those rows come back as id ""
+			nullClause = " OR id IS NULL"
 		}
 		page, err := db.Query(`
 			SELECT id, role, content, `+col("reasoning")+`, `+col("tool_calls")+`, `+col("tool_name")+`,
 				   `+col("tool_call_id")+`, timestamp
 			FROM messages
-			WHERE session_id = ? AND id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+			WHERE session_id = ? AND (id IN (`+strings.Join(placeholders, ",")+`)`+nullClause+`)`, args...)
 		if err != nil {
 			warnHermesSQLite(sessionID, err)
 			return sink.result()
@@ -473,6 +485,7 @@ func hermesSQLiteMessages(dbPath, sessionID string, q MessageQuery) []map[string
 			timestamp                                                 any
 		}
 		fetched := map[string]fullRow{}
+		byID := map[string]fullRow{} // fallback for a row rewritten between the passes
 		for page.Next() {
 			var id, role, content, reasoning, toolCalls, toolName, toolCallID, timestamp any
 			if err := page.Scan(&id, &role, &content, &reasoning, &toolCalls, &toolName, &toolCallID, &timestamp); err != nil {
@@ -490,12 +503,25 @@ func hermesSQLiteMessages(dbPath, sessionID string, q MessageQuery) []map[string
 			// Hermes schema — so the winner is matched on id plus its identity hash
 			key := hermesRowKey(row.role, row.content, timestamp, row.toolCallID, row.toolCalls, row.toolName)
 			fetched[sqliteValueString(id)+"\x00"+key] = row
+			byID[sqliteValueString(id)] = row
 		}
 		page.Close()
+		if err := page.Err(); err != nil {
+			// A mid-page read error is not a row that changed: say so instead of letting
+			// the missing refs pass for concurrent writes
+			warnHermesSQLite(sessionID, err)
+			return sink.result()
+		}
 		for _, ref := range order[start:end] {
 			row, ok := fetched[ref.id+"\x00"+ref.key]
 			if !ok {
-				continue // the row changed between the passes; there is nothing to show
+				// A row rewritten between the passes (a live compaction) has a new identity
+				// hash; the row with that id is still the one that belongs here. A deleted
+				// row has nothing, and the message is dropped rather than guessed
+				row, ok = byID[ref.id]
+			}
+			if !ok {
+				continue
 			}
 			parts := []map[string]any{}
 			switch row.role {

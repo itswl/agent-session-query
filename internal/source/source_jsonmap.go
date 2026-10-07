@@ -183,8 +183,12 @@ func (s *JsonMapSource) List() []Record {
 			}
 			rec.UpdatedAt = updatedStr
 			rec.Model = StrOr(GetOr(info, "model", ""), "")
-			rec.RuntimeMs = floatOrZero(GetOr(info, "runtimeMs", float64(0)))
-			rec.TotalTokens = floatOrZero(GetOr(info, "totalTokens", float64(0)))
+			if v, ok := info["runtimeMs"]; ok {
+				rec.RuntimeMs, rec.HasRuntime = floatOrZero(v), true
+			}
+			if v, ok := info["totalTokens"]; ok {
+				rec.TotalTokens, rec.HasTotalTokens = floatOrZero(v), true
+			}
 		} else { // hermes
 			updatedRaw = info["updated_at"]
 			rec.Status = "done"
@@ -195,8 +199,12 @@ func (s *JsonMapSource) List() []Record {
 			// must not ride out through the list or a brief
 			rec.DisplayName = RedactSecrets(StripTerminalControls(ToStr(GetOr(info, "display_name", ""))))
 			rec.Platform = StrOr(GetOr(info, "platform", ""), "")
-			rec.TotalTokens = floatOrZero(GetOr(info, "total_tokens", float64(0)))
-			rec.EstimatedCostUsd = floatOrZero(GetOr(info, "estimated_cost_usd", float64(0)))
+			if v, ok := info["total_tokens"]; ok {
+				rec.TotalTokens, rec.HasTotalTokens = floatOrZero(v), true
+			}
+			if v, ok := info["estimated_cost_usd"]; ok {
+				rec.EstimatedCostUsd, rec.HasEstimatedCost = floatOrZero(v), true
+			}
 		}
 
 		out = append(out, NewRecord(rec, updatedRaw))

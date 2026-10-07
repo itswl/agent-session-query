@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,18 +62,30 @@ type kv struct {
 }
 
 // load reads sessions.json; anything that is not a JSON object yields nothing.
-func (s *JsonMapSource) load() []kv {
+//
+// The error is returned rather than only implied by an empty result: a file that exists
+// but cannot be read — corrupt, truncated mid-write by the process that owns it,
+// permission denied — is a source that failed, not a source with nothing in it, and List
+// records it as such (see listErrorReporter). A missing file is not an error: the source
+// is simply empty until the CLI writes its first session.
+func (s *JsonMapSource) load() ([]kv, error) {
 	raw, err := os.ReadFile(s.def.sessionsJSON)
-	if err != nil || !json.Valid(raw) {
-		return nil
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading %s: %w", s.def.sessionsJSON, err)
+	}
+	if !json.Valid(raw) {
+		return nil, fmt.Errorf("%s is not valid JSON (truncated or corrupt)", s.def.sessionsJSON)
 	}
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	tok, err := dec.Token()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("%s: %w", s.def.sessionsJSON, err)
 	}
 	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
-		return nil
+		return nil, fmt.Errorf("%s is not a JSON object", s.def.sessionsJSON)
 	}
 	out := []kv{}
 	for dec.More() {
@@ -90,7 +103,7 @@ func (s *JsonMapSource) load() []kv {
 		}
 		out = append(out, kv{Key: key, Val: val})
 	}
-	return out
+	return out, nil
 }
 
 // fileOf resolves the jsonl path belonging to a session record.
@@ -107,10 +120,11 @@ func (s *JsonMapSource) fileOf(r record) string {
 }
 
 func (s *JsonMapSource) List() []record {
-	entries := s.load()
+	// this scan's verdict, recorded on the way out (see ListError); the index load leads
+	// it, because "could not even read the index" is the loudest thing a scan can say
+	entries, listErr := s.load()
 	isOpenClaw := s.def.mode == "openclaw"
 	out := []record{}
-	listErr := error(nil) // this scan's verdict, recorded on the way out (see ListError)
 
 	for _, entry := range entries {
 		info, ok := entry.Val.(map[string]any)
@@ -171,7 +185,10 @@ func (s *JsonMapSource) List() []record {
 			fields["status"] = "done"
 			fields["updatedAt"] = getOr(info, "updated_at", "")
 			fields["createdAt"] = getOr(info, "created_at", "")
-			fields["displayName"] = getOr(info, "display_name", "")
+			// display_name is written by the CLI, so it is cleaned like every other
+			// assembled title (see redactSecrets) — a display name that quoted a key
+			// must not ride out through the list or a brief
+			fields["displayName"] = redactSecrets(stripTerminalControls(toStr(getOr(info, "display_name", ""))))
 			fields["platform"] = getOr(info, "platform", "")
 			fields["totalTokens"] = getOr(info, "total_tokens", float64(0))
 			fields["estimatedCostUsd"] = getOr(info, "estimated_cost_usd", float64(0))
@@ -192,8 +209,12 @@ func (s *JsonMapSource) List() []record {
 			}
 		}
 		var records []record
-		records, listErr = hermesSQLiteList(s.def.stateDB, s.def.mode, seen)
+		var hermesErr error
+		records, hermesErr = hermesSQLiteList(s.def.stateDB, s.def.mode, seen)
 		out = append(out, records...)
+		if listErr == nil {
+			listErr = hermesErr
+		}
 	}
 	// Every scan replaces the last one's verdict, including when the database it used to
 	// fail on is simply gone now

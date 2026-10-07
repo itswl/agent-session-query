@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no cgo, cross-compilation unaffected)
@@ -39,6 +40,26 @@ import (
 // database carrying both layouts the V1 sessions that were never migrated are listed too.
 type OpenCodeSource struct {
 	dbPath string
+
+	// listErr is the failure the last List() hit (see listErrorReporter). For a long
+	// time a moved schema or a locked database read as "you have no sessions" — the
+	// exact failure the mechanism exists to prevent.
+	mu      sync.Mutex
+	listErr error
+}
+
+// setListError records how the last list went; nil clears a previous failure
+func (s *OpenCodeSource) setListError(err error) {
+	s.mu.Lock()
+	s.listErr = err
+	s.mu.Unlock()
+}
+
+// ListError implements listErrorReporter
+func (s *OpenCodeSource) ListError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listErr
 }
 
 // openCodeHasV2 reports whether the database carries the 2.x tables. Both have to exist:
@@ -102,27 +123,36 @@ func (s *OpenCodeSource) open() (*sql.DB, error) {
 func (s *OpenCodeSource) List() []record {
 	db, err := s.open()
 	if err != nil {
+		s.setListError(err)
 		return nil
 	}
 	defer db.Close()
 
+	out := []record{}
+	var listErr error
 	if openCodeHasV2(db) {
-		out := s.listV2(db)
+		out, listErr = s.listV2(db)
 		if openCodeHasTable(db, "session") {
 			// A database that saw 2.x and 1.x both: the V1 sessions that never migrated
 			// are history too, and a migrated one keeps its id, so NOT EXISTS keeps each
 			// session to one row
-			out = append(out, s.listV1(db, ` AND NOT EXISTS (SELECT 1 FROM session_v2 v WHERE v.id = session.id)`)...)
+			v1, err := s.listV1(db, ` AND NOT EXISTS (SELECT 1 FROM session_v2 v WHERE v.id = session.id)`)
+			out = append(out, v1...)
+			if listErr == nil {
+				listErr = err
+			}
 		}
-		return out
+	} else {
+		out, listErr = s.listV1(db, "")
 	}
-	return s.listV1(db, "")
+	s.setListError(listErr)
+	return out
 }
 
 // listV2 lists the 2.x sessions. The columns are the ones every 2.x database has been seen
 // to carry: a title, the directory the session ran in, and the two times. Whether the
 // table marks archived sessions is read off the schema rather than assumed.
-func (s *OpenCodeSource) listV2(db *sql.DB) []record {
+func (s *OpenCodeSource) listV2(db *sql.DB) ([]record, error) {
 	archivedClause := ""
 	if columns, err := tableColumns(db, "session_v2"); err == nil && columns["time_archived"] {
 		archivedClause = ` WHERE s.time_archived IS NULL`
@@ -134,7 +164,7 @@ func (s *OpenCodeSource) listV2(db *sql.DB) []record {
 		       (SELECT MAX(m.time_created) FROM session_message m WHERE m.session_id = s.id)
 		FROM session_v2 s` + archivedClause)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -143,7 +173,7 @@ func (s *OpenCodeSource) listV2(db *sql.DB) []record {
 		var id, directory, title sql.NullString
 		var created, updated, messageCount, lastMessage sql.NullInt64
 		if err := rows.Scan(&id, &directory, &title, &created, &updated, &messageCount, &lastMessage); err != nil {
-			return out
+			return out, err
 		}
 		if !id.Valid || id.String == "" {
 			continue
@@ -154,9 +184,11 @@ func (s *OpenCodeSource) listV2(db *sql.DB) []record {
 			updated = lastMessage
 		}
 		out = append(out, newRecord(map[string]any{
-			"source":       "opencode",
-			"key":          s.dbPath + "#" + id.String,
-			"shortKey":     firstNonEmpty(title.String, id.String),
+			"source": "opencode",
+			"key":    s.dbPath + "#" + id.String,
+			// opencode writes its own title, and it can quote anything the session
+			// touched; it is cleaned like every assembled title (see redactSecrets)
+			"shortKey":     firstNonEmpty(redactSecrets(stripTerminalControls(title.String)), id.String),
 			"sessionId":    id.String,
 			"file":         nil,
 			"hasFile":      false,
@@ -167,19 +199,22 @@ func (s *OpenCodeSource) listV2(db *sql.DB) []record {
 			"createdAt":    millisToISO(created),
 		}, millisToISO(updated)))
 	}
-	return out
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	return out, nil
 }
 
 // listV1 lists the sessions of the original layout; extra narrows the set in a mixed
 // database
-func (s *OpenCodeSource) listV1(db *sql.DB, extra string) []record {
+func (s *OpenCodeSource) listV1(db *sql.DB, extra string) ([]record, error) {
 	rows, err := db.Query(`
 		SELECT id, directory, title, slug, model, time_created, time_updated,
 		       (SELECT COUNT(*) FROM message m WHERE m.session_id = session.id)
 		FROM session
 		WHERE time_archived IS NULL` + extra)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -188,15 +223,16 @@ func (s *OpenCodeSource) listV1(db *sql.DB, extra string) []record {
 		var id, directory, title, slug, model sql.NullString
 		var created, updated, messageCount sql.NullInt64
 		if err := rows.Scan(&id, &directory, &title, &slug, &model, &created, &updated, &messageCount); err != nil {
-			return out
+			return out, err
 		}
 		if !id.Valid || id.String == "" {
 			continue
 		}
 
 		// title is what opencode itself shows in its session list (it writes one for
-		// every session); fall back to the slug, then the raw id
-		name := firstNonEmpty(title.String, slug.String, id.String)
+		// every session); fall back to the slug, then the raw id. Both fields are text
+		// opencode wrote, so both are cleaned like every assembled title.
+		name := firstNonEmpty(redactSecrets(stripTerminalControls(firstNonEmpty(title.String, slug.String))), id.String)
 
 		out = append(out, newRecord(map[string]any{
 			"source":    "opencode",
@@ -214,7 +250,10 @@ func (s *OpenCodeSource) listV1(db *sql.DB, extra string) []record {
 			"createdAt":    millisToISO(created),
 		}, millisToISO(updated)))
 	}
-	return out
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	return out, nil
 }
 
 // openCodeModelName turns the model column's JSON into the "provider/model" opencode

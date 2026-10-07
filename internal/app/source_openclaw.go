@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no cgo, cross-compilation unaffected)
@@ -35,6 +36,26 @@ import (
 // agent database is found (see buildSources).
 type OpenClawSource struct {
 	dbPaths []string
+
+	// listErr is the failure the last List() hit (see listErrorReporter): a database
+	// that cannot be opened or queried must read as "could not be read", not as
+	// "nothing there".
+	mu      sync.Mutex
+	listErr error
+}
+
+// setListError records how the last list went; nil clears a previous failure
+func (s *OpenClawSource) setListError(err error) {
+	s.mu.Lock()
+	s.listErr = err
+	s.mu.Unlock()
+}
+
+// ListError implements listErrorReporter
+func (s *OpenClawSource) ListError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listErr
 }
 
 func newOpenClawSource(dbPaths []string) *OpenClawSource {
@@ -69,16 +90,22 @@ func (s *OpenClawSource) open(path string) (*sql.DB, error) {
 
 func (s *OpenClawSource) List() []record {
 	out := []record{}
+	var listErr error
 	for _, dbPath := range s.dbPaths {
-		out = append(out, s.listOne(dbPath)...)
+		recs, err := s.listOne(dbPath)
+		out = append(out, recs...)
+		if err != nil && listErr == nil {
+			listErr = err
+		}
 	}
+	s.setListError(listErr)
 	return out
 }
 
-func (s *OpenClawSource) listOne(dbPath string) []record {
+func (s *OpenClawSource) listOne(dbPath string) ([]record, error) {
 	db, err := s.open(dbPath)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer db.Close()
 
@@ -101,7 +128,7 @@ func (s *OpenClawSource) listOne(dbPath string) []record {
 		         ORDER BY te.seq LIMIT 1) AS first_user
 		FROM session_windows`)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -111,15 +138,17 @@ func (s *OpenClawSource) listOne(dbPath string) []record {
 		var updated, messageCount sql.NullInt64
 		if err := rows.Scan(&id, &status, &provider, &model, &displayName,
 			&updated, &messageCount, &cwd, &firstUser); err != nil {
-			return list
+			return list, err
 		}
 		if !id.Valid || id.String == "" {
 			continue
 		}
 
 		// display_name is set for chat-channel sessions; CLI runs leave it empty and the
-		// first user message is the title, as with the file sources
-		name := displayName.String
+		// first user message is the title, as with the file sources. It is text a CLI
+		// wrote, so it is cleaned like every assembled title (the fallback below already
+		// goes through titleFromUserText, which redacts).
+		name := redactSecrets(stripTerminalControls(displayName.String))
 		if name == "" && firstUser.Valid {
 			var event struct {
 				Message struct {
@@ -153,7 +182,10 @@ func (s *OpenClawSource) listOne(dbPath string) []record {
 			"updatedAt":    millisToISO(updated),
 		}, millisToISO(updated)))
 	}
-	return list
+	if err := rows.Err(); err != nil {
+		return list, err
+	}
+	return list, nil
 }
 
 func (s *OpenClawSource) Messages(r record, q messageQuery) []map[string]any {

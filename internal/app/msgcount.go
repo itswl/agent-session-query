@@ -31,9 +31,9 @@ func lineHasAll(line []byte, tokens ...string) bool {
 
 // claudeCountMessages: user/assistant rows, sidechains excluded, plus the system rows the
 // reader shows as events (see claudeProbe.counts — one rule for the list, Final and here)
-func claudeCountMessages(path string) int {
+func claudeCountMessages(path string, from int64) (int, bool) {
 	n := 0
-	eachJSONLLine(path, func(line []byte) bool {
+	eachJSONLLineFrom(path, from, func(line []byte) bool {
 		// A conversation row carries a message object; the system rows that count carry a
 		// subtype. Anything with neither is skipped before it is decoded.
 		if !bytes.Contains(line, []byte(`"type"`)) ||
@@ -46,13 +46,13 @@ func claudeCountMessages(path string) int {
 		}
 		return true
 	})
-	return n
+	return n, true
 }
 
 // piCountMessages: type=message rows (see PiSource.Final)
-func piCountMessages(path string) int {
+func piCountMessages(path string, from int64) (int, bool) {
 	n := 0
-	eachJSONLLine(path, func(line []byte) bool {
+	eachJSONLLineFrom(path, from, func(line []byte) bool {
 		// Pi writes both compact JSON and pretty-printed JSON depending on the
 		// producer. The previous compact-only prefilter silently counted zero
 		// messages in the pretty form, leaving the list stuck on "counting…".
@@ -67,14 +67,14 @@ func piCountMessages(path string) int {
 		}
 		return true
 	})
-	return n
+	return n, true
 }
 
 // codexCountMessages: every row the reader turns into a message — conversation rows,
 // thinking, calls and their outputs, aborts — by the one rule in codexProbe.counts
-func codexCountMessages(path string) int {
+func codexCountMessages(path string, from int64) (int, bool) {
 	n := 0
-	eachJSONLLine(path, func(line []byte) bool {
+	eachJSONLLineFrom(path, from, func(line []byte) bool {
 		if !bytes.Contains(line, []byte(`"response_item"`)) && !bytes.Contains(line, []byte(`"turn_aborted"`)) {
 			return true
 		}
@@ -84,18 +84,18 @@ func codexCountMessages(path string) int {
 		}
 		return true
 	})
-	return n
+	return n, true
 }
 
 // geminiCountMessages counts the conversation rows; eachGeminiEntry already reduces the
 // append log to its entries, so the rule matches GeminiSource.Final exactly.
-func geminiCountMessages(path string) int {
+func geminiCountMessages(path string, from int64) (int, bool) {
 	n := 0
-	eachGeminiEntry(path, func(m map[string]any) bool {
+	eachGeminiEntryFrom(path, from, func(m map[string]any) bool {
 		if m["type"] == "user" || m["type"] == "gemini" {
 			n++
 		}
 		return true
 	})
-	return n
+	return n, true
 }

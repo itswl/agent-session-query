@@ -121,7 +121,7 @@ func TestClaudeToolStatusAndEvents(t *testing.T) {
 	rec := s.List()[0]
 	msgs := s.Messages(rec, messageQuery{limit: 100})
 	final := s.Final(rec)
-	if n := claudeCountMessages(path); n != len(msgs) || final["messageCount"] != len(msgs) {
+	if n, _ := claudeCountMessages(path, 0); n != len(msgs) || final["messageCount"] != len(msgs) {
 		t.Fatalf("counts disagree: counter %d, messages %d, final %v", n, len(msgs), final["messageCount"])
 	}
 	// 10 conversation and event rows: the empty hook summary and turn_duration are not

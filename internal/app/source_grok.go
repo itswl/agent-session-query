@@ -431,12 +431,20 @@ func (s *GrokSource) Messages(r record, q messageQuery) []map[string]any {
 // It is handed the summary.json path because that is what the list is keyed on. Unlike
 // the other counters it cannot pre-filter on raw bytes: grouping is stateful across
 // lines, so every update has to be decoded in order.
-func grokCountMessages(summaryPath string) int {
+func grokCountMessages(summaryPath string, from int64) (int, bool) {
+	if from > 0 {
+		// The grouper joins several update rows into one message, so its state spans
+		// lines: resuming at an offset could split one group across the seam and count
+		// it twice (or not at all). Recount the file and say so, rather than resume
+		// with a number that disagrees with Final.
+		n, _ := grokCountMessages(summaryPath, 0)
+		return n, false
+	}
 	n := 0
 	g := newGrokGrouper(func(map[string]any) bool { n++; return true }, false)
 	eachGrokUpdate(grokUpdatesPath(summaryPath), g.add)
 	g.flush()
-	return n
+	return n, true
 }
 
 func (s *GrokSource) Final(r record) map[string]any {

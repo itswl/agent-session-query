@@ -105,8 +105,13 @@ func TestGrokSource(t *testing.T) {
 	}
 
 	// The list's count and the opened session must agree, so they run the same grouping
-	if n := grokCountMessages(summary); n != 2 {
+	if n, _ := grokCountMessages(summary, 0); n != 2 {
 		t.Errorf("grokCountMessages = %d, want 2", n)
+	}
+	// The grouper joins several update rows into one message, so it must refuse to
+	// resume mid-file rather than split a group across the seam
+	if _, resumed := grokCountMessages(summary, 1); resumed {
+		t.Error("grokCountMessages claimed it can resume at an offset")
 	}
 
 	final := s.Final(rec)

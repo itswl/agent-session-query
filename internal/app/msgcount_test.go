@@ -22,7 +22,7 @@ func TestCountersAgreeWithFinal(t *testing.T) {
 		`{"type":"user","message":{"role":"user","content":"three"}}`,
 	)
 	claude := newClaudeSource(dir)
-	if got, want := claudeCountMessages(claudePath), finalCount(claude.Final(recordOfPath(claude, claudePath))); got != want {
+	if got, want := fullCount(claudeCountMessages, claudePath), finalCount(claude.Final(recordOfPath(claude, claudePath))); got != want {
 		t.Errorf("claude: counter %d, final %d", got, want)
 	}
 
@@ -36,7 +36,7 @@ func TestCountersAgreeWithFinal(t *testing.T) {
 		`{ "type": "message", "message": { "role": "user", "content": [{"type":"text","text":"pretty"}] } }`,
 	)
 	pi := newPiSource(dir)
-	if got, want := piCountMessages(piPath), finalCount(pi.Final(recordOfPath(pi, piPath))); got != want {
+	if got, want := fullCount(piCountMessages, piPath), finalCount(pi.Final(recordOfPath(pi, piPath))); got != want {
 		t.Errorf("pi: counter %d, final %d", got, want)
 	}
 
@@ -49,7 +49,7 @@ func TestCountersAgreeWithFinal(t *testing.T) {
 		`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"a"}]}}`,
 	)
 	codex := newCodexSource(dir)
-	if got, want := codexCountMessages(codexPath), finalCount(codex.Final(recordOfPath(codex, codexPath))); got != want {
+	if got, want := fullCount(codexCountMessages, codexPath), finalCount(codex.Final(recordOfPath(codex, codexPath))); got != want {
 		t.Errorf("codex: counter %d, final %d", got, want)
 	}
 
@@ -61,7 +61,7 @@ func TestCountersAgreeWithFinal(t *testing.T) {
 		`{"type":"gemini","content":"a"}`,
 	)
 	gemini := newGeminiSource(dir)
-	if got, want := geminiCountMessages(geminiPath), finalCount(gemini.Final(recordOfPath(gemini, geminiPath))); got != want {
+	if got, want := fullCount(geminiCountMessages, geminiPath), finalCount(gemini.Final(recordOfPath(gemini, geminiPath))); got != want {
 		t.Errorf("gemini: counter %d, final %d", got, want)
 	}
 }

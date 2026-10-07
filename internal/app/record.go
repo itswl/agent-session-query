@@ -226,11 +226,24 @@ const maxLineBytes = 256 * 1024 * 1024
 // ReadBytes: Scanner.Bytes() is a view into the internal buffer, so no allocation per
 // line — measured ~40% faster than line-wise ReadBytes over a 3000-line session.
 func eachJSONLLine(path string, fn func(line []byte) bool) {
+	eachJSONLLineFrom(path, 0, fn)
+}
+
+// eachJSONLLineFrom is eachJSONLLine starting at a byte offset. The offset must sit on a
+// line boundary — the caller (the count cache) checks that the byte before it is a
+// newline — and it exists so a counter resuming after an append reads only the appended
+// tail instead of the whole file again.
+func eachJSONLLineFrom(path string, from int64, fn func(line []byte) bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
 	}
 	defer f.Close()
+	if from > 0 {
+		if _, err := f.Seek(from, io.SeekStart); err != nil {
+			return
+		}
+	}
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
@@ -253,7 +266,12 @@ func eachJSONLLine(path string, fn func(line []byte) bool) {
 // eachJSONL decodes one object per line (bad lines and non-objects are skipped).
 // Returning false from fn stops early.
 func eachJSONL(path string, fn func(obj map[string]any) bool) {
-	eachJSONLLine(path, func(line []byte) bool {
+	eachJSONLFrom(path, 0, fn)
+}
+
+// eachJSONLFrom is eachJSONL starting at a byte offset (see eachJSONLLineFrom)
+func eachJSONLFrom(path string, from int64, fn func(obj map[string]any) bool) {
+	eachJSONLLineFrom(path, from, func(line []byte) bool {
 		var obj map[string]any
 		if json.Unmarshal(line, &obj) == nil && obj != nil {
 			return fn(obj)

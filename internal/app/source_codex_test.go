@@ -211,7 +211,7 @@ func TestCodexToolRows(t *testing.T) {
 	msgs := s.Messages(rec, messageQuery{limit: 100})
 	// Every row the reader shows is counted the same way by the list and by Final
 	final := s.Final(rec)
-	if n := codexCountMessages(path); n != len(msgs) || final["messageCount"] != len(msgs) {
+	if n, _ := codexCountMessages(path, 0); n != len(msgs) || final["messageCount"] != len(msgs) {
 		t.Fatalf("counts disagree: counter %d, messages %d, final %v", n, len(msgs), final["messageCount"])
 	}
 	// 4 user rows (2 injected) + 1 thinking (the encrypted-only one yields nothing) +

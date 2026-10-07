@@ -198,7 +198,14 @@ func (g geminiFolder) result(id, name string, response map[string]any, display, 
 // eachGeminiEntry yields messages line by line. A Gemini jsonl is an append log shaped
 // as "metadata first line + $set patches + message rows".
 func eachGeminiEntry(path string, fn func(entry map[string]any) bool) {
-	eachJSONL(path, func(obj map[string]any) bool {
+	eachGeminiEntryFrom(path, 0, fn)
+}
+
+// eachGeminiEntryFrom is eachGeminiEntry starting at a byte offset. Each row — a plain
+// entry or a $set patch — stands on its own, so a tail scan sees exactly what the full
+// scan saw for those rows (see eachJSONLLineFrom).
+func eachGeminiEntryFrom(path string, from int64, fn func(entry map[string]any) bool) {
+	eachJSONLFrom(path, from, func(obj map[string]any) bool {
 		if set, ok := obj["$set"].(map[string]any); ok && set != nil {
 			for _, m := range getSlice(set, "messages") {
 				if mm, ok := m.(map[string]any); ok {

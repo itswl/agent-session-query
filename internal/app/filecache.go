@@ -1,6 +1,7 @@
 package app
 
 import (
+	"crypto/sha256"
 	"os"
 	"sync"
 	"time"
@@ -29,7 +30,9 @@ type fileRecordCache struct {
 	// measured at 2.3 s for the lot. That is a fine price once per file version and an
 	// unacceptable one to pay inside a request the page repeats every ten seconds, so a
 	// list returns whatever counts it already has and queues the rest. The next poll has
-	// them. Keyed by (mtime, size) like the records are.
+	// them. Keyed by (mtime, size) like the records are; a file that only grew is counted
+	// from its previous end (see countStable), so a session being written costs its tail
+	// per poll, not its whole length again.
 	countMu  sync.Mutex
 	counts   map[string]fileCountEntry
 	counting map[string]bool // queued or in flight
@@ -38,8 +41,12 @@ type fileRecordCache struct {
 
 	// countFile is the source's own rule for what counts as a message (claude skips
 	// sidechains, codex skips the developer row, ...), so the list and the session's final
-	// result agree on the number.
-	countFile func(path string) int
+	// result agree on the number. It is asked for the messages in [from, EOF) and says
+	// whether it could honor that offset: a counter whose rule is line-local resumes from
+	// an append; one whose grouping spans lines (grok joins several updates into one
+	// message) reports resumed=false and returns the whole file's count instead, because
+	// a tail scan could split a group across the seam and miscount it.
+	countFile func(path string, from int64) (count int, resumed bool)
 }
 
 // hasCount reports whether the record already carries this count
@@ -52,12 +59,13 @@ type fileCountEntry struct {
 	mod  time.Time
 	size int64
 	n    int
+	// tail fingerprints the last bytes of the counted version (see tailPrint). It is what
+	// lets a resume prove the bytes before the offset are still the ones that produced n.
+	tail [32]byte
 }
 
 type countRequest struct {
 	path string
-	mod  time.Time
-	size int64
 }
 
 type fileRecordEntry struct {
@@ -66,7 +74,7 @@ type fileRecordEntry struct {
 	rec  record
 }
 
-func newFileRecordCache(countFile func(path string) int) *fileRecordCache {
+func newFileRecordCache(countFile func(path string, from int64) (int, bool)) *fileRecordCache {
 	return &fileRecordCache{
 		entries:   map[string]fileRecordEntry{},
 		counts:    map[string]fileCountEntry{},
@@ -90,8 +98,12 @@ func (c *fileRecordCache) countFor(path string, mod time.Time, size int64) (int,
 		return hit.n, true
 	}
 	if !c.counting[path] {
+		// The version to bank is decided by the worker from its own stat (see
+		// countStable): the requester's stat is already stale by the time the queue drains,
+		// and banking a count under the requester's version was how the number drifted —
+		// the next resume then started inside bytes the base already contained.
 		c.counting[path] = true
-		c.queue = append(c.queue, countRequest{path: path, mod: mod, size: size})
+		c.queue = append(c.queue, countRequest{path: path})
 	}
 	start := !c.working
 	c.working = true
@@ -120,15 +132,92 @@ func (c *fileRecordCache) countWorker() {
 		c.queue = c.queue[1:]
 		c.countMu.Unlock()
 
-		n := c.countFile(req.path)
-
+		entry, ok := c.countStable(req.path)
 		c.countMu.Lock()
-		delete(c.counting, req.path)
-		if n >= 0 {
-			c.counts[req.path] = fileCountEntry{mod: req.mod, size: req.size, n: n}
+		delete(c.counting, req.path) // a dropped scan is retried by the next poll
+		if ok {
+			c.counts[req.path] = entry
 		}
 		c.countMu.Unlock()
 	}
+}
+
+// countStable counts one path and returns the entry to bank, or ok=false when the file
+// changed while it was scanned — such a count describes no single version, and banking it
+// under the requested (size, mtime) made the next resume start inside bytes already
+// counted, inflating the number until the file happened to shrink.
+func (c *fileRecordCache) countStable(path string) (fileCountEntry, bool) {
+	pre, err := os.Stat(path)
+	if err != nil {
+		return fileCountEntry{}, false
+	}
+	c.countMu.Lock()
+	prev, have := c.counts[path]
+	c.countMu.Unlock()
+
+	// Resume from the previous end only when it is provably still there: the size grew,
+	// the offset sits just after a newline, and the bytes before it fingerprint the same.
+	from, base := int64(0), 0
+	if have && pre.Size() > prev.size && newlineBefore(path, prev.size) &&
+		tailPrint(path, prev.size) == prev.tail {
+		from, base = prev.size, prev.n
+	}
+	n, resumed := c.countFile(path, from)
+	if from > 0 && resumed {
+		n += base
+	}
+
+	post, err := os.Stat(path)
+	if err != nil || post.Size() != pre.Size() || !post.ModTime().Equal(pre.ModTime()) {
+		return fileCountEntry{}, false
+	}
+	return fileCountEntry{mod: pre.ModTime(), size: pre.Size(), n: n, tail: tailPrint(path, pre.Size())}, true
+}
+
+// tailPrint fingerprints up to the last 256 bytes before off. At resume time the counted
+// bytes must be the ones the count was made from; a grown size with a newline at the
+// boundary is not proof of that (a rewritten file can satisfy both by coincidence), so
+// the tail is compared as well. It samples instead of hashing the whole prefix — a
+// full-prefix hash would defeat the resume — and that is enough for real writers: a
+// rewrite differs before the boundary long before its last 256 bytes, and an append only
+// extends after it.
+func tailPrint(path string, off int64) [32]byte {
+	if off <= 0 {
+		return [32]byte{}
+	}
+	const window = 256
+	start := off - window
+	if start < 0 {
+		start = 0
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return [32]byte{}
+	}
+	defer f.Close()
+	buf := make([]byte, off-start)
+	if _, err := f.ReadAt(buf, start); err != nil {
+		return [32]byte{}
+	}
+	return sha256.Sum256(buf)
+}
+
+// newlineBefore reports whether the byte just before off is a newline — the proof that
+// off is a line boundary, so a scan may resume there.
+func newlineBefore(path string, off int64) bool {
+	if off <= 0 {
+		return true
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var b [1]byte
+	if _, err := f.ReadAt(b[:], off-1); err != nil {
+		return false
+	}
+	return b[0] == '\n'
 }
 
 // keepCounts drops counts for files this round did not see, so deleted sessions do not

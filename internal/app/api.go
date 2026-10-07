@@ -126,8 +126,8 @@ func (a *SessionQueryAPI) listWarnings() []map[string]any {
 	return out
 }
 
-// listVersion is the list's weak validator: membership, update time or status changing
-// all change it.
+// listVersion is the list's weak validator: membership, update time, status, or a
+// background message count landing all change it.
 //
 // The warnings go in as well. A source that stops being readable changes none of the
 // records — it just stops contributing any — and a 304 would then hide the one thing that
@@ -145,6 +145,13 @@ func listVersion(records []record, warnings []map[string]any) string {
 			_, _ = h.Write([]byte(r.str(field)))
 			_, _ = h.Write([]byte{0})
 		}
+		// The background count arriving is a change like any other: without it in the
+		// tag, a revalidating page keeps its 304 and its count-less body — the one that
+		// renders "counting…" — until something unrelated moves.
+		if n, ok := toFloat(r.fields["messageCount"]); ok {
+			_, _ = h.Write([]byte(strconv.FormatInt(int64(n), 10)))
+		}
+		_, _ = h.Write([]byte{0})
 		_, _ = h.Write([]byte{0x1e})
 	}
 	for _, w := range warnings {

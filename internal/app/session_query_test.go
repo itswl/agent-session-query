@@ -507,22 +507,33 @@ func TestHTTPLimitClamped(t *testing.T) {
 func TestHTTPSessionsETag(t *testing.T) {
 	srv, _ := newTestServer(t, "secret")
 
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/sessions", nil)
-	req.Header.Set("Authorization", "Bearer secret")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
+	// The tag moves once when a background message count lands (that is how the page
+	// learns its numbers), so settle it first: take tags until two reads in a row agree.
+	// Holding an unsettled tag against itself would race a genuine change.
+	var etag string
+	for attempt := 0; attempt < 100; attempt++ {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/sessions", nil)
+		req.Header.Set("Authorization", "Bearer secret")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		got := resp.Header.Get("ETag")
+		if got != "" && got == etag {
+			break
+		}
+		etag = got
+		time.Sleep(10 * time.Millisecond)
 	}
-	resp.Body.Close()
-	etag := resp.Header.Get("ETag")
 	if etag == "" {
 		t.Fatal("/sessions should carry an ETag")
 	}
 
-	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/sessions", nil)
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/sessions", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	req.Header.Set("If-None-Match", etag)
-	resp, err = http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

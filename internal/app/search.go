@@ -70,7 +70,7 @@ func (a *SessionQueryAPI) search(ctx context.Context, q source.SearchQuery) sear
 			all = append(all, candidate{source: src, rec: rec})
 		}
 	} else {
-		for _, src := range a.sources {
+		for _, src := range a.activeSources() {
 			for _, rec := range a.recordsOf(src) {
 				if !q.Since.IsZero() && (rec.SortAt().IsZero() || rec.SortAt().Before(q.Since)) {
 					continue

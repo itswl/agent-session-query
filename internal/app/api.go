@@ -21,6 +21,7 @@ import (
 // from disk; the cache only covers the "which sessions exist" layer of metadata.
 type SessionQueryAPI struct {
 	sources  []source.SessionSource
+	resolver source.Resolver
 	cacheTTL time.Duration
 
 	mu    sync.Mutex
@@ -39,14 +40,32 @@ type cachedRecords struct {
 }
 
 func newSessionQueryAPI(sources []source.SessionSource, cacheTTLSeconds float64) *SessionQueryAPI {
+	api := newSessionQueryAPIWithResolver(nil, cacheTTLSeconds)
+	api.sources = sources
+	return api
+}
+
+// newSessionQueryAPIWithResolver builds an API whose source set is re-resolved on every
+// query: the enabled sources are whatever the resolver reports at that moment, so a source
+// created after startup (a CLI's first session) is listed without a restart.
+func newSessionQueryAPIWithResolver(resolver source.Resolver, cacheTTLSeconds float64) *SessionQueryAPI {
 	if cacheTTLSeconds < 0 {
 		cacheTTLSeconds = 0
 	}
 	return &SessionQueryAPI{
-		sources:  sources,
+		resolver: resolver,
 		cacheTTL: time.Duration(cacheTTLSeconds * float64(time.Second)),
 		cache:    map[string]*cachedRecords{},
 	}
+}
+
+// activeSources is the set to query right now: the resolver's current answer when one was
+// configured, otherwise the fixed slice the process was built with.
+func (a *SessionQueryAPI) activeSources() []source.SessionSource {
+	if a.resolver != nil {
+		return a.resolver.Sources()
+	}
+	return a.sources
 }
 
 // recordsOf returns one source's session list (TTL cached)
@@ -91,7 +110,7 @@ func safeList(src source.SessionSource) (out []source.Record) {
 // again every time.
 func (a *SessionQueryAPI) listSessions() ([]map[string]any, string) {
 	all := []source.Record{}
-	for _, src := range a.sources {
+	for _, src := range a.activeSources() {
 		all = append(all, a.recordsOf(src)...)
 	}
 	// Newest update time first; equal times keep source order (stable sort)
@@ -112,7 +131,7 @@ func (a *SessionQueryAPI) listSessions() ([]map[string]any, string) {
 // /sessions and the MCP tools do).
 func (a *SessionQueryAPI) listWarnings() []map[string]any {
 	out := []map[string]any{}
-	for _, src := range a.sources {
+	for _, src := range a.activeSources() {
 		reporter, ok := src.(source.ListErrorReporter)
 		if !ok {
 			continue
@@ -185,7 +204,7 @@ func (a *SessionQueryAPI) findSession(pattern, sourceWanted string) (source.Sess
 	var bestSource source.SessionSource
 	var bestRecord source.Record
 	bestRank := -1
-	for _, src := range a.sources {
+	for _, src := range a.activeSources() {
 		if !sourceMatchesWanted(src.Mode(), sourceWanted) {
 			continue
 		}
@@ -285,7 +304,7 @@ func (a *SessionQueryAPI) listProjects() ([]map[string]any, int) {
 	buckets := map[string]*bucket{}
 	ungrouped := 0
 
-	for _, src := range a.sources {
+	for _, src := range a.activeSources() {
 		for _, rec := range a.recordsOf(src) {
 			name := rec.ProjectName()
 			if name == "" {

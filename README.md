@@ -267,7 +267,8 @@ long-running.
    Hermes needs `sessions.json` **or** `state.db`, either is enough. In a container, confirm
    the directory was actually mounted. With nothing installed at all, `auto` (and `all`)
    falls back to OpenClaw so the service still starts — `/health` lists it and it will
-   simply be empty.
+   simply be empty. In `auto`/`all` the set is re-checked while the process runs, so a CLI
+   whose first session appears after startup is picked up without a restart.
 2. **The list is empty**: check `/health` for which sources are enabled, and that the process
    can read those directories. A `warnings` entry there names the source that could not be
    read and why — a source that broke and a source with nothing in it both answer with an

@@ -51,7 +51,7 @@ Adding a data source: implement the `SessionSource` interface (`Mode` / `Locatio
 in. A ninth source is a sweep, not a patch — the two real additions touched seven and
 twelve files, and a source's name and abilities are spread across:
 
-- `KnownModes` and the `factories` map in `BuildSources()` (`internal/source/source.go`),
+- `KnownModes` and the `factories` map in `NewResolver()` (`internal/source/source.go`),
   plus `movable` and the whitelist inside `PathFlag.Set` if a single directory can
   relocate it
 - `resumeCommands` (`record.go`) if the CLI can reopen a session by id

@@ -16,6 +16,42 @@ import (
 // follow the same lists. A mode added to KnownModes alone now fails here instead of
 // drifting silently (the filecache counter wiring is per-constructor and stays
 // hand-checked; docs/development.md lists every place).
+// TestResolverSeesSourcesCreatedAfterStartup: auto mode must re-check what exists on every
+// call. A CLI that had never run on this machine has no data directory at startup; the first
+// session it writes creates one, and the running server has to start listing it without a
+// restart. BuildSources answers once and cannot; Resolver does. This is the opencode case:
+// the database only appears with the first message.
+func TestResolverSeesSourcesCreatedAfterStartup(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+	xdg := filepath.Join(home, "xdg")
+	t.Setenv("XDG_DATA_HOME", xdg)
+	t.Setenv("LOCALAPPDATA", xdg)
+
+	resolver, err := NewResolver("auto", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modes := modesOf(resolver.Sources()); containsString(modes, "opencode") {
+		t.Fatalf("opencode was enabled before its database existed: %v", modes)
+	}
+
+	// The first opencode message creates the database
+	write(t, filepath.Join(xdg, "opencode", "opencode.db"), ``)
+
+	if modes := modesOf(resolver.Sources()); !containsString(modes, "opencode") {
+		t.Fatalf("opencode was not picked up after its database appeared: %v", modes)
+	}
+}
+
+func modesOf(sources []SessionSource) []string {
+	out := make([]string, 0, len(sources))
+	for _, src := range sources {
+		out = append(out, src.Mode())
+	}
+	return out
+}
+
 func TestSourceRegistryConsistency(t *testing.T) {
 	home := t.TempDir()
 	setHome(t, home)

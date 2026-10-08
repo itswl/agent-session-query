@@ -386,7 +386,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			"status":       "ok",
 			"version":      buildVersion,
 			"mode":         s.mode,
-			"sources":      sourceModes(s.sources),
+			"sources":      sourceModes(s.api.activeSources()),
 			"capabilities": serverCapabilities,
 			// The page uses this to decide whether to show the token prompt: with no token
 			// configured there is no reason to make anyone invent one
@@ -413,7 +413,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"name":    "Agent Session API",
 			"mode":    s.mode,
-			"sources": sourceModes(s.sources),
+			"sources": sourceModes(s.api.activeSources()),
 			// /health carries the same fact as a bare boolean; here it is worth the sentence
 			// because it says which of the lines below it applies to
 			"auth":      "Authorization: Bearer <token> is required, except where a line says (no token)",

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -296,10 +297,86 @@ func (s labeledSource) Final(r Record) map[string]any {
 	return out
 }
 
-// BuildSources wires up data sources according to the run mode and any --path overrides.
+// Resolver reports the sources enabled right now.
+//
+// BuildSources answers that question once, at startup. A long-running server has to have it
+// answered again: a CLI that had never been run on this machine has no data directory when
+// the server starts, and creates one the first time it is used, so the sessions it writes
+// would stay invisible until a restart. Resolver.Sources() re-checks what exists on each
+// call, and hands back the same instance once a source has appeared — the list error a
+// source carries has to keep accumulating across calls rather than reset.
+type Resolver interface {
+	Sources() []SessionSource
+}
+
+// resolver is the Resolver implementation: a named mode resolves once, auto and all
+// re-resolve their known modes on every call.
+type resolver struct {
+	mode   string
+	at     func(name string) SessionSource
+	extras []SessionSource
+	// fixed is set for a named mode: the one source plus any labeled --path instances,
+	// chosen once and never re-resolved.
+	fixed []SessionSource
+
+	mu       sync.Mutex
+	live     map[string]SessionSource // auto/all: mode -> instance, remembered once it exists
+	warned   map[string]bool          // all: a missing source is named once
+	fallback bool
+	// fallbackSrc is the one instance behind the nothing-detected fallback, so its list
+	// error is remembered like any other source's
+	fallbackSrc SessionSource
+}
+
+func (r *resolver) Sources() []SessionSource {
+	// A named mode is the explicit act: asking for it by name does not wait for data to
+	// appear, so there is nothing to re-resolve
+	if r.fixed != nil {
+		return r.fixed
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	enabled := []SessionSource{}
+	for _, name := range KnownModes {
+		src, ok := r.live[name]
+		if !ok {
+			candidate := r.at(name)
+			if !candidate.Exists() {
+				// all is the mode that promises to name what it skipped; auto skips quietly
+				if r.mode == "all" && !r.warned[name] {
+					fmt.Fprintf(os.Stderr, "[WARN] data source not found, skipped: %s (%s)\n", name, candidate.Location())
+					r.warned[name] = true
+				}
+				continue
+			}
+			src = candidate
+			r.live[name] = src
+		}
+		enabled = append(enabled, src)
+	}
+	enabled = append(enabled, r.extras...)
+	if len(enabled) > 0 {
+		return enabled
+	}
+
+	if !r.fallback {
+		fmt.Fprintln(os.Stderr, "[WARN] no data source detected; defaulting to OpenClaw")
+		r.fallback = true
+	}
+	if r.fallbackSrc == nil {
+		r.fallbackSrc = r.at("openclaw")
+	}
+	return []SessionSource{r.fallbackSrc}
+}
+
+// NewResolver wires up data sources according to the run mode and any --path overrides, and
+// returns something that can be asked again later (see Resolver). The selection rules are
+// the ones BuildSources has always applied:
 //
 //   - a single named mode: enable only that one
-//   - all: enable everything (missing ones warn)
+//   - all: enable everything that exists, naming each missing one (once)
 //   - auto: enable whichever exist (the two json-map sources look for sessions.json,
 //     the rest for their directory)
 //
@@ -309,7 +386,7 @@ func (s labeledSource) Final(r Record) map[string]any {
 // enabled, in every mode: asking for it by name is the explicit act, so it is enabled
 // even when the directory does not exist (with a warning) and even when --mode names
 // another source.
-func BuildSources(mode string, paths []SourcePath) ([]SessionSource, error) {
+func NewResolver(mode string, paths []SourcePath) (Resolver, error) {
 	home := defaultHome()
 
 	// The five file-backed sources scan one directory, so that directory can move; the
@@ -369,30 +446,25 @@ func BuildSources(mode string, paths []SourcePath) ([]SessionSource, error) {
 		if _, ok := factories[mode]; !ok {
 			return nil, fmt.Errorf("unknown mode %q (choose from: auto, all, %s)", mode, JoinModes())
 		}
-		return append([]SessionSource{at(mode)}, extra...), nil
+		return &resolver{mode: mode, at: at, extras: extra, fixed: append([]SessionSource{at(mode)}, extra...)}, nil
 	}
+	return &resolver{
+		mode:   mode,
+		at:     at,
+		extras: extra,
+		live:   map[string]SessionSource{},
+		warned: map[string]bool{},
+	}, nil
+}
 
-	enabled := []SessionSource{}
-	for _, name := range KnownModes {
-		// KnownModes and factories are two lists of the same thing; a mode in one and not
-		// the other is a wiring bug, and it surfaces as an error rather than a nil call
-		if factories[name] == nil {
-			return nil, fmt.Errorf("KnownModes names %q but no factory exists for it", name)
-		}
-		source := at(name)
-		if source.Exists() {
-			enabled = append(enabled, source)
-		} else if mode == "all" {
-			fmt.Fprintf(os.Stderr, "[WARN] data source not found, skipped: %s (%s)\n", name, source.Location())
-		}
+// BuildSources answers NewResolver's question once: the sources enabled at this moment.
+// Callers that outlive one answer use NewResolver directly.
+func BuildSources(mode string, paths []SourcePath) ([]SessionSource, error) {
+	r, err := NewResolver(mode, paths)
+	if err != nil {
+		return nil, err
 	}
-	enabled = append(enabled, extra...)
-	if len(enabled) > 0 {
-		return enabled, nil
-	}
-
-	fmt.Fprintln(os.Stderr, "[WARN] no data source detected; defaulting to OpenClaw")
-	return []SessionSource{factories["openclaw"]()}, nil
+	return r.Sources(), nil
 }
 
 func JoinModes() string {

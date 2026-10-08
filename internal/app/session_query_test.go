@@ -225,6 +225,34 @@ func TestPublicIsACopy(t *testing.T) {
 // The HTTP layer
 // ---------------------------------------------------------------------------
 
+// staticResolver hands out whatever slice it currently holds, standing in for a source set
+// that changes while the server runs.
+type staticResolver struct{ current []source.SessionSource }
+
+func (r *staticResolver) Sources() []source.SessionSource { return r.current }
+
+// TestAPIResolvesSourcesPerQuery: the API must ask the resolver on every query rather than
+// read a slice captured at construction — that is what lets a session written by a CLI
+// whose data directory appeared after startup show up without a restart.
+func TestAPIResolvesSourcesPerQuery(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "p", "late.jsonl"),
+		`{"type":"session","id":"late","cwd":"/tmp"}`,
+		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}`,
+	)
+
+	resolver := &staticResolver{}
+	api := newSessionQueryAPIWithResolver(resolver, 0)
+	if got, _ := api.listSessions(); len(got) != 0 {
+		t.Fatalf("no sources should mean no sessions, got %d", len(got))
+	}
+
+	resolver.current = []source.SessionSource{source.NewPiSource(root)}
+	if got, _ := api.listSessions(); len(got) != 1 {
+		t.Fatalf("the source that appeared after construction was not queried: got %d sessions", len(got))
+	}
+}
+
 func newTestServerFixture(t *testing.T, token, sessionID string) (*httptest.Server, string) {
 	t.Helper()
 	root := t.TempDir()

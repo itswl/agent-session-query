@@ -120,7 +120,7 @@ type packEntry struct {
 // was I doing", which is a question about now; a pack answers "how did this get here",
 // which is a question about sequence.
 func (a *SessionQueryAPI) packEntries(q packQuery) (entries []packEntry, matching int) {
-	for _, src := range a.sources {
+	for _, src := range a.activeSources() {
 		if q.source != "" && src.Mode() != q.source {
 			continue
 		}

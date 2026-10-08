@@ -97,13 +97,17 @@ func Run(args []string) int {
 		*hookToken = os.Getenv("HOOK_TOKEN")
 	}
 
-	sources, err := source.BuildSources(*mode, paths)
+	// A resolver, not a one-shot slice: the server outlives the state it started with, and
+	// a CLI whose first session is written after startup has to start being listed without
+	// a restart.
+	resolver, err := source.NewResolver(*mode, paths)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[FATAL] %v\n", err)
 		return 1
 	}
+	sources := resolver.Sources()
 
-	api := newSessionQueryAPI(sources, *cacheTTL)
+	api := newSessionQueryAPIWithResolver(resolver, *cacheTTL)
 
 	// MCP mode: stdout belongs to JSON-RPC alone, so startup output must go to stderr
 	if *mcp {

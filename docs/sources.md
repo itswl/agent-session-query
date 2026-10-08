@@ -40,4 +40,9 @@ Supported: the directory-shaped sources `pi`, `claude`, `codex`, `gemini` and `g
 and SQLite sources (`hermes`, `openclaw`, `opencode`) keep their layout across several
 files and reject `--path`.
 
+In `auto` and `all`, which sources exist is re-checked while the process runs, not only at
+startup: a CLI you use for the first time after the server started creates its data
+directory with that first session, and it starts being listed without a restart. `all`
+names each missing source once, at first check.
+
 To run the service so these flags survive a reboot, see [deploy.md](deploy.md).

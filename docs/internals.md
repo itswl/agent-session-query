@@ -361,7 +361,10 @@ where the block opens.
 
 The extraction runs inside the `fileRecordCache` build callback, so it costs nothing on
 unchanged files; the first read after a change reads up to the head-scan cap, which is
-also where cwd already comes from.
+also where cwd already comes from. The background message counter is queued while the
+list is built and started once it is: started on the first file, it read whole transcripts
+while the list was still reading heads, and with subagents' transcripts listed — a
+gigabyte to count after a restart — the first list took 9 s instead of 2.
 
 ### A session's update time: read the tail, do not trust mtime
 

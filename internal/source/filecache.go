@@ -87,6 +87,17 @@ func newFileRecordCache(countFile func(path string, from int64) (int, bool)) *fi
 // as a stale-but-useful value while the new scan runs; otherwise the UI stays on
 // "counting…" forever for the session that is currently open.
 func (c *fileRecordCache) countFor(path string, mod time.Time, size int64) (int, bool) {
+	n, ok := c.queueCount(path, mod, size)
+	c.startCounting()
+	return n, ok
+}
+
+// queueCount is countFor without starting the worker. The list queues its files this way
+// and starts the worker once it has built every record: a worker started on the first
+// queued file reads whole transcripts while the list is still reading heads and tails of
+// the rest, and on a cold start with subagents' transcripts listed — a gigabyte to count —
+// that contention took the first list from 2 s to 9.
+func (c *fileRecordCache) queueCount(path string, mod time.Time, size int64) (int, bool) {
 	if c.countFile == nil {
 		return 0, false
 	}
@@ -104,17 +115,27 @@ func (c *fileRecordCache) countFor(path string, mod time.Time, size int64) (int,
 		c.counting[path] = true
 		c.queue = append(c.queue, countRequest{path: path})
 	}
-	start := !c.working
-	c.working = true
 	c.countMu.Unlock()
-
-	if start {
-		go c.countWorker()
-	}
 	if have {
 		return hit.n, true
 	}
 	return 0, false
+}
+
+// startCounting starts the worker when there is queued work and none is running
+func (c *fileRecordCache) startCounting() {
+	if c.countFile == nil {
+		return
+	}
+	c.countMu.Lock()
+	start := !c.working && len(c.queue) > 0
+	if start {
+		c.working = true
+	}
+	c.countMu.Unlock()
+	if start {
+		go c.countWorker()
+	}
 }
 
 // countWorker drains the queue one file at a time. A single worker is deliberate: this is
@@ -262,7 +283,7 @@ func (c *fileRecordCache) records(paths []string, build func(path, modISO string
 			// A count that arrived since this record was cached is attached by replacing
 			// the field map rather than writing into it: the cached record is read by
 			// other requests, and mutating its map under them would be a data race.
-			if n, counted := c.countFor(path, mod, size); counted && !hit.hasCount(n) {
+			if n, counted := c.queueCount(path, mod, size); counted && !hit.hasCount(n) {
 				// hit.rec is this round's copy of the cached entry, so writing the count
 				// into it cannot race a reader holding the cached Record
 				hit.rec.MessageCount, hit.rec.HasCount = n, true
@@ -273,7 +294,7 @@ func (c *fileRecordCache) records(paths []string, build func(path, modISO string
 		}
 
 		rec := build(path, mod.UTC().Format("2006-01-02T15:04:05"))
-		if n, ok := c.countFor(path, mod, size); ok {
+		if n, ok := c.queueCount(path, mod, size); ok {
 			rec.MessageCount, rec.HasCount = n, true // freshly built, not shared yet
 		}
 		fresh[path] = fileRecordEntry{mod: mod, size: size, rec: rec}
@@ -284,5 +305,6 @@ func (c *fileRecordCache) records(paths []string, build func(path, modISO string
 	c.entries = fresh
 	c.mu.Unlock()
 	c.keepCounts(paths)
+	c.startCounting()
 	return out
 }

@@ -57,14 +57,26 @@ type searchOutcome struct {
 }
 
 // search looks through every enabled source, newest session first.
+//
+// A result is a session. A Claude Code subagent's transcript is searched as part of the
+// session it ran in, and its hits come back in that session's result, each naming the
+// agent it is in (agentId, agent, agentType) so it can be opened. As results of their own,
+// one session's agents crowded out every other session: 23 of the first 50 results for
+// "error" were the agents of four sessions. Only a subagent whose session is outside the
+// selection stands alone, as its own record with parentSessionId.
 func (a *SessionQueryAPI) search(ctx context.Context, q source.SearchQuery) searchOutcome {
 	type candidate struct {
 		source source.SessionSource
 		rec    source.Record
 	}
+	type unit struct {
+		candidate
+		agents []candidate // the subagents that ran in it, in the order they started
+	}
 
 	filter := sessionFilter{
 		source: q.Source, project: q.Project, branch: q.Branch, since: q.Since, until: q.Until,
+		subagents: !q.NoSubagents,
 	}
 	all := []candidate{}
 	if q.Pattern != "" {
@@ -80,43 +92,91 @@ func (a *SessionQueryAPI) search(ctx context.Context, q source.SearchQuery) sear
 			all = append(all, candidate{source: src, rec: rec})
 		})
 	}
+	// A scoped search reads the one transcript it names; the rest is grouped by session
+	units := make([]unit, 0, len(all))
+	lead := map[string]int{} // source + session id → its unit
+	for _, c := range all {
+		if q.Pattern != "" || !c.rec.IsSubagent() {
+			lead[c.source.Mode()+"\x00"+c.rec.SessionID] = len(units)
+			units = append(units, unit{candidate: c})
+		}
+	}
+	for _, c := range all {
+		if q.Pattern != "" || !c.rec.IsSubagent() {
+			continue
+		}
+		if i, ok := lead[c.source.Mode()+"\x00"+c.rec.ParentSessionID]; ok {
+			units[i].agents = append(units[i].agents, c)
+		} else {
+			units = append(units, unit{candidate: c})
+		}
+	}
+	for _, u := range units {
+		sort.SliceStable(u.agents, func(i, j int) bool { return u.agents[i].rec.CreatedAt < u.agents[j].rec.CreatedAt })
+	}
 	// Newest first, so truncating at limit keeps the most recent — and so the scan can stop
 	// once limit sessions have matched without changing what the page would hold
-	sort.SliceStable(all, func(i, j int) bool { return all[i].rec.NewerThan(all[j].rec) })
+	sort.SliceStable(units, func(i, j int) bool { return units[i].rec.NewerThan(units[j].rec) })
 
-	hits := make([][]map[string]any, len(all))
+	// Every transcript is a job of its own, a session's before its agents', so a session with
+	// sixty agents is read across all the workers rather than by one of them: as one job per
+	// session, a search that matched nothing took 3.5 s instead of 0.3. Each job's hits are
+	// kept in its place in its session, and the session's result takes them in that order.
+	type job struct{ unit, member int } // member 0 is the unit's own transcript, n its agents[n-1]
+	order := []job{}
+	hits := make([][][]map[string]any, len(units))
+	for ui, u := range units {
+		hits[ui] = make([][]map[string]any, len(u.agents)+1)
+		for m := 0; m <= len(u.agents); m++ {
+			order = append(order, job{ui, m})
+		}
+	}
 	workers := runtime.GOMAXPROCS(0)
-	if workers > len(all) {
-		workers = len(all)
+	if workers > len(order) {
+		workers = len(order)
 	}
 	// The counters are read while the scans are still running: the dispatcher stops handing
-	// out sessions once limit of them have matched.
+	// out work once limit sessions have matched.
 	var scanned, found atomic.Int64
+	matchedUnit := make([]atomic.Bool, len(units))
 	scanStopped := false
 	if workers > 0 {
-		jobs := make(chan int)
+		jobs := make(chan job)
 		var wg sync.WaitGroup
 		for w := 0; w < workers; w++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for i := range jobs {
+				for j := range jobs {
 					if source.Cancelled(ctx) {
 						continue // drain the channel without starting more work
 					}
-					c := all[i]
+					c := units[j.unit].candidate
+					if j.member > 0 {
+						c = units[j.unit].agents[j.member-1]
+					}
 					matches := safeParse(c.source.Mode(), "search results", func() []map[string]any {
 						return searchOne(ctx, c.source, c.rec, q)
 					})
-					hits[i] = matches
-					scanned.Add(1)
-					if len(matches) > 0 {
+					if j.member > 0 {
+						for _, hit := range matches {
+							hit["agentId"] = c.rec.SessionID
+							hit["agent"] = c.rec.ShortKey
+							if c.rec.AgentType != "" {
+								hit["agentType"] = c.rec.AgentType
+							}
+						}
+					} else {
+						scanned.Add(1)
+					}
+					hits[j.unit][j.member] = matches
+					if len(matches) > 0 && matchedUnit[j.unit].CompareAndSwap(false, true) {
 						found.Add(1)
 					}
 				}
 			}()
 		}
-		for i := range all {
+		for _, j := range order {
 			if source.Cancelled(ctx) {
 				break
 			}
@@ -124,7 +184,8 @@ func (a *SessionQueryAPI) search(ctx context.Context, q source.SearchQuery) sear
 			// candidates are newest-first and jobs are handed out in that order, so every
 			// session still unscanned is older than every one that matched. What stopping
 			// gives up is the exact total, which is why matched is a lower bound whenever
-			// scanStopped says the scan ended here.
+			// scanStopped says the scan ended here. (A session can be stopped part-way
+			// through its agents; it keeps the hits read so far.)
 			//
 			// limit=0 is the count-only request — it wants exactly the total this would
 			// give up — so it scans everything.
@@ -132,7 +193,7 @@ func (a *SessionQueryAPI) search(ctx context.Context, q source.SearchQuery) sear
 				scanStopped = true
 				break
 			}
-			jobs <- i
+			jobs <- j
 		}
 		close(jobs)
 		wg.Wait()
@@ -144,7 +205,11 @@ func (a *SessionQueryAPI) search(ctx context.Context, q source.SearchQuery) sear
 		stopped:     source.Cancelled(ctx),
 		scanStopped: scanStopped,
 	}
-	for i, matches := range hits {
+	for i, parts := range hits {
+		matches := []map[string]any{}
+		for _, part := range parts {
+			matches = append(matches, part...)
+		}
 		if len(matches) == 0 {
 			continue
 		}
@@ -163,7 +228,7 @@ func (a *SessionQueryAPI) search(ctx context.Context, q source.SearchQuery) sear
 			matches = matches[:q.PerSession]
 			out.hitsCut = true
 		}
-		item := all[i].rec.Public()
+		item := units[i].rec.Public()
 		item["matches"] = matches
 		item["matchCount"] = len(matches)
 		out.results = append(out.results, item)

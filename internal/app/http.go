@@ -347,12 +347,13 @@ var rootEndpoints = []rootEndpoint{
 	{"GET", "/health", true, "health check"},
 	{"GET", "/stats", true, "server stats"},
 	{"GET", "/ui", true, "the web page"},
-	{"GET", "/sessions", false, "list every session"},
+	{"GET", "/sessions", false, "list every session; ?subagents=1 lists Claude Code subagents' transcripts as rows too"},
 	{"GET", "/sessions/<pattern>", false, "one session"},
 	{"GET", "/sessions/<pattern>/messages?limit=50&full=1", false, "its messages, earliest first unless ?order=desc; full=1 keeps tool output and thinking whole instead of cut to a preview"},
 	{"GET", "/sessions/<pattern>/final", false, "its final result"},
 	{"GET", "/sessions/<pattern>/export?format=", false, "one session as a document: md, jsonl, json or html"},
 	{"GET", "/sessions/<pattern>/rounds", false, "the session split into rounds — one per real user message"},
+	{"GET", "/sessions/<pattern>/subagents", false, "the Claude Code subagents that ran under a session (or under a subagent), in the order they started"},
 	{"GET", "/sessions/<pattern>/brief?round=", false, "a handoff brief of one round (default the latest); ?at=<ts> picks the round a timestamp falls in, ?since=<ts|2h> briefs every round after a moment"},
 	{"GET", "/search?q=", false, "full-text search across every source; source, project, branch, since and until narrow it"},
 	{"GET", "/projects", false, "session counts grouped by project"},
@@ -499,7 +500,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 	}
 
 	if path == "/sessions" {
-		sessions, etag := s.api.listSessions()
+		sessions, etag := s.api.listSessions(queryFlag(r.URL.Query().Get("subagents")))
 		// The page polls every 10 seconds and the list has usually not changed; with an
 		// ETag those polls end at a 304
 		w.Header().Set("ETag", etag)
@@ -587,6 +588,20 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 				"total":    len(messages),
 				"order":    orderName(query.FromEnd),
 			})
+			return http.StatusOK
+
+		case len(parts) == 2 && parts[0] != "" && parts[1] == "subagents":
+			pattern := unescapePattern(parts[0])
+			children, ok := s.api.subagentsOf(pattern, r.URL.Query().Get("source"))
+			if !ok {
+				writeJSON(w, http.StatusNotFound, map[string]any{"error": "Session not found"})
+				return http.StatusNotFound
+			}
+			subagents := make([]map[string]any, 0, len(children))
+			for _, child := range children {
+				subagents = append(subagents, child.Public())
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"subagents": subagents, "total": len(subagents)})
 			return http.StatusOK
 
 		case len(parts) == 2 && parts[0] != "" && parts[1] == "rounds":
@@ -851,6 +866,9 @@ func (s *apiServer) parseSearchQuery(r *http.Request) (source.SearchQuery, error
 	}
 	q.Project = strings.TrimSpace(values.Get("project"))
 	q.Branch = strings.TrimSpace(values.Get("branch"))
+	if raw := values.Get("subagents"); raw != "" && !queryFlag(raw) {
+		q.NoSubagents = true
+	}
 	return q, nil
 }
 
@@ -1083,7 +1101,9 @@ var serverCapabilities = []string{
 	"search.role",        // /search?role=
 	"search.scan",        // truncated.scan: matched is a lower bound when the scan stopped
 	"search.source",      // /search?source= — narrowed before the scan, not after it
+	"search.subagents",   // /search covers subagents' transcripts; ?subagents=0 leaves them out
 	"sessions.branch",    // a session row carries the git branch it opened on
 	"sessions.etag",      // /sessions answers 304, and carries the server version
+	"sessions.subagents", // /sessions?subagents=1, /sessions/<id>/subagents, and the fields that tie them
 	"usage",              // token usage on a final result
 }

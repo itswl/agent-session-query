@@ -115,6 +115,32 @@ and deployment see the [README](../README.md).
   matched nowhere else. The one attachment searched is a prompt typed while the agent
   was busy (`queued_command` in prompt mode, not `isMeta`) — the person's own words, though
   the reader does not draw them yet
+
+  **Subagents.** A subagent's transcript is a file of its own in a directory named after the
+  session it ran in: `<session>/subagents/agent-<id>.jsonl`, and a workflow's agents one
+  level down in `subagents/workflows/<run>/`. Beside each, `agent-<id>.meta.json` says what
+  kind of agent it was (`agentType`), what it was asked to do (`description` — the title;
+  the prompt itself is often pages long), the agent that spawned it (`parentAgentId`) and the
+  call that did (`toolUseId`). Every row of one is marked `isSidechain` and carries the
+  parent's `sessionId` and its own `agentId`. Measured locally: 291 subagent transcripts in
+  18 sessions, 528 MB between them — more than the sessions' own transcripts — and none of
+  it listed or searched before. Each is now a record: its `sessionId` is the agent id, and
+  it carries `parentSessionId`, `parentAgentId`, `agentType`, `parentToolUseId` and
+  `agentDepth`. Depth follows the `parentAgentId` links rather than the meta file's
+  `spawnDepth`, which starts at 0 for a team's members and at 1 for an agent spawned by a
+  call. In its own file the sidechain is the thread, so a subagent's rows are read,
+  counted and searched; in a session's transcript they still are not. A subagent has no
+  resume command — it is not a session a CLI reopens.
+
+  The list shows sessions and says how many agents ran in each (`subagents`); the agents
+  themselves are listed only when asked (`?subagents=1`), because they would be most of it,
+  and the projects count conversations. A search reads a session's agents with it: listed
+  as results of their own, one session's agents crowded out every other session — 23 of
+  the first 50 results for "error" were the agents of four sessions — so their hits come
+  back in their session's result instead, naming the agent. Each transcript is a job of its
+  own in the scan, so a session with sixty agents is read across every worker; as one job
+  per session, a search that matched nothing took 3.5 s, against 0.5 s now and 0.3 s
+  without the agents at all
 - **Codex**: the conversation is spread over several row types, and for a long time only
   the `response_item` / `message` rows were read — a Codex session showed two people talking
   with nothing in between, and its brief listed no tools. Now each of these yields one

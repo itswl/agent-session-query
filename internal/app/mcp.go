@@ -166,6 +166,9 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			Project:    filter.project,
 			Branch:     filter.branch,
 		}
+		if _, given := args["subagents"]; given && !argBool(args, "subagents") {
+			q.NoSubagents = true
+		}
 		q.Pattern = strings.TrimSpace(argString(args, "pattern"))
 		role := strings.TrimSpace(argString(args, "role"))
 		if role != "" && role != "user" && role != "assistant" {
@@ -198,6 +201,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if err != nil {
 			return nil, err
 		}
+		filter.subagents = argBool(args, "subagents")
 		sessions := s.api.sessionsWhere(filter)
 		total := len(sessions)
 		limit := argInt(args, "limit", mcpDefaultLimit, s.maxLimit)
@@ -267,7 +271,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if project == "" {
 			return nil, errors.New("missing argument: project")
 		}
-		sessions, _ := s.api.listSessions()
+		sessions, _ := s.api.listSessions(false)
 		limit := argInt(args, "limit", mcpDefaultLimit, s.maxLimit)
 		activity := make([]map[string]any, 0)
 		for _, item := range sessions {
@@ -297,7 +301,9 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			if term == "" {
 				continue
 			}
-			q := source.SearchQuery{Needle: term, Lowered: source.AppendLowerASCII(nil, []byte(term)), Limit: limit, PerSession: 5, Role: "assistant"}
+			// An answer given to the person, not one a subagent handed back to the agent that
+			// spawned it
+			q := source.SearchQuery{Needle: term, Lowered: source.AppendLowerASCII(nil, []byte(term)), Limit: limit, PerSession: 5, Role: "assistant", NoSubagents: true}
 			found := s.api.search(ctx, q)
 			for _, item := range found.results {
 				key := source.ToStr(item["source"]) + "\x00" + source.ToStr(item["sessionId"])
@@ -332,7 +338,16 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			return nil, fmt.Errorf("no session matches %q", pattern)
 		}
 		final, _ := s.api.getFinalMessage(pattern, sourceWanted)
-		return map[string]any{"session": session, "final": final}, nil
+		out := map[string]any{"session": session, "final": final}
+		// The agents that ran under it, so a caller can open one by its sessionId
+		if children, ok := s.api.subagentsOf(pattern, sourceWanted); ok && len(children) > 0 {
+			subagents := make([]map[string]any, 0, len(children))
+			for _, child := range children {
+				subagents = append(subagents, subagentSummary(child))
+			}
+			out["subagents"] = subagents
+		}
+		return out, nil
 
 	case "get_messages":
 		pattern := strings.TrimSpace(argString(args, "pattern"))
@@ -620,7 +635,9 @@ func mcpTools() []map[string]any {
 				"machine (" + strings.Join(source.KnownModes, ", ") + "). Answers " +
 				"\"which session did I deal with X in?\". Case-insensitive. source / project / " +
 				"branch / since / until narrow which sessions are scanned, before limit is " +
-				"counted — narrow to the project in question rather than raising limit.",
+				"counted — narrow to the project in question rather than raising limit. Claude Code " +
+				"subagents' transcripts are searched with the session they ran in: a hit inside one comes " +
+				"back in that session's result carrying agentId, which get_messages opens like a sessionId.",
 			"annotations": readOnlyAnnotations("Search sessions"),
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -635,24 +652,26 @@ func mcpTools() []map[string]any {
 					"until":       strSchema("only search sessions updated before this, e.g. 7d (a week ago) / 2026-09-01"),
 					"pattern":     strSchema("limit the search to one session: a sessionId, a fragment of one, or a file path fragment — the way to ask \"where in this session did we discuss X\" without paging through it"),
 					"role":        strSchema("keep only hits from this role: user or assistant"),
+					"subagents":   boolSchema("search Claude Code subagents' transcripts too (default true); false keeps to the sessions themselves"),
 				},
 				"required": []string{"query"},
 			},
 		},
 		{
 			"name":        "list_sessions",
-			"description": "List sessions newest first, optionally filtered by source, project (cwd), git branch or update time. A row carries branch when the CLI recorded one — the branch the session opened on, not what the checkout is on now.",
+			"description": "List sessions newest first, optionally filtered by source, project (cwd), git branch or update time. A row carries branch when the CLI recorded one — the branch the session opened on, not what the checkout is on now. A Claude Code session whose work was handed to subagents says how many in subagents; get_session lists them, and subagents=true lists them here as rows of their own (with parentSessionId, agentType and agentDepth).",
 			"annotations": readOnlyAnnotations("List sessions"),
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"source":  strSchema("restrict to one source: " + strings.Join(source.KnownModes, " / ")),
-					"project": strSchema("filter by project path (cwd), substring match"),
-					"branch":  strSchema("filter by the git branch the session opened on, substring match"),
-					"since":   strSchema("only sessions updated after this, e.g. 30d / 12h / 2026-09-01"),
-					"until":   strSchema("only sessions updated before this, e.g. 7d (a week ago) / 2026-09-01"),
-					"limit":   intSchema("how many to return at most, default 20"),
-					"cursor":  cursorSchema(),
+					"source":    strSchema("restrict to one source: " + strings.Join(source.KnownModes, " / ")),
+					"project":   strSchema("filter by project path (cwd), substring match"),
+					"branch":    strSchema("filter by the git branch the session opened on, substring match"),
+					"since":     strSchema("only sessions updated after this, e.g. 30d / 12h / 2026-09-01"),
+					"until":     strSchema("only sessions updated before this, e.g. 7d (a week ago) / 2026-09-01"),
+					"limit":     intSchema("how many to return at most, default 20"),
+					"cursor":    cursorSchema(),
+					"subagents": boolSchema("list Claude Code subagents' transcripts as rows too (default false: the sessions they ran in say how many)"),
 				},
 			},
 		},
@@ -715,7 +734,7 @@ func mcpTools() []map[string]any {
 		},
 		{
 			"name":        "get_session",
-			"description": "Fetch one session's metadata and final result. pattern may be a full sessionId, a fragment of one, or a fragment of the file path.",
+			"description": "Fetch one session's metadata and final result. pattern may be a full sessionId, a fragment of one, or a fragment of the file path. For a Claude Code session whose work went to subagents, subagents lists them in the order they started — each sessionId opens with get_messages like any session — and a subagent's own sessionId lists the agents below it.",
 			"annotations": readOnlyAnnotations("Get session"),
 			"inputSchema": map[string]any{
 				"type": "object",

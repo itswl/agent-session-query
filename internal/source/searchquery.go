@@ -28,6 +28,10 @@ type SearchQuery struct {
 	// the answer that repeats them. Applied while collecting, not after, so per_session
 	// counts hits that match rather than hits that happen to come first.
 	Role string
+	// NoSubagents leaves subagents' transcripts out. They are searched by default — the work
+	// a session handed to its agents happened there, commands and output included — and a
+	// hit in one comes back in the result of the session it ran in, naming the agent.
+	NoSubagents bool
 }
 
 // ProbeLimit is what a source actually fetches per session: one hit more than the caller

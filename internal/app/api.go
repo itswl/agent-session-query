@@ -109,10 +109,18 @@ func safeList(src source.SessionSource) (out []source.Record) {
 // The web page polls every 10 seconds and the list has almost always not changed. With an
 // ETag those polls end at a 304, instead of serialising and transferring the entire list
 // again every time.
-func (a *SessionQueryAPI) listSessions() ([]map[string]any, string) {
+//
+// Subagents' transcripts are left out unless asked for: a session's own row says how many
+// ran in it, and a list of everything would be more than half agents — 291 of them beside
+// 246 sessions here.
+func (a *SessionQueryAPI) listSessions(subagents bool) ([]map[string]any, string) {
 	all := []source.Record{}
 	for _, src := range a.activeSources() {
-		all = append(all, a.recordsOf(src)...)
+		for _, rec := range a.recordsOf(src) {
+			if subagents || !rec.IsSubagent() {
+				all = append(all, rec)
+			}
+		}
 	}
 	// Newest update time first; equal times keep source order (stable sort)
 	sort.SliceStable(all, func(i, j int) bool { return all[i].NewerThan(all[j]) })
@@ -172,6 +180,9 @@ func listVersion(records []source.Record, warnings []map[string]any) string {
 		if r.HasCount {
 			_, _ = h.Write([]byte(strconv.FormatInt(int64(r.MessageCount), 10)))
 		}
+		// So is a new subagent, which changes its session's row and not its file
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(strconv.Itoa(r.Subagents)))
 		_, _ = h.Write([]byte{0})
 		_, _ = h.Write([]byte{0x1e})
 	}
@@ -307,6 +318,9 @@ func (a *SessionQueryAPI) listProjects() ([]map[string]any, int) {
 
 	for _, src := range a.activeSources() {
 		for _, rec := range a.recordsOf(src) {
+			if rec.IsSubagent() {
+				continue // a project counts conversations; its sessions' agents are inside them
+			}
 			name := rec.ProjectName()
 			if name == "" {
 				ungrouped++
@@ -396,17 +410,21 @@ func (a *SessionQueryAPI) sourceName(raw string) (string, error) {
 // hits from other projects could fill its page before the project being asked about was
 // reached.
 type sessionFilter struct {
-	source  string    // a mode, which reaches its labeled instances, or one instance's name
-	project string    // substring of the project: the cwd, or gemini's own project field
-	branch  string    // substring of the git branch the session opened on
-	since   time.Time // updated at or after; zero is unbounded
-	until   time.Time // updated at or before; zero is unbounded
+	source    string    // a mode, which reaches its labeled instances, or one instance's name
+	project   string    // substring of the project: the cwd, or gemini's own project field
+	branch    string    // substring of the git branch the session opened on
+	since     time.Time // updated at or after; zero is unbounded
+	until     time.Time // updated at or before; zero is unbounded
+	subagents bool      // subagents' transcripts too, not only the sessions they ran in
 }
 
 // admits reports whether a session is inside the selection. A session whose update time
 // will not parse falls outside a bounded window rather than being guessed onto either side.
 func (f sessionFilter) admits(rec source.Record) bool {
 	if !sourceMatchesWanted(rec.Source, f.source) {
+		return false
+	}
+	if rec.IsSubagent() && !f.subagents {
 		return false
 	}
 	if f.project != "" && !strings.Contains(rec.ProjectName(), f.project) {
@@ -439,6 +457,80 @@ func (a *SessionQueryAPI) eachSession(f sessionFilter, fn func(source.SessionSou
 			}
 		}
 	}
+}
+
+// subagentsOf lists the subagents that ran under a session, in the order they started, so a
+// reader sees the work as it was handed out; each carries its parentAgentId and depth for
+// the nesting. A subagent's own pattern lists the agents below it.
+func (a *SessionQueryAPI) subagentsOf(pattern, sourceWanted string) ([]source.Record, bool) {
+	src, rec, ok := a.findSession(pattern, sourceWanted)
+	if !ok {
+		return nil, false
+	}
+	session := rec.SessionID
+	if rec.IsSubagent() {
+		session = rec.ParentSessionID
+	}
+	agents := map[string]source.Record{} // the session's subagents by id
+	for _, item := range a.recordsOf(src) {
+		if item.IsSubagent() && item.ParentSessionID == session {
+			agents[item.SessionID] = item
+		}
+	}
+	children := []source.Record{}
+	for _, item := range agents {
+		if !rec.IsSubagent() || descendsFrom(item, rec.SessionID, agents) {
+			children = append(children, item)
+		}
+	}
+	sort.Slice(children, func(i, j int) bool {
+		if children[i].CreatedAt != children[j].CreatedAt {
+			return children[i].CreatedAt < children[j].CreatedAt
+		}
+		return children[i].SessionID < children[j].SessionID // a map has no order of its own
+	})
+	return children, true
+}
+
+// subagentSummary is a subagent as get_session lists it: enough to pick one and open it
+// by its sessionId, without the paths and project fields every row of the list repeats
+func subagentSummary(rec source.Record) map[string]any {
+	out := map[string]any{
+		"sessionId":  rec.SessionID,
+		"shortKey":   rec.ShortKey,
+		"agentDepth": rec.AgentDepth,
+		"createdAt":  rec.CreatedAt,
+		"updatedAt":  rec.UpdatedAt,
+	}
+	if rec.AgentType != "" {
+		out["agentType"] = rec.AgentType
+	}
+	if rec.ParentAgentID != "" {
+		out["parentAgentId"] = rec.ParentAgentID
+	}
+	if rec.ParentToolUseID != "" {
+		out["parentToolUseId"] = rec.ParentToolUseID
+	}
+	if rec.HasCount {
+		out["messageCount"] = rec.MessageCount
+	}
+	return out
+}
+
+// descendsFrom reports whether a subagent was spawned, directly or further down, by the
+// agent named; agents are its session's subagents by id
+func descendsFrom(rec source.Record, agentID string, agents map[string]source.Record) bool {
+	for hops := 0; rec.ParentAgentID != "" && hops <= len(agents); hops++ {
+		if rec.ParentAgentID == agentID {
+			return true
+		}
+		next, ok := agents[rec.ParentAgentID]
+		if !ok {
+			return false
+		}
+		rec = next
+	}
+	return false
 }
 
 // sessionsWhere is the session list narrowed by a filter, newest first like the list

@@ -514,3 +514,127 @@ func TestHTTPSearchFilters(t *testing.T) {
 		t.Fatalf("an unknown source = %d %v, want 400 naming the instances", code, body)
 	}
 }
+
+// subagentServer serves a Claude Code session that handed work to subagents: aaa, spawned
+// by the main thread's call; bbb, spawned by aaa; ccc, a workflow's agent
+func subagentServer(t *testing.T) (*httptest.Server, *mcpServer) {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, "proj")
+	row := func(kind, ts, extra, content string) string {
+		return `{"type":"` + kind + `","timestamp":"2026-10-14T` + ts + `Z","sessionId":"s1","cwd":"/w","gitBranch":"main"` + extra + `,"message":{"role":"` + kind + `","content":` + content + `}}`
+	}
+	agentRow := func(id, kind, ts, content string) string {
+		return row(kind, ts, `,"isSidechain":true,"agentId":"`+id+`"`, content)
+	}
+	write(t, filepath.Join(dir, "s1.jsonl"),
+		row("user", "10:00:00", "", `"fan out the review"`),
+		row("assistant", "10:01:00", "", `[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{}}]`),
+		row("assistant", "10:30:00", "", `[{"type":"text","text":"done"}]`),
+	)
+	agents := filepath.Join(dir, "s1", "subagents")
+	write(t, filepath.Join(agents, "agent-aaa.jsonl"),
+		agentRow("aaa", "user", "10:02:00", `"Review the diff"`),
+		agentRow("aaa", "assistant", "10:10:00", `[{"type":"text","text":"found a race"}]`),
+	)
+	write(t, filepath.Join(agents, "agent-aaa.meta.json"), `{"agentType":"general-purpose","description":"Review the diff","toolUseId":"toolu_A"}`)
+	write(t, filepath.Join(agents, "agent-bbb.jsonl"),
+		agentRow("bbb", "user", "10:04:00", `"Check the cache"`),
+		agentRow("bbb", "assistant", "10:05:00", `[{"type":"text","text":"the cache lock is held across the write"}]`),
+	)
+	write(t, filepath.Join(agents, "agent-bbb.meta.json"), `{"agentType":"general-purpose","description":"Check the cache","toolUseId":"toolu_B","parentAgentId":"aaa"}`)
+	write(t, filepath.Join(agents, "workflows", "wf_1", "agent-ccc.jsonl"),
+		agentRow("ccc", "user", "10:06:00", `"Scan the logs"`),
+		agentRow("ccc", "assistant", "10:07:00", `[{"type":"text","text":"nothing unusual"}]`),
+	)
+	write(t, filepath.Join(agents, "workflows", "wf_1", "agent-ccc.meta.json"), `{"agentType":"workflow-subagent","description":"Scan the logs"}`)
+
+	sources := []source.SessionSource{source.NewClaudeSource(root)}
+	api := newSessionQueryAPI(sources, 2)
+	srv := httptest.NewServer(newAPIServer(serverOptions{mode: "auto", sources: sources, api: api, maxConnections: 50}))
+	t.Cleanup(srv.Close)
+	return srv, &mcpServer{api: api, sources: sources, maxLimit: defaultMaxLimit}
+}
+
+// TestSubagentsAcrossTheAPI: the list shows sessions and says how many agents ran in each,
+// listing the agents themselves only when asked; /subagents walks the tree in the order the
+// agents started; a search finds an agent's words in its session's result, naming the agent;
+// the projects count conversations.
+func TestSubagentsAcrossTheAPI(t *testing.T) {
+	srv, mcp := subagentServer(t)
+
+	_, body := get(t, srv.URL+"/sessions", "")
+	sessions := body["sessions"].([]any)
+	if len(sessions) != 1 || sessions[0].(map[string]any)["subagents"] != float64(3) {
+		t.Fatalf("/sessions = %v, want the one session, counting 3 agents", sessions)
+	}
+	_, body = get(t, srv.URL+"/sessions?subagents=1", "")
+	if body["total"] != float64(4) {
+		t.Fatalf("/sessions?subagents=1 lists %v, want the session and its 3 agents", body["total"])
+	}
+
+	ids := func(list []any) string {
+		out := []string{}
+		for _, item := range list {
+			out = append(out, item.(map[string]any)["sessionId"].(string))
+		}
+		return strings.Join(out, ",")
+	}
+	_, body = get(t, srv.URL+"/sessions/s1/subagents", "")
+	if got := ids(body["subagents"].([]any)); got != "aaa,bbb,ccc" {
+		t.Fatalf("/sessions/s1/subagents = %s, want aaa,bbb,ccc in the order they started", got)
+	}
+	first := body["subagents"].([]any)[0].(map[string]any)
+	if first["parentSessionId"] != "s1" || first["agentType"] != "general-purpose" || first["agentDepth"] != float64(1) || first["parentToolUseId"] != "toolu_A" {
+		t.Fatalf("an agent row = %v", first)
+	}
+	_, body = get(t, srv.URL+"/sessions/aaa/subagents", "")
+	if got := ids(body["subagents"].([]any)); got != "bbb" {
+		t.Fatalf("/sessions/aaa/subagents = %s, want the agent aaa spawned", got)
+	}
+	if code, _ := get(t, srv.URL+"/sessions/bbb/messages", ""); code != 200 {
+		t.Fatalf("an agent's transcript does not open by its id: %d", code)
+	}
+
+	// An agent's words come back in its session's result, saying which agent
+	_, body = get(t, srv.URL+"/search?q=lock%20is%20held", "")
+	results := body["results"].([]any)
+	if len(results) != 1 {
+		t.Fatalf("search = %v, want one result", results)
+	}
+	result := results[0].(map[string]any)
+	hit := result["matches"].([]any)[0].(map[string]any)
+	if result["sessionId"] != "s1" || hit["agentId"] != "bbb" || hit["agent"] != "Check the cache" || hit["agentType"] != "general-purpose" {
+		t.Fatalf("result = %v, hit = %v; want s1, with the hit naming agent bbb", result["sessionId"], hit)
+	}
+	_, body = get(t, srv.URL+"/search?q=lock%20is%20held&subagents=0", "")
+	if body["total"] != float64(0) {
+		t.Fatalf("subagents=0 still searched the agents: %v", body["results"])
+	}
+	// A search scoped to the agent reads the agent alone
+	_, body = get(t, srv.URL+"/search?q=lock%20is%20held&pattern=bbb", "")
+	if results := body["results"].([]any); len(results) != 1 || results[0].(map[string]any)["sessionId"] != "bbb" {
+		t.Fatalf("a search scoped to bbb = %v", body["results"])
+	}
+
+	_, body = get(t, srv.URL+"/projects", "")
+	if project := body["projects"].([]any)[0].(map[string]any); project["sessions"] != float64(1) {
+		t.Fatalf("/projects counts %v sessions in /w, want the one conversation", project["sessions"])
+	}
+
+	// MCP: get_session lists the agents; list_sessions lists them as rows only when asked
+	resp := mcpRoundTrip(t, mcp, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "get_session", "arguments": map[string]any{"pattern": "s1"}},
+	})
+	text, isErr := toolText(t, resp[0])
+	if isErr || !strings.Contains(text, `"subagents"`) || !strings.Contains(text, `"sessionId": "bbb"`) {
+		t.Fatalf("get_session s1 = %s", text)
+	}
+	if out := mcpCallTool(t, mcp, map[string]any{}); out["total"] != float64(1) {
+		t.Fatalf("list_sessions = %v sessions, want 1", out["total"])
+	}
+	if out := mcpCallTool(t, mcp, map[string]any{"subagents": true}); out["total"] != float64(4) {
+		t.Fatalf("list_sessions subagents=true = %v rows, want 4", out["total"])
+	}
+}

@@ -2,7 +2,7 @@
 name: agent-sessions
 description: 'Query the session history of every agent CLI on this machine — Claude Code, Codex, Gemini CLI, Pi, Hermes, OpenClaw, OpenCode, Grok — through the read-only `agent-sessions` MCP server, and hand a stretch of that history to another agent. Use when the user asks what they worked on before, which session covered a topic, how something was solved previously, whether they have dealt with a problem already, or wants context migrated to another agent or machine. Trigger phrases include "之前怎么解决的", "上周做了什么", "我是不是弄过这个", "把上下文给另一个 AI".'
 metadata:
-  version: 1.3.0
+  version: 1.4.0
 ---
 
 # Query the agent session history on this machine
@@ -43,7 +43,8 @@ span a Claude Code session and a Codex one in the same answer.
 | "Which step failed? What did it change?" | `list_rounds(pattern=<id>)` | One row per round: `failures`, `filesChanged`, `files` touched, whether it ended interrupted |
 | "Hand this round to another agent" | `session_brief(pattern=<id>, round=N)` | The ask, the files changed, tools with the number that failed, how it ended, and the command that resumes the session |
 | "What has happened since I handed this over?" | `session_brief(pattern=<id>, since=<the last handoff's time>)` | The delta: every round since that moment, with the stretch's files and failures summed above them |
-| "Show me the whole output of that command" | `get_messages(pattern=<id>, at=<ts>, limit=3, full=true)` | Tool output comes cut to a preview (`truncated: true`); `full` on a narrow window returns it whole |
+| "Show me the whole output of that command" | `get_messages(pattern=<id>, at=<ts>, limit=3, full=true)` | Tool output comes cut to a preview (`truncated: true`); `full` on a narrow window returns it whole — for Claude Code, also an output it saved beside the transcript |
+| "What did the subagents do?" | `get_session(pattern=<id>)`, then `get_messages(pattern=<agent sessionId>)` | A Claude Code session lists its subagents under `subagents`; each one's transcript opens by its `sessionId` like a session's. A search hit inside one carries `agentId` — open that, not the session |
 
 ### Landing on a search hit
 

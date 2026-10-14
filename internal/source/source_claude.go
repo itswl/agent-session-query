@@ -11,7 +11,10 @@ import (
 	"strings"
 )
 
-// Claude Code: ~/.claude/projects/<project>/<session-uuid>.jsonl
+// Claude Code: ~/.claude/projects/<project>/<session-uuid>.jsonl, and beside each session a
+// directory of the same name, where its subagents' transcripts are kept
+// (<session-uuid>/subagents/agent-<id>.jsonl, with an agent-<id>.meta.json describing each;
+// a workflow's agents one level further down, in subagents/workflows/<run>/)
 type ClaudeCodeSource struct {
 	root  string
 	cache *fileRecordCache
@@ -27,11 +30,26 @@ func (s *ClaudeCodeSource) Location() string { return s.root }
 func (s *ClaudeCodeSource) Exists() bool { return fileExists(s.root) }
 
 func (s *ClaudeCodeSource) files() []string {
-	files, err := filepath.Glob(filepath.Join(s.root, "*", "*.jsonl"))
-	if err != nil {
-		return nil
+	files := []string{}
+	for _, pattern := range []string{
+		filepath.Join(s.root, "*", "*.jsonl"),
+		filepath.Join(s.root, "*", "*", "subagents", "agent-*.jsonl"),
+		filepath.Join(s.root, "*", "*", "subagents", "workflows", "*", "agent-*.jsonl"),
+	} {
+		matches, err := filepath.Glob(pattern)
+		if err == nil {
+			files = append(files, matches...)
+		}
 	}
 	return files
+}
+
+// claudeSubagentPath reports whether a transcript is a subagent's: agent-<id>.jsonl in a
+// session's subagents directory. Every row of one is marked isSidechain, which in a session's
+// own transcript means "not this thread" and is skipped; in a subagent's it is the thread.
+func claudeSubagentPath(path string) bool {
+	return strings.HasPrefix(filepath.Base(path), "agent-") &&
+		strings.Contains(filepath.ToSlash(path), "/subagents/")
 }
 
 // claudeHeadLines caps how far down the file the metadata scan will go.
@@ -51,46 +69,159 @@ const claudeHeadLines = 50
 // List reads only the head of each session file for metadata; unchanged files come
 // straight from the cache (see fileRecordCache)
 func (s *ClaudeCodeSource) List() []Record {
-	return s.cache.records(s.files(), func(path, modISO string) Record {
+	return claudeLinkSubagents(s.cache.records(s.files(), func(path, modISO string) Record {
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		// Use the time on the last record in the file, not the file's mtime (see updatedAtOf)
 		updated := updatedAtOf(path, modISO)
-		sid := stem
-		var cwd any = ""
-		branch := ""
-		var haveSID, haveCWD, haveBranch bool
-		seen := 0
-		eachJSONL(path, func(obj map[string]any) bool {
-			if !haveSID && Truthy(obj["sessionId"]) {
-				sid, haveSID = ToStr(obj["sessionId"]), true
-			}
-			if !haveCWD && Truthy(obj["cwd"]) {
-				cwd, haveCWD = obj["cwd"], true
-			}
-			// The branch the session opened on. Claude Code writes gitBranch on nearly
-			// every row, so the head scan already passes several; a session started
-			// outside a repository has none, and that is the one case the scan runs to
-			// the cap, which is why the cap is there.
-			if !haveBranch && Truthy(obj["gitBranch"]) {
-				branch, haveBranch = ToStr(obj["gitBranch"]), true
-			}
-			seen++
-			return !(haveSID && haveCWD && haveBranch) && seen < claudeHeadLines
-		})
+		head := claudeHeadOf(path)
+		if claudeSubagentPath(path) {
+			return claudeSubagentRecord(path, stem, head, updated)
+		}
 		name := FirstNonEmpty(claudeUserTitle(path), stem)
 		return NewRecord(Record{
 			Source:    "claude",
 			Key:       path,
 			ShortKey:  name,
-			SessionID: sid,
+			SessionID: FirstNonEmpty(head.sid, stem),
 			File:      path,
 			HasFile:   true,
 			Status:    "done",
-			Cwd:       ToStr(cwd),
-			Branch:    branch,
+			Cwd:       head.cwd,
+			Branch:    head.branch,
 			UpdatedAt: updated,
 		}, updated)
+	}))
+}
+
+// claudeHead is what a transcript's first rows say about it
+type claudeHead struct {
+	sid, cwd, branch string
+	firstAt          string // the first row's time: when a subagent was started
+	agentID          string
+}
+
+// claudeHeadOf decodes only the fields it reads: the first row of a subagent's transcript
+// is its prompt, often pages long, and decoding it whole into a map was the larger part of
+// listing one
+func claudeHeadOf(path string) claudeHead {
+	var h claudeHead
+	var haveSID, haveCWD, haveBranch bool
+	seen := 0
+	EachJSONLLine(path, func(line []byte) bool {
+		seen++
+		var row struct {
+			SessionID any `json:"sessionId"`
+			Cwd       any `json:"cwd"`
+			GitBranch any `json:"gitBranch"`
+			Timestamp any `json:"timestamp"`
+			AgentID   any `json:"agentId"`
+		}
+		if json.Unmarshal(line, &row) != nil {
+			return seen < claudeHeadLines
+		}
+		if h.firstAt == "" {
+			h.firstAt = ToStr(row.Timestamp)
+		}
+		if h.agentID == "" {
+			h.agentID = ToStr(row.AgentID)
+		}
+		if !haveSID && Truthy(row.SessionID) {
+			h.sid, haveSID = ToStr(row.SessionID), true
+		}
+		if !haveCWD && Truthy(row.Cwd) {
+			h.cwd, haveCWD = ToStr(row.Cwd), true
+		}
+		// The branch the session opened on. Claude Code writes gitBranch on nearly every
+		// row, so the head scan already passes several; a session started outside a
+		// repository has none, and that is the one case the scan runs to the cap, which is
+		// why the cap is there.
+		if !haveBranch && Truthy(row.GitBranch) {
+			h.branch, haveBranch = ToStr(row.GitBranch), true
+		}
+		return !(haveSID && haveCWD && haveBranch) && seen < claudeHeadLines
 	})
+	return h
+}
+
+// claudeSubagentRecord lists a subagent's transcript as a session of its own, tied to the
+// session it ran in. Its rows carry the parent's sessionId; its own id is the agent id, which
+// is also how the parent's records name it. The meta file beside it says what kind of agent
+// it was, what it was asked to do (the title — the prompt itself is often pages long), which
+// agent spawned it, and the call that did.
+//
+// Measured locally: 291 subagent transcripts in 18 sessions, 528 MB between them — more than
+// the sessions' own transcripts — none of it listed or searched until now.
+func claudeSubagentRecord(path, stem string, head claudeHead, updated string) Record {
+	meta := map[string]any{}
+	if data, err := os.ReadFile(strings.TrimSuffix(path, ".jsonl") + ".meta.json"); err == nil {
+		_ = json.Unmarshal(data, &meta)
+	}
+	// The session directory is the parent of subagents/, however deep the transcript sits
+	parent := head.sid
+	if parent == "" {
+		for dir := filepath.Dir(path); dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+			if filepath.Base(dir) == "subagents" {
+				parent = filepath.Base(filepath.Dir(dir))
+				break
+			}
+		}
+	}
+	// The prompt is read for a title only when the meta file has none: it is a second pass
+	// over the head of a file whose first row can be pages long
+	title := FirstNonEmpty(TitleFromUserText(ToStr(meta["description"])), TitleFromUserText(ToStr(meta["name"])))
+	if title == "" {
+		title = FirstNonEmpty(claudeUserTitle(path), stem)
+	}
+	return NewRecord(Record{
+		Source:          "claude",
+		Key:             path,
+		ShortKey:        title,
+		SessionID:       FirstNonEmpty(head.agentID, strings.TrimPrefix(stem, "agent-")),
+		File:            path,
+		HasFile:         true,
+		Status:          "done",
+		Cwd:             head.cwd,
+		Branch:          head.branch,
+		UpdatedAt:       updated,
+		CreatedAt:       head.firstAt,
+		ParentSessionID: parent,
+		ParentAgentID:   ToStr(meta["parentAgentId"]),
+		AgentType:       ToStr(meta["agentType"]),
+		ParentToolUseID: ToStr(meta["toolUseId"]),
+		AgentDepth:      1,
+	}, updated)
+}
+
+// claudeLinkSubagents fills in what no single transcript knows: how many subagents ran in
+// each session, and how deep each subagent sits. Depth follows the parentAgentId links
+// rather than the spawnDepth the meta file records, which starts from 0 for a team's
+// members and from 1 for an agent the main thread spawned with a tool call.
+func claudeLinkSubagents(records []Record) []Record {
+	agents := map[string]int{}   // parent session + agent id → index
+	children := map[string]int{} // parent session → subagents
+	for i, r := range records {
+		if r.IsSubagent() {
+			agents[r.ParentSessionID+"\x00"+r.SessionID] = i
+			children[r.ParentSessionID]++
+		}
+	}
+	for i := range records {
+		r := &records[i]
+		if !r.IsSubagent() {
+			r.Subagents = children[r.SessionID]
+			continue
+		}
+		depth, at := 1, r
+		for hops := 0; at.ParentAgentID != "" && hops < len(records); hops++ {
+			j, ok := agents[at.ParentSessionID+"\x00"+at.ParentAgentID]
+			if !ok {
+				break
+			}
+			depth, at = depth+1, &records[j]
+		}
+		r.AgentDepth = depth
+	}
+	return records
 }
 
 // claudeUserTitle is the first real user message of a Claude Code session, as a title.
@@ -364,8 +495,8 @@ type claudeProbe struct {
 	} `json:"message"`
 }
 
-func (p claudeProbe) counts() bool {
-	if p.IsSidechain {
+func (p claudeProbe) counts(subagent bool) bool {
+	if p.IsSidechain && !subagent {
 		return false
 	}
 	switch p.Type {
@@ -385,7 +516,11 @@ func (p claudeProbe) counts() bool {
 // list showed injected context where the conversation should have been, and the
 // per_session slots were spent on it.
 func (s *ClaudeCodeSource) Search(ctx context.Context, r Record, q SearchQuery) []map[string]any {
-	return searchFileWith(ctx, r.File, q, lineRules{stamp: rowTime, keep: claudeSearchable})
+	keep := claudeSearchable
+	if r.IsSubagent() {
+		keep = claudeRowSearchable
+	}
+	return searchFileWith(ctx, r.File, q, lineRules{stamp: rowTime, keep: keep})
 }
 
 // claudeSearchable is the row rule Messages follows — the main thread's user and assistant
@@ -397,6 +532,12 @@ func claudeSearchable(obj map[string]any) bool {
 	if Truthy(obj["isSidechain"]) {
 		return false
 	}
+	return claudeRowSearchable(obj)
+}
+
+// claudeRowSearchable is claudeSearchable without the thread check, for a subagent's
+// transcript, where every row is the sidechain
+func claudeRowSearchable(obj map[string]any) bool {
 	switch obj["type"] {
 	case "user", "assistant":
 		return true
@@ -431,8 +572,10 @@ func (s *ClaudeCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 		return sink.result()
 	}
 	row := claudeRow{names: map[string]string{}, full: q.Full, root: s.root}
+	subagent := r.IsSubagent()
 	eachJSONL(path, func(obj map[string]any) bool {
-		if Truthy(obj["isSidechain"]) { // subagent messages are not part of the main thread
+		// A subagent's rows are not part of the main thread — except in its own transcript
+		if Truthy(obj["isSidechain"]) && !subagent {
 			return true
 		}
 		switch obj["type"] {
@@ -476,9 +619,10 @@ func (s *ClaudeCodeSource) Final(r Record) map[string]any {
 	// card is read as. The scan already walks every line, so this costs one small decode
 	// per assistant message.
 	var totals usageTotals
+	subagent := r.IsSubagent()
 	EachJSONLLine(path, func(line []byte) bool {
 		var probe claudeProbe
-		if json.Unmarshal(line, &probe) != nil || !probe.counts() {
+		if json.Unmarshal(line, &probe) != nil || !probe.counts(subagent) {
 			return true
 		}
 		count++

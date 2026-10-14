@@ -29,10 +29,12 @@ func lineHasAll(line []byte, tokens ...string) bool {
 	return true
 }
 
-// claudeCountMessages: user/assistant rows, sidechains excluded, plus the system rows the
-// reader shows as events (see claudeProbe.counts — one rule for the list, Final and here)
+// claudeCountMessages: user/assistant rows, sidechains excluded except in a subagent's own
+// transcript, plus the system rows the reader shows as events (see claudeProbe.counts — one
+// rule for the list, Final and here)
 func claudeCountMessages(path string, from int64) (int, bool) {
 	n := 0
+	subagent := claudeSubagentPath(path)
 	eachJSONLLineFrom(path, from, func(line []byte) bool {
 		// A conversation row carries a message object; the system rows that count carry a
 		// subtype. Anything with neither is skipped before it is decoded.
@@ -41,7 +43,7 @@ func claudeCountMessages(path string, from int64) (int, bool) {
 			return true
 		}
 		var probe claudeProbe
-		if json.Unmarshal(line, &probe) == nil && probe.counts() {
+		if json.Unmarshal(line, &probe) == nil && probe.counts(subagent) {
 			n++
 		}
 		return true

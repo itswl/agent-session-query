@@ -62,6 +62,19 @@ type Record struct {
 	Archived         bool
 	Files            []string // the files one session spans when it spans several (gemini)
 
+	// A Claude Code subagent runs a transcript of its own inside a session, and is listed as
+	// a record of its own: ParentSessionID is the session it ran in, ParentAgentID the agent
+	// that spawned it when that was not the session's main thread, AgentType what kind of
+	// agent it is, AgentDepth how far down it sits (1 for one the main thread spawned), and
+	// ParentToolUseID the call that started it, when one did. Subagents is the other end: on
+	// a session, how many subagent transcripts ran inside it.
+	ParentSessionID string
+	ParentAgentID   string
+	AgentType       string
+	AgentDepth      int
+	ParentToolUseID string
+	Subagents       int
+
 	sortAt   time.Time // parsed update time; zero means this record's time would not parse
 	sortKey  string    // fallback when the time will not parse: the raw string
 	lowerSID string
@@ -177,6 +190,22 @@ func (r Record) Public() map[string]any {
 	if len(r.Files) > 0 {
 		out["files"] = append([]string(nil), r.Files...) // copied: the record's slice lives in the cache
 	}
+	if r.ParentSessionID != "" {
+		out["parentSessionId"] = r.ParentSessionID
+		if r.ParentAgentID != "" {
+			out["parentAgentId"] = r.ParentAgentID
+		}
+		if r.AgentType != "" {
+			out["agentType"] = r.AgentType
+		}
+		out["agentDepth"] = r.AgentDepth
+		if r.ParentToolUseID != "" {
+			out["parentToolUseId"] = r.ParentToolUseID
+		}
+	}
+	if r.Subagents > 0 {
+		out["subagents"] = r.Subagents
+	}
 	out["isActive"] = r.IsActive()
 	out["project"] = r.ProjectName()
 	if resume := r.ResumeCommand(); resume != "" {
@@ -192,6 +221,10 @@ func (r Record) Public() map[string]any {
 func (r Record) IsActive() bool {
 	return !r.sortAt.IsZero() && time.Since(r.sortAt) < ActiveWindow
 }
+
+// IsSubagent reports whether the record is a subagent's transcript rather than a session
+// a person started
+func (r Record) IsSubagent() bool { return r.ParentSessionID != "" }
 
 // SortAt is the parsed update time, zero when it would not parse. Ordering and the
 // since/until bounds work off this rather than the string.
@@ -245,6 +278,9 @@ var resumeCommands = map[string]string{
 // in — so a caller that means to carry on with the same files wants the record's cwd,
 // which the record already carries. The page prefixes the cd for that reason.
 func (r Record) ResumeCommand() string {
+	if r.IsSubagent() {
+		return "" // a subagent is not a session a CLI can reopen; its parent is
+	}
 	mode := r.Source
 	if i := strings.IndexByte(mode, ':'); i >= 0 {
 		mode = mode[:i] // a labeled instance (claude:box2) resumes with its base CLI

@@ -365,3 +365,108 @@ func TestReadPersistedOutputCap(t *testing.T) {
 		t.Fatalf("an output under the cap = %q, %v", got, ok)
 	}
 }
+
+// writeClaudeSubagents lays out a session that handed work to subagents, the way Claude Code
+// keeps them: an agent the main thread spawned with a tool call, one that agent spawned in
+// turn, and a workflow's agent with no call behind it
+func writeClaudeSubagents(t *testing.T, root string) {
+	t.Helper()
+	dir := filepath.Join(root, "proj")
+	row := func(kind, ts, extra, content string) string {
+		return `{"type":"` + kind + `","timestamp":"2026-10-14T` + ts + `Z","sessionId":"s1","cwd":"/w","gitBranch":"main"` + extra + `,"message":{"role":"` + kind + `","content":` + content + `}}`
+	}
+	agentRow := func(id, kind, ts, content string) string {
+		return row(kind, ts, `,"isSidechain":true,"agentId":"`+id+`"`, content)
+	}
+	call := func(id string) string { return `[{"type":"tool_use","id":"` + id + `","name":"Agent","input":{}}]` }
+	result := func(id string) string {
+		return `[{"type":"tool_result","tool_use_id":"` + id + `","content":"launched"}]`
+	}
+	write(t, filepath.Join(dir, "s1.jsonl"),
+		row("user", "10:00:00", "", `"fan out the review"`),
+		row("assistant", "10:01:00", "", call("toolu_A")),
+		row("user", "10:01:30", "", result("toolu_A")),
+		row("assistant", "10:30:00", "", `[{"type":"text","text":"done"}]`),
+	)
+	agents := filepath.Join(dir, "s1", "subagents")
+	write(t, filepath.Join(agents, "agent-aaa.jsonl"),
+		agentRow("aaa", "user", "10:02:00", `"Review the diff for races, and hand the cache to an agent of its own"`),
+		agentRow("aaa", "assistant", "10:03:00", call("toolu_B")),
+		agentRow("aaa", "user", "10:03:30", result("toolu_B")),
+		agentRow("aaa", "assistant", "10:10:00", `[{"type":"text","text":"found a race in the cache"}]`),
+	)
+	write(t, filepath.Join(agents, "agent-aaa.meta.json"),
+		`{"agentType":"general-purpose","description":"Review the diff","toolUseId":"toolu_A","spawnDepth":1}`)
+	write(t, filepath.Join(agents, "agent-bbb.jsonl"),
+		agentRow("bbb", "user", "10:04:00", `"Check the cache"`),
+		agentRow("bbb", "assistant", "10:05:00", `[{"type":"text","text":"the cache lock is held across the write"}]`),
+	)
+	write(t, filepath.Join(agents, "agent-bbb.meta.json"),
+		`{"agentType":"general-purpose","description":"Check the cache","toolUseId":"toolu_B","parentAgentId":"aaa","spawnDepth":2}`)
+	write(t, filepath.Join(agents, "workflows", "wf_1", "agent-ccc.jsonl"),
+		agentRow("ccc", "user", "10:06:00", `"Scan the logs"`),
+		agentRow("ccc", "assistant", "10:07:00", `[{"type":"text","text":"nothing unusual"}]`),
+	)
+	write(t, filepath.Join(agents, "workflows", "wf_1", "agent-ccc.meta.json"),
+		`{"agentType":"workflow-subagent","description":"Scan the logs","spawnDepth":1}`)
+}
+
+// TestClaudeSubagents: a subagent's transcript is listed as a record of its own, tied to the
+// session it ran in and to the agent that spawned it; its rows, every one marked
+// isSidechain, are its thread — read, counted and searched — while the session's own
+// transcript still leaves sidechain rows out.
+func TestClaudeSubagents(t *testing.T) {
+	root := t.TempDir()
+	writeClaudeSubagents(t, root)
+	src := NewClaudeSource(root)
+
+	byID := map[string]Record{}
+	for _, rec := range src.List() {
+		byID[rec.SessionID] = rec
+	}
+	if len(byID) != 4 {
+		t.Fatalf("records = %v, want the session and its three agents", byID)
+	}
+	session, a, b, c := byID["s1"], byID["aaa"], byID["bbb"], byID["ccc"]
+	if session.IsSubagent() || session.Subagents != 3 || session.ResumeCommand() == "" {
+		t.Errorf("session = %+v, want a session with 3 subagents", session)
+	}
+	if a.ParentSessionID != "s1" || a.AgentType != "general-purpose" || a.AgentDepth != 1 ||
+		a.ParentToolUseID != "toolu_A" || a.ShortKey != "Review the diff" || a.ParentAgentID != "" {
+		t.Errorf("agent aaa = %+v", a)
+	}
+	if !strings.HasPrefix(a.CreatedAt, "2026-10-14T10:02") || a.Cwd != "/w" || a.Branch != "main" {
+		t.Errorf("agent aaa started %q in %q on %q", a.CreatedAt, a.Cwd, a.Branch)
+	}
+	// Not a session a CLI can reopen
+	if a.ResumeCommand() != "" || a.Public()["resumeCommand"] != nil {
+		t.Errorf("a subagent offers a resume command: %q", a.ResumeCommand())
+	}
+	if b.AgentDepth != 2 || b.ParentAgentID != "aaa" || b.ParentToolUseID != "toolu_B" {
+		t.Errorf("agent bbb = %+v, want depth 2 under aaa", b)
+	}
+	if c.AgentDepth != 1 || c.AgentType != "workflow-subagent" || c.ParentSessionID != "s1" || c.ParentToolUseID != "" {
+		t.Errorf("the workflow's agent = %+v", c)
+	}
+
+	if msgs := src.Messages(a, MessageQuery{Limit: 50}); len(msgs) != 4 {
+		t.Errorf("agent aaa reads %d messages, want its 4 sidechain rows", len(msgs))
+	}
+	if msgs := src.Messages(session, MessageQuery{Limit: 50}); len(msgs) != 4 {
+		t.Errorf("the session reads %d messages, want its own 4", len(msgs))
+	}
+	final := src.Final(b)
+	if final["messageCount"] != 2 || final["text"] != "the cache lock is held across the write" {
+		t.Errorf("agent bbb's final = %v", final)
+	}
+	if n, _ := claudeCountMessages(b.File, 0); n != 2 {
+		t.Errorf("agent bbb counts %d messages, want 2", n)
+	}
+	q := SearchQuery{Needle: "lock is held", Lowered: []byte("lock is held"), PerSession: 3}
+	if hits := src.Search(context.Background(), b, q); len(hits) != 1 || hits[0]["role"] != "assistant" {
+		t.Errorf("searching agent bbb = %v, want its reply", hits)
+	}
+	if hits := src.Search(context.Background(), session, q); len(hits) != 0 {
+		t.Errorf("the session's own transcript matched an agent's words: %v", hits)
+	}
+}

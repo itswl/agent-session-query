@@ -528,7 +528,7 @@ func TestClaudeBranch(t *testing.T) {
 		`{"type":"assistant","timestamp":"2026-09-21T09:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`,
 	)
 	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
-	sessions, _ := api.listSessions()
+	sessions, _ := api.listSessions(false)
 	got := map[string]map[string]any{}
 	for _, s := range sessions {
 		got[source.ToStr(s["sessionId"])] = s

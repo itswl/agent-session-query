@@ -1049,6 +1049,39 @@ details > summary .fold-size { flex: none; font-size: 11px; font-variant-numeric
   overflow-x: auto; color: var(--fg-mid);
 }
 .md pre.code code { background: transparent; padding: 0; font-size: inherit; border-radius: 0; }
+
+/* Copy actions. An icon where a word would join the text it sits in — a code block, a
+   bubble's head — shown when the pointer is over its block; a tick or a cross says how it
+   went. Where nothing hovers, they stay in view. */
+.copy-btn.icon-copy, button.icon-copy {
+  display: inline-grid; place-items: center; width: 24px; height: 22px; padding: 0;
+  color: var(--dim);
+}
+button.icon-copy svg {
+  width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.4;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+button.icon-copy:hover { color: var(--fg); }
+.copy-btn.done, button.icon-copy.done { color: var(--ok); }
+.copy-btn.failed, button.icon-copy.failed { color: var(--err); }
+.md .code-block { position: relative; }
+.md .code-block > .copy-btn {
+  position: absolute; top: 6px; right: 6px; background: var(--panel);
+  opacity: 0; transition: opacity var(--dur) var(--ease);
+}
+.md .code-block:hover > .copy-btn, .md .code-block > .copy-btn:focus-visible,
+.md .code-block > .copy-btn.done, .md .code-block > .copy-btn.failed { opacity: 1; }
+.msg .head .copy-brief { opacity: 0; transition: opacity var(--dur) var(--ease); }
+.msg:hover .head .copy-brief, .msg .head .copy-brief:focus-visible,
+.msg .head .copy-brief.done, .msg .head .copy-brief.failed { opacity: 1; }
+.step-copy { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 6px; }
+.timeline-card .card-head > .copy-btn:not(.icon-copy) { margin-left: auto; }
+.group .group-pack { margin-left: 2px; opacity: 0; transition: opacity var(--dur) var(--ease); }
+.group:hover .group-pack, .group .group-pack:focus-visible,
+.group .group-pack.done, .group .group-pack.failed { opacity: 1; }
+@media (hover: none) {
+  .md .code-block > .copy-btn, .msg .head .copy-brief, .group .group-pack { opacity: 1; }
+}
 .md code { font-family: var(--mono); font-size: 0.92em; background: var(--panel-2); padding: 1px 5px; border-radius: var(--r-sm); }
 .msg.user .md code { background: light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.08)); }
 .md blockquote { margin: 6px 0 8px; padding: 2px 0 2px 12px; border-left: 2px solid var(--line); color: var(--fg-mid); }

@@ -209,6 +209,93 @@ function branchGlyph() {
   return svg;
 }
 
+// copyGlyph and downloadGlyph: the two sheets of a copy, and an arrow into a tray
+function copyGlyph() {
+  return svgIcon('0 0 16 16', ['M5.5 5.5h7v8h-7z', 'M3.5 10.5v-8h7']);
+}
+function downloadGlyph() {
+  return svgIcon('0 0 16 16', ['M8 2.5v8', 'M4.8 7.5 8 10.7l3.2-3.2', 'M3 13.5h10']);
+}
+
+// writeClipboard puts text on the clipboard when the text is still being fetched. Safari
+// allows a write only inside the tap that asked for it, and a fetch outlives the tap; a
+// ClipboardItem given the promise is written inside it and filled when the text arrives.
+async function writeClipboard(text) {
+  if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+    const blob = Promise.resolve(text).then((t) => new Blob([String(t)], { type: 'text/plain' }));
+    await navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
+    return;
+  }
+  await navigator.clipboard.writeText(String(await text));
+}
+
+// copyButton is a copy action: an icon when it sits inside text it would otherwise add a
+// word to (a code block, a bubble's head), a label otherwise. It says how it went for a
+// moment — a tick or a cross on an icon, the word on a label.
+function copyButton(label, produce, options) {
+  const opts = options || {};
+  const node = el('button', 'ghost tiny copy-btn' + (opts.icon ? ' icon-copy' : '') + (opts.className ? ' ' + opts.className : ''));
+  node.type = 'button';
+  node.title = opts.title || label;
+  node.setAttribute('aria-label', opts.title || label);
+  if (opts.icon) node.appendChild(copyGlyph());
+  else node.textContent = label;
+  node.addEventListener('click', async (event) => {
+    event.stopPropagation();
+    let outcome = 'done';
+    try {
+      await writeClipboard(produce());
+    } catch (err) {
+      outcome = 'failed';
+    }
+    node.classList.remove('done', 'failed');
+    node.classList.add(outcome);
+    if (!opts.icon) node.textContent = outcome === 'done' ? 'Copied' : 'Failed';
+    clearTimeout(node._reset);
+    node._reset = setTimeout(() => {
+      node.classList.remove('done', 'failed');
+      if (!opts.icon) node.textContent = label;
+    }, 1500);
+  });
+  return node;
+}
+
+// fetchText reads a text endpoint with the token the page holds
+async function fetchText(path) {
+  const headers = state.token ? { Authorization: 'Bearer ' + state.token } : {};
+  const res = await fetch(path, { headers });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.text();
+}
+
+// packPath is a project's pack: what each of its latest sessions asked and concluded,
+// oldest first, in Markdown — the context to hand to another agent
+function packPath(project) {
+  return '/export?project=' + encodeURIComponent(project) + '&format=md' +
+    (state.showArchived ? '&include_archived=1' : '');
+}
+
+async function downloadPack(project, node) {
+  try {
+    const blob = new Blob([await fetchText(packPath(project))], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const name = String(project).split(/[\\/]/).filter(Boolean).pop() || 'project';
+    link.download = 'pack-' + safeFilename(name) + '.md';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    node.classList.add('done');
+  } catch (err) {
+    handleError(err);
+    setStatus('Pack failed: ' + err.message);
+    node.classList.add('failed');
+  }
+  setTimeout(() => node.classList.remove('done', 'failed'), 1500);
+}
+
 // findGlyph: the magnifier the session search box carries, drawn the same way
 function findGlyph() {
   const svg = svgIcon('0 0 16 16', ['M10.6 10.6 14 14']);
@@ -587,6 +674,18 @@ function buildGroup(id) {
   node.appendChild(el('span', 'caret'));
   node.appendChild(el('span', 'group-name'));
   node.appendChild(el('span', 'group-count'));
+  // The project's pack, saved from its header
+  const pack = el('button', 'ghost tiny icon-copy group-pack');
+  pack.type = 'button';
+  pack.title = 'Download this project\u2019s pack: what each of its latest sessions asked and concluded';
+  pack.setAttribute('aria-label', pack.title);
+  pack.appendChild(downloadGlyph());
+  pack.addEventListener('click', (event) => {
+    event.stopPropagation();
+    downloadPack(node.dataset.id.replace(/^group:/, ''), pack);
+  });
+  pack.addEventListener('keydown', (event) => event.stopPropagation());
+  node.appendChild(pack);
   // The name is the key into collapsedGroups; the row id carries it with a prefix
   node.addEventListener('click', () => toggleGroup(node.dataset.id));
   node.addEventListener('keydown', (event) => {
@@ -642,7 +741,9 @@ function toggleGroup(rowId) {
 }
 
 function fillGroup(node, row) {
-  const [caret, name, count] = node.children;
+  const [caret, name, count, pack] = node.children;
+  // A group with no project behind it has no pack to ask for
+  pack.classList.toggle('hidden', row.name === '(no project)');
   // Show only the last segment of the project path; the full path goes in the title
   const short = String(row.name).split(/[\\/]/).filter(Boolean).pop() || row.name;
   setText(caret, row.collapsed ? '\u25b8' : '\u25be');
@@ -1394,7 +1495,11 @@ function markdownNode(text, root) {
       const code = el('code', '', body.join('\n'));
       if (fence[2]) code.dataset.lang = fence[2];
       pre.appendChild(code);
-      box.appendChild(pre);
+      const block = el('div', 'code-block');
+      block.appendChild(pre);
+      const text = body.join('\n');
+      block.appendChild(copyButton('Copy', () => text, { icon: true, title: 'Copy this code' }));
+      box.appendChild(block);
       continue;
     }
     if (!line.trim()) {
@@ -2132,6 +2237,16 @@ function messageNode(message, index, options) {
     const time = el('span', 'time', shortTime(message.timestamp, streamDay));
     time.title = String(message.timestamp);
     head.appendChild(time);
+    // A round's ask copies the round's brief: what was asked, what changed, how it ended —
+    // found by the ask's time, since the server numbers rounds over its own read
+    if (opts.brief) {
+      const record = state.byId.get(state.selectedId);
+      const at = String(message.timestamp);
+      head.appendChild(copyButton('Copy brief', () => fetchText('/sessions/' +
+        encodeURIComponent(state.selectedId) + '/brief?at=' + encodeURIComponent(at) +
+        (record && record.source ? '&source=' + encodeURIComponent(record.source) : '')),
+      { icon: true, className: 'copy-brief', title: 'Copy this round\u2019s brief: what was asked, what changed, how it ended' }));
+    }
   }
   node.appendChild(head);
 
@@ -2161,7 +2276,7 @@ function roundNode(round) {
   const node = el('section', 'round' + (round.ask ? '' : ' lead'));
   node.dataset.round = round.no;
   if (round.ask) {
-    node.appendChild(messageNode(round.ask.message, round.ask.index, { label: '#' + round.no }));
+    node.appendChild(messageNode(round.ask.message, round.ask.index, { label: '#' + round.no, brief: true }));
   } else {
     // The ask lies before this window (or there is none): say so, where the bubble would be
     const total = Number(state.detail && state.detail.final && state.detail.final.messageCount) || 0;
@@ -2398,6 +2513,8 @@ function toolStepNode(step, round, options) {
 // for a shell, JSON for the rest), then the output with how it ended
 function stepDetails(step) {
   const box = el('div', 'step-details');
+  const copies = stepCopies(step);
+  if (copies.childNodes.length) box.appendChild(copies);
   const call = step.call;
   if (call) {
     const kind = toolKind(call.name);
@@ -2424,6 +2541,62 @@ function stepDetails(step) {
     box.appendChild(el('div', 'dim small', 'no result recorded'));
   }
   return box;
+}
+
+// stepCopies are what an opened step can hand on: the command it ran, the change it made as
+// a diff, and its output — read whole first when the window holds only its start
+function stepCopies(step) {
+  const row = el('div', 'step-copy');
+  const call = step.call;
+  if (call) {
+    const kind = toolKind(call.name);
+    const command = kind === 'exec' ? commandOf(call.arguments || {}) : '';
+    if (command) row.appendChild(copyButton('Copy command', () => command));
+    if (kind === 'write') {
+      const diff = diffText(call);
+      if (diff) row.appendChild(copyButton('Copy diff', () => diff));
+    }
+  }
+  const result = step.result;
+  if (result && result.content) row.appendChild(copyButton('Copy output', () => wholeOutput(step)));
+  return row;
+}
+
+// diffText is a change as text: the patch or diff the call carried, or one written from its
+// old and new text
+function diffText(call) {
+  const a = call.arguments && typeof call.arguments === 'object' ? call.arguments : {};
+  for (const raw of [a.patch, a.input, a.diff]) {
+    if (typeof raw === 'string' && (raw.includes('*** Begin Patch') || /^--- |\n\+\+\+ /.test(raw))) return raw;
+  }
+  const lines = diffOf(call) || [];
+  return lines.map((line) => {
+    switch (line.type) {
+      case 'file': {
+        // git's a/ and b/ belong in front of a path relative to the repository
+        const relative = !/^(\/|[A-Za-z]:[\\/])/.test(line.text);
+        return '--- ' + (relative ? 'a/' : '') + line.text + '\n+++ ' + (relative ? 'b/' : '') + line.text;
+      }
+      case 'gap': return '@@';
+      case 'add': return '+' + line.text;
+      case 'del': return '-' + line.text;
+      default: return ' ' + line.text;
+    }
+  }).join('\n');
+}
+
+// wholeOutput is a step's output whole: a cut one is read in full first, and the window
+// keeps the full block, as Show full output would leave it
+async function wholeOutput(step) {
+  const result = step.result;
+  if (!result.truncated) return String(result.content || '');
+  const message = step.resultMessage || step.message;
+  const position = step.resultPosition !== undefined ? step.resultPosition : step.position;
+  if (!message || position === undefined || !(await fetchWhole(message, position))) {
+    throw new Error('the output could not be read whole');
+  }
+  setTimeout(renderMessages, 0);
+  return String(message.content[position].content || '');
 }
 
 // loadFullBlock fetches the one message a cut output belongs to with full=1 and swaps the
@@ -2881,10 +3054,8 @@ function copyBrief(record) {
     const node = event.currentTarget;
     const original = node.textContent;
     try {
-      const headers = state.token ? { Authorization: 'Bearer ' + state.token } : {};
-      const res = await fetch('/sessions/' + encodeURIComponent(record.sessionId) + '/brief', { headers });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      await navigator.clipboard.writeText(await res.text());
+      await writeClipboard(fetchText('/sessions/' + encodeURIComponent(record.sessionId) + '/brief' +
+        (record.source ? '?source=' + encodeURIComponent(record.source) : '')));
       setText(node, 'Copied');
     } catch (err) {
       setText(node, 'Failed');
@@ -3054,6 +3225,15 @@ function projectTimeline(record) {
   const head = el('div', 'card-head');
   head.appendChild(el('h3', '', 'Project timeline'));
   head.appendChild(el('span', 'count', items.length + (items.length === 12 ? '+' : '')));
+  // The project's pack: each recent session's ask and conclusion, oldest first — copied to
+  // paste into another agent, or saved as a file
+  const packHint = 'the project\u2019s pack: what each of its latest sessions asked and concluded, oldest first';
+  head.appendChild(copyButton('Copy pack', () => fetchText(packPath(project)), { title: 'Copy ' + packHint }));
+  const save = button('ghost tiny icon-copy', '', (event) => downloadPack(project, event.currentTarget));
+  save.appendChild(downloadGlyph());
+  save.title = 'Download ' + packHint;
+  save.setAttribute('aria-label', save.title);
+  head.appendChild(save);
   card.appendChild(head);
   card.appendChild(el('p', 'sub', project));
   const list = el('div', 'timeline');
@@ -3542,7 +3722,7 @@ function markMatches(node, needle) {
     const value = walker.currentNode.nodeValue;
     const folded = value.toLowerCase();
     if (folded.length !== value.length || !folded.includes(lower)) continue;
-    if (walker.currentNode.parentElement.closest('.step-head, summary')) continue;
+    if (walker.currentNode.parentElement.closest('.step-head, summary, button')) continue;
     texts.push(walker.currentNode);
   }
   let first = null;

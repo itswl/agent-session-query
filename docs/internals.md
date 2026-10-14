@@ -631,6 +631,14 @@ Bash's own `timeout` argument made every command a match for "timeout". An ancho
 that comes back empty — the instant lies before the first message — is fetched again from
 the other side of it.
 
+Copying goes through one helper (`writeClipboard`). Most of what the page copies has to be
+fetched first — a round's brief, a project's pack, an output the window holds only the
+start of — and Safari allows a clipboard write only inside the tap that asked for it, which
+a fetch outlives: `writeText` after an `await` failed there. A `ClipboardItem` given the
+fetch's promise is written inside the tap and filled when the text arrives; `writeText` is
+the fallback. A copy button inside text (a code block, a bubble's head) is an icon, so it
+adds no word to what find matches or a fold previews, and find skips buttons altogether.
+
 ### Full-text search
 
 `/search` builds no index. An index has to be written somewhere, maintained, and reasoned about

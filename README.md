@@ -145,7 +145,10 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   "Show full output" fetches the rest. Replies render their Markdown — headings, lists,
   code, tables, links — and a message's time shows the clock alone on the session's own
   day, the date in front on any other (the full timestamp is in the tooltip). Steps are
-  coloured by category (run / read / write / search / network / delegate)
+  coloured by category (run / read / write / search / network / delegate). **Copying** is
+  where the thing is: a code block in a reply copies itself, a round's ask copies that
+  round's brief, and an opened step copies its command, its change as a diff, or its output
+  — read whole first when the window holds only its start
 - **Right**: the final result stays visible — stopReason, the answer, the thinking — then
   the **conversation table of contents**: two lines a round — what you asked, and what the
   agent concluded, with how many steps it took and a red mark when one failed or the round
@@ -153,7 +156,9 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   and says so when the session is longer). Below it the session's facts: the command that
   reopens it in its own CLI (copied with the `cd` it needs), the file path, one click to
   export in any of the four formats (Markdown, JSONL, JSON or a standalone HTML page),
-  usage and cost, and the other sessions of the same project
+  usage and cost, and the other sessions of the same project — with the project's **pack**
+  (what each of its latest sessions asked and concluded, oldest first) to copy into another
+  agent or save as a file; a project's header in the list saves it too
 
 It installs as a web app: open `/ui` on a phone and "Add to Home Screen" gives it an
 icon, a name and a window without browser chrome, and it honours the notch and home

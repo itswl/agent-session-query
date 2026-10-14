@@ -22,7 +22,7 @@ no alias.
 | `jsonl` | `application/x-ndjson` | one tagged JSON object per line (`session` / `message` / `final`) — a query with `jq` is a filter, not a parse |
 | `json` | `application/json` | the same data as one document, for a consumer that wants a single parse |
 | `html` | `text/html` | a page that stands on its own: inline stylesheet, no scripts, no requests, so it opens from disk and can be attached to anything |
-| `/search?q=&limit=30&per_session=3&since=30d&until=&source=&project=&branch=&pattern=&role=` | yes | **Full-text search** across every source; `source` / `project` / `branch` / `since` / `until` narrow which sessions are scanned, `pattern` scopes it to one session, `role` keeps only `user` or `assistant` hits |
+| `/search?q=&limit=30&per_session=3&since=30d&until=&source=&project=&branch=&pattern=&role=` | yes | **Full-text search** across every source; `source` / `project` / `branch` / `since` / `until` narrow which sessions are scanned, `pattern` scopes it to one session, `role` keeps only `user` or `assistant` hits. A hit is in something the transcript shows: Claude Code's hook output, reminders and subagent rows are not searched (a prompt typed while the agent was busy is) |
 | `/projects` | yes | Session counts grouped by project (cwd) |
 | `/mcp` | yes | MCP's Streamable HTTP transport, `POST`; see [mcp.md](mcp.md) |
 

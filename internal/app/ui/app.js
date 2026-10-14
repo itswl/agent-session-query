@@ -3362,10 +3362,9 @@ function ownTargets(needle, places) {
 // only the beginning of — tool output, thinking — so it becomes a target on the message's cut
 // block, read whole when the walk gets there. With no cut block at that time the words are
 // in something the page does not draw at all: a field a source keeps beside its transcript,
-// or a row of its own that is not a message (Claude Code's attachment and progress rows).
-// The message at that time, or the one nearest the row — an attachment comes just before
-// the prompt it belongs to, a progress row just after the call — is still where they are,
-// so it is a target too, shown without marks. hitAt keeps the hit's own time for the jumps
+// or a row of its own that is not a message (a prompt Claude Code queued while the agent
+// was busy). The message at that time, or the one nearest the row, is still where they
+// are, so it is a target too, shown without marks. hitAt keeps the hit's own time for the jumps
 // that look for it.
 function cutTargets(times, places, own) {
   const all = windowMessages();

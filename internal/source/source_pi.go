@@ -178,7 +178,7 @@ func (s *PiSource) Messages(r Record, q MessageQuery) []map[string]any {
 // 1 ms at the median, 11 s at p90 and six minutes at worst — and a hit carrying the row's
 // time anchored a window that began after the message it was found in.
 func (s *PiSource) Search(ctx context.Context, r Record, q SearchQuery) []map[string]any {
-	return searchFileStamped(ctx, r.File, q, piMessageTime)
+	return searchFileWith(ctx, r.File, q, lineRules{stamp: piMessageTime})
 }
 
 // piMessageTime is the time Messages gives a row's message, read the same way: its own,

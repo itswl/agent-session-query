@@ -260,8 +260,7 @@ func (s *JsonMapSource) Messages(r Record, q MessageQuery) []map[string]any {
 }
 
 // Search scans the jsonl when there is one; without it (newer Hermes is all SQLite) it
-// queries the database. This is the only searchableSource implementation — every other
-// source has nothing but files, so the generic path suffices.
+// queries the database.
 func (s *JsonMapSource) Search(ctx context.Context, r Record, q SearchQuery) []map[string]any {
 	if path := s.fileOf(r); path != "" {
 		return SearchFile(ctx, path, q)

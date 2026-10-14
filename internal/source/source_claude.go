@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -242,6 +243,53 @@ func (p claudeProbe) counts() bool {
 		return p.Subtype == "compact_boundary" || (p.Subtype == "stop_hook_summary" && len(p.HookErrors) > 0)
 	}
 	return false
+}
+
+// Search scans the rows the reader draws, not the whole file. A Claude Code transcript
+// carries more bookkeeping than conversation: measured locally, 94 547 attachment rows
+// (hook output alone was 203 MB of them) against 106 318 user and assistant rows, beside
+// title, mode, snapshot and queue rows. None of them is drawn, and they matched first:
+// across eight common words, the first hit in 332 of 400 results was an attachment, so the
+// list showed injected context where the conversation should have been, and the
+// per_session slots were spent on it.
+func (s *ClaudeCodeSource) Search(ctx context.Context, r Record, q SearchQuery) []map[string]any {
+	return searchFileWith(ctx, r.File, q, lineRules{stamp: rowTime, keep: claudeSearchable})
+}
+
+// claudeSearchable is the row rule Messages follows — the main thread's user and assistant
+// rows, and the system rows it draws as events — with one addition: what the user typed
+// while the agent was working. It reaches the model as a queued-command attachment, and for
+// some versions of Claude Code that row is the only record of it; dropped here, the user's
+// own words would not be found.
+func claudeSearchable(obj map[string]any) bool {
+	if Truthy(obj["isSidechain"]) {
+		return false
+	}
+	switch obj["type"] {
+	case "user", "assistant":
+		return true
+	case "system":
+		return claudeSystemEvent(obj) != nil
+	case "attachment":
+		return claudeQueuedPrompt(obj)
+	}
+	return false
+}
+
+// claudeQueuedPrompt: an attachment carrying a prompt the user typed while the agent worked.
+// The same attachment type also carries background-task notifications (commandMode
+// task-notification) and prompts the CLI wrote itself (isMeta); neither is the user's.
+func claudeQueuedPrompt(obj map[string]any) bool {
+	a := getMap(obj, "attachment")
+	return a["type"] == "queued_command" && a["commandMode"] == "prompt" && !Truthy(a["isMeta"])
+}
+
+// claudeHitRole names who spoke in a queued prompt: the user, not "attachment"
+func claudeHitRole(obj map[string]any) string {
+	if obj["type"] == "attachment" && claudeQueuedPrompt(obj) {
+		return "user"
+	}
+	return ""
 }
 
 func (s *ClaudeCodeSource) Messages(r Record, q MessageQuery) []map[string]any {

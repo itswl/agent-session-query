@@ -30,18 +30,30 @@ func Cancelled(ctx context.Context) bool {
 
 // SearchFile scans one jsonl session file.
 func SearchFile(ctx context.Context, path string, q SearchQuery) []map[string]any {
-	return searchFileStamped(ctx, path, q, rowTime)
+	return searchFileWith(ctx, path, q, lineRules{stamp: rowTime})
 }
 
 // rowTime is where a hit's time comes from for most sources: the row's own timestamp, which
 // is also the time their messages carry
 func rowTime(obj map[string]any) any { return obj["timestamp"] }
 
-// searchFileStamped is the scan with the hit's time taken by stamp. A hit's time is what a
-// caller anchors a window at (get_messages at=, the page landing on a hit), and the window
-// is cut by the times the messages carry — so a hit has to carry the time of the message it
-// is in, which is not the row's for every source (see PiSource.Search).
-func searchFileStamped(ctx context.Context, path string, q SearchQuery, stamp func(map[string]any) any) []map[string]any {
+// lineRules fit the file scan to one source's transcript.
+//
+// stamp is where a hit's time comes from. A hit's time is what a caller anchors a window at
+// (get_messages at=, the page landing on a hit), and the window is cut by the times the
+// messages carry — so a hit has to carry the time of the message it is in, which is not the
+// row's for every source (see PiSource.Search).
+//
+// keep, when set, says whether a row is one the source's reader draws. A hit in a row the
+// reader never shows is a hit nobody can land on, and in a transcript that carries more
+// bookkeeping than conversation such hits are most of them (see ClaudeCodeSource.Search).
+type lineRules struct {
+	stamp func(map[string]any) any
+	keep  func(map[string]any) bool
+}
+
+// searchFileWith is the scan under one source's rules.
+func searchFileWith(ctx context.Context, path string, q SearchQuery, rules lineRules) []map[string]any {
 	if path == "" || len(q.Lowered) == 0 {
 		return nil
 	}
@@ -59,7 +71,7 @@ func searchFileStamped(ctx context.Context, path string, q SearchQuery, stamp fu
 		if !bytes.Contains(lower, q.Lowered) {
 			return true
 		}
-		if hit := buildHit(line, q, stamp); hit != nil {
+		if hit := buildHit(line, q, rules); hit != nil {
 			// The role filter lives here rather than after the fact: filtering a
 			// per_session-sized slice would keep whichever hits came first in the file
 			// and could miss the one being asked for entirely.
@@ -72,11 +84,14 @@ func searchFileStamped(ctx context.Context, path string, q SearchQuery, stamp fu
 	return hits
 }
 
-// buildHit turns a matching line into a result; it returns nil when the match landed
-// only in a field name or an escape sequence.
-func buildHit(line []byte, q SearchQuery, stamp func(map[string]any) any) map[string]any {
+// buildHit turns a matching line into a result; it returns nil when the row is not one
+// the reader draws, or when the match landed only in a field name or an escape sequence.
+func buildHit(line []byte, q SearchQuery, rules lineRules) map[string]any {
 	var obj map[string]any
 	if json.Unmarshal(line, &obj) != nil || obj == nil {
+		return nil
+	}
+	if rules.keep != nil && !rules.keep(obj) {
 		return nil
 	}
 	text, ok := findMatchingText(obj, string(q.Lowered), 0)
@@ -86,7 +101,7 @@ func buildHit(line []byte, q SearchQuery, stamp func(map[string]any) any) map[st
 	return map[string]any{
 		"snippet":   SnippetAround(text, string(q.Lowered), SearchSnippetRadius),
 		"role":      hitRole(obj),
-		"timestamp": hitTimestamp(stamp(obj)),
+		"timestamp": hitTimestamp(rules.stamp(obj)),
 	}
 }
 
@@ -179,6 +194,9 @@ func hitRole(obj map[string]any) string {
 				return role
 			}
 		}
+	}
+	if role := claudeHitRole(obj); role != "" {
+		return role
 	}
 	if role := GrokHitRole(obj); role != "" {
 		return role

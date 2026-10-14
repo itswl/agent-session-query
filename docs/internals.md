@@ -95,6 +95,13 @@ and deployment see the [README](../README.md).
   `cwd` is not on the first line — a run of non-conversation rows precedes it. Across 174 real
   local sessions the distribution was: line 2 once, line 3 123 times, line 4 30 times, line 5
   19 times, line 6 once
+
+  Search keeps to the rows the reader draws. Hook output, reminders and skill listings ride
+  in `attachment` rows, and searching them made hits nobody could see: measured locally over
+  eight common words, 332 of 400 first hits were attachments, and 105 of the 400 results
+  matched nowhere else. The one attachment searched is a prompt typed while the agent
+  was busy (`queued_command` in prompt mode, not `isMeta`) — the person's own words, though
+  the reader does not draw them yet
 - **Codex**: the conversation is spread over several row types, and for a long time only
   the `response_item` / `message` rows were read — a Codex session showed two people talking
   with nothing in between, and its brief listed no tools. Now each of these yields one
@@ -502,11 +509,11 @@ hit inside the window that the page found nothing at is in text the window holds
 start of — a cut tool output — and becomes a target that is read whole (`full=1` on the one
 message) when the walk reaches it; with no cut block there, the words are in something the
 page does not draw at all (a field beside the transcript, or a row that is not a message,
-like Claude Code's attachment rows) and the target is the nearest message, shown without
-marks. Matching runs over what the page draws: a call's argument *values*, not its JSON —
-a key is not text on the screen, and Bash's own `timeout` argument made every command a
-match for "timeout". An anchored window that comes back empty — the instant lies before the
-first message — is fetched again from the other side of it.
+like a prompt Claude Code queued while the agent was busy) and the target is the nearest
+message, shown without marks. Matching runs over what the page draws: a call's argument
+*values*, not its JSON — a key is not text on the screen, and Bash's own `timeout` argument
+made every command a match for "timeout". An anchored window that comes back empty — the
+instant lies before the first message — is fetched again from the other side of it.
 
 ### Full-text search
 
@@ -560,16 +567,17 @@ that ends in `id` after folding camelCase and snake_case together (`turnId`,
 `root_turn_id`, `callID`, ...) names an identifier, never body text. A match that lands
 nowhere else produces no hit at all: the row matched, but it had nothing to say.
 
-Newer Hermes sessions live entirely in SQLite with no jsonl, so `JsonMapSource` implements the
-optional `searchableSource` interface and uses `LIKE` (SQLite's LIKE is already
+Newer Hermes sessions live entirely in SQLite with no jsonl, so `JsonMapSource` implements
+the optional `searchableSource` interface and uses `LIKE` (SQLite's LIKE is already
 case-insensitive for ASCII). Sources whose sessions are not one file each — Gemini's split
 conversations, opencode's and openclaw's databases, the Hermes json-map entries — implement
 `Search` themselves; the rest take the generic per-file scan described above. Pi takes that
 scan too, but stamps each hit with its message's time (`message.timestamp`, epoch
 milliseconds) rather than the row's: a hit's time is what a window is anchored at, windows
 are cut by the times messages carry, and pi writes a row up to minutes after the message in
-it was created. A labeled instance (`--path mode:label=`) searches with whatever the source
-it wraps does.
+it was created. Claude Code takes it with a row filter: a line that passes the raw-byte
+check yields a hit only when it is a row the reader draws (see its notes above). A labeled
+instance (`--path mode:label=`) searches with whatever the source it wraps does.
 
 ### Running in the background
 

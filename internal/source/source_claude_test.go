@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -198,5 +199,53 @@ func TestClaudeFullRead(t *testing.T) {
 	}
 	if _, has := whole[1]["content"].([]map[string]any)[0]["truncated"]; has {
 		t.Fatal("thinking must be whole in a full read")
+	}
+}
+
+// TestClaudeSearchKeepsToTheRowsTheReaderDraws: a Claude Code transcript holds more
+// bookkeeping than conversation, and hits in it were most of what a search returned —
+// hook output, reminders and queue rows nobody can open. Only the rows Messages draws are
+// searched, plus a prompt the user typed while the agent worked, which some versions record
+// only as a queued-command attachment.
+func TestClaudeSearchKeepsToTheRowsTheReaderDraws(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "proj", "s1.jsonl"),
+		`{"type":"user","sessionId":"s1","cwd":"/w","uuid":"u1","timestamp":"2026-10-14T01:00:00Z","message":{"role":"user","content":"deploy the gateway"}}`,
+		`{"type":"attachment","uuid":"a1","timestamp":"2026-10-14T01:00:01Z","attachment":{"type":"hook_success","content":"hook saw the gateway"}}`,
+		`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-10-14T01:00:02Z","content":"what about the gateway logs"}`,
+		`{"type":"assistant","uuid":"s2","isSidechain":true,"timestamp":"2026-10-14T01:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"a subagent read the gateway"}]}}`,
+		`{"type":"attachment","uuid":"a2","timestamp":"2026-10-14T01:00:04Z","attachment":{"type":"queued_command","commandMode":"prompt","prompt":"what about the gateway logs"}}`,
+		`{"type":"attachment","uuid":"a3","timestamp":"2026-10-14T01:00:05Z","attachment":{"type":"queued_command","commandMode":"task-notification","prompt":"background task gateway-check finished"}}`,
+		`{"type":"assistant","uuid":"r1","timestamp":"2026-10-14T01:00:06Z","message":{"role":"assistant","content":[{"type":"text","text":"the gateway is up"}]}}`,
+	)
+	write(t, filepath.Join(root, "proj", "s2.jsonl"),
+		`{"type":"user","sessionId":"s2","cwd":"/w","uuid":"v1","timestamp":"2026-10-14T02:00:00Z","message":{"role":"user","content":"something else"}}`,
+		`{"type":"attachment","uuid":"b1","timestamp":"2026-10-14T02:00:01Z","attachment":{"type":"skill_listing","content":"a skill that manages a gateway"}}`,
+	)
+	s := NewClaudeSource(root)
+	byID := map[string]Record{}
+	for _, r := range s.List() {
+		byID[r.SessionID] = r
+	}
+	q := SearchQuery{Needle: "gateway", Lowered: []byte("gateway"), Limit: 10, PerSession: 10}
+
+	hits := s.Search(context.Background(), byID["s1"], q)
+	got := []string{}
+	for _, h := range hits {
+		got = append(got, ToStr(h["role"])+": "+ToStr(h["snippet"]))
+	}
+	want := []string{"user: deploy the gateway", "user: what about the gateway logs", "assistant: the gateway is up"}
+	if strings.Join(got, " | ") != strings.Join(want, " | ") {
+		t.Fatalf("hits = %q, want %q", got, want)
+	}
+	// The queued prompt is the user's, so a role=user search finds it with the ask
+	q.Role = "user"
+	if n := len(s.Search(context.Background(), byID["s1"], q)); n != 2 {
+		t.Fatalf("role=user found %d hits, want the ask and the queued prompt", n)
+	}
+	// A session whose only match is in a row nobody sees has no hit at all
+	q.Role = ""
+	if hits := s.Search(context.Background(), byID["s2"], q); len(hits) != 0 {
+		t.Fatalf("a match only in a skill listing is not a hit: %v", hits)
 	}
 }

@@ -21,9 +21,9 @@ Roughly in the order they look worth doing.
 | Item | What it would answer | How it looks |
 |---|---|---|
 | Remote sources | One view over several machines: another instance's sessions read through its HTTP API, labelled like a `--path` instance | Worth doing. The API already has everything a remote source needs; the work is a source that pages through it, and the failure modes of a network in the middle |
-| Archived sessions | The sessions OpenCode and Hermes hide once archived, behind an `include_archived` switch | Worth doing, small. Hidden stays the default |
 | `--path` for the database sources | Hermes, OpenClaw and OpenCode data on a mounted disk, a backup or a container volume | Worth doing when someone has such a copy to read; mechanical |
 | Pack and copy buttons in the page | The pack of a project without writing its URL; copying a round's brief, a step's command or patch | Likely. Small, and the server side exists |
+| Archived sessions | The sessions OpenCode and Hermes hide once archived — left out of the list and the search today — behind an `include_archived` switch, hidden by default | Maybe. Small, but measured where it was proposed there was nothing behind it: no archived session in either database. Worth it once sessions get archived there |
 | Live follow | A running session followed as it grows, with a mark where new content starts | Maybe. The page already refreshes every ten seconds; shorter polling for the open, active session would do most of it |
 | Bookmarks and notes | A session or a round marked to come back to | Maybe. Browser storage keeps the server read-only; worth it only if the list is hard to find things in |
 | Edits made with shell commands | `sed -i`, a redirect or a script counted as changing a file, not only as naming it | Maybe. A command's effect has to be guessed from its text, and a wrong guess is worse than the honest "named in a command" file history gives now |

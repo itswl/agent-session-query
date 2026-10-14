@@ -507,6 +507,19 @@ button.linkish:hover { background: none; text-decoration-color: currentColor; }
 }
 .queued-note > details { margin: 0; }
 
+/* The files a window changed, and the other sessions that changed each */
+.file-list, .file-history { list-style: none; margin: 0; padding: 0; }
+.file-list > li { padding: 3px 0; border-bottom: 1px solid var(--line-soft); }
+.file-list > li:last-child { border-bottom: 0; }
+.file-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.file-row .file-name {
+  flex: 1 1 auto; min-width: 0; font: 12px/1.5 var(--mono); color: var(--fg-mid);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.file-history { margin: 4px 0 6px 10px; padding-left: 10px; border-left: 1px solid var(--line-soft); }
+.file-history > li { padding: 3px 0; }
+.file-history .file-asked { color: var(--fg-mid); overflow-wrap: anywhere; }
+
 /* An Agent step leads to the transcript it started, from the end of its own line */
 .step.has-agent { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
 .step.has-agent > :not(.step-head):not(.agent-open) { grid-column: 1 / -1; }

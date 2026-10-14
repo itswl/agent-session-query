@@ -103,7 +103,7 @@ go build -o agent-session-query ./cmd/agent-session-query
 - **左栏**：每个会话显示一个可读的名字——opencode 用它自带的会话标题，其他源取首条真实
   用户消息——而不是一串 sessionId。输入会即时过滤 sessionId / 路径 / cwd，同时这些击键也会在服务端**搜索消息正文**。
   正文命中以「N more in message bodies」分隔线附在元数据结果下方，带上命中片段——一次查询
-  同时覆盖两边，不用切模式。<kbd>Enter</kbd> 只是免去等待。列表可以按时间或按项目分组，
+  同时覆盖两边，不用切模式；来源过滤选了某个来源时，正文搜索只在这个来源里进行。<kbd>Enter</kbd> 只是免去等待。列表可以按时间或按项目分组，
   最近两分钟内有新消息的会话会有一个呼吸的绿点（表示最近有动静，不是进程存活检查，悬停可看具体多久之前）；项目分组标题可点击折叠。行上显示该会话的消息数——文件源会在
   首次列出时于后台统计，所以数字是页面出来之后稍晚一点出现，而不是让列表请求去等它
 - **中栏**：按轮阅读的对话——你提问，agent 干活，agent 回答。提问与回复之间的那段工作折叠成一行：
@@ -153,7 +153,7 @@ go build -o agent-session-query ./cmd/agent-session-query
 | `/ui` `/favicon.ico` | 否 | 内嵌页面（本身不含任何数据） |
 | `/sessions` | 是 | 列出全部会话（跨数据源合并，最新在前） |
 | `/sessions/<pattern>` | 是 | 单个会话；可接 `/messages`（支持 `order` / `limit` / `at`，`full=1` 让工具输出不截断）、`/final`、`/rounds`（按每条真实提问切轮，带每轮改了哪些文件、几次工具调用失败）、`/brief`（一轮的交接简报，附恢复命令）或 `/export`（不带 `limit` 即全文，文件标明覆盖范围；`format=jsonl` 取结构化形式）|
-| `/search?q=` | 是 | 跨全部数据源的**全文搜索**；`pattern` 限定在单个会话内，`role` 只看 user / assistant 的命中 |
+| `/search?q=` | 是 | 跨全部数据源的**全文搜索**；`source` / `project` / `branch` / `since` / `until` 限定扫描哪些会话，`pattern` 限定在单个会话内，`role` 只看 user / assistant 的命中 |
 | `/projects` | 是 | 按项目（cwd）分组的会话数 |
 | `/export?project=&since=` | 是 | **把多个会话导出成一份文档**——每个会话问了什么、得出了什么，按时间从旧到新。`mode=full` 则把正文一并内联 |
 | `/mcp` | 是 | MCP 的 Streamable HTTP 传输（`POST`） |

@@ -108,7 +108,8 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   sessionId, path and cwd instantly, and the same keystrokes also
   **search the message bodies** on the server. Body matches are appended below the metadata
   ones under a "N more in message bodies" divider, carrying the matching snippet, so one
-  query covers both without a mode to switch. <kbd>Enter</kbd> only skips the wait. The list
+  query covers both without a mode to switch; with a source picked in the filter, the body
+  search runs within that source. <kbd>Enter</kbd> only skips the wait. The list
   can be grouped by time or by project — project headers fold away when clicked — and a
   session written within the last couple of minutes gets a pulsing dot (recent activity,
   not a liveness check — hovering it says how long ago). Rows carry the session's message count
@@ -185,7 +186,7 @@ marked "yes" require `Authorization: Bearer <token>`.
 | `/ui` `/favicon.ico` | no | The embedded page (which holds no data) |
 | `/sessions` | yes | List every session (merged across sources, newest first) |
 | `/sessions/<pattern>` | yes | One session; add `/messages` (with `order` / `limit` / `at`, and `full=1` for tool output whole rather than cut to a preview), `/final`, `/rounds` (the session split at each real user message, with files changed and tool calls failed per round), `/brief` (a handoff brief of one round, resume command included), or `/export` (no `limit` means the whole session; `format=jsonl` for the data form) |
-| `/search?q=` | yes | **Full-text search** across every source; `pattern` scopes it to one session, `role` to `user` or `assistant` hits |
+| `/search?q=` | yes | **Full-text search** across every source; `source` / `project` / `branch` / `since` / `until` narrow which sessions are scanned, `pattern` scopes it to one session, `role` to `user` or `assistant` hits |
 | `/projects` | yes | Session counts grouped by project (cwd) |
 | `/export?project=&since=` | yes | **A pack of several sessions as one document** — what was asked and what each concluded, oldest first. `mode=full` inlines the transcripts |
 | `/mcp` | yes | MCP's Streamable HTTP transport (`POST`) |

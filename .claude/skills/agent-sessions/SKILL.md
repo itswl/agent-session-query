@@ -2,7 +2,7 @@
 name: agent-sessions
 description: 'Query the session history of every agent CLI on this machine — Claude Code, Codex, Gemini CLI, Pi, Hermes, OpenClaw, OpenCode, Grok — through the read-only `agent-sessions` MCP server, and hand a stretch of that history to another agent. Use when the user asks what they worked on before, which session covered a topic, how something was solved previously, whether they have dealt with a problem already, or wants context migrated to another agent or machine. Trigger phrases include "之前怎么解决的", "上周做了什么", "我是不是弄过这个", "把上下文给另一个 AI".'
 metadata:
-  version: 1.2.0
+  version: 1.3.0
 ---
 
 # Query the agent session history on this machine
@@ -30,6 +30,7 @@ span a Claude Code session and a Codex one in the same answer.
 | The user is asking | Reach for | Why |
 |---|---|---|
 | "Which session was X in?" | `search_sessions(query=…)` | Hits carry a sessionId, role and snippet, so often no session needs opening |
+| "…in this repo / with that agent" | `search_sessions(query=…, project=…, source=…)` | Narrows before the scan, so busier projects cannot fill the page; narrow rather than raise `limit`. `branch` works too |
 | "What did I ask about X?" | `search_sessions(query=…, role="user")` | `role=user` drops the answers that merely repeat the question |
 | "What was in that one session?" | `search_sessions(pattern=<id>, query=…)` | Scopes the scan to one session instead of all of them |
 | "What did we work on last week?" | `list_sessions(since="7d")` | Filter by `source` / `project` too |

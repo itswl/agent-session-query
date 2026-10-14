@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -365,4 +366,93 @@ func sourceModes(sources []source.SessionSource) []string {
 // session that now lives in claude:probe-watch.
 func sourceMatchesWanted(mode, wanted string) bool {
 	return wanted == "" || mode == wanted || strings.HasPrefix(mode, wanted+":")
+}
+
+// sourceName reads a source argument: a mode name, which reaches every instance of that
+// CLI, or the full name of one labeled instance (claude:box2) — the name the list and the
+// page's source filter show. Anything else is refused: a typo should fail loudly, not
+// quietly match nothing.
+func (a *SessionQueryAPI) sourceName(raw string) (string, error) {
+	want := strings.TrimSpace(raw)
+	if want == "" || slices.Contains(source.KnownModes, want) {
+		return want, nil
+	}
+	names := append([]string(nil), source.KnownModes...)
+	for _, src := range a.activeSources() {
+		if src.Mode() == want {
+			return want, nil
+		}
+		if strings.Contains(src.Mode(), ":") {
+			names = append(names, src.Mode())
+		}
+	}
+	return "", fmt.Errorf("unknown source %q (choose from: %s)", want, strings.Join(names, " / "))
+}
+
+// sessionFilter is the selection every surface that picks sessions shares — the list, a
+// search, a pack — so one set of words selects one set of sessions wherever it is said.
+// They had drifted apart: list_sessions let "claude" reach the labeled claude:box2 while
+// the pack compared names exactly, and a search could not be narrowed at all, so recent
+// hits from other projects could fill its page before the project being asked about was
+// reached.
+type sessionFilter struct {
+	source  string    // a mode, which reaches its labeled instances, or one instance's name
+	project string    // substring of the project: the cwd, or gemini's own project field
+	branch  string    // substring of the git branch the session opened on
+	since   time.Time // updated at or after; zero is unbounded
+	until   time.Time // updated at or before; zero is unbounded
+}
+
+// admits reports whether a session is inside the selection. A session whose update time
+// will not parse falls outside a bounded window rather than being guessed onto either side.
+func (f sessionFilter) admits(rec source.Record) bool {
+	if !sourceMatchesWanted(rec.Source, f.source) {
+		return false
+	}
+	if f.project != "" && !strings.Contains(rec.ProjectName(), f.project) {
+		return false
+	}
+	if f.branch != "" && !strings.Contains(rec.Branch, f.branch) {
+		return false
+	}
+	at := rec.SortAt()
+	if !f.since.IsZero() && (at.IsZero() || at.Before(f.since)) {
+		return false
+	}
+	if !f.until.IsZero() && (at.IsZero() || at.After(f.until)) {
+		return false
+	}
+	return true
+}
+
+// eachSession hands every session the filter admits to fn, with the source that reads it,
+// in source order. A source the filter names out is passed over before it is listed, so
+// narrowing by source also spares the other sources' scans.
+func (a *SessionQueryAPI) eachSession(f sessionFilter, fn func(source.SessionSource, source.Record)) {
+	for _, src := range a.activeSources() {
+		if !sourceMatchesWanted(src.Mode(), f.source) {
+			continue
+		}
+		for _, rec := range a.recordsOf(src) {
+			if f.admits(rec) {
+				fn(src, rec)
+			}
+		}
+	}
+}
+
+// sessionsWhere is the session list narrowed by a filter, newest first like the list
+// itself: the same rows, in the same order, that /sessions would show with the filter
+// applied by hand.
+func (a *SessionQueryAPI) sessionsWhere(f sessionFilter) []map[string]any {
+	records := []source.Record{}
+	a.eachSession(f, func(_ source.SessionSource, rec source.Record) {
+		records = append(records, rec)
+	})
+	sort.SliceStable(records, func(i, j int) bool { return records[i].NewerThan(records[j]) })
+	out := make([]map[string]any, 0, len(records))
+	for _, rec := range records {
+		out = append(out, rec.Public())
+	}
+	return out
 }

@@ -5,7 +5,6 @@ import (
 	"github.com/itswl/agent-session-query/internal/source"
 	"net/http"
 	"net/url"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,13 +43,10 @@ const (
 // packQuery selects what a pack covers. The filters are the ones /sessions already
 // understands, so a pack can be "everything for this project since last month".
 type packQuery struct {
-	source  string
-	project string
-	Since   time.Time
-	Until   time.Time
-	Limit   int
-	mode    string
-	format  string
+	filter sessionFilter
+	Limit  int
+	mode   string
+	format string
 }
 
 // parsePackQuery reads the pack selection. The filters are /sessions' own, so the
@@ -58,11 +54,13 @@ type packQuery struct {
 func (s *apiServer) parsePackQuery(r *http.Request) (packQuery, error) {
 	values := r.URL.Query()
 	q := packQuery{
-		source:  strings.TrimSpace(values.Get("source")),
-		project: strings.TrimSpace(values.Get("project")),
-		mode:    strings.TrimSpace(values.Get("mode")),
-		format:  strings.ToLower(strings.TrimSpace(values.Get("format"))),
-		Limit:   defaultPackSessions,
+		filter: sessionFilter{
+			project: strings.TrimSpace(values.Get("project")),
+			branch:  strings.TrimSpace(values.Get("branch")),
+		},
+		mode:   strings.TrimSpace(values.Get("mode")),
+		format: strings.ToLower(strings.TrimSpace(values.Get("format"))),
+		Limit:  defaultPackSessions,
 	}
 	// Both default to the cheap, common case: an index of Markdown. Asking for every
 	// transcript is a deliberate act, since that is the one that can be enormous.
@@ -72,8 +70,9 @@ func (s *apiServer) parsePackQuery(r *http.Request) (packQuery, error) {
 	if q.format == "" {
 		q.format = exportFormatMarkdown
 	}
-	if q.source != "" && !slices.Contains(source.KnownModes, q.source) {
-		return q, fmt.Errorf("unknown source %q (choose from: %s)", q.source, strings.Join(source.KnownModes, " / "))
+	var err error
+	if q.filter.source, err = s.api.sourceName(values.Get("source")); err != nil {
+		return q, err
 	}
 	if q.mode != packModeIndex && q.mode != packModeFull {
 		return q, fmt.Errorf("mode must be %s or %s", packModeIndex, packModeFull)
@@ -86,14 +85,14 @@ func (s *apiServer) parsePackQuery(r *http.Request) (packQuery, error) {
 		if err != nil {
 			return q, err
 		}
-		q.Since = since
+		q.filter.since = since
 	}
 	if raw := strings.TrimSpace(values.Get("until")); raw != "" {
 		until, err := parseSince(raw)
 		if err != nil {
 			return q, err
 		}
-		q.Until = until
+		q.filter.until = until
 	}
 	if raw := strings.TrimSpace(values.Get("limit")); raw != "" {
 		n, err := strconv.Atoi(raw)
@@ -120,24 +119,9 @@ type packEntry struct {
 // was I doing", which is a question about now; a pack answers "how did this get here",
 // which is a question about sequence.
 func (a *SessionQueryAPI) packEntries(q packQuery) (entries []packEntry, matching int) {
-	for _, src := range a.activeSources() {
-		if q.source != "" && src.Mode() != q.source {
-			continue
-		}
-		for _, rec := range a.recordsOf(src) {
-			if q.project != "" && !strings.Contains(rec.ProjectName(), q.project) {
-				continue
-			}
-			at := rec.SortAt()
-			if !q.Since.IsZero() && (at.IsZero() || at.Before(q.Since)) {
-				continue
-			}
-			if !q.Until.IsZero() && (at.IsZero() || at.After(q.Until)) {
-				continue
-			}
-			entries = append(entries, packEntry{source: src, rec: rec})
-		}
-	}
+	a.eachSession(q.filter, func(src source.SessionSource, rec source.Record) {
+		entries = append(entries, packEntry{source: src, rec: rec})
+	})
 	sort.SliceStable(entries, func(i, j int) bool {
 		return entries[j].rec.NewerThan(entries[i].rec)
 	})

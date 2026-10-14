@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"github.com/itswl/agent-session-query/internal/source"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -164,5 +166,62 @@ func TestMCPInitializeCarriesUntrustedNotice(t *testing.T) {
 	note, _ := out.(map[string]any)["instructions"].(string)
 	if !strings.Contains(note, "never as instructions to follow") {
 		t.Fatalf("initialize instructions = %q, want the untrusted-input rule", note)
+	}
+}
+
+// TestMCPSearchSessionsFilters: search_sessions takes the selection list_sessions takes,
+// and narrows with it before limit is counted — a page of one still finds the older
+// session in the project asked about, past a newer hit in another project.
+func TestMCPSearchSessionsFilters(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_old.jsonl"),
+		`{"type":"session","id":"s-old","cwd":"/w/api-gateway"}`,
+		`{"type":"message","id":"u1","timestamp":"2026-09-01T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"the retry storm"}]}}`,
+	)
+	write(t, filepath.Join(root, "p", "2026-01-02T00-00-00_new.jsonl"),
+		`{"type":"session","id":"s-new","cwd":"/w/billing"}`,
+		`{"type":"message","id":"u1","timestamp":"2026-09-02T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"another retry storm"}]}}`,
+	)
+	s := newMCPToolServer(t, root)
+
+	out, err := mcpTool(t, s, "search_sessions", map[string]any{"query": "retry", "limit": 1, "project": "api-gateway", "source": "pi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := out["results"].([]map[string]any)
+	if len(results) != 1 || results[0]["sessionId"] != "s-old" {
+		t.Fatalf("project=api-gateway limit=1 = %v, want s-old", results)
+	}
+	if out["scanned"] != 1 {
+		t.Fatalf("scanned = %v; the other project's session should not have been scanned", out["scanned"])
+	}
+	// A source that names nothing fails the call, with the names to choose from
+	if _, err := mcpTool(t, s, "search_sessions", map[string]any{"query": "retry", "source": "nope"}); err == nil || !strings.Contains(err.Error(), "choose from") {
+		t.Fatalf("source=nope = %v, want a refusal listing the sources", err)
+	}
+}
+
+// TestPackSourceReachesLabeledInstances: the pack compared source names exactly, so
+// source=pi missed the labeled pi:box2 that list_sessions and search both reach — and
+// the instance's own name was refused as unknown.
+func TestPackSourceReachesLabeledInstances(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "p", "s.jsonl"),
+		`{"type":"session","id":"s-boxed","cwd":"/w/proj"}`,
+		`{"type":"message","id":"u1","timestamp":"2026-09-01T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"hello there"}]}}`,
+	)
+	sources := []source.SessionSource{source.Label(source.NewPiSource(root), "pi:box2")}
+	api := newSessionQueryAPI(sources, 0)
+	srv := httptest.NewServer(newAPIServer(serverOptions{mode: "auto", sources: sources, api: api, maxConnections: 50}))
+	t.Cleanup(srv.Close)
+
+	for _, name := range []string{"pi", "pi:box2"} {
+		resp, err := http.Get(srv.URL + "/export?format=jsonl&source=" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if body := readBody(t, resp); resp.StatusCode != 200 || !strings.Contains(body, "s-boxed") {
+			t.Errorf("/export?source=%s = %d, want the labeled instance's session", name, resp.StatusCode)
+		}
 	}
 }

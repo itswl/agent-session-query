@@ -63,24 +63,22 @@ func (a *SessionQueryAPI) search(ctx context.Context, q source.SearchQuery) sear
 		rec    source.Record
 	}
 
+	filter := sessionFilter{
+		source: q.Source, project: q.Project, branch: q.Branch, since: q.Since, until: q.Until,
+	}
 	all := []candidate{}
 	if q.Pattern != "" {
-		// Scoped: the pattern names one session, and only that one is searched
-		if src, rec, ok := a.findSession(q.Pattern, ""); ok {
+		// Scoped: the pattern names one session, and only that one is searched. The source
+		// picks between sessions of different CLIs that answer to the same pattern, the
+		// way it does for get_session; the rest of the selection still applies to the one
+		// session found, since a filter that was given is a filter that holds.
+		if src, rec, ok := a.findSession(q.Pattern, q.Source); ok && filter.admits(rec) {
 			all = append(all, candidate{source: src, rec: rec})
 		}
 	} else {
-		for _, src := range a.activeSources() {
-			for _, rec := range a.recordsOf(src) {
-				if !q.Since.IsZero() && (rec.SortAt().IsZero() || rec.SortAt().Before(q.Since)) {
-					continue
-				}
-				if !q.Until.IsZero() && (rec.SortAt().IsZero() || rec.SortAt().After(q.Until)) {
-					continue
-				}
-				all = append(all, candidate{source: src, rec: rec})
-			}
-		}
+		a.eachSession(filter, func(src source.SessionSource, rec source.Record) {
+			all = append(all, candidate{source: src, rec: rec})
+		})
 	}
 	// Newest first, so truncating at limit keeps the most recent — and so the scan can stop
 	// once limit sessions have matched without changing what the page would hold

@@ -10,6 +10,15 @@ type SearchQuery struct {
 	PerSession int       // how many hits per session at most
 	Since      time.Time // only search sessions updated after this; zero means no limit
 	Until      time.Time // only search sessions updated before this; zero means no limit
+	// Source, Project and Branch narrow which sessions are scanned, with the meanings
+	// list_sessions gives them: a mode or one labeled instance, and substrings of the
+	// project and of the branch the session opened on. They narrow before the scan rather
+	// than after it, so limit counts sessions inside the selection — a page cut first and
+	// filtered second could hold none of the sessions asked about, the newer ones elsewhere
+	// having filled it.
+	Source  string
+	Project string
+	Branch  string
 	// Pattern limits the search to the one session it names, found the same way
 	// get_session finds it (a full id, a fragment, a path fragment). Without it a search
 	// spans every session; with it, "where in this session did we discuss X" is one call

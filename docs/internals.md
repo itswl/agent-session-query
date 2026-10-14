@@ -507,12 +507,18 @@ The speed comes from ordering, not from the algorithm:
    through untouched
 3. **Parallel per session** — `GOMAXPROCS` workers each scan one session and results are written
    back by index, so the order never shifts
-4. **Newest first, and bounded by the page** — candidates are ordered by update time, so
+4. **The selection comes before the scan** — `since` / `until` / `source` / `project` /
+   `branch` drop sessions while the candidates are gathered (a source the filter names out
+   is not even listed), through the same `sessionFilter` that `list_sessions` and a pack
+   use. Applied to the page afterwards instead, they would let newer hits from elsewhere
+   fill it — and with the scan stopping at the page, the sessions asked about might never
+   have been read at all
+5. **Newest first, and bounded by the page** — candidates are ordered by update time, so
    truncating at `limit` keeps the most recent; and the dispatcher stops handing out
    sessions once `limit` of them have matched, which bounds a page's scan by the page
    rather than the corpus. `limit=0` (the count-only call) walks everything, and wherever
    the scan did stop early `matched` is a lower bound and `truncated.scan` says so
-5. **Cancellable** — the page searches on every keystroke and only ever displays the last
+6. **Cancellable** — the page searches on every keystroke and only ever displays the last
    result, so an abandoned scan has to stop rather than run to completion. `search` takes the
    request context; workers stop picking up sessions once it is done, and inside a file the
    check is sampled every `CancelCheckLines` lines (a channel receive per line would cost more

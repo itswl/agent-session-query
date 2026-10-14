@@ -354,7 +354,7 @@ var rootEndpoints = []rootEndpoint{
 	{"GET", "/sessions/<pattern>/export?format=", false, "one session as a document: md, jsonl, json or html"},
 	{"GET", "/sessions/<pattern>/rounds", false, "the session split into rounds — one per real user message"},
 	{"GET", "/sessions/<pattern>/brief?round=", false, "a handoff brief of one round (default the latest); ?at=<ts> picks the round a timestamp falls in, ?since=<ts|2h> briefs every round after a moment"},
-	{"GET", "/search?q=", false, "full-text search across every source"},
+	{"GET", "/search?q=", false, "full-text search across every source; source, project, branch, since and until narrow it"},
 	{"GET", "/projects", false, "session counts grouped by project"},
 	{"GET", "/export?project=", false, "a pack: what was asked and concluded across sessions, oldest first"},
 	{"GET", "/api/<path>", false, "the same authenticated routes, under an /api prefix"},
@@ -794,8 +794,9 @@ func parseAt(raw string) (time.Time, error) {
 }
 
 // parseSearchQuery reads the /search parameters: q is required, limit is how many
-// sessions come back, per_session is how many hits each session may contribute, and since
-// narrows the scan (useful on machines with a lot of history).
+// sessions come back, per_session is how many hits each session may contribute, and since,
+// until, source, project and branch narrow the scan (useful on machines with a lot of
+// history).
 func (s *apiServer) parseSearchQuery(r *http.Request) (source.SearchQuery, error) {
 	values := r.URL.Query()
 	needle := strings.TrimSpace(values.Get("q"))
@@ -842,6 +843,14 @@ func (s *apiServer) parseSearchQuery(r *http.Request) (source.SearchQuery, error
 		return source.SearchQuery{}, err
 	}
 	q.Role = role
+	// The selection list_sessions and the pack already take. The page sends its source
+	// filter here: filtering the returned page by source instead could show nothing for
+	// the chosen source while matches existed, the page having filled up elsewhere.
+	if q.Source, err = s.api.sourceName(values.Get("source")); err != nil {
+		return source.SearchQuery{}, err
+	}
+	q.Project = strings.TrimSpace(values.Get("project"))
+	q.Branch = strings.TrimSpace(values.Get("branch"))
 	return q, nil
 }
 
@@ -1059,18 +1068,22 @@ func (w countingWriter) Write(p []byte) (int, error) {
 // directly. Add a name when a route grows an ability; never rename or remove one, because
 // the whole point is that older callers keep reading it.
 var serverCapabilities = []string{
-	"brief.at",        // /sessions/<id>/brief?at=
-	"brief.since",     // /sessions/<id>/brief?since= — the delta handoff
-	"export.pack",     // /export across sessions
-	"export.session",  // /sessions/<id>/export
-	"messages.at",     // /sessions/<id>/messages?at=
-	"messages.full",   // ?full=1 — tool output and thinking whole
-	"rounds",          // /sessions/<id>/rounds
-	"rounds.lastAt",   // a round carries the end of its work and the end of its rows apart
-	"search.pattern",  // /search?pattern= — scoped to one session
-	"search.role",     // /search?role=
-	"search.scan",     // truncated.scan: matched is a lower bound when the scan stopped
-	"sessions.branch", // a session row carries the git branch it opened on
-	"sessions.etag",   // /sessions answers 304, and carries the server version
-	"usage",           // token usage on a final result
+	"brief.at",           // /sessions/<id>/brief?at=
+	"brief.since",        // /sessions/<id>/brief?since= — the delta handoff
+	"export.pack",        // /export across sessions
+	"export.pack.branch", // /export?branch=
+	"export.session",     // /sessions/<id>/export
+	"messages.at",        // /sessions/<id>/messages?at=
+	"messages.full",      // ?full=1 — tool output and thinking whole
+	"rounds",             // /sessions/<id>/rounds
+	"rounds.lastAt",      // a round carries the end of its work and the end of its rows apart
+	"search.branch",      // /search?branch=
+	"search.pattern",     // /search?pattern= — scoped to one session
+	"search.project",     // /search?project=
+	"search.role",        // /search?role=
+	"search.scan",        // truncated.scan: matched is a lower bound when the scan stopped
+	"search.source",      // /search?source= — narrowed before the scan, not after it
+	"sessions.branch",    // a session row carries the git branch it opened on
+	"sessions.etag",      // /sessions answers 304, and carries the server version
+	"usage",              // token usage on a final result
 }

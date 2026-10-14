@@ -411,3 +411,106 @@ func TestSearchStopsOnceLimitIsReached(t *testing.T) {
 		t.Fatalf("limit=2 returned %d results over HTTP", len(results))
 	}
 }
+
+// TestSearchFilters: source, project and branch narrow which sessions are scanned, and
+// they do it before limit is counted. Narrowing the page after the scan instead — what the
+// page did with its source filter — let newer hits elsewhere fill it, and the sessions
+// asked about came back with nothing although they held the term.
+func TestSearchFilters(t *testing.T) {
+	piRoot, claudeRoot := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(piRoot, "p", "2026-01-01T00-00-00_target.jsonl"),
+		`{"type":"session","id":"s-target","cwd":"/w/target"}`,
+		`{"type":"message","id":"m1","timestamp":"2026-09-01T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"the upstream timeout again"}]}}`,
+	)
+	write(t, filepath.Join(piRoot, "p", "2026-01-02T00-00-00_noise.jsonl"),
+		`{"type":"session","id":"s-noise","cwd":"/w/elsewhere"}`,
+		`{"type":"message","id":"m1","timestamp":"2026-09-02T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"a timeout in another project"}]}}`,
+	)
+	write(t, filepath.Join(claudeRoot, "proj", "c-branch.jsonl"),
+		`{"type":"user","sessionId":"c-branch","cwd":"/w/target","gitBranch":"fix/timeouts","timestamp":"2026-09-03T10:00:00Z","message":{"role":"user","content":"why does the timeout fire"}}`,
+		`{"type":"assistant","gitBranch":"fix/timeouts","timestamp":"2026-09-03T10:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"the timeout is five seconds"}]}}`,
+	)
+	sources := []source.SessionSource{source.NewPiSource(piRoot), source.NewClaudeSource(claudeRoot)}
+	api := newSessionQueryAPI(sources, 0)
+	base := source.SearchQuery{Needle: "timeout", Lowered: []byte("timeout"), Limit: 1, PerSession: 3}
+	ids := func(out searchOutcome) string {
+		got := []string{}
+		for _, r := range out.results {
+			got = append(got, source.ToStr(r["sessionId"]))
+		}
+		return strings.Join(got, ",")
+	}
+	search := func(edit func(q *source.SearchQuery)) searchOutcome {
+		q := base
+		edit(&q)
+		return api.search(context.Background(), q)
+	}
+
+	// Unfiltered, a page of one holds the newest hit
+	if got := ids(search(func(*source.SearchQuery) {})); got != "c-branch" {
+		t.Fatalf("unfiltered = %q, want the newest session", got)
+	}
+	// The case the page could not answer: one session, one source, one project — and a
+	// newer hit in the same source but another project that would have filled the page
+	out := search(func(q *source.SearchQuery) { q.Source, q.Project = "pi", "/w/target" })
+	if got := ids(out); got != "s-target" {
+		t.Fatalf("source=pi project=/w/target = %q, want s-target", got)
+	}
+	if out.scanned != 1 {
+		t.Fatalf("the selection holds one session, but %d were scanned", out.scanned)
+	}
+	// A source the filter names out is not scanned at all
+	if out := search(func(q *source.SearchQuery) { q.Source, q.Limit = "pi", 10 }); ids(out) != "s-noise,s-target" || out.scanned != 2 {
+		t.Fatalf("source=pi = %q after %d scanned, want both pi sessions and nothing else", ids(out), out.scanned)
+	}
+	// The branch the session opened on; sessions that recorded none are outside any branch
+	if got := ids(search(func(q *source.SearchQuery) { q.Branch, q.Limit = "timeouts", 10 })); got != "c-branch" {
+		t.Fatalf("branch=timeouts = %q, want c-branch alone", got)
+	}
+	// A scoped search keeps the selection too: the session it names is outside this project
+	if out := search(func(q *source.SearchQuery) { q.Pattern, q.Project = "s-target", "/w/elsewhere" }); out.scanned != 0 {
+		t.Fatalf("pattern outside the project still scanned %d sessions", out.scanned)
+	}
+	// ...and the source decides which CLI's sessions the pattern may name, as it does for
+	// get_session
+	if got := ids(search(func(q *source.SearchQuery) { q.Pattern = "c-branch" })); got != "c-branch" {
+		t.Fatalf("pattern=c-branch = %q", got)
+	}
+	if out := search(func(q *source.SearchQuery) { q.Pattern, q.Source = "c-branch", "pi" }); out.scanned != 0 {
+		t.Fatalf("pattern=c-branch source=pi scanned %d sessions; the pattern names a claude one", out.scanned)
+	}
+}
+
+// TestHTTPSearchFilters: the filters over HTTP, where the page sends its source filter,
+// and the source name the page holds for a labeled instance is one the server accepts.
+func TestHTTPSearchFilters(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_a.jsonl"),
+		`{"type":"session","id":"s-a","cwd":"/w/a"}`,
+		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"nginx here"}]}}`,
+	)
+	sources := []source.SessionSource{source.Label(source.NewPiSource(root), "pi:box2")}
+	srv := httptest.NewServer(newAPIServer(serverOptions{
+		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 0), maxConnections: 50,
+	}))
+	t.Cleanup(srv.Close)
+
+	for query, want := range map[string]float64{
+		"&source=pi":        1, // a mode reaches its labeled instances
+		"&source=pi:box2":   1, // and the instance's own name, as the page holds it
+		"&source=claude":    0,
+		"&project=box2:/w/": 1, // a labeled instance's projects carry the label
+		"&project=/w/b":     0,
+		"&branch=main":      0, // pi records no branch, so no pi session is on one
+	} {
+		code, body := get(t, srv.URL+"/search?q=nginx"+query, "")
+		if code != 200 || body["total"] != want {
+			t.Errorf("/search?q=nginx%s = %d total %v, want %v", query, code, body["total"], want)
+		}
+	}
+	// A source that names nothing is refused with the names that would have worked
+	code, body := get(t, srv.URL+"/search?q=nginx&source=pi:nope", "")
+	if code != 400 || !strings.Contains(source.ToStr(body["error"]), "pi:box2") {
+		t.Fatalf("an unknown source = %d %v, want 400 naming the instances", code, body)
+	}
+}

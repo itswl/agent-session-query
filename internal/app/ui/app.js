@@ -146,7 +146,7 @@ function setStatus(text) {
 // and the ten-second refresh must not undo that while the user is still reading it.
 function idleStatus() {
   const found = state.content;
-  if (found && !found.searching && found.query === state.keyword) {
+  if (found && !found.searching && contentIsCurrent(found)) {
     // A '+' when the scan stopped at the page size: matched is then a lower bound
     const matched = found.truncated && found.truncated.scan ? found.matched + '+' : found.matched;
     return '\u201c' + found.query + '\u201d · ' + matched + ' in message bodies · ' +
@@ -435,8 +435,11 @@ function listRows() {
 // local and instant; this half arrives from the server a moment later.
 function contentRows(shown) {
   const found = state.content;
-  if (!found || found.query !== state.keyword) return [];
+  if (!found || !contentIsCurrent(found)) return [];
 
+  // The server narrowed the scan to the chosen source already; this keeps the exact
+  // instance, because a mode asked for there also reaches its labeled instances
+  // (claude:box2) while this list shows one at a time
   const listed = new Set(shown.map((s) => s.sessionId));
   const extra = (found.results || []).filter((hit) =>
     !listed.has(hit.sessionId) && (!state.source || hit.source === state.source));
@@ -648,6 +651,12 @@ function renderList() {
 // metadata matches rather than replacing them. Enter just skips the wait.
 // ---------------------------------------------------------------------------
 
+// contentIsCurrent: the body hits answer what the list is showing now — the same keyword,
+// searched within the same source
+function contentIsCurrent(found) {
+  return found.query === state.keyword && (found.source || '') === (state.source || '');
+}
+
 function cancelContentSearch() {
   if (state.contentTimer) {
     clearTimeout(state.contentTimer);
@@ -686,15 +695,19 @@ async function runContentSearch(keyword) {
 
   const controller = new AbortController();
   state.contentAbort = controller;
-  state.content = { query: text, searching: true, results: [] };
+  // The source filter travels with the search. Filtering the page that came back instead
+  // could leave nothing for the chosen source: the scan stops once a page of sessions has
+  // matched, and newer hits from the other sources can fill it first.
+  const scope = state.source;
+  state.content = { query: text, source: scope, searching: true, results: [] };
   renderList();
 
   try {
-    const data = await api('/search?q=' + encodeURIComponent(text) + '&limit=50',
-      { signal: controller.signal });
+    const data = await api('/search?q=' + encodeURIComponent(text) + '&limit=50' +
+      (scope ? '&source=' + encodeURIComponent(scope) : ''), { signal: controller.signal });
     // A newer keystroke may have landed while this was in flight
     if (controller.signal.aborted || state.keyword !== text) return;
-    state.content = Object.assign({ query: text, searching: false }, data);
+    state.content = Object.assign({ query: text, source: scope, searching: false }, data);
     state.contentAbort = null;
     renderList();
     setStatus(idleStatus());
@@ -816,7 +829,10 @@ function renderSources() {
   }
   select.replaceChildren(...options);
   select.value = sources.includes(current) ? current : '';
+  const before = state.source;
   state.source = select.value;
+  // The source a body search ran within has left the list, taking the filter with it
+  if (state.source !== before && state.content) runContentSearch(state.keyword);
 }
 
 // ---------------------------------------------------------------------------
@@ -3369,6 +3385,8 @@ $('source-filter').addEventListener('change', (event) => {
   state.source = event.target.value;
   saveViewPrefs();
   renderList();
+  // Body hits were searched for within one source, so another source is another search
+  if (state.content) runContentSearch(state.keyword);
 });
 
 // Reading on: fetch the next page when the reader reaches the edge that has one. On a

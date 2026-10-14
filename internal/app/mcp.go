@@ -149,25 +149,22 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if query == "" {
 			return nil, errors.New("missing argument: query")
 		}
+		// The selection list_sessions takes, applied before the scan: a page filtered
+		// after it could hold none of the sessions asked about
+		filter, err := s.sessionFilterArgs(args)
+		if err != nil {
+			return nil, err
+		}
 		q := source.SearchQuery{
 			Needle:     query,
 			Lowered:    source.AppendLowerASCII(nil, []byte(query)),
 			Limit:      argInt(args, "limit", mcpDefaultLimit, s.maxLimit),
 			PerSession: argInt(args, "per_session", defaultSearchPerSession, s.maxLimit),
-		}
-		if raw := strings.TrimSpace(argString(args, "since")); raw != "" {
-			since, err := parseSince(raw)
-			if err != nil {
-				return nil, err
-			}
-			q.Since = since
-		}
-		if raw := strings.TrimSpace(argString(args, "until")); raw != "" {
-			until, err := parseSince(raw)
-			if err != nil {
-				return nil, fmt.Errorf("bad until value: %w", err)
-			}
-			q.Until = until
+			Since:      filter.since,
+			Until:      filter.until,
+			Source:     filter.source,
+			Project:    filter.project,
+			Branch:     filter.branch,
 		}
 		q.Pattern = strings.TrimSpace(argString(args, "pattern"))
 		role := strings.TrimSpace(argString(args, "role"))
@@ -191,65 +188,17 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		}, nil
 
 	case "list_sessions":
-		sessions, _ := s.api.listSessions()
-		if want, err := wantedSource(args); err != nil {
-			return nil, err
-		} else if want != "" {
-			// sourceMatchesWanted, not equality: "claude" must also match the labeled
-			// instance "claude:box2" — get_session has always resolved it that way, and
-			// the two surfaces disagreeing meant a session an agent could open by id was
-			// invisible to the list call that should have found it
-			filtered := sessions[:0:0]
-			for _, item := range sessions {
-				if sourceMatchesWanted(source.ToStr(item["source"]), want) {
-					filtered = append(filtered, item)
-				}
-			}
-			sessions = filtered
-		}
-		if project := strings.TrimSpace(argString(args, "project")); project != "" {
-			filtered := sessions[:0:0]
-			for _, item := range sessions {
-				if strings.Contains(source.ToStr(item["project"]), project) {
-					filtered = append(filtered, item)
-				}
-			}
-			sessions = filtered
-		}
-		// The branch the session opened on, as the CLI recorded it at the time — not what
-		// the checkout is on now, which is the question nobody is asking
-		if branch := strings.TrimSpace(argString(args, "branch")); branch != "" {
-			filtered := sessions[:0:0]
-			for _, item := range sessions {
-				if strings.Contains(source.ToStr(item["branch"]), branch) {
-					filtered = append(filtered, item)
-				}
-			}
-			sessions = filtered
-		}
-		// since/until bound the update time; a session with no parseable time is left out
-		// of a bounded query rather than guessed into either side
-		window, err := parseTimeWindow(args)
+		// The source argument reaches labeled instances ("claude" matches claude:box2) —
+		// get_session has always resolved it that way, and the two surfaces disagreeing
+		// meant a session an agent could open by id was invisible to the list call that
+		// should have found it. The branch is the one the session opened on, as the CLI
+		// recorded it at the time — not what the checkout is on now, which is the question
+		// nobody is asking.
+		filter, err := s.sessionFilterArgs(args)
 		if err != nil {
 			return nil, err
 		}
-		if !window.since.IsZero() || !window.until.IsZero() {
-			filtered := sessions[:0:0]
-			for _, item := range sessions {
-				at, ok := source.ParseTimestamp(source.ToStr(item["updatedAt"]))
-				if !ok {
-					continue
-				}
-				if !window.since.IsZero() && at.Before(window.since) {
-					continue
-				}
-				if !window.until.IsZero() && at.After(window.until) {
-					continue
-				}
-				filtered = append(filtered, item)
-			}
-			sessions = filtered
-		}
+		sessions := s.api.sessionsWhere(filter)
 		total := len(sessions)
 		limit := argInt(args, "limit", mcpDefaultLimit, s.maxLimit)
 		offset := decodeCursor(argString(args, "cursor"))
@@ -336,7 +285,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if pattern == "" {
 			return nil, errors.New("missing argument: pattern")
 		}
-		sourceWanted, err := wantedSource(args)
+		sourceWanted, err := s.wantedSource(args)
 		if err != nil {
 			return nil, err
 		}
@@ -353,7 +302,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			return nil, errors.New("missing argument: pattern")
 		}
 		limit := argInt(args, "limit", 50, s.maxLimit)
-		sourceWanted, err := wantedSource(args)
+		sourceWanted, err := s.wantedSource(args)
 		if err != nil {
 			return nil, err
 		}
@@ -424,7 +373,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if pattern == "" {
 			return nil, errors.New("missing argument: pattern")
 		}
-		sourceWanted, err := wantedSource(args)
+		sourceWanted, err := s.wantedSource(args)
 		if err != nil {
 			return nil, err
 		}
@@ -439,7 +388,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if pattern == "" {
 			return nil, errors.New("missing argument: pattern")
 		}
-		sourceWanted, err := wantedSource(args)
+		sourceWanted, err := s.wantedSource(args)
 		if err != nil {
 			return nil, err
 		}
@@ -489,17 +438,28 @@ func pageMessages(fetched []map[string]any, offset, limit int, fromEnd bool) []m
 
 // wantedSource reads the optional source argument and rejects values that name no
 // configured source — a typo should fail loudly, not silently match nothing.
-func wantedSource(args map[string]any) (string, error) {
-	want := strings.TrimSpace(argString(args, "source"))
-	if want == "" {
-		return "", nil
+func (s *mcpServer) wantedSource(args map[string]any) (string, error) {
+	return s.api.sourceName(argString(args, "source"))
+}
+
+// sessionFilterArgs reads the selection every session-picking tool shares — source,
+// project, branch, since and until — with the meanings sessionFilter gives them.
+func (s *mcpServer) sessionFilterArgs(args map[string]any) (sessionFilter, error) {
+	sourceWanted, err := s.wantedSource(args)
+	if err != nil {
+		return sessionFilter{}, err
 	}
-	for _, src := range source.KnownModes {
-		if src == want {
-			return want, nil
-		}
+	window, err := parseTimeWindow(args)
+	if err != nil {
+		return sessionFilter{}, err
 	}
-	return "", fmt.Errorf("unknown source %q (choose from: %s)", want, strings.Join(source.KnownModes, " / "))
+	return sessionFilter{
+		source:  sourceWanted,
+		project: strings.TrimSpace(argString(args, "project")),
+		branch:  strings.TrimSpace(argString(args, "branch")),
+		since:   window.since,
+		until:   window.until,
+	}, nil
 }
 
 // parseTimeWindow reads the since/until pair off a tool call. Both use the same relative
@@ -620,7 +580,9 @@ func mcpTools() []map[string]any {
 			// still naming six sources after the seventh was added.
 			"description": "Full-text search across the session history of every agent CLI on this " +
 				"machine (" + strings.Join(source.KnownModes, ", ") + "). Answers " +
-				"\"which session did I deal with X in?\". Case-insensitive.",
+				"\"which session did I deal with X in?\". Case-insensitive. source / project / " +
+				"branch / since / until narrow which sessions are scanned, before limit is " +
+				"counted — narrow to the project in question rather than raising limit.",
 			"annotations": readOnlyAnnotations("Search sessions"),
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -628,6 +590,9 @@ func mcpTools() []map[string]any {
 					"query":       strSchema("text to search for"),
 					"limit":       intSchema("how many sessions to return at most, default 20"),
 					"per_session": intSchema("how many hits per session at most, default 3"),
+					"source":      strSchema("only search one source: " + strings.Join(source.KnownModes, " / ") + " (a mode also reaches its labeled instances, e.g. claude:box2)"),
+					"project":     strSchema("only search sessions whose project path (cwd) contains this"),
+					"branch":      strSchema("only search sessions that opened on a git branch containing this"),
 					"since":       strSchema("only search sessions updated after this, e.g. 30d / 12h / 2026-09-01; narrows the scan when history is large"),
 					"until":       strSchema("only search sessions updated before this, e.g. 7d (a week ago) / 2026-09-01"),
 					"pattern":     strSchema("limit the search to one session: a sessionId, a fragment of one, or a file path fragment — the way to ask \"where in this session did we discuss X\" without paging through it"),

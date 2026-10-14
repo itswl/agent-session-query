@@ -55,8 +55,8 @@ current MCP specification (2025-06-18):
 
 | Tool | What it does |
 |------|--------------|
-| `search_sessions` | Full-text search over message bodies (ids and timestamps are not searched as text); takes `query` / `limit` / `per_session` / `since` / `until` / `cursor`, plus `pattern` to search inside one session and `role` to keep only `user` or `assistant` hits |
-| `list_sessions` | List sessions newest first, filtered by `source` / `project` / `branch` / `since` / `until`; paginates. `source` takes a mode name (`claude`) and reaches labeled instances of it (`claude:box2`), the way `get_session` already resolved them. A row carries `branch` when its CLI recorded one — the branch the session opened on, not what the checkout is on now |
+| `search_sessions` | Full-text search over message bodies (ids and timestamps are not searched as text); takes `query` / `limit` / `per_session`, the selection `list_sessions` takes — `source` / `project` / `branch` / `since` / `until`, applied before the scan so `limit` counts sessions inside it — plus `pattern` to search inside one session and `role` to keep only `user` or `assistant` hits. It does not paginate, and a `cursor` is refused |
+| `list_sessions` | List sessions newest first, filtered by `source` / `project` / `branch` / `since` / `until`; paginates. `source` takes a mode name (`claude`) and reaches labeled instances of it (`claude:box2`), the way `get_session` already resolved them, or one instance's full name; a name that is neither fails the call with the valid ones. A row carries `branch` when its CLI recorded one — the branch the session opened on, not what the checkout is on now |
 | `list_projects` | Group sessions by project (cwd) — which agents were used on a given repository, and how many sessions each |
 | `recent_project_activity` | The most recently updated sessions of one project, across sources — a read-only project timeline |
 | `find_decisions` | Lexical (not generated) search for decision- and conclusion-shaped excerpts. Terms are separated by commas. The excerpts are leads to inspect, not authoritative memory |
@@ -93,6 +93,9 @@ reading far more than it needs.
 a snippet, so the answer is often readable without opening anything. `role=user` narrows to
 what the human asked, which is usually what you are looking for when the answer echoes the
 question. `pattern` scopes the search to one session when you already know which one.
+`project` (with `source` and `branch` beside it) keeps the search to the work you mean: it
+narrows before the scan, so recent hits from other repositories cannot fill the page first
+— narrow rather than raise `limit`.
 
 **"What did that session come to?"** — `get_session`. Metadata, and the final result: what
 the session concluded. For most questions this is the whole answer, and it costs a

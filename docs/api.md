@@ -8,7 +8,7 @@ no alias.
 |----------|------|--------------|
 | `/` `/health` `/stats` | no | Service info and health check. `/` is the one to read first: it lists every endpoint below and says which of them need a token. `/health` adds the enabled sources, the version, `authRequired` and connection stats |
 | `/sessions` | yes | List every session (merged across sources, newest first) |
-| `/export?project=&since=&until=&source=&mode=index` | yes | **Export several sessions as one document.** Oldest first, because a pack answers "how did this get here" where the list answers "what am I doing". `mode=index` (the default) gives one block per session — when, where, what was asked, what it concluded, and the id to check it against; `mode=full` inlines the transcripts. `format=md` (default) or `jsonl`. `limit` defaults to 20 sessions of the matching set, and the header always states how many of that set it holds |
+| `/export?project=&branch=&since=&until=&source=&mode=index` | yes | **Export several sessions as one document.** Oldest first, because a pack answers "how did this get here" where the list answers "what am I doing". `mode=index` (the default) gives one block per session — when, where, what was asked, what it concluded, and the id to check it against; `mode=full` inlines the transcripts. `format=md` (default) or `jsonl`. `limit` defaults to 20 sessions of the matching set, and the header always states how many of that set it holds |
 | `/sessions/<pattern>` | yes | One session's metadata |
 | `/sessions/<pattern>/messages?limit=50&order=asc&full=1` | yes | A session's messages; `order=asc` (the default) takes the earliest N, `order=desc` the latest N, `offset=N` walks stable pages from that end (use this for scrolling; it does not depend on timestamps), and `at=<time>` anchors the window at that instant instead of at an end. Tool output and thinking come cut to a preview and marked `truncated: true`; `full=1` returns them whole (ask for a narrow window, a build log is large). Capped by `--max-limit`; offsets are capped at 20,000. |
 | `/sessions/<pattern>/final` | yes | A session's final result |
@@ -22,7 +22,7 @@ no alias.
 | `jsonl` | `application/x-ndjson` | one tagged JSON object per line (`session` / `message` / `final`) — a query with `jq` is a filter, not a parse |
 | `json` | `application/json` | the same data as one document, for a consumer that wants a single parse |
 | `html` | `text/html` | a page that stands on its own: inline stylesheet, no scripts, no requests, so it opens from disk and can be attached to anything |
-| `/search?q=&limit=30&per_session=3&since=30d&until=&pattern=&role=` | yes | **Full-text search** across every source; `pattern` scopes it to one session, `role` keeps only `user` or `assistant` hits |
+| `/search?q=&limit=30&per_session=3&since=30d&until=&source=&project=&branch=&pattern=&role=` | yes | **Full-text search** across every source; `source` / `project` / `branch` / `since` / `until` narrow which sessions are scanned, `pattern` scopes it to one session, `role` keeps only `user` or `assistant` hits |
 | `/projects` | yes | Session counts grouped by project (cwd) |
 | `/mcp` | yes | MCP's Streamable HTTP transport, `POST`; see [mcp.md](mcp.md) |
 
@@ -100,11 +100,22 @@ for, so `sessions` reads true by definition (more matched than the zero returned
 is already the exact count there, and it is not a reason to raise the limit.
 
 With a lot of history, narrow the scan with `since=30d` (which also accepts `12h` or
-`2026-09-01`), `until` for the other end of that window, `pattern` to search inside one
-session instead of all of them, and `role` (`user` or `assistant`) to keep only hits from
-those messages. Each session contributes at most `per_session` snippets — with `role` set,
-that counts hits matching the role rather than whichever hits happened to come first in the
-file.
+`2026-09-01`), `until` for the other end of that window, `source`, `project` and `branch`,
+`pattern` to search inside one session instead of all of them, and `role` (`user` or
+`assistant`) to keep only hits from those messages. Each session contributes at most
+`per_session` snippets — with `role` set, that counts hits matching the role rather than
+whichever hits happened to come first in the file.
+
+`source`, `project` and `branch` mean what they mean for `list_sessions` and a pack, and
+they narrow **before** the scan, so `limit` counts sessions inside the selection: with the
+filter applied to the page afterwards, newer hits elsewhere could fill it and leave nothing
+for the project or source being asked about. `source` takes a mode (`claude`, which also
+reaches labeled instances such as `claude:box2`) or one instance's full name, and a name
+that matches neither is a 400 listing the valid ones. `project` is a substring of the
+project path — the cwd, or gemini's own project name — and `branch` a substring of the git
+branch the session opened on; a session whose CLI recorded no branch is outside any
+`branch` filter. With `pattern`, `source` picks which CLI's session the pattern may name,
+and the rest of the selection still has to hold for that session.
 
 **`<pattern>` matching rules** (first rank to hit wins; every source takes part in every
 round, so a fuzzy hit never shadows an exact hit in another source): ① exact `sessionId`

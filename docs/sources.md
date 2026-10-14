@@ -6,12 +6,18 @@ The sources read the session directories the agent CLIs write by default:
 |--------|------------------|
 | pi | `~/.pi/agent/sessions` |
 | claude | `~/.claude/projects` |
-| codex | `~/.codex/sessions` |
+| codex | `~/.codex/sessions`, plus `~/.codex/archived_sessions` beside it |
 | gemini | `~/.gemini/tmp` |
-| grok | `~/.grok/sessions`, plus `~/.grok/archived_sessions` beside it (listed with `archived: true`) |
+| grok | `~/.grok/sessions`, plus `~/.grok/archived_sessions` beside it |
 | hermes | `~/.hermes/sessions` (plus `state.db`) |
 | openclaw | `~/.openclaw/agents/*` |
 | opencode | The XDG data dir — `${XDG_DATA_HOME:-~/.local/share}/opencode`, macOS included (`%LOCALAPPDATA%\opencode` on Windows) |
+
+Sessions a CLI has archived — Grok's and Codex's moved into `archived_sessions`, OpenCode's
+marked `time_archived`, the ones Hermes hides (`archived`, or `hidden` in older schemas) —
+are read like any other and marked `archived: true`, and left out of the list, the search,
+the pack, file history and the project counts unless `include_archived=1` (or the MCP
+argument of the same name) asks for them, as each CLI leaves them out of its own list.
 
 ## `--path`
 

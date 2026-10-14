@@ -188,7 +188,7 @@ func TestListSortAndCache(t *testing.T) {
 	}
 
 	api := newSessionQueryAPI([]source.SessionSource{source.NewPiSource(root)}, 60)
-	sessions, etag := api.listSessions(false)
+	sessions, etag, _ := api.listSessions(false, false)
 	if len(sessions) != 2 || sessions[0]["sessionId"] != "new" {
 		t.Fatalf("sessions = %v", sessions)
 	}
@@ -197,11 +197,11 @@ func TestListSortAndCache(t *testing.T) {
 	}
 	// A new file does not appear while the cache is valid; with TTL=0 it shows up at once
 	write(t, filepath.Join(root, "p3", "third.jsonl"), `{"type":"session","id":"third"}`)
-	if got, again := api.listSessions(false); len(got) != 2 || again != etag {
+	if got, again, _ := api.listSessions(false, false); len(got) != 2 || again != etag {
 		t.Fatalf("the cache should have hit, got %d entries etag=%s", len(got), again)
 	}
 	uncached := newSessionQueryAPI([]source.SessionSource{source.NewPiSource(root)}, 0)
-	got, newETag := uncached.listSessions(false)
+	got, newETag, _ := uncached.listSessions(false, false)
 	if len(got) != 3 {
 		t.Fatalf("TTL=0 should show 3 entries immediately, got %d", len(got))
 	}
@@ -243,12 +243,12 @@ func TestAPIResolvesSourcesPerQuery(t *testing.T) {
 
 	resolver := &staticResolver{}
 	api := newSessionQueryAPIWithResolver(resolver, 0)
-	if got, _ := api.listSessions(false); len(got) != 0 {
+	if got, _, _ := api.listSessions(false, false); len(got) != 0 {
 		t.Fatalf("no sources should mean no sessions, got %d", len(got))
 	}
 
 	resolver.current = []source.SessionSource{source.NewPiSource(root)}
-	if got, _ := api.listSessions(false); len(got) != 1 {
+	if got, _, _ := api.listSessions(false, false); len(got) != 1 {
 		t.Fatalf("the source that appeared after construction was not queried: got %d sessions", len(got))
 	}
 }
@@ -701,7 +701,7 @@ func TestProjectsAndActive(t *testing.T) {
 
 	api := newSessionQueryAPI([]source.SessionSource{source.NewPiSource(root)}, 0)
 
-	sessions, _ := api.listSessions(false)
+	sessions, _, _ := api.listSessions(false, false)
 	active := map[string]bool{}
 	for _, s := range sessions {
 		active[source.ToStr(s["sessionId"])] = source.Truthy(s["isActive"])
@@ -716,7 +716,7 @@ func TestProjectsAndActive(t *testing.T) {
 		t.Fatalf("a session from three hours ago should not count as active: %v", active)
 	}
 
-	projects, ungrouped := api.listProjects()
+	projects, ungrouped := api.listProjects(false)
 	if len(projects) != 2 || ungrouped != 0 {
 		t.Fatalf("this should group into 2 projects: %v (ungrouped=%d)", projects, ungrouped)
 	}

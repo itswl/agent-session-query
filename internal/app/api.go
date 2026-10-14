@@ -112,12 +112,17 @@ func safeList(src source.SessionSource) (out []source.Record) {
 //
 // Subagents' transcripts are left out unless asked for: a session's own row says how many
 // ran in it, and a list of everything would be more than half agents — 291 of them beside
-// 246 sessions here.
-func (a *SessionQueryAPI) listSessions(subagents bool) ([]map[string]any, string) {
+// 246 sessions here. So are the sessions their CLI has archived, as each CLI leaves them
+// out of its own list; archived says how many there are, listed or not.
+func (a *SessionQueryAPI) listSessions(subagents, archived bool) ([]map[string]any, string, int) {
 	all := []source.Record{}
+	archivedTotal := 0
 	for _, src := range a.activeSources() {
 		for _, rec := range a.recordsOf(src) {
-			if subagents || !rec.IsSubagent() {
+			if rec.Archived && !rec.IsSubagent() {
+				archivedTotal++
+			}
+			if (subagents || !rec.IsSubagent()) && (archived || !rec.Archived) {
 				all = append(all, rec)
 			}
 		}
@@ -129,7 +134,12 @@ func (a *SessionQueryAPI) listSessions(subagents bool) ([]map[string]any, string
 	for _, item := range all {
 		out = append(out, item.Public())
 	}
-	return out, listVersion(all, a.listWarnings())
+	version := listVersion(all, a.listWarnings())
+	if archivedTotal > 0 {
+		// A session archived or brought back changes the count without touching the rows
+		version = strings.TrimSuffix(version, `"`) + "a" + strconv.Itoa(archivedTotal) + `"`
+	}
+	return out, version, archivedTotal
 }
 
 // listWarnings names the sources whose last list failed, as {source, error}.
@@ -305,7 +315,7 @@ func (a *SessionQueryAPI) getFinalMessage(pattern, sourceWanted string) (map[str
 // This is the one thing this tool can do that the others cannot: what you did on a given
 // repository with Claude Code, Codex and Gemini, all in a single view.
 // Note that hermes / openclaw have neither cwd nor project and land in ungrouped.
-func (a *SessionQueryAPI) listProjects() ([]map[string]any, int) {
+func (a *SessionQueryAPI) listProjects(archived bool) ([]map[string]any, int) {
 	type bucket struct {
 		sessions  int
 		sources   map[string]int
@@ -320,6 +330,9 @@ func (a *SessionQueryAPI) listProjects() ([]map[string]any, int) {
 		for _, rec := range a.recordsOf(src) {
 			if rec.IsSubagent() {
 				continue // a project counts conversations; its sessions' agents are inside them
+			}
+			if rec.Archived && !archived {
+				continue
 			}
 			name := rec.ProjectName()
 			if name == "" {
@@ -416,6 +429,7 @@ type sessionFilter struct {
 	since     time.Time // updated at or after; zero is unbounded
 	until     time.Time // updated at or before; zero is unbounded
 	subagents bool      // subagents' transcripts too, not only the sessions they ran in
+	archived  bool      // the sessions their CLI archived too
 }
 
 // admits reports whether a session is inside the selection. A session whose update time
@@ -425,6 +439,9 @@ func (f sessionFilter) admits(rec source.Record) bool {
 		return false
 	}
 	if rec.IsSubagent() && !f.subagents {
+		return false
+	}
+	if rec.Archived && !f.archived {
 		return false
 	}
 	if f.project != "" && !strings.Contains(rec.ProjectName(), f.project) {

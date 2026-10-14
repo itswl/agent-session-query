@@ -44,9 +44,10 @@ and deployment see the [README](../README.md).
   marks them in `archived`, which is also what Hermes filters on itself
   (`COALESCE(archived, 0)`). SQLite rejects an unknown column outright, so naming the wrong
   one does not degrade the query, it fails it — and the failure looks exactly like a Hermes
-  with no sessions in it. `hermesVisibilityClause` reads `pragma_table_info` and builds the
-  filter from whichever column is there, and leaves it off when neither is: listing one
-  session Hermes would have hidden beats reporting a full database as an empty one. A list
+  with no sessions in it. `hermesArchivedColumn` reads `pragma_table_info` and selects
+  whichever column is there as the session's `archived` mark, and marks nothing when
+  neither is: a hidden session is listed marked, and the list leaves it out unless asked
+  (see Archived sessions). A list
   that fails for any other reason (a renamed column, a schema mid-migration) comes back as an
   error rather than as zero records, and the API says so — see below
 
@@ -206,8 +207,9 @@ and deployment see the [README](../README.md).
 - **OpenCode**: everything lives in one SQLite database at
   `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` — there is no jsonl, so it is the
   second all-SQLite source after newer Hermes and implements `searchableSource` (a `LIKE`
-  over the `part` table). Sessions whose `time_archived` is set are skipped, matching what
-  opencode itself shows. `session.directory` is the cwd, `session.title` becomes the display
+  over the `part` table). A session whose `time_archived` is set is listed marked
+  `archived`, and left out of the list unless asked, matching what opencode itself shows.
+  `session.directory` is the cwd, `session.title` becomes the display
   name, and the model column's JSON (`{"id":...,"providerID":...}`) becomes
   `provider/model`. Messages are `message` rows joined to their `part` rows: `text` /
   `reasoning` map to text / thinking, and a `tool` part — which carries the call and its
@@ -254,6 +256,20 @@ and deployment see the [README](../README.md).
   `info.cwd`; the group directory name is that same path URL-encoded, which is the fallback,
   and above 255 bytes Grok substitutes a slug plus a hash and records the real path in a
   `.cwd` file beside the sessions
+
+### Archived sessions
+
+Four CLIs put sessions away without deleting them, each its own way: Grok and Codex move the
+file into an `archived_sessions` directory beside their sessions, OpenCode stamps
+`time_archived`, and Hermes marks the sessions it hides in `archived` (`hidden` in older
+schemas). They were handled three ways — Grok's listed, OpenCode's and Hermes's skipped
+before anything could ask for them, Codex's not looked for. Now every source lists them
+marked `archived`, and one filter (`sessionFilter.archived`) leaves them out of the list,
+the search, the pack, file history and the project counts unless `include_archived` asks,
+as each CLI leaves them out of its own list. `/sessions` says how many there are either way,
+which is what the page's *Archived* switch is shown by; a lookup by id finds one regardless.
+Measured on the machine this was written on: none archived in any of the four, so the
+switch stays out of sight there.
 
 ### Blocks: one shape for eight transcripts
 

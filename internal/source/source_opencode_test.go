@@ -82,9 +82,21 @@ func newOpenCodeFixture(t *testing.T) *OpenCodeSource {
 
 func TestOpenCodeList(t *testing.T) {
 	s := newOpenCodeFixture(t)
-	records := s.List()
-	if len(records) != 1 {
-		t.Fatalf("the archived session must be skipped: %d records", len(records))
+	records := []Record{}
+	archived := 0
+	for _, rec := range s.List() {
+		// An archived session is listed marked, for the list to leave out unless asked
+		if rec.Archived {
+			archived++
+			if rec.SessionID != "ses_archived" {
+				t.Errorf("%s is marked archived", rec.SessionID)
+			}
+			continue
+		}
+		records = append(records, rec)
+	}
+	if len(records) != 1 || archived != 1 {
+		t.Fatalf("records = %d live and %d archived, want 1 and 1", len(records), archived)
 	}
 	rec := records[0]
 	if rec.SessionID != "ses_live" {

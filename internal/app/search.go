@@ -76,7 +76,7 @@ func (a *SessionQueryAPI) search(ctx context.Context, q source.SearchQuery) sear
 
 	filter := sessionFilter{
 		source: q.Source, project: q.Project, branch: q.Branch, since: q.Since, until: q.Until,
-		subagents: !q.NoSubagents,
+		subagents: !q.NoSubagents, archived: q.IncludeArchived,
 	}
 	all := []candidate{}
 	if q.Pattern != "" {

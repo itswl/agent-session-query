@@ -16,7 +16,7 @@ MCP server**。它不会修改任何会话数据。
 | OpenClaw | `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite`（SQLite，2026.9+；旧版 `sessions.json` 布局仍可读） | `session_windows` 表的 `session_id` |
 | Pi | `~/.pi/agent/sessions/<project>/*.jsonl` | session 行上的 `id` |
 | Claude Code | `~/.claude/projects/<project>/*.jsonl` | 文件名（一个 uuid）/ `sessionId` 字段 |
-| Codex | `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl` | 元数据行上的 `payload.session_id` |
+| Codex | `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl`，以及 `~/.codex/archived_sessions/` | 元数据行上的 `payload.session_id` |
 | Gemini CLI | `~/.gemini/tmp/<project>/chats/session-*.jsonl` | 首行的 `sessionId` |
 | OpenCode | `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db`（SQLite；Windows 为 `%LOCALAPPDATA%\opencode`；1.x 的 `session` 表与 2.x 的 `session_v2` / `session_message` 表都读） | `session` 或 `session_v2` 表的 `id` |
 | Grok CLI | `~/.grok/sessions/<url 编码的 cwd>/<session-id>/`（`summary.json` + `updates.jsonl`），以及 `~/.grok/archived_sessions/` | `summary.json` 里的 `info.id` |
@@ -108,7 +108,8 @@ go build -o agent-session-query ./cmd/agent-session-query
   首次列出时于后台统计，所以数字是页面出来之后稍晚一点出现，而不是让列表请求去等它。
   把工作交给了**子 agent** 的 Claude Code 会话会显示有几个（「▸ 12 agents」），点开后按派生
   关系缩进列在它下面；每个子 agent 都能像会话一样打开自己的对话记录，并有链接回到所属会话，
-  会话里的 `Agent` 步骤也能直接跳到它启动的那份记录
+  会话里的 `Agent` 步骤也能直接跳到它启动的那份记录。CLI 归档掉的会话默认不在列表里，和 CLI 自己一致；
+  有归档会话时，列表上方会出现 **Archived** 开关，打开后它们带着「archived」标记一起列出
 - **中栏**：按轮阅读的对话——你提问，agent 干活，agent 回答。提问与回复之间的那段工作折叠成一行：
   *72 steps · 61 commands · changed 2 files · 1 failed · 24m39s*。折叠时失败的步骤仍然留在视野里，
   带着输出的开头；连续的读文件和搜索合并成一条「explored — read 4 files, searched twice」；每一步点开

@@ -254,7 +254,7 @@ func hermesListFrom(db *sql.DB, mode string, skip map[string]bool) ([]Record, er
 	if err != nil {
 		return nil, err
 	}
-	visible, err := hermesVisibilityClause(db)
+	archived, err := hermesArchivedColumn(db)
 	if err != nil {
 		return nil, err
 	}
@@ -266,8 +266,8 @@ func hermesListFrom(db *sql.DB, mode string, skip map[string]bool) ([]Record, er
 		       s.started_at, s.ended_at,
 		       (SELECT MAX(m.timestamp) FROM messages m
 		         WHERE m.session_id = s.id` + shown + `),
-		       s.message_count
-		FROM sessions s` + visible)
+		       s.message_count, ` + archived + `
+		FROM sessions s`)
 	if err != nil {
 		return nil, err
 	}
@@ -279,10 +279,10 @@ func hermesListFrom(db *sql.DB, mode string, skip map[string]bool) ([]Record, er
 		var inputTokens, outputTokens, reasoningTokens sql.NullInt64
 		var cost sql.NullFloat64
 		var startedAt, endedAt, lastMsg sql.NullFloat64
-		var messageCount sql.NullInt64
+		var messageCount, hidden sql.NullInt64
 		if err := rows.Scan(&sid, &key, &displayName, &platform, &model, &cwd,
 			&inputTokens, &outputTokens, &reasoningTokens, &cost, &startedAt, &endedAt, &lastMsg,
-			&messageCount); err != nil {
+			&messageCount, &hidden); err != nil {
 			return out, err
 		}
 		if !sid.Valid || sid.String == "" || skip[sid.String] {
@@ -338,6 +338,7 @@ func hermesListFrom(db *sql.DB, mode string, skip map[string]bool) ([]Record, er
 			// and get theirs lazily in the page once a session is opened
 			MessageCount: int(nullIntOrZero(messageCount)),
 			HasCount:     true,
+			Archived:     hidden.Int64 != 0,
 		}, updatedAt))
 	}
 	// The rows loop ends on an error too (a truncated read, a database replaced under us),
@@ -348,31 +349,28 @@ func hermesListFrom(db *sql.DB, mode string, skip map[string]bool) ([]Record, er
 	return out, nil
 }
 
-// hermesVisibilityClause returns the WHERE fragment that leaves out the sessions Hermes
-// itself hides, or "" when this state.db has no column for them.
+// hermesArchivedColumn is the select expression that says whether Hermes hides a session —
+// listed all the same and marked archived, the way every source marks the sessions its CLI
+// has put away, and left out of the list unless asked for.
 //
 // Which column marks them is not the same in every Hermes: Bot Mode sessions were marked in
 // `hidden`, and current Hermes (schema 25) marks them in `archived` instead. An unknown
 // column does not degrade a query, it takes the whole statement down — so the columns are
 // read off the database instead of assumed, the way Hermes itself filters on
-// COALESCE(archived, 0).
-//
-// With neither column present the list runs unfiltered, which is the safer failure: showing
-// one session Hermes would have hidden beats reporting a database full of sessions as empty.
-// A schema that cannot be read is another matter — the read it is for fails with it, rather
-// than running unfiltered on a guess.
-func hermesVisibilityClause(db *sql.DB) (string, error) {
+// COALESCE(archived, 0). With neither present, no session is marked. A schema that cannot be
+// read fails the read it is for, rather than running on a guess.
+func hermesArchivedColumn(db *sql.DB) (string, error) {
 	columns, err := tableColumns(db, "sessions")
 	if err != nil {
 		return "", err
 	}
 	switch {
 	case columns["hidden"]:
-		return "\n\t\tWHERE COALESCE(s.hidden, 0) = 0", nil
+		return "COALESCE(s.hidden, 0)", nil
 	case columns["archived"]:
-		return "\n\t\tWHERE COALESCE(s.archived, 0) = 0", nil
+		return "COALESCE(s.archived, 0)", nil
 	}
-	return "", nil
+	return "0", nil
 }
 
 // hermesShownClause is the WHERE fragment (leading AND) that keeps the message rows Hermes

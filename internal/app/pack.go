@@ -55,8 +55,9 @@ func (s *apiServer) parsePackQuery(r *http.Request) (packQuery, error) {
 	values := r.URL.Query()
 	q := packQuery{
 		filter: sessionFilter{
-			project: strings.TrimSpace(values.Get("project")),
-			branch:  strings.TrimSpace(values.Get("branch")),
+			project:  strings.TrimSpace(values.Get("project")),
+			branch:   strings.TrimSpace(values.Get("branch")),
+			archived: queryFlag(values.Get("include_archived")),
 		},
 		mode:   strings.TrimSpace(values.Get("mode")),
 		format: strings.ToLower(strings.TrimSpace(values.Get("format"))),

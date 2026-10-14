@@ -638,3 +638,67 @@ func TestSubagentsAcrossTheAPI(t *testing.T) {
 		t.Fatalf("list_sessions subagents=true = %v rows, want 4", out["total"])
 	}
 }
+
+// TestArchivedSessionsAcrossTheAPI: a session its CLI archived is left out of the list, the
+// search, the pack and the projects, as the CLI leaves it out of its own list, and every one
+// of them takes include_archived to read it — marked archived. The list says how many there
+// are either way, and the session still opens by its id.
+func TestArchivedSessionsAcrossTheAPI(t *testing.T) {
+	home := t.TempDir()
+	rollout := func(id, words string) []string {
+		return []string{
+			`{"type":"session_meta","payload":{"session_id":"` + id + `","id":"` + id + `","cwd":"/w/repo"}}`,
+			`{"type":"response_item","timestamp":"2026-10-14T10:00:00Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"` + words + `"}]}}`,
+		}
+	}
+	sessions := filepath.Join(home, "sessions")
+	write(t, filepath.Join(sessions, "2026", "10", "14", "rollout-2026-10-14T10-00-00-live.jsonl"), rollout("live", "tune the cache")...)
+	write(t, filepath.Join(home, "archived_sessions", "rollout-2026-10-01T10-00-00-old.jsonl"), rollout("old", "tune the cache, the old way")...)
+	sources := []source.SessionSource{source.NewCodexSource(sessions)}
+	api := newSessionQueryAPI(sources, 0)
+	srv := httptest.NewServer(newAPIServer(serverOptions{mode: "auto", sources: sources, api: api, maxConnections: 50}))
+	t.Cleanup(srv.Close)
+
+	_, body := get(t, srv.URL+"/sessions", "")
+	if body["total"] != float64(1) || body["archived"] != float64(1) {
+		t.Fatalf("/sessions = %v sessions, archived %v; want the live one, and a count of 1 archived", body["total"], body["archived"])
+	}
+	_, body = get(t, srv.URL+"/sessions?include_archived=1", "")
+	marked := 0
+	for _, raw := range body["sessions"].([]any) {
+		if raw.(map[string]any)["archived"] == true {
+			marked++
+		}
+	}
+	if body["total"] != float64(2) || marked != 1 {
+		t.Fatalf("include_archived=1 lists %v, %d marked archived; want 2 and 1", body["total"], marked)
+	}
+	if code, _ := get(t, srv.URL+"/sessions/old", ""); code != 200 {
+		t.Fatalf("an archived session does not open by its id: %d", code)
+	}
+
+	_, body = get(t, srv.URL+"/search?q=tune", "")
+	if body["total"] != float64(1) {
+		t.Fatalf("search = %v results, want the live session only", body["total"])
+	}
+	_, body = get(t, srv.URL+"/search?q=tune&include_archived=1", "")
+	if body["total"] != float64(2) {
+		t.Fatalf("search with include_archived=1 = %v results, want both", body["total"])
+	}
+	_, body = get(t, srv.URL+"/projects", "")
+	if project := body["projects"].([]any)[0].(map[string]any); project["sessions"] != float64(1) {
+		t.Fatalf("/projects counts %v, want the live session", project["sessions"])
+	}
+	_, body = get(t, srv.URL+"/projects?include_archived=1", "")
+	if project := body["projects"].([]any)[0].(map[string]any); project["sessions"] != float64(2) {
+		t.Fatalf("/projects?include_archived=1 counts %v, want both", project["sessions"])
+	}
+
+	mcp := &mcpServer{api: api, sources: sources, maxLimit: defaultMaxLimit}
+	if out := mcpCallTool(t, mcp, map[string]any{}); out["total"] != float64(1) {
+		t.Fatalf("list_sessions = %v, want 1", out["total"])
+	}
+	if out := mcpCallTool(t, mcp, map[string]any{"include_archived": true}); out["total"] != float64(2) {
+		t.Fatalf("list_sessions include_archived = %v, want 2", out["total"])
+	}
+}

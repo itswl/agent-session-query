@@ -165,6 +165,8 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			Source:     filter.source,
 			Project:    filter.project,
 			Branch:     filter.branch,
+			// The sessions their CLI archived are read only when asked, as everywhere
+			IncludeArchived: filter.archived,
 		}
 		if _, given := args["subagents"]; given && !argBool(args, "subagents") {
 			q.NoSubagents = true
@@ -246,7 +248,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		}, nil
 
 	case "list_projects":
-		projects, ungrouped := s.api.listProjects()
+		projects, ungrouped := s.api.listProjects(argBool(args, "include_archived"))
 		return map[string]any{"projects": projects, "total": len(projects), "ungrouped": ungrouped}, nil
 
 	case "get_session_pack":
@@ -292,7 +294,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		if project == "" {
 			return nil, errors.New("missing argument: project")
 		}
-		sessions, _ := s.api.listSessions(false)
+		sessions, _, _ := s.api.listSessions(false, false)
 		limit := argInt(args, "limit", mcpDefaultLimit, s.maxLimit)
 		activity := make([]map[string]any, 0)
 		for _, item := range sessions {
@@ -528,11 +530,12 @@ func (s *mcpServer) sessionFilterArgs(args map[string]any) (sessionFilter, error
 		return sessionFilter{}, err
 	}
 	return sessionFilter{
-		source:  sourceWanted,
-		project: strings.TrimSpace(argString(args, "project")),
-		branch:  strings.TrimSpace(argString(args, "branch")),
-		since:   window.since,
-		until:   window.until,
+		source:   sourceWanted,
+		project:  strings.TrimSpace(argString(args, "project")),
+		branch:   strings.TrimSpace(argString(args, "branch")),
+		since:    window.since,
+		until:    window.until,
+		archived: argBool(args, "include_archived"),
 	}, nil
 }
 
@@ -663,17 +666,18 @@ func mcpTools() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"query":       strSchema("text to search for"),
-					"limit":       intSchema("how many sessions to return at most, default 20"),
-					"per_session": intSchema("how many hits per session at most, default 3"),
-					"source":      strSchema("only search one source: " + strings.Join(source.KnownModes, " / ") + " (a mode also reaches its labeled instances, e.g. claude:box2)"),
-					"project":     strSchema("only search sessions whose project path (cwd) contains this"),
-					"branch":      strSchema("only search sessions that opened on a git branch containing this"),
-					"since":       strSchema("only search sessions updated after this, e.g. 30d / 12h / 2026-09-01; narrows the scan when history is large"),
-					"until":       strSchema("only search sessions updated before this, e.g. 7d (a week ago) / 2026-09-01"),
-					"pattern":     strSchema("limit the search to one session: a sessionId, a fragment of one, or a file path fragment — the way to ask \"where in this session did we discuss X\" without paging through it"),
-					"role":        strSchema("keep only hits from this role: user or assistant"),
-					"subagents":   boolSchema("search Claude Code subagents' transcripts too (default true); false keeps to the sessions themselves"),
+					"query":            strSchema("text to search for"),
+					"limit":            intSchema("how many sessions to return at most, default 20"),
+					"per_session":      intSchema("how many hits per session at most, default 3"),
+					"source":           strSchema("only search one source: " + strings.Join(source.KnownModes, " / ") + " (a mode also reaches its labeled instances, e.g. claude:box2)"),
+					"project":          strSchema("only search sessions whose project path (cwd) contains this"),
+					"branch":           strSchema("only search sessions that opened on a git branch containing this"),
+					"since":            strSchema("only search sessions updated after this, e.g. 30d / 12h / 2026-09-01; narrows the scan when history is large"),
+					"until":            strSchema("only search sessions updated before this, e.g. 7d (a week ago) / 2026-09-01"),
+					"pattern":          strSchema("limit the search to one session: a sessionId, a fragment of one, or a file path fragment — the way to ask \"where in this session did we discuss X\" without paging through it"),
+					"role":             strSchema("keep only hits from this role: user or assistant"),
+					"subagents":        boolSchema("search Claude Code subagents' transcripts too (default true); false keeps to the sessions themselves"),
+					"include_archived": boolSchema("the sessions their CLI has archived too (default false, as each CLI leaves them out of its own list); they carry archived: true"),
 				},
 				"required": []string{"query"},
 			},
@@ -685,14 +689,15 @@ func mcpTools() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"source":    strSchema("restrict to one source: " + strings.Join(source.KnownModes, " / ")),
-					"project":   strSchema("filter by project path (cwd), substring match"),
-					"branch":    strSchema("filter by the git branch the session opened on, substring match"),
-					"since":     strSchema("only sessions updated after this, e.g. 30d / 12h / 2026-09-01"),
-					"until":     strSchema("only sessions updated before this, e.g. 7d (a week ago) / 2026-09-01"),
-					"limit":     intSchema("how many to return at most, default 20"),
-					"cursor":    cursorSchema(),
-					"subagents": boolSchema("list Claude Code subagents' transcripts as rows too (default false: the sessions they ran in say how many)"),
+					"source":           strSchema("restrict to one source: " + strings.Join(source.KnownModes, " / ")),
+					"project":          strSchema("filter by project path (cwd), substring match"),
+					"branch":           strSchema("filter by the git branch the session opened on, substring match"),
+					"since":            strSchema("only sessions updated after this, e.g. 30d / 12h / 2026-09-01"),
+					"until":            strSchema("only sessions updated before this, e.g. 7d (a week ago) / 2026-09-01"),
+					"limit":            intSchema("how many to return at most, default 20"),
+					"cursor":           cursorSchema(),
+					"subagents":        boolSchema("list Claude Code subagents' transcripts as rows too (default false: the sessions they ran in say how many)"),
+					"include_archived": boolSchema("the sessions their CLI has archived too (default false, as each CLI leaves them out of its own list); they carry archived: true"),
 				},
 			},
 		},
@@ -712,14 +717,15 @@ func mcpTools() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"project":  strSchema("only sessions whose project path (cwd) contains this"),
-					"source":   strSchema("only one source: " + strings.Join(source.KnownModes, " / ") + " (a mode also reaches its labeled instances, e.g. claude:box2)"),
-					"branch":   strSchema("only sessions that opened on a git branch containing this"),
-					"since":    strSchema("only sessions updated after this, e.g. 7d / 12h / 2026-09-01"),
-					"until":    strSchema("only sessions updated before this, e.g. 1d / 2026-09-01"),
-					"limit":    intSchema("how many sessions at most, the most recent of the selection: default 20 (5 with mode=full), at most 100"),
-					"mode":     strSchema("index (default): the ask and the conclusion per session; full: also each session's latest messages"),
-					"messages": intSchema("with mode=full, how many of each session's latest messages to include, default 10"),
+					"project":          strSchema("only sessions whose project path (cwd) contains this"),
+					"source":           strSchema("only one source: " + strings.Join(source.KnownModes, " / ") + " (a mode also reaches its labeled instances, e.g. claude:box2)"),
+					"branch":           strSchema("only sessions that opened on a git branch containing this"),
+					"since":            strSchema("only sessions updated after this, e.g. 7d / 12h / 2026-09-01"),
+					"until":            strSchema("only sessions updated before this, e.g. 1d / 2026-09-01"),
+					"limit":            intSchema("how many sessions at most, the most recent of the selection: default 20 (5 with mode=full), at most 100"),
+					"mode":             strSchema("index (default): the ask and the conclusion per session; full: also each session's latest messages"),
+					"messages":         intSchema("with mode=full, how many of each session's latest messages to include, default 10"),
+					"include_archived": boolSchema("the sessions their CLI has archived too (default false, as each CLI leaves them out of its own list); they carry archived: true"),
 				},
 			},
 		},
@@ -735,15 +741,16 @@ func mcpTools() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"path":         strSchema("the file: an absolute path, or the end of one"),
-					"changed_only": boolSchema("only the rounds that changed the file, not those that only read it"),
-					"project":      strSchema("only sessions whose project path (cwd) contains this"),
-					"source":       strSchema("only one source: " + strings.Join(source.KnownModes, " / ")),
-					"branch":       strSchema("only sessions that opened on a git branch containing this"),
-					"since":        strSchema("only sessions updated after this, e.g. 30d / 12h / 2026-09-01"),
-					"until":        strSchema("only sessions updated before this, e.g. 7d / 2026-09-01"),
-					"limit":        intSchema("how many sessions at most, newest first, default 20"),
-					"subagents":    boolSchema("include Claude Code subagents' transcripts (default true: an agent's edit is an edit)"),
+					"path":             strSchema("the file: an absolute path, or the end of one"),
+					"changed_only":     boolSchema("only the rounds that changed the file, not those that only read it"),
+					"project":          strSchema("only sessions whose project path (cwd) contains this"),
+					"source":           strSchema("only one source: " + strings.Join(source.KnownModes, " / ")),
+					"branch":           strSchema("only sessions that opened on a git branch containing this"),
+					"since":            strSchema("only sessions updated after this, e.g. 30d / 12h / 2026-09-01"),
+					"until":            strSchema("only sessions updated before this, e.g. 7d / 2026-09-01"),
+					"limit":            intSchema("how many sessions at most, newest first, default 20"),
+					"subagents":        boolSchema("include Claude Code subagents' transcripts (default true: an agent's edit is an edit)"),
+					"include_archived": boolSchema("the sessions their CLI has archived too (default false, as each CLI leaves them out of its own list); they carry archived: true"),
 				},
 				"required": []string{"path"},
 			},
@@ -752,7 +759,9 @@ func mcpTools() []map[string]any {
 			"name":        "list_projects",
 			"description": "Group sessions by project (cwd) to see which agents were used on a given repository, and how many sessions each has.",
 			"annotations": readOnlyAnnotations("List projects"),
-			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+				"include_archived": boolSchema("the sessions their CLI has archived too (default false, as each CLI leaves them out of its own list); they carry archived: true"),
+			}},
 		},
 		{
 			"name":        "recent_project_activity",

@@ -371,3 +371,28 @@ func TestCodexInjected(t *testing.T) {
 		}
 	}
 }
+
+// TestCodexArchivedRollouts: a rollout Codex archives moves to archived_sessions beside the
+// sessions directory. It is listed from there, marked archived — flat, the way the archive
+// moves it, or in the dated tree — and a relocated root has no such directory to look at.
+func TestCodexArchivedRollouts(t *testing.T) {
+	home := t.TempDir()
+	meta := func(id string) string {
+		return `{"type":"session_meta","payload":{"session_id":"` + id + `","id":"` + id + `","cwd":"/w"}}`
+	}
+	sessions := filepath.Join(home, "sessions")
+	write(t, filepath.Join(sessions, "2026", "10", "14", "rollout-2026-10-14T10-00-00-live.jsonl"), meta("live"))
+	write(t, filepath.Join(home, "archived_sessions", "rollout-2026-10-01T10-00-00-flat.jsonl"), meta("flat"))
+	write(t, filepath.Join(home, "archived_sessions", "2026", "09", "01", "rollout-2026-09-01T10-00-00-dated.jsonl"), meta("dated"))
+
+	got := map[string]bool{}
+	for _, rec := range NewCodexSource(sessions).List() {
+		got[rec.SessionID] = rec.Archived
+	}
+	if len(got) != 3 || got["live"] || !got["flat"] || !got["dated"] {
+		t.Fatalf("archived by id = %v, want live false, flat and dated true", got)
+	}
+	if NewCodexSource(t.TempDir()).archivedRoot() != "" {
+		t.Error("a root not named sessions has no archive beside it")
+	}
+}

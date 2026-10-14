@@ -154,18 +154,17 @@ func (s *OpenCodeSource) List() []Record {
 
 // listV2 lists the 2.x sessions. The columns are the ones every 2.x database has been seen
 // to carry: a title, the directory the session ran in, and the two times. Whether the
-// table marks archived sessions is read off the schema rather than assumed.
+// table marks archived sessions is read off the schema rather than assumed; an archived one
+// is listed and marked, and the list leaves it out unless asked.
 func (s *OpenCodeSource) listV2(db *sql.DB) ([]Record, error) {
-	archivedClause := ""
-	if columns, err := tableColumns(db, "session_v2"); err == nil && columns["time_archived"] {
-		archivedClause = ` WHERE s.time_archived IS NULL`
-	}
+	archived := opencodeArchivedColumn(db, "session_v2", "s.")
 	rows, err := db.Query(`
 		SELECT s.id, s.directory, COALESCE(s.title, ''), s.time_created, s.time_updated,
 		       (SELECT COUNT(*) FROM session_message m
 		         WHERE m.session_id = s.id AND m.type IN ('user', 'assistant')),
-		       (SELECT MAX(m.time_created) FROM session_message m WHERE m.session_id = s.id)
-		FROM session_v2 s` + archivedClause)
+		       (SELECT MAX(m.time_created) FROM session_message m WHERE m.session_id = s.id),
+		       ` + archived + `
+		FROM session_v2 s`)
 	if err != nil {
 		return nil, err
 	}
@@ -174,8 +173,8 @@ func (s *OpenCodeSource) listV2(db *sql.DB) ([]Record, error) {
 	out := []Record{}
 	for rows.Next() {
 		var id, directory, title sql.NullString
-		var created, updated, messageCount, lastMessage sql.NullInt64
-		if err := rows.Scan(&id, &directory, &title, &created, &updated, &messageCount, &lastMessage); err != nil {
+		var created, updated, messageCount, lastMessage, isArchived sql.NullInt64
+		if err := rows.Scan(&id, &directory, &title, &created, &updated, &messageCount, &lastMessage, &isArchived); err != nil {
 			return out, err
 		}
 		if !id.Valid || id.String == "" {
@@ -199,6 +198,7 @@ func (s *OpenCodeSource) listV2(db *sql.DB) ([]Record, error) {
 			HasCount:     true,
 			UpdatedAt:    millisToISO(updated),
 			CreatedAt:    millisToISO(created),
+			Archived:     isArchived.Int64 != 0,
 		}, millisToISO(updated)))
 	}
 	if err := rows.Err(); err != nil {
@@ -207,14 +207,24 @@ func (s *OpenCodeSource) listV2(db *sql.DB) ([]Record, error) {
 	return out, nil
 }
 
+// opencodeArchivedColumn is the select expression that says whether a session was archived:
+// the time_archived column where the table has one, nothing archived where it does not
+func opencodeArchivedColumn(db *sql.DB, table, alias string) string {
+	if columns, err := tableColumns(db, table); err == nil && columns["time_archived"] {
+		return "(" + alias + "time_archived IS NOT NULL)"
+	}
+	return "0"
+}
+
 // listV1 lists the sessions of the original layout; extra narrows the set in a mixed
 // database
 func (s *OpenCodeSource) listV1(db *sql.DB, extra string) ([]Record, error) {
 	rows, err := db.Query(`
 		SELECT id, directory, title, slug, model, time_created, time_updated,
-		       (SELECT COUNT(*) FROM message m WHERE m.session_id = session.id)
+		       (SELECT COUNT(*) FROM message m WHERE m.session_id = session.id),
+		       ` + opencodeArchivedColumn(db, "session", "") + `
 		FROM session
-		WHERE time_archived IS NULL` + extra)
+		WHERE 1 = 1` + extra)
 	if err != nil {
 		return nil, err
 	}
@@ -223,8 +233,8 @@ func (s *OpenCodeSource) listV1(db *sql.DB, extra string) ([]Record, error) {
 	out := []Record{}
 	for rows.Next() {
 		var id, directory, title, slug, model sql.NullString
-		var created, updated, messageCount sql.NullInt64
-		if err := rows.Scan(&id, &directory, &title, &slug, &model, &created, &updated, &messageCount); err != nil {
+		var created, updated, messageCount, isArchived sql.NullInt64
+		if err := rows.Scan(&id, &directory, &title, &slug, &model, &created, &updated, &messageCount, &isArchived); err != nil {
 			return out, err
 		}
 		if !id.Valid || id.String == "" {
@@ -249,6 +259,7 @@ func (s *OpenCodeSource) listV1(db *sql.DB, extra string) ([]Record, error) {
 			HasCount:     true,
 			UpdatedAt:    millisToISO(updated),
 			CreatedAt:    millisToISO(created),
+			Archived:     isArchived.Int64 != 0,
 		}, millisToISO(updated)))
 	}
 	if err := rows.Err(); err != nil {

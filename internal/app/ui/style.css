@@ -463,6 +463,13 @@ body.hide-list #list, body.hide-side #side { display: none; }
 .item .msgs { font-size: 11.5px; color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .item .msgs:empty { display: none; }
 
+/* A session its CLI archived, listed because the switch asked for it */
+.item .arch-tag {
+  font-size: 10.5px; color: var(--dim); border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 0 5px; line-height: 1.5; white-space: nowrap;
+}
+#show-archived.on { color: var(--accent); background: var(--accent-soft); }
+
 /* Subagents sit under the session they ran in, indented by how deep they were spawned, on
    a guide line that says whose they are */
 .item.agent {

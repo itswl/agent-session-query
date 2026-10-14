@@ -257,7 +257,8 @@ func TestHermesSQLiteListAndToolMessages(t *testing.T) {
 		                       started_at, ended_at, estimated_cost_usd, message_count)
 		 VALUES ('h-live', '', '排查接口 502', '', '/w/proj', 'deepseek-chat',
 		         1789705755.0, 1789705770.0, 0.0012, 7)`,
-		// archived: sessions Hermes hides from its own list must not be listed here either
+		// archived: a session Hermes hides from its own list is listed marked archived, for
+		// the list to leave out unless asked
 		`INSERT INTO sessions (id, session_key, display_name, archived, started_at, ended_at)
 		 VALUES ('h-archived', 'k-archived', 'bot session', 1, 1789705755.0, 1789705770.0)`,
 		// display_name only (the older field, pre-title Hermes)
@@ -278,14 +279,24 @@ func TestHermesSQLiteListAndToolMessages(t *testing.T) {
 		 VALUES ('n4', 'h-live', 'assistant', 'the upstream is timing out', 'stop', 1789705759.0)`,
 	})
 
-	records, err := hermesSQLiteList(dbPath, "hermes", nil)
+	all, err := hermesSQLiteList(dbPath, "hermes", nil)
 	if err != nil {
 		t.Fatalf("listing failed: %v", err)
 	}
-	if len(records) != 2 {
+	records := []Record{}
+	for _, rec := range all {
+		if rec.Archived {
+			if rec.SessionID != "h-archived" {
+				t.Errorf("%s is marked archived", rec.SessionID)
+			}
+			continue
+		}
+		records = append(records, rec)
+	}
+	if len(all) != 3 || len(records) != 2 {
 		// A column/scan mismatch returns no records, so this count also guards the SELECT
 		// list staying in step with the Scan
-		t.Fatalf("the archived session must be skipped: %d records", len(records))
+		t.Fatalf("records = %d, %d of them not archived; want 3 and 2", len(all), len(records))
 	}
 	if n := records[0].MessageCount; !records[0].HasCount || n != 7 {
 		t.Errorf("messageCount = %v, want 7 (sessions.message_count)", n)
@@ -372,8 +383,13 @@ func TestHermesSQLiteListLegacyHiddenColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listing failed: %v", err)
 	}
-	if len(records) != 1 || records[0].SessionID != "h-visible" {
-		t.Fatalf("the hidden session must be skipped: %v", records)
+	for _, rec := range records {
+		if rec.Archived != (rec.SessionID == "h-hidden") {
+			t.Fatalf("%s archived = %v; the hidden one, and only it, is marked", rec.SessionID, rec.Archived)
+		}
+	}
+	if len(records) != 2 {
+		t.Fatalf("records = %d, want both, the hidden one marked", len(records))
 	}
 }
 

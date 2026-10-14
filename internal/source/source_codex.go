@@ -52,7 +52,27 @@ func (s *CodexSource) files() []string {
 	if err != nil {
 		return nil
 	}
+	if archived := s.archivedRoot(); archived != "" {
+		// Flat, the way Codex's archive moves a rollout, and in the dated tree too
+		for _, pattern := range []string{
+			filepath.Join(archived, "rollout-*.jsonl"),
+			filepath.Join(archived, "*", "*", "*", "rollout-*.jsonl"),
+		} {
+			more, _ := filepath.Glob(pattern)
+			files = append(files, more...)
+		}
+	}
 	return files
+}
+
+// archivedRoot is ~/.codex/archived_sessions when the root is the default sessions
+// directory beside it: where Codex moves a rollout it archives. None was on disk on the
+// machines this was written on, so both layouts it could have are read.
+func (s *CodexSource) archivedRoot() string {
+	if filepath.Base(s.root) != "sessions" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(s.root), "archived_sessions")
 }
 
 // codexHeadLines caps how far the metadata scan goes (a defensive backstop; normally
@@ -136,6 +156,7 @@ func (s *CodexSource) List() []Record {
 			Model:      model,
 			CliVersion: StrOr(GetOr(payload, "cli_version", ""), ""),
 			UpdatedAt:  updated,
+			Archived:   s.archivedRoot() != "" && strings.HasPrefix(path, s.archivedRoot()+string(filepath.Separator)),
 		}, updated)
 	})
 }

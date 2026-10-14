@@ -50,6 +50,8 @@ const state = {
   agentByCall: new Map(), // the tool call that started a subagent → its record
   openAgents: new Set(),  // sessions whose subagents are unfolded in the list
   revealedFor: '',        // the selection whose session's subagents were last unfolded for it
+  showArchived: false,    // the sessions their CLI archived are listed too
+  archivedTotal: 0,       // how many there are, listed or not (/sessions says)
   openFiles: new Set(),   // files whose history is open in the details pane
   fileHistory: new Map(), // file → { loading } | { data } | { error }: /files, asked once
   selectedId: '',
@@ -497,6 +499,28 @@ function revealSelectedAgent() {
   if (record.parentSessionId) state.openAgents.add(record.parentSessionId);
 }
 
+// The archived switch: the sessions a CLI put away are listed, marked, only when asked —
+// and the switch is offered only when there are some
+function syncArchivedButton() {
+  const button = $('show-archived');
+  if (!button) return;
+  button.classList.toggle('hidden', !state.archivedTotal && !state.showArchived);
+  button.classList.toggle('on', state.showArchived);
+  button.setAttribute('aria-pressed', state.showArchived ? 'true' : 'false');
+  button.textContent = 'Archived' + (state.archivedTotal ? ' (' + state.archivedTotal + ')' : '');
+  button.title = state.showArchived
+    ? 'Hide the sessions their CLI has archived'
+    : 'Show the sessions their CLI has archived';
+}
+
+function toggleArchived() {
+  state.showArchived = !state.showArchived;
+  saveViewPrefs();
+  syncArchivedButton();
+  refresh({ force: true });
+  if (state.keyword.trim()) runContentSearch(state.keyword);
+}
+
 function toggleAgents(sessionId) {
   if (state.openAgents.has(sessionId)) state.openAgents.delete(sessionId);
   else state.openAgents.add(sessionId);
@@ -650,6 +674,7 @@ function buildItem(sessionId) {
 
   const row = el('div', 'row1');
   row.appendChild(el('span', 'tag'));   // source
+  row.appendChild(el('span', 'arch-tag hidden', 'archived')); // put away by its CLI
   row.appendChild(el('span', 'live'));  // recent-activity dot (newest message inside activeWindow)
   row.appendChild(el('span', 'msgs'));  // message count (from the source, or learned on open)
   row.appendChild(el('span', 'time'));  // relative time
@@ -666,7 +691,8 @@ function buildItem(sessionId) {
 }
 
 function fillItem(item, session) {
-  const [tag, live, msgs, time, agents] = item.children[0].children;
+  const [tag, archTag, live, msgs, time, agents] = item.children[0].children;
+  archTag.classList.toggle('hidden', !session.archived);
   const agent = !!session.parentSessionId;
   item.classList.toggle('agent', agent);
   item.style.setProperty('--depth', agent ? String(Number(session.agentDepth) || 1) : '0');
@@ -831,7 +857,8 @@ async function runContentSearch(keyword) {
 
   try {
     const data = await api('/search?q=' + encodeURIComponent(text) + '&limit=50' +
-      (scope ? '&source=' + encodeURIComponent(scope) : ''), { signal: controller.signal });
+      (scope ? '&source=' + encodeURIComponent(scope) : '') +
+      (state.showArchived ? '&include_archived=1' : ''), { signal: controller.signal });
     // A newer keystroke may have landed while this was in flight
     if (controller.signal.aborted || state.keyword !== text) return;
     state.content = Object.assign({ query: text, source: scope, searching: false }, data);
@@ -4312,8 +4339,10 @@ function scheduleCountWarmup() {
 async function refresh(options) {
   const force = !!(options && options.force);
   try {
-    const data = await api('/sessions?subagents=1');
+    const data = await api('/sessions?subagents=1' + (state.showArchived ? '&include_archived=1' : ''));
     if (serverChanged(data.version)) return;
+    state.archivedTotal = Number(data.archived) || 0;
+    syncArchivedButton();
     const all = data.sessions || [];
     state.sessions = all.filter((s) => !s.parentSessionId);
     state.byId = new Map(all.map((s) => [s.sessionId, s]));
@@ -4554,6 +4583,7 @@ window.addEventListener('scroll', () => { if (isPhone()) onMessagesScroll(); }, 
 if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 
 $('fold-groups').addEventListener('click', foldAllGroups);
+$('show-archived').addEventListener('click', toggleArchived);
 
 $('toggle-list').addEventListener('click', () => {
   state.hideList = !state.hideList;
@@ -4618,6 +4648,7 @@ function saveViewPrefs() {
       exportFormat: state.exportFormat,
       hideList: state.hideList,
       hideSide: state.hideSide,
+      showArchived: state.showArchived,
       collapsed: [...state.collapsedGroups],
     }));
   } catch (e) {
@@ -4646,6 +4677,7 @@ function applyViewPrefs() {
   if (EXPORT_FORMATS.some(([v]) => v === prefs.exportFormat)) state.exportFormat = prefs.exportFormat;
   if (typeof prefs.hideList === 'boolean') state.hideList = prefs.hideList;
   if (typeof prefs.hideSide === 'boolean') state.hideSide = prefs.hideSide;
+  if (typeof prefs.showArchived === 'boolean') state.showArchived = prefs.showArchived;
   if (Array.isArray(prefs.collapsed)) state.collapsedGroups = new Set(prefs.collapsed);
 }
 

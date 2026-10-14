@@ -343,11 +343,12 @@ func TestMCPEveryArgumentIsAdvertised(t *testing.T) {
 	// The arguments each tool's implementation reads out of args
 	read := map[string][]string{
 		// cursor is read on search_sessions only to be refused: it does not paginate
-		"search_sessions":  {"query", "limit", "per_session", "since", "until", "pattern", "role", "source", "project", "branch", "subagents"},
-		"list_sessions":    {"source", "project", "branch", "since", "until", "limit", "cursor", "subagents"},
-		"get_session_pack": {"source", "project", "branch", "since", "until", "limit", "mode", "messages"},
+		"search_sessions":  {"query", "limit", "per_session", "since", "until", "pattern", "role", "source", "project", "branch", "subagents", "include_archived"},
+		"list_sessions":    {"source", "project", "branch", "since", "until", "limit", "cursor", "subagents", "include_archived"},
+		"get_session_pack": {"source", "project", "branch", "since", "until", "limit", "mode", "messages", "include_archived"},
 		"get_session":      {"pattern", "source"},
-		"file_history":     {"path", "changed_only", "project", "source", "branch", "since", "until", "limit", "subagents"},
+		"file_history":     {"path", "changed_only", "project", "source", "branch", "since", "until", "limit", "subagents", "include_archived"},
+		"list_projects":    {"include_archived"},
 		"get_messages":     {"pattern", "source", "limit", "order", "role", "at", "full", "cursor"},
 		"list_rounds":      {"pattern", "source"},
 		"session_brief":    {"pattern", "source", "round", "at"},

@@ -17,7 +17,7 @@ Eight sources; whichever exist are queried, and they can be merged in one query:
 | OpenClaw | `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite` (SQLite, 2026.9+; older `sessions.json` layouts still read) | `session_id` in `session_windows` |
 | Pi | `~/.pi/agent/sessions/<project>/*.jsonl` | `id` on the session row |
 | Claude Code | `~/.claude/projects/<project>/*.jsonl` | the filename (a uuid) / the `sessionId` field |
-| Codex | `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl` | `payload.session_id` on the metadata row |
+| Codex | `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl`, plus `~/.codex/archived_sessions/` | `payload.session_id` on the metadata row |
 | Gemini CLI | `~/.gemini/tmp/<project>/chats/session-*.jsonl` | `sessionId` on the first line |
 | OpenCode | `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` (SQLite; `%LOCALAPPDATA%\opencode` on Windows; the 1.x `session` tables and the 2.x `session_v2` / `session_message` tables both) | `id` in the `session` or `session_v2` table |
 | Grok CLI | `~/.grok/sessions/<url-encoded-cwd>/<session-id>/` (`summary.json` + `updates.jsonl`), plus `~/.grok/archived_sessions/` | `info.id` in `summary.json` |
@@ -118,7 +118,8 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   Claude Code session that handed work to **subagents** says how many ("▸ 12 agents"), and
   unfolds them under it, nested the way they were spawned; each opens as a transcript of
   its own, with a link back to the session, and an `Agent` step in the session leads to the
-  transcript it started
+  transcript it started. Sessions a CLI has archived stay out of the list, as they do in the
+  CLI; when there are some, an **Archived** switch above the list brings them in, marked
 - **Middle**: the conversation, read by rounds — you asked, the agent worked, the agent
   answered. The work between an ask and its reply folds to one line: *72 steps · 61
   commands · changed 2 files · 1 failed · 24m39s*. A failed step stays in view when the

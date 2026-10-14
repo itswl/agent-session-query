@@ -47,6 +47,13 @@ there. A non-loopback bind without a token is refused at startup rather than war
 and the bound socket itself is re-checked: a `--host` name that resolves off loopback is
 refused too.
 
+**Archived sessions**: a session its CLI has archived — Grok's and Codex's moved into
+`archived_sessions`, OpenCode's marked `time_archived`, the ones Hermes hides — is left out
+of `/sessions`, `/search`, `/export`, `/files` and `/projects`, as each CLI leaves it out of
+its own list, and `include_archived=1` on any of them reads it too, marked `archived: true`.
+`/sessions` says how many there are either way (`archived`, present when there are some),
+and one still opens by its id.
+
 **Branch**: a session row carries `branch` when its CLI recorded one — the branch the
 session opened on, written down at the time, not what the checkout is on now. Claude Code
 records it on nearly every row; the other sources do not record it at all, and the key is
@@ -150,8 +157,9 @@ pattern containing a colon needs URL encoding (`%3A`).
   `runtimeMs`, `files`, `messageCount` — are omitted rather than empty when the source has
   nothing to say (the same rule `branch` follows). `messageCount`, `totalTokens`,
   `estimatedCostUsd` and `runtimeMs` stay present whenever the source recorded them — a
-  recorded zero stays — so a missing one means "not recorded", not zero. A Grok session
-  the user archived (it lives under `archived_sessions/`) carries `archived: true`
+  recorded zero stays — so a missing one means "not recorded", not zero. A session its CLI
+  archived carries `archived: true`, and is listed only with `include_archived=1` (see
+  below)
 - Search: the list fields plus `matches` (`snippet` + `role` + `timestamp`) and `matchCount`.
   A match's `timestamp` is the time of the message it is in — the one `messages?at=` cuts
   windows by, so passing it there lands on the match. That is the row's own time for every

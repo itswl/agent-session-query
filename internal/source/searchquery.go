@@ -32,6 +32,9 @@ type SearchQuery struct {
 	// a session handed to its agents happened there, commands and output included — and a
 	// hit in one comes back in the result of the session it ran in, naming the agent.
 	NoSubagents bool
+	// IncludeArchived reads the sessions their CLI has archived too; left out by default,
+	// as each CLI leaves them out of its own list
+	IncludeArchived bool
 }
 
 // ProbeLimit is what a source actually fetches per session: one hit more than the caller

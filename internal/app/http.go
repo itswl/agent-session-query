@@ -347,7 +347,7 @@ var rootEndpoints = []rootEndpoint{
 	{"GET", "/health", true, "health check"},
 	{"GET", "/stats", true, "server stats"},
 	{"GET", "/ui", true, "the web page"},
-	{"GET", "/sessions", false, "list every session; ?subagents=1 lists Claude Code subagents' transcripts as rows too"},
+	{"GET", "/sessions", false, "list every session; ?subagents=1 lists Claude Code subagents' transcripts as rows too, ?include_archived=1 the sessions their CLI archived"},
 	{"GET", "/sessions/<pattern>", false, "one session"},
 	{"GET", "/sessions/<pattern>/messages?limit=50&full=1", false, "its messages, earliest first unless ?order=desc; full=1 keeps tool output and thinking whole instead of cut to a preview"},
 	{"GET", "/sessions/<pattern>/final", false, "its final result"},
@@ -501,7 +501,8 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 	}
 
 	if path == "/sessions" {
-		sessions, etag := s.api.listSessions(queryFlag(r.URL.Query().Get("subagents")))
+		sessions, etag, archived := s.api.listSessions(queryFlag(r.URL.Query().Get("subagents")),
+			queryFlag(r.URL.Query().Get("include_archived")))
 		// The page polls every 10 seconds and the list has usually not changed; with an
 		// ETag those polls end at a 304
 		w.Header().Set("ETag", etag)
@@ -511,6 +512,11 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			return http.StatusNotModified
 		}
 		body := map[string]any{"sessions": sessions, "total": len(sessions), "version": buildVersion}
+		// How many sessions their CLI archived, listed here only with include_archived=1:
+		// the page offers the switch only when there is something behind it
+		if archived > 0 {
+			body["archived"] = archived
+		}
 		// A source that could not be read answers with the same empty list as a source with
 		// nothing in it; this is where the two are told apart
 		if warnings := s.api.listWarnings(); len(warnings) > 0 {
@@ -541,7 +547,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 	}
 
 	if path == "/projects" {
-		projects, ungrouped := s.api.listProjects()
+		projects, ungrouped := s.api.listProjects(queryFlag(r.URL.Query().Get("include_archived")))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"projects": projects,
 			"total":    len(projects),
@@ -890,6 +896,7 @@ func (s *apiServer) parseSearchQuery(r *http.Request) (source.SearchQuery, error
 	if raw := values.Get("subagents"); raw != "" && !queryFlag(raw) {
 		q.NoSubagents = true
 	}
+	q.IncludeArchived = queryFlag(values.Get("include_archived"))
 	return q, nil
 }
 
@@ -927,6 +934,7 @@ func (s *apiServer) parseFileHistoryQuery(r *http.Request) (fileHistoryQuery, er
 	}
 	raw := values.Get("subagents")
 	q.filter.subagents = raw == "" || queryFlag(raw)
+	q.filter.archived = queryFlag(values.Get("include_archived"))
 	return q, nil
 }
 
@@ -1161,6 +1169,7 @@ var serverCapabilities = []string{
 	"search.scan",        // truncated.scan: matched is a lower bound when the scan stopped
 	"search.source",      // /search?source= — narrowed before the scan, not after it
 	"search.subagents",   // /search covers subagents' transcripts; ?subagents=0 leaves them out
+	"sessions.archived",  // archived sessions listed and searched with include_archived=1, marked archived
 	"sessions.branch",    // a session row carries the git branch it opened on
 	"sessions.etag",      // /sessions answers 304, and carries the server version
 	"sessions.subagents", // /sessions?subagents=1, /sessions/<id>/subagents, and the fields that tie them

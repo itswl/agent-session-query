@@ -397,6 +397,35 @@ func TestSplitRoundsDropsHarnessBlocks(t *testing.T) {
 	}
 }
 
+// TestQueuedPromptStaysInItsRound: a prompt typed while the agent worked is read inside the
+// turn it arrived in — it starts no round, and the round it lands in is not taken for
+// interrupted, since the agent went on and answered
+func TestQueuedPromptStaysInItsRound(t *testing.T) {
+	text := func(s string) []map[string]any { return []map[string]any{source.TextBlock(s)} }
+	rounds := splitRounds([]map[string]any{
+		{"role": "user", "timestamp": "2026-10-01T10:00:00Z", "content": text("deploy the gateway")},
+		{"role": "assistant", "timestamp": "2026-10-01T10:00:01Z", "content": []map[string]any{source.ToolCallBlock("c1", "Bash", map[string]any{"command": "make deploy"})}},
+		{"role": "user", "queued": true, "timestamp": "2026-10-01T10:00:02Z", "content": text("and check the logs after")},
+		{"role": "assistant", "timestamp": "2026-10-01T10:00:03Z", "content": text("deployed; the logs are clean")},
+	})
+	if len(rounds) != 1 {
+		t.Fatalf("rounds = %d, want 1 (a queued prompt starts nothing)", len(rounds))
+	}
+	if rounds[0].asked != "deploy the gateway" || rounds[0].interrupted || rounds[0].outcome != "deployed; the logs are clean" {
+		t.Fatalf("round = %+v", rounds[0])
+	}
+	// A document says where it sits: inside the agent's turn, not opening one
+	queued := []map[string]any{{"role": "user", "queued": true, "timestamp": "2026-10-01T10:00:02Z", "content": text("and check the logs after")}}
+	for name, doc := range map[string]string{
+		"md":   renderExportMarkdown(source.Record{SessionID: "s"}, queued, nil, source.MessageQuery{}),
+		"html": renderExportHTML(source.Record{SessionID: "s"}, queued, nil, source.MessageQuery{}),
+	} {
+		if !strings.Contains(doc, "user · queued while the agent worked") {
+			t.Errorf("the %s export heads a queued prompt as a plain user turn", name)
+		}
+	}
+}
+
 // TestRoundEndIgnoresLateRows: a notification the CLI delivers hours after the agent
 // stopped lands in whichever round was last. It must not become that round's end — a
 // round of two commands reporting ninety-four hours is the bug this covers — but a search

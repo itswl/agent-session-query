@@ -148,7 +148,7 @@ func renderExportMarkdown(item source.Record, messages []map[string]any, final m
 
 	fmt.Fprintf(&b, "\n## Messages (%s %d)\n", which, len(messages))
 	for _, message := range messages {
-		fmt.Fprintf(&b, "\n### %s", source.StrOr(message["role"], "unknown"))
+		fmt.Fprintf(&b, "\n### %s", roleHeading(message))
 		if ts := source.StrOr(message["timestamp"], ""); ts != "" {
 			fmt.Fprintf(&b, " · %s", ts)
 		}
@@ -301,7 +301,7 @@ func renderExportHTML(item source.Record, messages []map[string]any, final map[s
 	for _, message := range messages {
 		fmt.Fprintf(&b, "<article class=\"msg %s\"><header>%s",
 			html.EscapeString(source.StrOr(message["role"], "unknown")),
-			html.EscapeString(source.StrOr(message["role"], "unknown")))
+			html.EscapeString(roleHeading(message)))
 		if ts := source.StrOr(message["timestamp"], ""); ts != "" {
 			fmt.Fprintf(&b, "<time>%s</time>", html.EscapeString(ts))
 		}
@@ -517,4 +517,14 @@ func sanitizeFilename(name string) string {
 		return "session"
 	}
 	return source.Truncate(cleaned, 100, "")
+}
+
+// roleHeading is the speaker a document heads a message with; a prompt queued while the
+// agent worked says so, since it sits inside the agent's turn rather than opening one
+func roleHeading(message map[string]any) string {
+	role := source.StrOr(message["role"], "unknown")
+	if source.Truthy(message["queued"]) {
+		return role + " · queued while the agent worked"
+	}
+	return role
 }

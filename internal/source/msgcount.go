@@ -30,8 +30,8 @@ func lineHasAll(line []byte, tokens ...string) bool {
 }
 
 // claudeCountMessages: user/assistant rows, sidechains excluded except in a subagent's own
-// transcript, plus the system rows the reader shows as events (see claudeProbe.counts — one
-// rule for the list, Final and here)
+// transcript, plus the system rows the reader shows as events and the prompts queued while
+// the agent worked (see claudeProbe.counts — one rule for the list, Final and here)
 func claudeCountMessages(path string, from int64) (int, bool) {
 	n := 0
 	subagent := claudeSubagentPath(path)
@@ -39,7 +39,8 @@ func claudeCountMessages(path string, from int64) (int, bool) {
 		// A conversation row carries a message object; the system rows that count carry a
 		// subtype. Anything with neither is skipped before it is decoded.
 		if !bytes.Contains(line, []byte(`"type"`)) ||
-			!(bytes.Contains(line, []byte(`"message"`)) || bytes.Contains(line, []byte(`"subtype"`))) {
+			!(bytes.Contains(line, []byte(`"message"`)) || bytes.Contains(line, []byte(`"subtype"`)) ||
+				bytes.Contains(line, []byte(`"queued_command"`))) {
 			return true
 		}
 		var probe claudeProbe

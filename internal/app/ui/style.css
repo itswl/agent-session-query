@@ -493,6 +493,15 @@ button.linkish {
   text-underline-offset: 2px;
 }
 button.linkish:hover { background: none; text-decoration-color: currentColor; }
+/* A prompt typed while the agent worked, inside the turn it arrived in: your words, in
+   your colour, where a note the CLI wrote would be dim */
+.queued-note { margin: 4px 0 6px 27px; }
+.queued-note .queued-label { font-size: 11px; color: var(--accent); margin: 0 0 2px 14px; }
+.queued-note .note.from-user {
+  margin: 0; color: var(--fg); font-size: 13px; border-left-color: var(--accent-line);
+}
+.queued-note > details { margin: 0; }
+
 /* An Agent step leads to the transcript it started, from the end of its own line */
 .step.has-agent { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
 .step.has-agent > :not(.step-head):not(.agent-open) { grid-column: 1 / -1; }

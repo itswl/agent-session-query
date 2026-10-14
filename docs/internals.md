@@ -113,8 +113,11 @@ and deployment see the [README](../README.md).
   in `attachment` rows, and searching them made hits nobody could see: measured locally over
   eight common words, 332 of 400 first hits were attachments, and 105 of the 400 results
   matched nowhere else. The one attachment searched is a prompt typed while the agent
-  was busy (`queued_command` in prompt mode, not `isMeta`) — the person's own words, though
-  the reader does not draw them yet
+  was busy (`queued_command` in prompt mode, not `isMeta`) — the person's own words. The
+  reader draws it too, as a `user` message marked `queued` at the time it was typed: of 78
+  here, 45 appear nowhere else in their transcripts and 31 more only where a later
+  compaction summary quotes them. It starts no round, since the agent read it without
+  stopping, and the page shows it inside the turn it arrived in
 
   **Subagents.** A subagent's transcript is a file of its own in a directory named after the
   session it ran in: `<session>/subagents/agent-<id>.jsonl`, and a workflow's agents one
@@ -286,11 +289,11 @@ between them saying how much was left out.
 
 `brief.go` segments a session at each real user message (`isRoundStart`: a user row with
 words of its own once a harness's closing blocks are dropped — see Session titles — not
-command plumbing, not `injected`). A round carries the files any tool named and, separately,
-the files a write-kind call changed and did not fail at — a write waits for its result by
-call id, so a failed edit is not a change — plus `failures`, the count of results that
-reported an error or an interruption. An `interrupted` event in the round marks it
-interrupted outright; the ask-after-ask heuristic covers the sources that record no such
+command plumbing, not `injected`, not `queued`). A round carries the files any tool named
+and, separately, the files a write-kind call changed and did not fail at — a write waits for
+its result by call id, so a failed edit is not a change — plus `failures`, the count of
+results that reported an error or an interruption. An `interrupted` event in the round marks
+it interrupted outright; the ask-after-ask heuristic covers the sources that record no such
 event. The brief carries the resume command with the `cd` the page prepends for the same
 reason (see `resumeCommand`).
 
@@ -576,12 +579,12 @@ the session, and only when a walk runs off the window), and a search scoped to t
 hit inside the window that the page found nothing at is in text the window holds only the
 start of — a cut tool output — and becomes a target that is read whole (`full=1` on the one
 message) when the walk reaches it; with no cut block there, the words are in something the
-page does not draw at all (a field beside the transcript, or a row that is not a message,
-like a prompt Claude Code queued while the agent was busy) and the target is the nearest
-message, shown without marks. Matching runs over what the page draws: a call's argument
-*values*, not its JSON — a key is not text on the screen, and Bash's own `timeout` argument
-made every command a match for "timeout". An anchored window that comes back empty — the
-instant lies before the first message — is fetched again from the other side of it.
+page does not draw at all (a field beside the transcript, or a row that is not a message)
+and the target is the nearest message, shown without marks. Matching runs over what the page
+draws: a call's argument *values*, not its JSON — a key is not text on the screen, and
+Bash's own `timeout` argument made every command a match for "timeout". An anchored window
+that comes back empty — the instant lies before the first message — is fetched again from
+the other side of it.
 
 ### Full-text search
 

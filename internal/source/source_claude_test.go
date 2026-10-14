@@ -470,3 +470,48 @@ func TestClaudeSubagents(t *testing.T) {
 		t.Errorf("the session's own transcript matched an agent's words: %v", hits)
 	}
 }
+
+// TestClaudeQueuedPrompts: what the person typed while the agent worked is read as their
+// words — a user message marked queued, at the time it was typed — and counted, so the
+// number in the list is the number the reader returns. The same attachment type also
+// carries a background task's notification and prompts the CLI wrote itself; neither is.
+func TestClaudeQueuedPrompts(t *testing.T) {
+	root := t.TempDir()
+	queued := func(ts, mode, prompt string, meta bool) string {
+		isMeta := ""
+		if meta {
+			isMeta = `,"isMeta":true`
+		}
+		return `{"type":"attachment","timestamp":"2026-10-14T` + ts + `Z","uuid":"q-` + ts + `","attachment":{"type":"queued_command","commandMode":"` + mode + `","prompt":` + prompt + isMeta + `}}`
+	}
+	path := filepath.Join(root, "proj", "s1.jsonl")
+	write(t, path,
+		`{"type":"user","timestamp":"2026-10-14T10:00:00Z","sessionId":"s1","cwd":"/w","message":{"role":"user","content":"deploy the gateway"}}`,
+		`{"type":"assistant","timestamp":"2026-10-14T10:00:05Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"make deploy"}}]}}`,
+		queued("10:00:10", "prompt", `"and check the logs after"`, false),
+		queued("10:00:11", "prompt", `[{"type":"text","text":"this one too"},{"type":"image","source":{}}]`, false),
+		queued("10:00:12", "prompt", `"a prompt the CLI wrote"`, true),
+		queued("10:00:13", "task-notification", `"<task-notification>done</task-notification>"`, false),
+		`{"type":"user","timestamp":"2026-10-14T10:00:20Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}`,
+		`{"type":"assistant","timestamp":"2026-10-14T10:00:30Z","message":{"role":"assistant","content":[{"type":"text","text":"deployed; the logs are clean"}]}}`,
+	)
+	src := NewClaudeSource(root)
+	rec := src.List()[0]
+	msgs := src.Messages(rec, MessageQuery{Limit: 50})
+	got := []string{}
+	for _, m := range msgs {
+		if m["queued"] == true {
+			got = append(got, ToStr(m["role"])+"@"+ToStr(m["timestamp"])[11:19]+": "+ContentText(m["content"].([]map[string]any)[0]["content"]))
+		}
+	}
+	want := "user@10:00:10: and check the logs after | user@10:00:11: this one too"
+	if strings.Join(got, " | ") != want {
+		t.Fatalf("queued = %s\nwant      %s", strings.Join(got, " | "), want)
+	}
+	if final := src.Final(rec); final["messageCount"] != len(msgs) {
+		t.Errorf("final counts %v messages, the reader returns %d", final["messageCount"], len(msgs))
+	}
+	if n, _ := claudeCountMessages(path, 0); n != len(msgs) {
+		t.Errorf("the list counts %d messages, the reader returns %d", n, len(msgs))
+	}
+}

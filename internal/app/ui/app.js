@@ -1749,7 +1749,8 @@ function stripHarness(text) {
 // assembled (those arrive flagged injected), and not one that is wholly an XML-style
 // element — a person does not type a question that way
 function isAsk(message) {
-  if (message.role !== 'user' || message.injected) return false;
+  // A prompt queued while the agent worked is read inside the turn it arrived in
+  if (message.role !== 'user' || message.injected || message.queued) return false;
   const text = stripHarness(messageWords(message)).trim();
   if (!text) return false;
   if (PLUMBING_PREFIXES.some((prefix) => text.startsWith(prefix))) return false;
@@ -1856,7 +1857,7 @@ function analyseRound(round) {
           if (message.role === 'assistant' && i === finalAt) break; // the reply, rendered on its own
           if (!String(block.content || '').trim()) break;
           if (message.injected) steps.push({ kind: 'injected', key, block, index, position });
-          else steps.push({ kind: 'note', key, block, index, position, role: message.role });
+          else steps.push({ kind: 'note', key, block, index, position, role: message.role, queued: !!message.queued });
           break;
         default:
           break;
@@ -2137,9 +2138,10 @@ function roundNode(round) {
     const timeline = timelineNode(round);
     if (timeline) node.appendChild(timeline);
   } else {
-    // The conversation alone: what the agent said along the way, then its reply
+    // The conversation alone: what the agent said along the way and what you added while it
+    // worked, then its reply
     for (const step of round.steps) {
-      if (step.kind === 'note' && step.role !== 'user') node.appendChild(markStep(noteNode(step), step));
+      if (conversationNote(step)) node.appendChild(markStep(noteNode(step), step));
     }
   }
   if (round.final) {
@@ -2621,8 +2623,14 @@ function thinkingStepNode(step) {
 function noteNode(step) {
   const rendered = markdownNode(step.block.content, el('div', 'note md' + (step.role === 'user' ? ' from-user' : '')));
   const plain = rendered.textContent || '';
-  if (plain.length <= FOLD_AT.text) return rendered;
-  return foldable(rendered, step.key, 'note');
+  const node = plain.length <= FOLD_AT.text ? rendered : foldable(rendered, step.key, 'note');
+  if (!step.queued) return node;
+  // The person's words, typed while the agent was working: they belong in the turn they
+  // arrived in, and say so
+  const box = el('div', 'queued-note');
+  box.appendChild(el('div', 'queued-label', 'you, while it worked'));
+  box.appendChild(node);
+  return box;
 }
 
 // injectedNode: context the CLI put in the user's mouth, folded by default
@@ -3291,12 +3299,19 @@ function targetSelector(target) {
   return '.msg[data-index="' + target.index + '"]';
 }
 
+// conversationNote: a note the conversation view keeps — the agent's words along the way, or
+// a prompt you queued while it worked; not the other user rows a round can hold, which a
+// CLI wrote
+function conversationNote(step) {
+  return step.kind === 'note' && (step.role !== 'user' || !!step.queued);
+}
+
 // drawnIn says whether a view draws a target at all, folded or not
 function drawnIn(view, target) {
   const only = stepView(view);
   if (target.kind === 'step') {
     if (only) return target.step.kind === 'tool' && only.test(target.step);
-    if (view === 'conversation') return target.step.kind === 'note' && target.step.role !== 'user';
+    if (view === 'conversation') return conversationNote(target.step);
     return true;
   }
   if (only) return target.kind === 'ask' && flatToolSteps(target.round.steps).some(only.test);
@@ -3533,9 +3548,8 @@ function ownTargets(needle, places) {
 // only the beginning of — tool output, thinking — so it becomes a target on the message's cut
 // block, read whole when the walk gets there. With no cut block at that time the words are
 // in something the page does not draw at all: a field a source keeps beside its transcript,
-// or a row of its own that is not a message (a prompt Claude Code queued while the agent
-// was busy). The message at that time, or the one nearest the row, is still where they
-// are, so it is a target too, shown without marks. hitAt keeps the hit's own time for the jumps
+// or a row of its own that is not a message. The message at that time, or the one nearest
+// the row, is still where they are, so it is a target too, shown without marks. hitAt keeps the hit's own time for the jumps
 // that look for it.
 function cutTargets(times, places, own) {
   const all = windowMessages();

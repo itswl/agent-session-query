@@ -493,6 +493,12 @@ type claudeProbe struct {
 	Message     struct {
 		Usage json.RawMessage `json:"usage"`
 	} `json:"message"`
+	Attachment struct {
+		Type        string `json:"type"`
+		CommandMode string `json:"commandMode"`
+		IsMeta      bool   `json:"isMeta"`
+		Prompt      any    `json:"prompt"`
+	} `json:"attachment"`
 }
 
 func (p claudeProbe) counts(subagent bool) bool {
@@ -504,6 +510,10 @@ func (p claudeProbe) counts(subagent bool) bool {
 		return true
 	case "system":
 		return p.Subtype == "compact_boundary" || (p.Subtype == "stop_hook_summary" && len(p.HookErrors) > 0)
+	case "attachment":
+		a := p.Attachment
+		return a.Type == "queued_command" && a.CommandMode == "prompt" && !a.IsMeta &&
+			strings.TrimSpace(ContentText(a.Prompt)) != ""
 	}
 	return false
 }
@@ -557,6 +567,12 @@ func claudeQueuedPrompt(obj map[string]any) bool {
 	return a["type"] == "queued_command" && a["commandMode"] == "prompt" && !Truthy(a["isMeta"])
 }
 
+// claudeQueuedText is the words of a queued prompt: a string, or blocks when an image was
+// pasted with it
+func claudeQueuedText(obj map[string]any) string {
+	return strings.TrimSpace(ContentText(getMap(obj, "attachment")["prompt"]))
+}
+
 // claudeHitRole names who spoke in a queued prompt: the user, not "attachment"
 func claudeHitRole(obj map[string]any) string {
 	if obj["type"] == "attachment" && claudeQueuedPrompt(obj) {
@@ -589,6 +605,23 @@ func (s *ClaudeCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 				"role":      "system",
 				"timestamp": GetOr(obj, "timestamp", ""),
 				"content":   []map[string]any{event},
+			})
+		case "attachment":
+			// What the person typed while the agent was working reaches the model as an
+			// attachment, at the time it was typed, and for most such prompts nothing else
+			// records it: of 78 here, 45 appear nowhere else and 31 more only where a later
+			// compaction summary quotes them. It is the person's words, marked queued: it does
+			// not start a round, because the agent did not stop to answer it.
+			text := claudeQueuedText(obj)
+			if !claudeQueuedPrompt(obj) || text == "" {
+				return true
+			}
+			return sink.add(map[string]any{
+				"id":        GetOr(obj, "uuid", ""),
+				"role":      "user",
+				"timestamp": GetOr(obj, "timestamp", ""),
+				"queued":    true,
+				"content":   []map[string]any{TextBlock(text)},
 			})
 		case "user", "assistant":
 		default:

@@ -68,10 +68,12 @@ type round struct {
 	pending map[string]string
 }
 
-// isRoundStart: a user message carrying human words that is not command plumbing, and
-// not one the CLI assembled (a Codex AGENTS.md or environment row carries injected: true)
+// isRoundStart: a user message carrying human words that is not command plumbing, not one
+// the CLI assembled (a Codex AGENTS.md or environment row carries injected: true), and not
+// one typed while the agent was working (queued: the agent read it without stopping, so
+// the round it arrived in goes on)
 func isRoundStart(m map[string]any) bool {
-	if source.ToStr(m["role"]) != "user" || source.Truthy(m["injected"]) {
+	if source.ToStr(m["role"]) != "user" || source.Truthy(m["injected"]) || source.Truthy(m["queued"]) {
 		return false
 	}
 	text := strings.TrimSpace(source.StripHarnessBlocks(messageText(m["content"])))

@@ -2,7 +2,8 @@
 
 Where the project stands and what might come next, kept current with every release. An
 open item is a candidate, not a promise: each says what it would answer and how worth doing
-it looks now, and an item can leave the list as readily as it joins it.
+it looks now, and an item can leave the list as readily as it joins it. A deferred one was
+decided against for now.
 
 ## Shipped
 
@@ -22,8 +23,6 @@ Roughly in the order they look worth doing.
 
 | Item | What it would answer | How it looks |
 |---|---|---|
-| Remote sources | One view over several machines: another instance's sessions read through its HTTP API, labelled like a `--path` instance | Worth doing. The API already has everything a remote source needs; the work is a source that pages through it, and the failure modes of a network in the middle |
-| `--path` for the database sources | Hermes, OpenClaw and OpenCode data on a mounted disk, a backup or a container volume | Worth doing when someone has such a copy to read; mechanical |
 | Live follow | A running session followed as it grows, with a mark where new content starts | Maybe. The page already refreshes every ten seconds; shorter polling for the open, active session would do most of it |
 | Bookmarks and notes | A session or a round marked to come back to | Maybe. Browser storage keeps the server read-only; worth it only if the list is hard to find things in |
 | Edits made with shell commands | `sed -i`, a redirect or a script counted as changing a file, not only as naming it | Maybe. A command's effect has to be guessed from its text, and a wrong guess is worse than the honest "named in a command" file history gives now |
@@ -32,6 +31,15 @@ Roughly in the order they look worth doing.
 | Storage report | Disk used by source, project and age, as a read-only report | Maybe. Cheap to compute; the service never deletes anything |
 | Two-session compare | Two attempts at the same task side by side: conclusions, failures, files changed, time | Doubtful. Most of what it would line up is already per session in the pack, `/rounds` and file history; it needs a concrete case first |
 | `/metrics` | Prometheus scraping: latency, scan volume, queueing, source errors | Doubtful unless the service runs under monitoring; `/health` and `/stats` cover the rest |
+
+## Deferred
+
+Decided against for now (2026-10-14), kept for when that changes.
+
+| Item | What it would answer | Why not now |
+|---|---|---|
+| Remote sources | One view over several machines: another instance's sessions read through its HTTP API, labelled like a `--path` instance | Each machine's own page and API answer for its sessions today; joining them is the larger piece of work, with a network in the middle |
+| `--path` for the database sources | Hermes, OpenClaw and OpenCode data on a mounted disk, a backup or a container volume | No such copy waiting to be read |
 
 ## Not planned
 

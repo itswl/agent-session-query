@@ -55,15 +55,22 @@ func fullCount(counter func(string, int64) (int, bool), path string) int {
 	return n
 }
 
-// waitForCount enqueues this version of the file and waits until its own count is
-// stored. It cannot poll through countFor: that deliberately answers with the previous
-// version's stale count while a rescan runs (the page shows a stale number rather than
-// "counting…" forever), so the stored entry is checked directly.
+// waitForCount asks for this version of the file the way the page's poll does — again on
+// every pass — and waits until its own count is stored. It cannot read the answer off
+// countFor: that deliberately answers with the previous version's stale count while a
+// rescan runs (the page shows a stale number rather than "counting…" forever), so the
+// stored entry is checked directly.
+//
+// Asking once was not enough. A request that arrives while an older scan is still in
+// flight is folded into it, and when that scan raced a write it is dropped, not banked —
+// the next poll queues the rescan. With one request there was no next poll: the test
+// timed out whenever the dropped scan was still finishing as the request came in, which
+// -race made slow enough to happen on macOS and Windows runners.
 func waitForCount(t *testing.T, cache *fileRecordCache, path string, mod time.Time, size int64) int {
 	t.Helper()
-	cache.countFor(path, mod, size) // enqueue if this version is not counted yet
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
+		cache.countFor(path, mod, size) // queues this version unless a scan is already on it
 		cache.countMu.Lock()
 		hit, ok := cache.counts[path]
 		cache.countMu.Unlock()

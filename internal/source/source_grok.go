@@ -127,8 +127,8 @@ func (s *GrokSource) List() []Record {
 		// Grok titles a session itself, so prefer its title over the opening prompt and
 		// fall back through the same path the other sources take.
 		title := FirstNonEmpty(
-			TitleFromUserText(ToStr(meta["generated_title"])),
-			TitleFromUserText(ToStr(meta["session_summary"])),
+			TitleFromUserText(cutOpenHarnessBlock(ToStr(meta["generated_title"]))),
+			TitleFromUserText(cutOpenHarnessBlock(ToStr(meta["session_summary"]))),
 			grokUserTitle(updates),
 			sid,
 		)

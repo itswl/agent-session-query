@@ -74,7 +74,7 @@ func isRoundStart(m map[string]any) bool {
 	if source.ToStr(m["role"]) != "user" || source.Truthy(m["injected"]) {
 		return false
 	}
-	text := strings.TrimSpace(messageText(m["content"]))
+	text := strings.TrimSpace(source.StripHarnessBlocks(messageText(m["content"])))
 	if text == "" {
 		return false
 	}
@@ -174,7 +174,7 @@ func splitRounds(messages []map[string]any) []round {
 			cur = &round{
 				index:   len(rounds) + 1,
 				startAt: source.ToStr(m["timestamp"]),
-				asked:   strings.TrimSpace(messageText(m["content"])),
+				asked:   strings.TrimSpace(source.StripHarnessBlocks(messageText(m["content"]))),
 				kinds:   map[string]int{},
 				pending: map[string]string{},
 			}

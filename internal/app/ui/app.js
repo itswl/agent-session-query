@@ -1591,12 +1591,33 @@ const PLUMBING_PREFIXES = [
   '<local-command-', '<caveat', 'Caveat:', '<task-notification', '<system-reminder',
 ];
 
+// The blocks a harness closes a user's words with before a model reads them (T3 Code's,
+// on every prompt it gives Grok); the same list the server's StripHarnessBlocks keeps
+const HARNESS_BLOCKS = ['runtime_info', 'pull_request_linking'];
+
+// stripHarness drops the harness blocks that close a text, however many. Only those: the
+// same tag written mid-question is the user's, and stays.
+function stripHarness(text) {
+  let t = String(text || '').trimEnd();
+  for (;;) {
+    let stripped = false;
+    for (const tag of HARNESS_BLOCKS) {
+      if (!t.endsWith('</' + tag + '>')) continue;
+      const open = t.lastIndexOf('<' + tag + '>');
+      if (open < 0) continue;
+      t = t.slice(0, open).trimEnd();
+      stripped = true;
+    }
+    if (!stripped) return t;
+  }
+}
+
 // isAsk: a user message carrying words of its own, not command plumbing, not one the CLI
 // assembled (those arrive flagged injected), and not one that is wholly an XML-style
 // element — a person does not type a question that way
 function isAsk(message) {
   if (message.role !== 'user' || message.injected) return false;
-  const text = messageWords(message).trim();
+  const text = stripHarness(messageWords(message)).trim();
   if (!text) return false;
   if (PLUMBING_PREFIXES.some((prefix) => text.startsWith(prefix))) return false;
   return !wrappedInTag(text);
@@ -2973,13 +2994,13 @@ function tocCard() {
   return card;
 }
 
-// tocPreviewOf is a message's own words, folded to one line; "" when it has none (a
-// tool result, an attachment, a bare signature)
+// tocPreviewOf is a message's own words, folded to one line, without the blocks a harness
+// closed them with; "" when it has none (a tool result, an attachment, a bare signature)
 function tocPreviewOf(message, max) {
   const limit = max || 70;
   for (const block of message.content || []) {
     if (block.type === 'text' && block.content) {
-      const one = plainText(block.content);
+      const one = plainText(stripHarness(block.content));
       if (!one) continue;
       return one.length > limit ? one.slice(0, limit) + '…' : one;
     }

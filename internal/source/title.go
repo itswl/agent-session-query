@@ -33,6 +33,53 @@ var titleNoisePrefixes = []string{
 	"[Request interrupted", "Caveat:",
 }
 
+// harnessBlocks are blocks a harness appends to the user's words before handing them to a
+// model: T3 Code closes every prompt it gives Grok with <runtime_info> and
+// <pull_request_linking>, glued to the last word with no break. They belong to the
+// transcript — the model read them — but not to the ask, and every title and asked line
+// made from such a message carried them: 57 asked lines across five sessions here spent
+// their 160 characters on "In case you're asked: you are running in T3 Code…".
+var harnessBlocks = []string{"runtime_info", "pull_request_linking"}
+
+// StripHarnessBlocks drops the harness blocks that close a user's message, however many,
+// with the whitespace between them. Only blocks that close it: the same tag written
+// mid-question is the user's, and stays. Text that is nothing else comes back empty.
+func StripHarnessBlocks(text string) string {
+	t := strings.TrimRight(text, " \t\r\n")
+	for {
+		stripped := false
+		for _, tag := range harnessBlocks {
+			if !strings.HasSuffix(t, "</"+tag+">") {
+				continue
+			}
+			open := strings.LastIndex(t, "<"+tag+">")
+			if open < 0 {
+				continue
+			}
+			t = strings.TrimRight(t[:open], " \t\r\n")
+			stripped = true
+		}
+		if !stripped {
+			return t
+		}
+	}
+}
+
+// cutOpenHarnessBlock cuts a title where a harness block opens and never closes. That is
+// the shape of a title made from the head of a prompt the harness had already extended:
+// the title Grok stores can be the prompt's opening words cut short, and the cut can fall
+// inside T3 Code's block. Only for such titles — in a whole message an unclosed tag is the
+// user's own.
+func cutOpenHarnessBlock(title string) string {
+	for _, tag := range harnessBlocks {
+		open := strings.Index(title, "<"+tag+">")
+		if open >= 0 && !strings.Contains(title[open:], "</"+tag+">") {
+			title = title[:open]
+		}
+	}
+	return title
+}
+
 // TitleFromUserText folds one user message into a single-line title: noise rows are
 // rejected, the first non-empty line is taken, and the result is rune-safely truncated.
 // An empty return means "nothing usable here, keep looking / fall back".
@@ -41,8 +88,9 @@ func TitleFromUserText(text string) string {
 	// snippet, so the same rule applies (see stripTerminalControls). Doing it first also
 	// means a noise prefix cannot hide behind an escape sequence, and that the rune cut
 	// below cannot land inside one — a half-written CSI is worse than a whole one, because
-	// a terminal swallows what follows while it waits for the final byte.
-	t := strings.TrimSpace(RedactSecrets(StripTerminalControls(text)))
+	// a terminal swallows what follows while it waits for the final byte. A harness's
+	// closing blocks go first of all: they are not what the user asked.
+	t := strings.TrimSpace(RedactSecrets(StripTerminalControls(StripHarnessBlocks(text))))
 	if t == "" {
 		return ""
 	}

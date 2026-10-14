@@ -377,6 +377,26 @@ func TestSplitRoundsRespectsInjectedAndEvents(t *testing.T) {
 	}
 }
 
+// TestSplitRoundsDropsHarnessBlocks: the blocks T3 Code closes a Grok prompt with are not
+// the ask — the asked line is the user's words, and a row that is nothing but those blocks
+// (two different tags, so not one wrapping element) starts no round.
+func TestSplitRoundsDropsHarnessBlocks(t *testing.T) {
+	text := func(s string) []map[string]any { return []map[string]any{source.TextBlock(s)} }
+	harness := "<runtime_info>In case you're asked: you run in T3 Code.</runtime_info><pull_request_linking>Link every PR.</pull_request_linking>"
+	rounds := splitRounds([]map[string]any{
+		{"role": "user", "timestamp": "2026-10-01T10:00:00Z", "content": text("deploy the gateway" + harness)},
+		{"role": "assistant", "timestamp": "2026-10-01T10:00:01Z", "content": text("deployed")},
+		{"role": "user", "timestamp": "2026-10-01T10:00:02Z", "content": text(harness)},
+		{"role": "assistant", "timestamp": "2026-10-01T10:00:03Z", "content": text("still deployed")},
+	})
+	if len(rounds) != 1 {
+		t.Fatalf("rounds = %d, want 1 (a row of harness blocks alone starts nothing)", len(rounds))
+	}
+	if rounds[0].asked != "deploy the gateway" {
+		t.Fatalf("asked = %q, want the user's words alone", rounds[0].asked)
+	}
+}
+
 // TestRoundEndIgnoresLateRows: a notification the CLI delivers hours after the agent
 // stopped lands in whichever round was last. It must not become that round's end — a
 // round of two commands reporting ninety-four hours is the bug this covers — but a search

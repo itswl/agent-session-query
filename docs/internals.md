@@ -232,13 +232,14 @@ drops. The page fetches a cut block's message again with `full=1` when asked.
 ### Rounds and the brief
 
 `brief.go` segments a session at each real user message (`isRoundStart`: a user row with
-words of its own, not command plumbing, not `injected`). A round carries the files any tool
-named and, separately, the files a write-kind call changed and did not fail at — a write
-waits for its result by call id, so a failed edit is not a change — plus `failures`, the
-count of results that reported an error or an interruption. An `interrupted` event in the
-round marks it interrupted outright; the ask-after-ask heuristic covers the sources that
-record no such event. The brief carries the resume command with the `cd` the page prepends
-for the same reason (see `resumeCommand`).
+words of its own once a harness's closing blocks are dropped — see Session titles — not
+command plumbing, not `injected`). A round carries the files any tool named and, separately,
+the files a write-kind call changed and did not fail at — a write waits for its result by
+call id, so a failed edit is not a change — plus `failures`, the count of results that
+reported an error or an interruption. An `interrupted` event in the round marks it
+interrupted outright; the ask-after-ask heuristic covers the sources that record no such
+event. The brief carries the resume command with the `cd` the page prepends for the same
+reason (see `resumeCommand`).
 
 **A round ends when the work ends, not when its rows do.** `endAt` is the last row that is
 the ask, an assistant message, or a row carrying a tool call, a tool result or an event.
@@ -319,6 +320,17 @@ caveat rows, Codex with AGENTS.md instructions and environment context — all o
 (each prefix was seen in real local data), takes the first line of what survives, and
 truncates to 80 runes. Coverage measured locally: 190/192 Claude sessions, 31/33 Gemini,
 2/2 Pi, 2/2 Codex come out with a title.
+
+Nor is the end of a user message always the person's: a harness can append blocks of its
+own before a model reads it. T3 Code closes every prompt it hands Grok with
+`<runtime_info>` and `<pull_request_linking>`, glued to the last word, and those blocks
+became the title and the asked line of every such session — 57 asked lines across five
+sessions here. `StripHarnessBlocks` drops them when they close a message, in either order
+and with the blanks between, and leaves the same tag written mid-question alone. Titles, a
+round's asked line, a pack's opening and the page's table of contents read through it; the
+transcript keeps the blocks, because the model did read them. Grok's own stored title can
+be the prompt's opening words cut short, stopping inside a block, and such a title is cut
+where the block opens.
 
 The extraction runs inside the `fileRecordCache` build callback, so it costs nothing on
 unchanged files; the first read after a change reads up to the head-scan cap, which is

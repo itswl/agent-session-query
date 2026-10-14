@@ -36,10 +36,53 @@ func TestTitleFromUserText(t *testing.T) {
 		{"whitespace only", "  \n  ", ""},
 		{"leading and trailing blanks", "  看下这个报错  ", "看下这个报错"},
 		{"the first line wins over pasted output", "评审一下这个服务\nError: boom\nError: boom2", "评审一下这个服务"},
+		// T3 Code glues its blocks to the last word, so they sat on the first line
+		{"a harness's closing blocks are not the ask", "修一下构建<runtime_info>In case you're asked: you run in T3 Code.</runtime_info><pull_request_linking>Link every PR.</pull_request_linking>", "修一下构建"},
 	}
 	for _, c := range cases {
 		if got := TitleFromUserText(c.in); got != c.want {
 			t.Errorf("%s: titleFromUserText = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestStripHarnessBlocks: only blocks that close the message go, in either order and with
+// the blanks between them; the same tag mid-question is the user's.
+func TestStripHarnessBlocks(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"glued to the last word", "fix the build<runtime_info>you run in T3 Code</runtime_info><pull_request_linking>link PRs</pull_request_linking>", "fix the build"},
+		{"blank lines between", "fix the build\n\n<runtime_info>x</runtime_info>\n<pull_request_linking>y</pull_request_linking>\n", "fix the build"},
+		{"either order", "fix the build<pull_request_linking>y</pull_request_linking><runtime_info>x</runtime_info>", "fix the build"},
+		{"one of them", "fix the build\n<runtime_info>x</runtime_info>", "fix the build"},
+		{"the tag mid-question stays", "why does <runtime_info>x</runtime_info> show up in my prompts?", "why does <runtime_info>x</runtime_info> show up in my prompts?"},
+		{"a closing tag with no opening stays", "it ends with </runtime_info>", "it ends with </runtime_info>"},
+		{"other tags are not this rule's", "look <system-reminder>x</system-reminder>", "look <system-reminder>x</system-reminder>"},
+		{"nothing else", "<runtime_info>x</runtime_info><pull_request_linking>y</pull_request_linking>", ""},
+		{"plain words", "fix the build", "fix the build"},
+	}
+	for _, c := range cases {
+		if got := StripHarnessBlocks(c.in); got != c.want {
+			t.Errorf("%s: StripHarnessBlocks = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestCutOpenHarnessBlock: a title made from a prompt's head can stop inside a harness
+// block; it is cut where the block opens. A block that closes is not this rule's.
+func TestCutOpenHarnessBlock(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"stopped inside the first block", "fix the build<runtime_info>In case you're asked: you are runn", "fix the build"},
+		{"stopped inside the second", "fix the build<runtime_info>x</runtime_info><pull_request_linking>When the t3", "fix the build<runtime_info>x</runtime_info>"},
+		{"a closed block is left to StripHarnessBlocks", "fix the build<runtime_info>x</runtime_info>", "fix the build<runtime_info>x</runtime_info>"},
+		{"no block", "Reading sample.txt", "Reading sample.txt"},
+	}
+	for _, c := range cases {
+		if got := cutOpenHarnessBlock(c.in); got != c.want {
+			t.Errorf("%s: cutOpenHarnessBlock = %q, want %q", c.name, got, c.want)
 		}
 	}
 }

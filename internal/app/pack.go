@@ -534,20 +534,21 @@ func packSnippet(text string) string {
 }
 
 // blockText is the first text block of a message, or the value itself when a source hands
-// back a plain string. The empty return means "nothing said here" and callers skip it.
+// back a plain string, without the blocks a harness closed it with. The empty return means
+// "nothing said here" and callers skip it.
 func blockText(content any) string {
 	if blocks, ok := content.([]map[string]any); ok {
 		for _, block := range blocks {
 			if source.ToStr(block["type"]) != "text" {
 				continue
 			}
-			if text := strings.TrimSpace(source.ToStr(block["content"])); text != "" {
+			if text := strings.TrimSpace(source.StripHarnessBlocks(source.ToStr(block["content"]))); text != "" {
 				return text
 			}
 		}
 		return ""
 	}
-	return strings.TrimSpace(source.ContentText(content))
+	return strings.TrimSpace(source.StripHarnessBlocks(source.ContentText(content)))
 }
 
 // packQuote folds an outcome onto one line and caps it: a conclusion is a paragraph or a

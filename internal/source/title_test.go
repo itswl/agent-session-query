@@ -144,3 +144,22 @@ func TestFirstUserTitlePerSource(t *testing.T) {
 		}
 	}
 }
+
+// TestEpochToTimeIsExact: an epoch in milliseconds is the instant it names, to the
+// microsecond — not 14 nanoseconds before it, as a float division made it, which put a
+// message just outside a window anchored at its own time
+func TestEpochToTimeIsExact(t *testing.T) {
+	for _, c := range []struct {
+		in   float64
+		want string
+	}{
+		{1791312688214, "2026-10-06T18:51:28.214Z"},
+		{1789705756.123, "2026-09-18T04:29:16.123Z"},
+		{1789705756, "2026-09-18T04:29:16Z"},
+	} {
+		got, ok := epochToTime(c.in)
+		if !ok || got.Format("2006-01-02T15:04:05.999999999Z07:00") != c.want {
+			t.Errorf("epochToTime(%v) = %v, want %s", c.in, got, c.want)
+		}
+	}
+}

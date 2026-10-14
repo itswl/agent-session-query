@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -751,19 +752,25 @@ func ParseTimestamp(s string) (time.Time, bool) {
 // epochToTime converts epoch seconds or milliseconds to UTC. Anything past 1e11 is
 // treated as milliseconds (1e11 seconds is the year 5138, 1e11 milliseconds is 1973 —
 // the boundary cannot be mistaken).
+//
+// The instant is counted in whole microseconds, not carried through a fraction of a second:
+// 1791312688214 ms divided by a thousand is 1791312688.2139999866 in a float, and that put a
+// pi message 14 nanoseconds before the instant at=1791312688214 asked for — so a window
+// anchored at a message's own time began after it, and reading a cut output whole found
+// nothing to swap in.
 func epochToTime(v float64) (time.Time, bool) {
 	if v == 0 {
 		return time.Time{}, false
 	}
+	micros := v * 1e6
 	if v > 1e11 || v < -1e11 {
-		v /= 1000
+		micros = v * 1e3
 	}
-	if v < -62135596800 || v > 253402300799 {
+	sec := micros / 1e6
+	if sec < -62135596800 || sec > 253402300799 {
 		return time.Time{}, false
 	}
-	sec := int64(v)
-	nsec := int64((v - float64(sec)) * float64(time.Second))
-	return time.Unix(sec, nsec).UTC(), true
+	return time.UnixMicro(int64(math.Round(micros))).UTC(), true
 }
 
 // utcFromSeconds formats an epoch-seconds timestamp into the two UTC shapes;

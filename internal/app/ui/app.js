@@ -44,8 +44,12 @@ const state = {
   authRequired: true,
   serverVersion: '',   // what /health said; a poll answered by another version reloads the page
   insets: null,        // what the system covers of the page, measured or assumed
-  sessions: [],
-  byId: new Map(),
+  sessions: [],        // the sessions themselves; their subagents are in agentsOf
+  byId: new Map(),     // every record by sessionId, subagents' included
+  agentsOf: new Map(), // session id → the subagents that ran in it, as a tree in start order
+  agentByCall: new Map(), // the tool call that started a subagent → its record
+  openAgents: new Set(),  // sessions whose subagents are unfolded in the list
+  revealedFor: '',        // the selection whose session's subagents were last unfolded for it
   selectedId: '',
   keyword: '',
   source: '',
@@ -404,15 +408,97 @@ function showApp() {
 // Left pane: the session list (patched incrementally by sessionId, never rebuilt whole)
 // ---------------------------------------------------------------------------
 
+// indexAgents files the Claude Code subagents under the sessions they ran in. A subagent
+// is a transcript of its own, listed under its session rather than beside it: listed flat
+// they would be most of the list.
+function indexAgents(agents) {
+  const bySession = new Map();
+  for (const agent of agents) {
+    if (!bySession.has(agent.parentSessionId)) bySession.set(agent.parentSessionId, []);
+    bySession.get(agent.parentSessionId).push(agent);
+  }
+  state.agentsOf = new Map();
+  for (const [sessionId, list] of bySession) state.agentsOf.set(sessionId, agentTree(list));
+  state.agentByCall = new Map(agents.filter((a) => a.parentToolUseId).map((a) => [a.parentToolUseId, a]));
+}
+
+// agentTree orders one session's subagents the way they were handed out: each one followed
+// by the agents it spawned, siblings in the order they started
+function agentTree(agents) {
+  const children = new Map();
+  for (const agent of agents) {
+    const key = agent.parentAgentId || '';
+    if (!children.has(key)) children.set(key, []);
+    children.get(key).push(agent);
+  }
+  for (const list of children.values()) {
+    list.sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  }
+  const out = [];
+  const seen = new Set();
+  const walk = (key) => {
+    for (const agent of children.get(key) || []) {
+      if (seen.has(agent.sessionId)) continue;
+      seen.add(agent.sessionId);
+      out.push(agent);
+      walk(agent.sessionId);
+    }
+  };
+  walk('');
+  // An agent whose spawner is not on disk still belongs to the session
+  for (const agent of agents) {
+    if (seen.has(agent.sessionId)) continue;
+    seen.add(agent.sessionId);
+    out.push(agent);
+    walk(agent.sessionId);
+  }
+  return out;
+}
+
+function matchesKeyword(s, keyword) {
+  return [s.sessionId, s.shortKey, s.key, s.cwd, s.agentType]
+    .filter(Boolean)
+    .some((field) => String(field).toLowerCase().includes(keyword));
+}
+
+// A session is listed when it matches the filter or one of its agents does
 function visibleSessions() {
   const keyword = state.keyword.toLowerCase();
   return state.sessions.filter((s) => {
     if (state.source && s.source !== state.source) return false;
     if (!keyword) return true;
-    return [s.sessionId, s.shortKey, s.key, s.cwd]
-      .filter(Boolean)
-      .some((field) => String(field).toLowerCase().includes(keyword));
+    return matchesKeyword(s, keyword) ||
+      (state.agentsOf.get(s.sessionId) || []).some((agent) => matchesKeyword(agent, keyword));
   });
+}
+
+// agentRows are the subagent rows under a session: every one when the session's agents are
+// unfolded, otherwise only those a filter matched
+function agentRows(session) {
+  const agents = state.agentsOf.get(session.sessionId) || [];
+  if (!agents.length) return [];
+  const keyword = state.keyword.toLowerCase();
+  const shown = state.openAgents.has(session.sessionId)
+    ? agents
+    : keyword ? agents.filter((a) => matchesKeyword(a, keyword)) : [];
+  return shown.map((agent) => ({ kind: 'agent', id: agent.sessionId, session: agent }));
+}
+
+// revealSelectedAgent unfolds the session a newly selected subagent ran in, so the open
+// transcript has its row in the list. Once per selection: folding the session again while
+// the agent stays open is a choice the next refresh keeps.
+function revealSelectedAgent() {
+  if (state.revealedFor === state.selectedId) return;
+  const record = state.byId.get(state.selectedId);
+  if (!record) return; // not listed yet; the next render tries again
+  state.revealedFor = state.selectedId;
+  if (record.parentSessionId) state.openAgents.add(record.parentSessionId);
+}
+
+function toggleAgents(sessionId) {
+  if (state.openAgents.has(sessionId)) state.openAgents.delete(sessionId);
+  else state.openAgents.add(sessionId);
+  renderList();
 }
 
 // listRows lays out the rows to display: by time that is just a run of sessions, by
@@ -422,7 +508,7 @@ function listRows() {
   const sessions = visibleSessions();
   let rows;
   if (state.grouping !== 'project') {
-    rows = sessions.map((s) => ({ kind: 'session', id: s.sessionId, session: s }));
+    rows = sessions.flatMap((s) => [{ kind: 'session', id: s.sessionId, session: s }, ...agentRows(s)]);
   } else {
     // sessions is already newest-first, so Map insertion order puts the most recently
     // touched project first
@@ -442,7 +528,7 @@ function listRows() {
         count: items.length, active: items.some((s) => s.isActive), collapsed,
       });
       if (collapsed) continue;
-      for (const s of items) rows.push({ kind: 'session', id: s.sessionId, session: s });
+      for (const s of items) rows.push({ kind: 'session', id: s.sessionId, session: s }, ...agentRows(s));
     }
   }
   return rows.concat(contentRows(sessions));
@@ -547,6 +633,7 @@ function fillGroup(node, row) {
 
 function buildRow(row) {
   if (row.kind === 'group') return buildGroup(row.id);
+  if (row.kind === 'agent') return buildItem(row.id);
   if (row.kind === 'content-head') return buildContentHead(row.id);
   if (row.kind === 'hit') return buildHit(row.id, row.session.sessionId);
   return buildItem(row.id);
@@ -564,6 +651,12 @@ function buildItem(sessionId) {
   row.appendChild(el('span', 'live'));  // recent-activity dot (newest message inside activeWindow)
   row.appendChild(el('span', 'msgs'));  // message count (from the source, or learned on open)
   row.appendChild(el('span', 'time'));  // relative time
+  // How many subagents ran in the session, and the way to unfold them under it
+  const agents = button('agents-toggle hidden', '', (event) => {
+    event.stopPropagation();
+    toggleAgents(item.dataset.id);
+  });
+  row.appendChild(agents);
   item.appendChild(row);
   item.appendChild(el('div', 'key'));
   item.appendChild(el('div', 'meta'));
@@ -571,10 +664,23 @@ function buildItem(sessionId) {
 }
 
 function fillItem(item, session) {
-  const [tag, live, msgs, time] = item.children[0].children;
-  const cls = sourceClass(session.source);
+  const [tag, live, msgs, time, agents] = item.children[0].children;
+  const agent = !!session.parentSessionId;
+  item.classList.toggle('agent', agent);
+  item.style.setProperty('--depth', agent ? String(Number(session.agentDepth) || 1) : '0');
+  // A subagent's row names its kind where a session's names its source: the source is
+  // the session's, one row up
+  const cls = agent ? 'tag agent-tag' : sourceClass(session.source);
   if (tag.className !== cls) tag.className = cls;
-  setText(tag, session.source);
+  setText(tag, agent ? session.agentType || 'agent' : session.source);
+  const spawned = agent ? 0 : Number(session.subagents) || 0;
+  agents.classList.toggle('hidden', !spawned);
+  if (spawned) {
+    const open = state.openAgents.has(session.sessionId);
+    setText(agents, (open ? '\u25be ' : '\u25b8 ') + spawned + (spawned === 1 ? ' agent' : ' agents'));
+    agents.title = (open ? 'Fold' : 'Show') + ' the subagents that ran in this session';
+    agents.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
   // File-backed sources always report status done, so "running" can only be inferred
   // from the update time (the server works this out)
   // The dot means the newest message is recent, which is all the server can know — so
@@ -596,8 +702,8 @@ function fillItem(item, session) {
   key.title = session.key || '';
 
   const meta = item.children[2];
-  setText(meta, session.cwd || '');
-  meta.classList.toggle('hidden', !session.cwd);
+  setText(meta, agent ? '' : session.cwd || '');
+  meta.classList.toggle('hidden', agent || !session.cwd);
 }
 
 // The metadata filter came up empty. If something was typed, the user was most likely
@@ -617,6 +723,7 @@ function emptyListState() {
 
 function renderList() {
   const list = $('list');
+  revealSelectedAgent();
   const rows = listRows();
 
   if (rows.length === 0) {
@@ -786,12 +893,14 @@ function buildHit(rowId, sessionId) {
     // Land on the words, not only near them: the find bar takes the query, and the match
     // the window is anchored at is the one shown
     const keyword = state.keyword.trim();
+    // A hit inside one of the session's subagents opens that agent's transcript
+    const target = first.agentId && state.byId.has(first.agentId) ? first.agentId : item.dataset.sid;
     if (keyword) {
       $('find').value = keyword;
       $('find-bar').classList.remove('hidden');
-      state.reveal = { kind: 'find', sessionId: item.dataset.sid, direction: 1, at: parseTime(first.timestamp) };
+      state.reveal = { kind: 'find', sessionId: target, direction: 1, at: parseTime(first.timestamp) };
     }
-    selectSession(item.dataset.sid, first.timestamp || '');
+    selectSession(target, first.timestamp || '');
     // Already open at that very match, nothing is fetched and nothing would land it
     if (state.reveal && !state.busy) settleReveal();
   });
@@ -827,8 +936,9 @@ function fillHit(item, hit) {
   // the rest in context
   const first = (hit.matches || [])[0] || {};
   const snippet = item.children[2];
-  setText(snippet, first.snippet || '');
-  snippet.title = (first.role || '') + ' · ' + (first.timestamp || '');
+  setText(snippet, (first.agentId ? '\u21b3 ' + (first.agent || 'agent') + ': ' : '') + (first.snippet || ''));
+  snippet.title = (first.agentId ? 'in the subagent ' + (first.agent || first.agentId) + ' · ' : '') +
+    (first.role || '') + ' · ' + (first.timestamp || '');
 }
 
 
@@ -921,6 +1031,7 @@ function renderStreamHead(record) {
   if (record.status) tagrow.appendChild(statusTag(record.status));
   // Grok keeps an archived session in a directory of its own; it is still history
   if (record.archived) tagrow.appendChild(el('span', 'tag', 'archived'));
+  if (record.parentSessionId) tagrow.appendChild(el('span', 'tag agent-tag', record.agentType || 'agent'));
   if (record.updatedAt) {
     const time = el('span', 'time', relTime(record.updatedAt));
     time.title = record.updatedAt;
@@ -940,6 +1051,8 @@ function renderStreamHead(record) {
     meta.appendChild(branch);
   }
   box.appendChild(meta);
+  // A subagent's transcript is read in the session that started it: the way back up
+  if (record.parentSessionId) box.appendChild(agentLineage(record));
 
   const bar = el('div', 'toolbar');
   bar.appendChild(segmented(
@@ -1037,6 +1150,26 @@ function renderStreamHead(record) {
 
   main.replaceChildren(box);
   settle();
+}
+
+// agentLineage is where a subagent ran: the session, and the agent that spawned it when that
+// was not the session itself, each a link to its transcript
+function agentLineage(record) {
+  const line = el('div', 'agent-lineage');
+  const up = (label, target) => {
+    const link = button('linkish', label, () => selectSession(target.sessionId));
+    link.title = 'Open ' + (target.shortKey || target.sessionId);
+    return link;
+  };
+  line.appendChild(el('span', 'dim', 'subagent of '));
+  const session = state.byId.get(record.parentSessionId);
+  line.appendChild(session ? up(session.shortKey || session.sessionId, session) : el('span', '', record.parentSessionId));
+  const spawner = record.parentAgentId && state.byId.get(record.parentAgentId);
+  if (spawner) {
+    line.appendChild(el('span', 'dim', ' · spawned by '));
+    line.appendChild(up(spawner.shortKey || spawner.sessionId, spawner));
+  }
+  return line;
 }
 
 // headSettler notes a head's height; the function it returns scrolls the page by however
@@ -2188,6 +2321,20 @@ function toolStepNode(step, round, options) {
     renderMessages();
   });
   row.appendChild(head);
+  // A call that started a subagent leads to the agent's own transcript
+  const agent = step.call && state.agentByCall.get(step.call.id);
+  if (agent) {
+    row.classList.add('has-agent');
+    const link = button('ghost tiny agent-open', 'transcript \u203a', (event) => {
+      event.stopPropagation();
+      selectSession(agent.sessionId);
+    });
+    const n = Number(agent.messageCount) || 0;
+    link.title = 'Open the agent\u2019s own transcript: ' + (agent.shortKey || agent.sessionId) +
+      (n ? ' · ' + n + ' messages' : '');
+    link.setAttribute('aria-label', link.title);
+    row.appendChild(link);
+  }
   if (open) {
     row.appendChild(stepDetails(step));
   } else if (opts.pinned && result && result.content) {
@@ -2802,6 +2949,9 @@ function sessionCard(record, final) {
     // the checkout is on now: the work is months old and the branch may be gone.
     ['Branch', record.branch],
     ['CLI', record.cliVersion],
+    ['Agent', record.agentType],
+    ['Depth', record.parentSessionId ? record.agentDepth : undefined],
+    ['Subagents', record.subagents],
     ['Token', record.totalTokens],
     ['Cost $', record.estimatedCostUsd],
     ['File', record.hasFile ? 'present' : 'missing (may exist only in state.db)'],
@@ -3999,10 +4149,12 @@ function scheduleCountWarmup() {
 async function refresh(options) {
   const force = !!(options && options.force);
   try {
-    const data = await api('/sessions');
+    const data = await api('/sessions?subagents=1');
     if (serverChanged(data.version)) return;
-    state.sessions = data.sessions || [];
-    state.byId = new Map(state.sessions.map((s) => [s.sessionId, s]));
+    const all = data.sessions || [];
+    state.sessions = all.filter((s) => !s.parentSessionId);
+    state.byId = new Map(all.map((s) => [s.sessionId, s]));
+    indexAgents(all.filter((s) => s.parentSessionId));
     state.loadedAt = new Date().toLocaleTimeString();
     renderSources();
     renderList();
@@ -4034,9 +4186,10 @@ function isTyping(node) {
 }
 
 function moveSelection(delta) {
-  // Both halves are navigable: metadata matches first, then the content hits
+  // Both halves are navigable: metadata matches first, then the content hits — and the
+  // subagents a session has unfolded, in their place under it
   const sessions = listRows()
-    .filter((r) => r.kind === 'session' || r.kind === 'hit')
+    .filter((r) => r.kind === 'session' || r.kind === 'agent' || r.kind === 'hit')
     .map((r) => r.session);
   if (sessions.length === 0) return;
   const index = sessions.findIndex((s) => s.sessionId === state.selectedId);
@@ -4131,6 +4284,7 @@ $('logout').addEventListener('click', () => {
   state.token = '';
   state.sessions = [];
   state.byId = new Map();
+  indexAgents([]);
   state.selectedId = '';
   state.detail = null;
   if (state.timer) clearInterval(state.timer);

@@ -114,7 +114,11 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   session written within the last couple of minutes gets a pulsing dot (recent activity,
   not a liveness check — hovering it says how long ago). Rows carry the session's message count
   — counted from the file in the background the first time it is listed, so the count
-  appears a moment after the page does rather than being paid for on the request path
+  appears a moment after the page does rather than being paid for on the request path. A
+  Claude Code session that handed work to **subagents** says how many ("▸ 12 agents"), and
+  unfolds them under it, nested the way they were spawned; each opens as a transcript of
+  its own, with a link back to the session, and an `Agent` step in the session leads to the
+  transcript it started
 - **Middle**: the conversation, read by rounds — you asked, the agent worked, the agent
   answered. The work between an ask and its reply folds to one line: *72 steps · 61
   commands · changed 2 files · 1 failed · 24m39s*. A failed step stays in view when the

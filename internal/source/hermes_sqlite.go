@@ -11,8 +11,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
-	_ "modernc.org/sqlite" // pure-Go SQLite driver (no cgo, cross-compilation unaffected)
+	"modernc.org/sqlite" // pure-Go SQLite driver (no cgo, cross-compilation unaffected)
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // hermesSQLiteFinal reads Hermes's state.db for a session's final message.
@@ -30,14 +32,21 @@ func hermesSQLiteFinal(dbPath, mode, sessionID, status string) map[string]any {
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil
 	}
-
-	db, err := openHermesDB(dbPath)
+	var final map[string]any
+	err := readHermesDB(dbPath, func(db *sql.DB) (err error) {
+		final, err = hermesFinalFrom(db, mode, sessionID, status)
+		return err
+	})
 	if err != nil {
-		warnHermesSQLite(sessionID, err)
+		warnHermesSQLite("the final message", sessionID, err)
 		return nil
 	}
-	defer db.Close()
+	return final
+}
 
+// hermesFinalFrom is one attempt at hermesSQLiteFinal's read; nil without an error is "no
+// final message here"
+func hermesFinalFrom(db *sql.DB, mode, sessionID, status string) (map[string]any, error) {
 	var messageCount sql.NullInt64
 	var inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens sql.NullInt64
 	var estimatedCost sql.NullFloat64
@@ -56,11 +65,13 @@ func hermesSQLiteFinal(dbPath, mode, sessionID, status string) map[string]any {
 	case errors.Is(err, sql.ErrNoRows):
 		hasSession = false
 	case err != nil:
-		warnHermesSQLite(sessionID, err)
-		return nil
+		return nil, err
 	}
 
-	shown := hermesShownClause(db, "")
+	shown, err := hermesShownClause(db, "")
+	if err != nil {
+		return nil, err
+	}
 	var id, content, finishReason, reasoning, timestamp sql.NullString
 	row = db.QueryRow(
 		`SELECT id, content, finish_reason, reasoning, timestamp
@@ -75,10 +86,9 @@ func hermesSQLiteFinal(dbPath, mode, sessionID, status string) map[string]any {
 	)
 	switch err := row.Scan(&id, &content, &finishReason, &reasoning, &timestamp); {
 	case errors.Is(err, sql.ErrNoRows):
-		return nil
+		return nil, nil
 	case err != nil:
-		warnHermesSQLite(sessionID, err)
-		return nil
+		return nil, err
 	}
 
 	// Fall back to the real count when message_count is missing or zero
@@ -93,8 +103,7 @@ func hermesSQLiteFinal(dbPath, mode, sessionID, status string) map[string]any {
 			sessionID,
 		).Scan(&actual)
 		if err != nil {
-			warnHermesSQLite(sessionID, err)
-			return nil
+			return nil, err
 		}
 		if actual.Valid {
 			count = actual.Int64
@@ -126,7 +135,7 @@ func hermesSQLiteFinal(dbPath, mode, sessionID, status string) map[string]any {
 		"thinking":     reasoning.String,
 		"toolCalls":    []any{},
 		"usage":        usage,
-	}
+	}, nil
 }
 
 func nullIntOrZero(v sql.NullInt64) int64 {
@@ -152,15 +161,71 @@ func sqliteURI(dbPath string) string {
 	return "file:" + filepath.ToSlash(dbPath)
 }
 
-// openHermesDB opens state.db read-only: no -wal/-shm files, no changes to someone
-// else's database
+// sqliteBusyTimeout is how long a read waits for a write to finish before SQLite calls the
+// database locked. Every database read here belongs to a program that is still writing to
+// it, and without a timeout SQLite gives up at once: against Hermes's state.db, which a
+// container writes while the host reads, the service log had "database is locked" 17 times
+// — each one a final message or a page of messages missing for no reason but timing.
+const sqliteBusyTimeout = 2 * time.Second
+
+// sqliteReadOnlyDSN opens a database read-only — no -wal/-shm files, no changes to someone
+// else's database — and sets the busy timeout on every connection the pool makes
+func sqliteReadOnlyDSN(dbPath string) string {
+	return sqliteURI(dbPath) + "?mode=ro&_pragma=busy_timeout(" +
+		strconv.FormatInt(sqliteBusyTimeout.Milliseconds(), 10) + ")"
+}
+
+// openHermesDB opens state.db read-only (see sqliteReadOnlyDSN)
 func openHermesDB(dbPath string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", sqliteURI(dbPath)+"?mode=ro")
+	db, err := sql.Open("sqlite", sqliteReadOnlyDSN(dbPath))
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	return db, nil
+}
+
+// hermesRetryPauses are the waits between a read that met a hot journal and its next try.
+//
+// A hot journal is the -journal file a crashed write leaves behind, and a read-only
+// connection cannot roll one back: SQLite fails the read with SQLITE_READONLY_ROLLBACK and
+// never consults the busy timeout, because a crash is not something to wait out. But SQLite
+// calls a journal hot when no one holds a lock on the database, and the locks of a writer in
+// a container need not be visible from the host: there the journal of a commit still in
+// progress can look hot. Such a read was early, not wrong ("attempt to write a readonly
+// database" four times in the same log), and one a moment later finds the journal gone. A
+// journal that outlasts all of these pauses is a real one, and the read fails as before.
+var hermesRetryPauses = []time.Duration{50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond}
+
+// hermesPause waits out one retry pause; a test swaps it to finish the write in between
+var hermesPause = time.Sleep
+
+// readHermesDB opens state.db read-only and runs read on it, again after each pause while
+// the read keeps meeting a journal that looks hot. read must be safe to repeat: whatever an
+// attempt returned is replaced by the next one's.
+func readHermesDB(dbPath string, read func(db *sql.DB) error) error {
+	db, err := openHermesDB(dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	err = read(db)
+	for _, pause := range hermesRetryPauses {
+		if !sqliteHotJournal(err) {
+			break
+		}
+		hermesPause(pause)
+		err = read(db)
+	}
+	return err
+}
+
+// sqliteHotJournal reports a read refused over a journal it could not roll back (see
+// hermesRetryPauses). A locked database is not one: the busy timeout has already waited
+// that out.
+func sqliteHotJournal(err error) bool {
+	var se *sqlite.Error
+	return errors.As(err, &se) && se.Code() == sqlite3.SQLITE_READONLY_ROLLBACK
 }
 
 // hermesSQLiteList lists sessions from state.db's sessions table.
@@ -172,13 +237,27 @@ func openHermesDB(dbPath string) (*sql.DB, error) {
 // cannot read is not an empty database, and a caller that cannot tell the two apart reports
 // the first as the second.
 func hermesSQLiteList(dbPath, mode string, skip map[string]bool) ([]Record, error) {
-	db, err := openHermesDB(dbPath)
+	var out []Record
+	err := readHermesDB(dbPath, func(db *sql.DB) (err error) {
+		out, err = hermesListFrom(db, mode, skip)
+		return err
+	})
 	if err != nil {
-		warnHermesSQLite("list", err)
+		warnHermesSQLite("the session list", "", err)
+	}
+	return out, err
+}
+
+// hermesListFrom is one attempt at hermesSQLiteList's read
+func hermesListFrom(db *sql.DB, mode string, skip map[string]bool) ([]Record, error) {
+	shown, err := hermesShownClause(db, "m.")
+	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
-
+	visible, err := hermesVisibilityClause(db)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := db.Query(`
 		SELECT s.id, COALESCE(NULLIF(s.session_key, ''), s.id),
 		       COALESCE(NULLIF(s.title, ''), NULLIF(s.display_name, ''), ''),
@@ -186,11 +265,10 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) ([]Record, erro
 		       s.input_tokens, s.output_tokens, s.reasoning_tokens, s.estimated_cost_usd,
 		       s.started_at, s.ended_at,
 		       (SELECT MAX(m.timestamp) FROM messages m
-		         WHERE m.session_id = s.id` + hermesShownClause(db, "m.") + `),
+		         WHERE m.session_id = s.id` + shown + `),
 		       s.message_count
-		FROM sessions s` + hermesVisibilityClause(db))
+		FROM sessions s` + visible)
 	if err != nil {
-		warnHermesSQLite("list", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -205,7 +283,6 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) ([]Record, erro
 		if err := rows.Scan(&sid, &key, &displayName, &platform, &model, &cwd,
 			&inputTokens, &outputTokens, &reasoningTokens, &cost, &startedAt, &endedAt, &lastMsg,
 			&messageCount); err != nil {
-			warnHermesSQLite("list", err)
 			return out, err
 		}
 		if !sid.Valid || sid.String == "" || skip[sid.String] {
@@ -266,7 +343,6 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) ([]Record, erro
 	// The rows loop ends on an error too (a truncated read, a database replaced under us),
 	// and the partial list that came back must not be handed up as the whole one
 	if err := rows.Err(); err != nil {
-		warnHermesSQLite("list", err)
 		return out, err
 	}
 	return out, nil
@@ -283,19 +359,20 @@ func hermesSQLiteList(dbPath, mode string, skip map[string]bool) ([]Record, erro
 //
 // With neither column present the list runs unfiltered, which is the safer failure: showing
 // one session Hermes would have hidden beats reporting a database full of sessions as empty.
-func hermesVisibilityClause(db *sql.DB) string {
+// A schema that cannot be read is another matter — the read it is for fails with it, rather
+// than running unfiltered on a guess.
+func hermesVisibilityClause(db *sql.DB) (string, error) {
 	columns, err := tableColumns(db, "sessions")
 	if err != nil {
-		warnHermesSQLite("list", err)
-		return ""
+		return "", err
 	}
 	switch {
 	case columns["hidden"]:
-		return "\n\t\tWHERE COALESCE(s.hidden, 0) = 0"
+		return "\n\t\tWHERE COALESCE(s.hidden, 0) = 0", nil
 	case columns["archived"]:
-		return "\n\t\tWHERE COALESCE(s.archived, 0) = 0"
+		return "\n\t\tWHERE COALESCE(s.archived, 0) = 0", nil
 	}
-	return ""
+	return "", nil
 }
 
 // hermesShownClause is the WHERE fragment (leading AND) that keeps the message rows Hermes
@@ -310,12 +387,16 @@ func hermesVisibilityClause(db *sql.DB) string {
 // shown when it is live or compacted, and hidden only when it is neither. An older
 // state.db without the compacted column keeps the active-only rule, and one without
 // either column is left unfiltered.
-func hermesShownClause(db *sql.DB, alias string) string {
+func hermesShownClause(db *sql.DB, alias string) (string, error) {
 	columns, err := tableColumns(db, "messages")
 	if err != nil {
-		warnHermesSQLite("messages", err)
-		return ""
+		return "", err
 	}
+	return hermesShownFrom(columns, alias), nil
+}
+
+// hermesShownFrom is hermesShownClause for a messages schema already read
+func hermesShownFrom(columns map[string]bool, alias string) string {
 	switch {
 	case columns["active"] && columns["compacted"]:
 		return " AND (COALESCE(" + alias + "active, 1) = 1 OR COALESCE(" + alias + "compacted, 0) = 1)"
@@ -368,17 +449,22 @@ func hermesSQLiteMessages(dbPath, sessionID string, q MessageQuery) []map[string
 	if q.Limit <= 0 {
 		return out
 	}
-	db, err := openHermesDB(dbPath)
+	err := readHermesDB(dbPath, func(db *sql.DB) (err error) {
+		out, err = hermesMessagesFrom(db, sessionID, q)
+		return err
+	})
 	if err != nil {
-		warnHermesSQLite(sessionID, err)
-		return out
+		warnHermesSQLite("messages", sessionID, err)
 	}
-	defer db.Close()
+	return out
+}
 
+// hermesMessagesFrom is one attempt at hermesSQLiteMessages's read. A failure part-way
+// returns the messages emitted so far with the error, as the read always has.
+func hermesMessagesFrom(db *sql.DB, sessionID string, q MessageQuery) ([]map[string]any, error) {
 	columns, err := tableColumns(db, "messages")
 	if err != nil {
-		warnHermesSQLite(sessionID, err)
-		return out
+		return []map[string]any{}, err
 	}
 	// A column the schema lacks is selected as NULL under the same name, so one statement
 	// fits every Hermes version seen so far
@@ -392,12 +478,11 @@ func hermesSQLiteMessages(dbPath, sessionID string, q MessageQuery) []map[string
 		SELECT id, role, content, `+col("reasoning")+`, `+col("tool_calls")+`, `+col("tool_name")+`,
 		       `+col("tool_call_id")+`, `+col("active")+`, `+col("display_metadata")+`, timestamp
 		FROM messages
-		WHERE session_id = ?`+hermesShownClause(db, "")+`
+		WHERE session_id = ?`+hermesShownFrom(columns, "")+`
 		  AND role IN ('user', 'assistant', 'tool')
 		ORDER BY id ASC`, sessionID)
 	if err != nil {
-		warnHermesSQLite(sessionID, err)
-		return out
+		return []map[string]any{}, err
 	}
 	defer rows.Close()
 
@@ -414,8 +499,7 @@ func hermesSQLiteMessages(dbPath, sessionID string, q MessageQuery) []map[string
 	for rows.Next() {
 		var id, role, content, reasoning, toolCalls, toolName, toolCallID, active, displayMeta, timestamp any
 		if err := rows.Scan(&id, &role, &content, &reasoning, &toolCalls, &toolName, &toolCallID, &active, &displayMeta, &timestamp); err != nil {
-			warnHermesSQLite(sessionID, err)
-			return out
+			return []map[string]any{}, err
 		}
 		if hermesModelOnly(displayMeta) {
 			continue
@@ -437,8 +521,7 @@ func hermesSQLiteMessages(dbPath, sessionID string, q MessageQuery) []map[string
 		order = append(order, ref)
 	}
 	if err := rows.Err(); err != nil {
-		warnHermesSQLite(sessionID, err)
-		return out
+		return []map[string]any{}, err
 	}
 	// The pool is one connection (SetMaxOpenConns in openHermesDB), so the first read has
 	// to be finished before the second pass can query
@@ -477,8 +560,7 @@ func hermesSQLiteMessages(dbPath, sessionID string, q MessageQuery) []map[string
 			FROM messages
 			WHERE session_id = ? AND (id IN (`+strings.Join(placeholders, ",")+`)`+nullClause+`)`, args...)
 		if err != nil {
-			warnHermesSQLite(sessionID, err)
-			return sink.result()
+			return sink.result(), err
 		}
 		type fullRow struct {
 			role, content, reasoning, toolCalls, toolName, toolCallID string
@@ -490,8 +572,7 @@ func hermesSQLiteMessages(dbPath, sessionID string, q MessageQuery) []map[string
 			var id, role, content, reasoning, toolCalls, toolName, toolCallID, timestamp any
 			if err := page.Scan(&id, &role, &content, &reasoning, &toolCalls, &toolName, &toolCallID, &timestamp); err != nil {
 				page.Close()
-				warnHermesSQLite(sessionID, err)
-				return sink.result()
+				return sink.result(), err
 			}
 			row := fullRow{
 				role: sqliteValueString(role), content: sqliteValueString(content),
@@ -509,8 +590,7 @@ func hermesSQLiteMessages(dbPath, sessionID string, q MessageQuery) []map[string
 		if err := page.Err(); err != nil {
 			// A mid-page read error is not a row that changed: say so instead of letting
 			// the missing refs pass for concurrent writes
-			warnHermesSQLite(sessionID, err)
-			return sink.result()
+			return sink.result(), err
 		}
 		for _, ref := range order[start:end] {
 			row, ok := fetched[ref.id+"\x00"+ref.key]
@@ -545,11 +625,11 @@ func hermesSQLiteMessages(dbPath, sessionID string, q MessageQuery) []map[string
 				"timestamp": sqliteTimeString(row.timestamp),
 				"content":   parts,
 			}) {
-				return sink.result()
+				return sink.result(), nil
 			}
 		}
 	}
-	return sink.result()
+	return sink.result(), nil
 }
 
 // hermesRowKey is the dedupe identity of one message row, as a hash: the index holds one
@@ -625,13 +705,26 @@ func hermesSQLiteSearch(ctx context.Context, dbPath, sessionID string, q SearchQ
 	if sessionID == "" || len(q.Lowered) == 0 || q.PerSession <= 0 {
 		return nil
 	}
-	db, err := openHermesDB(dbPath)
-	if err != nil {
-		warnHermesSQLite(sessionID, err)
-		return nil
+	var out []map[string]any
+	err := readHermesDB(dbPath, func(db *sql.DB) (err error) {
+		out, err = hermesSearchFrom(ctx, db, sessionID, q)
+		return err
+	})
+	// A search that stopped because its caller did — the scan cancels what is still
+	// running once it has enough hits, and a reader can leave — has nothing to report: those
+	// were the "context canceled" warnings in the log
+	if err != nil && ctx.Err() == nil {
+		warnHermesSQLite("search hits", sessionID, err)
 	}
-	defer db.Close()
+	return out
+}
 
+// hermesSearchFrom is one attempt at hermesSQLiteSearch's read
+func hermesSearchFrom(ctx context.Context, db *sql.DB, sessionID string, q SearchQuery) ([]map[string]any, error) {
+	shown, err := hermesShownClause(db, "")
+	if err != nil {
+		return nil, err
+	}
 	like := "%" + EscapeLike(string(q.Lowered)) + "%"
 	// The role filter goes into the query rather than onto the result: filtering the rows
 	// the LIMIT already returned would keep whichever hits came first in the table.
@@ -645,13 +738,12 @@ func hermesSQLiteSearch(ctx context.Context, dbPath, sessionID string, q SearchQ
 	rows, err := db.QueryContext(ctx, `
 		SELECT role, content, reasoning, timestamp
 		FROM messages
-		WHERE session_id = ?`+hermesShownClause(db, "")+roleClause+`
+		WHERE session_id = ?`+shown+roleClause+`
 		  AND (content LIKE ? ESCAPE '\' OR reasoning LIKE ? ESCAPE '\')
 		ORDER BY timestamp ASC, id ASC
 		LIMIT ?`, args...)
 	if err != nil {
-		warnHermesSQLite(sessionID, err)
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -660,8 +752,7 @@ func hermesSQLiteSearch(ctx context.Context, dbPath, sessionID string, q SearchQ
 		var role, content, reasoning sql.NullString
 		var timestamp any
 		if err := rows.Scan(&role, &content, &reasoning, &timestamp); err != nil {
-			warnHermesSQLite(sessionID, err)
-			return out
+			return out, err
 		}
 		text := content.String
 		if IndexFold(text, string(q.Lowered)) < 0 {
@@ -673,7 +764,7 @@ func hermesSQLiteSearch(ctx context.Context, dbPath, sessionID string, q SearchQ
 			"timestamp": sqliteTimeString(timestamp),
 		})
 	}
-	return out
+	return out, rows.Err()
 }
 
 // EscapeLike escapes LIKE wildcards so that searching for "100%" does not turn into
@@ -725,6 +816,12 @@ func nullStringOrNil(v sql.NullString) any {
 	return nil
 }
 
-func warnHermesSQLite(sessionID string, err error) {
-	fmt.Fprintf(os.Stderr, "[WARN] reading the Hermes SQLite final message failed for %s: %v\n", sessionID, err)
+// warnHermesSQLite reports a read of state.db that failed for good — after its retries —
+// naming what was being read; every read used to report itself as the final message
+func warnHermesSQLite(what, sessionID string, err error) {
+	if sessionID == "" {
+		fmt.Fprintf(os.Stderr, "[WARN] reading %s from Hermes's state.db failed: %v\n", what, err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[WARN] reading %s from Hermes's state.db failed for %s: %v\n", what, sessionID, err)
 }

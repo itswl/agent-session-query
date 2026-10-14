@@ -80,7 +80,7 @@ func (s *OpenClawSource) Location() string {
 func (s *OpenClawSource) Exists() bool { return len(s.dbPaths) > 0 }
 
 func (s *OpenClawSource) open(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", sqliteURI(path)+"?mode=ro")
+	db, err := sql.Open("sqlite", sqliteReadOnlyDSN(path))
 	if err != nil {
 		return nil, err
 	}

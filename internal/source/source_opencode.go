@@ -111,9 +111,11 @@ func (s *OpenCodeSource) Location() string { return s.dbPath }
 func (s *OpenCodeSource) Exists() bool     { return fileExists(s.dbPath) }
 
 // open opens the database read-only. Verified against a live writer: mode=ro reads
-// through the write-ahead log fine, so sessions still being written are visible.
+// through the write-ahead log fine, so sessions still being written are visible, and the
+// rare moment a reader must wait (another connection rebuilding the log's index) is
+// waited out rather than failed (see sqliteReadOnlyDSN).
 func (s *OpenCodeSource) open() (*sql.DB, error) {
-	db, err := sql.Open("sqlite", sqliteURI(s.dbPath)+"?mode=ro")
+	db, err := sql.Open("sqlite", sqliteReadOnlyDSN(s.dbPath))
 	if err != nil {
 		return nil, err
 	}

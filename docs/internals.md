@@ -49,6 +49,19 @@ and deployment see the [README](../README.md).
   session Hermes would have hidden beats reporting a full database as an empty one. A list
   that fails for any other reason (a renamed column, a schema mid-migration) comes back as an
   error rather than as zero records, and the API says so — see below
+
+  Hermes writes `state.db` from a container while this service reads it from the host, and
+  a read that met a write in progress failed outright: no busy timeout was set, so SQLite
+  answered `database is locked` at once. Every SQLite source now opens with a 2 s busy
+  timeout (`sqliteReadOnlyDSN`). The other failure is not one waiting cures. SQLite calls a
+  rollback journal hot when no connection holds a lock on the database; the writer's locks
+  in the container need not be visible from the host; and a read-only connection cannot
+  roll a hot journal back, so the read fails with `SQLITE_READONLY_ROLLBACK`, which no busy
+  handler sees. The Hermes reads try again after 50, 100 and 200 ms — an ordinary commit is
+  long over by then — and a journal still there after that is a crashed writer's, so the
+  read fails as it did before. A read logs once, after its retries, naming what it was
+  reading; a search its caller stopped (the scan cancels what is still running once it has
+  enough) logs nothing
 - **OpenClaw 2026.9+**: one SQLite database per agent at
   `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite` — `session_windows` is the
   session list (status, model, display_name, unix-millisecond times) and

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -614,5 +615,98 @@ CREATE TABLE messages (
 	}
 	if !texts["first body"] || !texts["second body"] {
 		t.Fatalf("shown texts = %v", texts)
+	}
+}
+
+// TestHermesReadWaitsOutAWrite: a read that lands while Hermes is committing waits for the
+// commit, where it used to fail at once with "database is locked" — the read-only
+// connection had no busy timeout.
+func TestHermesReadWaitsOutAWrite(t *testing.T) {
+	dbPath := newHermesFixture(t)
+	makeHermesDB(t, dbPath, hermesSchema, []string{
+		`INSERT INTO sessions (id, title, started_at) VALUES ('h-one', 'first', 1760000000)`,
+	})
+
+	// A write in progress: an exclusive lock, which keeps every reader out until the commit
+	writer, err := sql.Open("sqlite", sqliteURI(dbPath)+"?_txlock=exclusive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	tx, err := writer.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`INSERT INTO sessions (id, title, started_at) VALUES ('h-two', 'second', 1760000100)`); err != nil {
+		t.Fatal(err)
+	}
+	committed := make(chan error, 1)
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		committed <- tx.Commit()
+	}()
+
+	records, err := hermesSQLiteList(dbPath, "hermes", nil)
+	if err := <-committed; err != nil {
+		t.Fatal(err)
+	}
+	if err != nil {
+		t.Fatalf("a read during a write failed instead of waiting: %v", err)
+	}
+	// Both sessions: the read ran after the commit, not around it
+	if len(records) != 2 {
+		t.Fatalf("records = %d, want 2", len(records))
+	}
+}
+
+// TestHermesReadRetriesAHotJournal: a read-only connection cannot roll back a journal it
+// takes for hot, and SQLite refuses the read without waiting. Seen from the host, a commit
+// Hermes has in progress can look exactly like that, so the read is tried again; a journal
+// still there after every retry fails the read as before.
+func TestHermesReadRetriesAHotJournal(t *testing.T) {
+	dbPath := newHermesFixture(t)
+	makeHermesDB(t, dbPath, hermesSchema, []string{
+		`INSERT INTO sessions (id, title, started_at) VALUES ('h-one', 'first', 1760000000)`,
+	})
+	// What makes SQLite call a journal hot: it exists, its first byte is not zero, and no
+	// connection holds a lock on the database
+	journal := dbPath + "-journal"
+	writeJournal := func() {
+		t.Helper()
+		if err := os.WriteFile(journal, []byte("a commit in progress"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func(saved func(time.Duration)) { hermesPause = saved }(hermesPause)
+
+	// The commit finishes during the first pause, and the second try reads
+	writeJournal()
+	pauses := 0
+	hermesPause = func(time.Duration) {
+		pauses++
+		if pauses == 1 {
+			if err := os.Remove(journal); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	records, err := hermesSQLiteList(dbPath, "hermes", nil)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("list = %d records, %v; want the session, read on the retry", len(records), err)
+	}
+	if pauses != 1 {
+		t.Fatalf("pauses = %d, want 1", pauses)
+	}
+
+	// A journal that never goes is a crashed writer's: the retries are spent and the read
+	// fails with SQLite's own error
+	writeJournal()
+	pauses = 0
+	hermesPause = func(time.Duration) { pauses++ }
+	if _, err := hermesSQLiteList(dbPath, "hermes", nil); !sqliteHotJournal(err) {
+		t.Fatalf("err = %v, want the refusal to roll back", err)
+	}
+	if pauses != len(hermesRetryPauses) {
+		t.Fatalf("pauses = %d, want %d", pauses, len(hermesRetryPauses))
 	}
 }

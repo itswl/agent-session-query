@@ -199,8 +199,9 @@ Full parameters, the `<pattern>` matching rules and every response field are in
 `--mcp` runs on stdio, and in HTTP mode there is also `POST /mcp`. That lets **an agent query
 its own history** — Claude Code can go looking for the same problem you solved with Codex
 last week. The tools: `search_sessions` / `list_sessions` / `list_projects` /
-`recent_project_activity` / `find_decisions` / `find_similar_question` / `get_session` /
-`get_messages` / `list_rounds` / `session_brief`. A tool result in a transcript carries how
+`recent_project_activity` / `get_session_pack` / `find_decisions` / `find_similar_question` /
+`get_session` / `get_messages` / `list_rounds` / `session_brief`. `get_session_pack` is the pack
+as one call: what each session in a selection asked and concluded, oldest first. A tool result in a transcript carries how
 it ended (status, exit code, duration) and which call it answers; `list_rounds` says which
 round carried failures and which files it changed, and `session_brief` hands one round to
 another agent with the command that resumes the session. Session text is untrusted input:

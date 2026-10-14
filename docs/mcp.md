@@ -59,6 +59,7 @@ current MCP specification (2025-06-18):
 | `list_sessions` | List sessions newest first, filtered by `source` / `project` / `branch` / `since` / `until`; paginates. `source` takes a mode name (`claude`) and reaches labeled instances of it (`claude:box2`), the way `get_session` already resolved them, or one instance's full name; a name that is neither fails the call with the valid ones. A row carries `branch` when its CLI recorded one — the branch the session opened on, not what the checkout is on now |
 | `list_projects` | Group sessions by project (cwd) — which agents were used on a given repository, and how many sessions each |
 | `recent_project_activity` | The most recently updated sessions of one project, across sources — a read-only project timeline |
+| `get_session_pack` | Several sessions in one call, oldest first: for each, what was asked and what it concluded, with the `sessionId` and `source` that `session_brief`, `list_rounds` and `get_messages` take to read further — "what has been going on in this project lately" without a list and then a brief per row. Selected with `source` / `project` / `branch` / `since` / `until` as `list_sessions` is; `limit` keeps the most recent of the selection (default 20, at most 100) and `matching` says how many it held. `concluded` is folded to one line and capped as in the Markdown pack — `get_session` returns it whole. `mode=full` adds each session's latest `messages` (default 10, tool output cut to a preview, `earlierMessages` saying whether more precede them) and defaults to 5 sessions. It is `GET /export` for a client that has only stdio |
 | `find_decisions` | Lexical (not generated) search for decision- and conclusion-shaped excerpts. Terms are separated by commas. The excerpts are leads to inspect, not authoritative memory |
 | `find_similar_question` | Prior assistant answers matching the supplied question terms — read-only recall for "have I dealt with this before" |
 | `get_session` | One session's metadata and final result; `source` disambiguates when an id collides |
@@ -96,6 +97,11 @@ question. `pattern` scopes the search to one session when you already know which
 `project` (with `source` and `branch` beside it) keeps the search to the work you mean: it
 narrows before the scan, so recent hits from other repositories cannot fill the page first
 — narrow rather than raise `limit`.
+
+**"What has been going on here lately?"** — `get_session_pack(project=…, since=…)`. One
+entry per session, oldest first, each the ask and the conclusion — the context to recover
+before continuing someone's work, or to hand to another agent, in one call. Follow an entry
+up with `session_brief` or `list_rounds` by its `sessionId` and `source`.
 
 **"What did that session come to?"** — `get_session`. Metadata, and the final result: what
 the session concluded. For most questions this is the whole answer, and it costs a
@@ -141,7 +147,9 @@ GET /export?project=&since=                       # a pack: many sessions, one d
 
 A pack is worth knowing about for "what has been going on lately": one entry per session —
 what was asked and what it concluded, oldest first — on the order of a few kilobytes per
-session, because it carries the pair rather than the transcripts.
+session, because it carries the pair rather than the transcripts. `get_session_pack` returns
+the same index as data, with no HTTP server needed; the export is for when the pack should
+be a file.
 
 ## Pagination
 

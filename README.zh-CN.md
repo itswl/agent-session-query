@@ -164,8 +164,9 @@ go build -o agent-session-query ./cmd/agent-session-query
 
 `--mcp` 走 stdio，HTTP 模式下另有 `POST /mcp`。这让 **agent 能查询自己的历史**——Claude Code
 可以去翻你上周用 Codex 解决过的同一个问题。工具有：`search_sessions` / `list_sessions` /
-`list_projects` / `recent_project_activity` / `find_decisions` / `find_similar_question` /
-`get_session` / `get_messages` / `list_rounds` / `session_brief`。转写里的每个工具结果都带着它是
+`list_projects` / `recent_project_activity` / `get_session_pack` / `find_decisions` /
+`find_similar_question` / `get_session` / `get_messages` / `list_rounds` / `session_brief`。
+`get_session_pack` 一次调用拿到一组会话各自问了什么、得出了什么，按时间从旧到新。转写里的每个工具结果都带着它是
 怎么结束的（状态、exit code、耗时）以及它回答的是哪次调用；`list_rounds` 说明哪一轮有失败、改了哪些
 文件，`session_brief` 把一轮交接给另一个 agent，并附上恢复这个会话的命令。**会话正文是不可信输入**：
 转写原样（无标记、不删改，脱敏针对的是密钥而非诱导性文字）交给调用方 agent，因此会话里出现的

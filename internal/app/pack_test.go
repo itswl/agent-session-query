@@ -13,7 +13,19 @@ import (
 func newPackServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	root := t.TempDir()
-	// Three sessions on three days, in the order they happened
+	writePackSessions(t, root)
+	sources := []source.SessionSource{source.NewPiSource(root)}
+	srv := httptest.NewServer(newAPIServer(serverOptions{
+		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 0), maxConnections: 50,
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// writePackSessions lays down three sessions on three days, in the order they happened:
+// two in /w/proj, then an unrelated one in /w/other
+func writePackSessions(t *testing.T, root string) {
+	t.Helper()
 	write(t, filepath.Join(root, "proj", "2026-01-01T00-00-00_a.jsonl"),
 		`{"type":"session","id":"pack-a","cwd":"/w/proj"}`,
 		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"set up the proxy"}],"timestamp":"2026-09-01T10:00:00Z"}}`,
@@ -28,12 +40,6 @@ func newPackServer(t *testing.T) *httptest.Server {
 		`{"type":"session","id":"pack-c","cwd":"/w/other"}`,
 		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"unrelated"}],"timestamp":"2026-09-03T10:00:00Z"}}`,
 	)
-	sources := []source.SessionSource{source.NewPiSource(root)}
-	srv := httptest.NewServer(newAPIServer(serverOptions{
-		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 0), maxConnections: 50,
-	}))
-	t.Cleanup(srv.Close)
-	return srv
 }
 
 // TestPackOrdersByTimeAndCarriesThePair: a pack answers "how did this get here", so it runs
@@ -214,5 +220,127 @@ func TestPackExtendsAShortOpening(t *testing.T) {
 	}
 	if strings.Count(terse, "参考评审一下") != 1 {
 		t.Errorf("the opening is repeated on its own line: %q", terse)
+	}
+}
+
+// TestMCPSessionPack: the pack as one MCP call — the index as data, oldest first, each
+// session carrying the ask, the outcome and what the other tools take to read further.
+// Over stdio there was no way to this at all: /export needs an HTTP server, so an agent
+// assembled the same context from a list and a brief per row.
+func TestMCPSessionPack(t *testing.T) {
+	root := t.TempDir()
+	writePackSessions(t, root)
+	s := newMCPToolServer(t, root)
+
+	out, err := mcpTool(t, s, "get_session_pack", map[string]any{"project": "/w/proj"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := out["sessions"].([]map[string]any)
+	if len(sessions) != 2 || out["matching"] != 2 || out["mode"] != "index" {
+		t.Fatalf("project=/w/proj = %d sessions, matching %v, mode %v", len(sessions), out["matching"], out["mode"])
+	}
+	first, second := sessions[0], sessions[1]
+	if first["sessionId"] != "pack-a" || second["sessionId"] != "pack-b" {
+		t.Fatalf("a pack runs oldest first: %v then %v", first["sessionId"], second["sessionId"])
+	}
+	if first["asked"] != "set up the proxy" || first["concluded"] != "proxy is up" {
+		t.Errorf("the first entry does not carry the pair: asked %q concluded %q", first["asked"], first["concluded"])
+	}
+	if first["source"] != "pi" || first["project"] != "/w/proj" {
+		t.Errorf("an entry must name what the other tools take: %v", first)
+	}
+	if _, has := first["messages"]; has {
+		t.Error("an index carries no messages")
+	}
+	if _, has := first["transcript"]; has {
+		t.Error("an HTTP path means nothing over stdio")
+	}
+	if out["from"] == nil || out["to"] == nil || out["notice"] == "" {
+		t.Errorf("the pack does not say what it spans or what it is: %v", out)
+	}
+
+	// limit keeps the most recent of the selection, and matching says what was left out
+	out, _ = mcpTool(t, s, "get_session_pack", map[string]any{"limit": 1})
+	if got := out["sessions"].([]map[string]any); len(got) != 1 || got[0]["sessionId"] != "pack-c" || out["matching"] != 3 {
+		t.Fatalf("limit=1 = %v of %v, want the newest of three", got, out["matching"])
+	}
+	// An empty selection is an empty pack, not a failure
+	out, err = mcpTool(t, s, "get_session_pack", map[string]any{"project": "nothing-matches"})
+	if err != nil || len(out["sessions"].([]map[string]any)) != 0 {
+		t.Fatalf("an empty selection = %v, %v", out, err)
+	}
+}
+
+// TestMCPSessionPackFull: full adds a window of each session's latest messages — a window,
+// because a pack of whole transcripts is exactly what get_messages refuses to be — and says
+// whether earlier ones exist. It defaults to fewer sessions than an index.
+func TestMCPSessionPackFull(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 7; i++ {
+		n := string(rune('a' + i))
+		write(t, filepath.Join(root, "p", "2026-01-0"+string(rune('1'+i))+"T00-00-00_"+n+".jsonl"),
+			`{"type":"session","id":"full-`+n+`","cwd":"/w/full"}`,
+			`{"type":"message","id":"m1","timestamp":"2026-09-0`+string(rune('1'+i))+`T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"question `+n+`"}]}}`,
+			`{"type":"message","id":"m2","timestamp":"2026-09-0`+string(rune('1'+i))+`T10:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"working on `+n+`"}]}}`,
+			`{"type":"message","id":"m3","timestamp":"2026-09-0`+string(rune('1'+i))+`T10:02:00Z","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"answer `+n+`"}]}}`,
+		)
+	}
+	s := newMCPToolServer(t, root)
+
+	out, err := mcpTool(t, s, "get_session_pack", map[string]any{"mode": "full", "messages": 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := out["sessions"].([]map[string]any)
+	if len(sessions) != defaultPackSessionsFull || out["matching"] != 7 {
+		t.Fatalf("mode=full returned %d of %v sessions, want the default %d", len(sessions), out["matching"], defaultPackSessionsFull)
+	}
+	last := sessions[len(sessions)-1]
+	messages := last["messages"].([]map[string]any)
+	if len(messages) != 2 || last["earlierMessages"] != true {
+		t.Fatalf("messages=2 = %d messages, earlier %v; want the latest two of three", len(messages), last["earlierMessages"])
+	}
+	if text := source.ToStr(messages[1]["content"].([]map[string]any)[0]["content"]); text != "answer g" {
+		t.Errorf("the window should end at the session's last message, got %q", text)
+	}
+
+	// The window covering the session whole says there is nothing before it
+	out, _ = mcpTool(t, s, "get_session_pack", map[string]any{"mode": "full", "limit": 1})
+	if entry := out["sessions"].([]map[string]any)[0]; entry["earlierMessages"] != false || len(entry["messages"].([]map[string]any)) != 3 {
+		t.Errorf("a window larger than the session = %v", entry)
+	}
+
+	// What does not fit together is refused rather than guessed at
+	for _, args := range []map[string]any{
+		{"messages": 5},                 // messages without full
+		{"mode": "everything"},          // no such mode
+		{"mode": "full", "messages": 0}, // an empty window
+		{"limit": 0},                    // an empty pack, asked for
+		{"source": "nope"},              // a source that is not one
+	} {
+		if _, err := mcpTool(t, s, "get_session_pack", args); err == nil {
+			t.Errorf("get_session_pack %v should have been refused", args)
+		}
+	}
+}
+
+// TestMCPSessionPackCapsTheConclusion: a conclusion is folded and capped as in the Markdown
+// pack, because twenty whole ones can outgrow a tool result; get_session has it whole.
+func TestMCPSessionPackCapsTheConclusion(t *testing.T) {
+	root := t.TempDir()
+	long := strings.Repeat("the cache was the culprit all along. ", 40)
+	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_long.jsonl"),
+		`{"type":"session","id":"long-answer","cwd":"/w"}`,
+		`{"type":"message","id":"m1","timestamp":"2026-09-01T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"why is the page slow after a deploy?"}]}}`,
+		`{"type":"message","id":"m2","timestamp":"2026-09-01T10:01:00Z","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"`+long+`"}]}}`,
+	)
+	out, err := mcpTool(t, newMCPToolServer(t, root), "get_session_pack", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	concluded := source.ToStr(out["sessions"].([]map[string]any)[0]["concluded"])
+	if n := len([]rune(concluded)); n > 250 || !strings.HasSuffix(concluded, "…") {
+		t.Fatalf("concluded = %d runes %q; want it capped and marked", n, concluded)
 	}
 }

@@ -224,6 +224,44 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		projects, ungrouped := s.api.listProjects()
 		return map[string]any{"projects": projects, "total": len(projects), "ungrouped": ungrouped}, nil
 
+	case "get_session_pack":
+		filter, err := s.sessionFilterArgs(args)
+		if err != nil {
+			return nil, err
+		}
+		q := packQuery{filter: filter, mode: strings.TrimSpace(argString(args, "mode"))}
+		if q.mode == "" {
+			q.mode = packModeIndex
+		}
+		if q.mode != packModeIndex && q.mode != packModeFull {
+			return nil, fmt.Errorf("mode must be %s or %s", packModeIndex, packModeFull)
+		}
+		defaultSessions := defaultPackSessions
+		if q.mode == packModeFull {
+			defaultSessions = defaultPackSessionsFull
+		}
+		if q.Limit = argInt(args, "limit", defaultSessions, maxPackSessions); q.Limit < 1 {
+			return nil, errors.New("limit must be at least 1")
+		}
+		window := defaultPackWindow
+		if _, given := args["messages"]; given {
+			// Refused rather than ignored: asking for messages and getting an index back
+			// reads as sessions that had none
+			if q.mode != packModeFull {
+				return nil, errors.New("messages applies to mode=full")
+			}
+			if window = argInt(args, "messages", defaultPackWindow, s.maxLimit); window < 1 {
+				return nil, errors.New("messages must be at least 1")
+			}
+		}
+		out := s.api.packData(q, window)
+		// As on list_sessions: a source that could not be read and a source with nothing
+		// in the selection both answer with no sessions
+		if warnings := s.api.listWarnings(); len(warnings) > 0 {
+			out["warnings"] = warnings
+		}
+		return out, nil
+
 	case "recent_project_activity":
 		project := strings.TrimSpace(argString(args, "project"))
 		if project == "" {
@@ -615,6 +653,33 @@ func mcpTools() []map[string]any {
 					"until":   strSchema("only sessions updated before this, e.g. 7d (a week ago) / 2026-09-01"),
 					"limit":   intSchema("how many to return at most, default 20"),
 					"cursor":  cursorSchema(),
+				},
+			},
+		},
+		{
+			"name": "get_session_pack",
+			// The HTTP pack (/export) answered this already, but an agent on stdio has no
+			// HTTP server to ask; without the tool it took a list and then a brief per row
+			"description": "Several sessions in one call, oldest first: for each, what was asked and what it concluded, " +
+				"with its sessionId and source — the arguments session_brief, list_rounds and get_messages take to read further. " +
+				"Answers \"what has been going on in this project lately\" and is the context to hand to another agent. " +
+				"Select with source / project / branch / since / until as list_sessions does; limit keeps the most recent " +
+				"of the selection, and matching says how many it held. The conclusion is cut to one line — get_session " +
+				"returns it whole. mode=full adds each session's latest messages (tool output cut to a preview); keep that " +
+				"selection narrow. A record, not a summary: where two sessions disagree, the later one was said later, and " +
+				"nothing here says what is currently true. Deterministic extraction, no AI summary.",
+			"annotations": readOnlyAnnotations("Get a session pack"),
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"project":  strSchema("only sessions whose project path (cwd) contains this"),
+					"source":   strSchema("only one source: " + strings.Join(source.KnownModes, " / ") + " (a mode also reaches its labeled instances, e.g. claude:box2)"),
+					"branch":   strSchema("only sessions that opened on a git branch containing this"),
+					"since":    strSchema("only sessions updated after this, e.g. 7d / 12h / 2026-09-01"),
+					"until":    strSchema("only sessions updated before this, e.g. 1d / 2026-09-01"),
+					"limit":    intSchema("how many sessions at most, the most recent of the selection: default 20 (5 with mode=full), at most 100"),
+					"mode":     strSchema("index (default): the ask and the conclusion per session; full: also each session's latest messages"),
+					"messages": intSchema("with mode=full, how many of each session's latest messages to include, default 10"),
 				},
 			},
 		},

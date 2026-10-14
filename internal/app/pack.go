@@ -293,6 +293,10 @@ func renderPackMarkdown(a *SessionQueryAPI, entries []packEntry, summary packSum
 	return b.String()
 }
 
+// packNoticeLine is the notice for the data forms, where a paragraph would be one string
+// nobody reads twice
+const packNoticeLine = "a record, not a summary: nothing here states what is currently true"
+
 // renderPackJSONL is the index as data: a header line, then one record per session. A
 // program that wants a transcript follows the sessionId; inlining every transcript would
 // make the pack unqueryable, which is the one thing this form is for.
@@ -307,7 +311,7 @@ func renderPackJSONL(entries []packEntry, summary packSummary) string {
 		"sources":     summary.sources,
 		"generatedAt": summary.generated.Format(time.RFC3339),
 		"mode":        summary.mode,
-		"notice":      "a record, not a summary: nothing here states what is currently true",
+		"notice":      packNoticeLine,
 	})
 	for i, entry := range entries {
 		item := entry.rec.Public()
@@ -334,6 +338,109 @@ func renderPackJSONL(entries []packEntry, summary packSummary) string {
 		writeJSONLine(&b, record)
 	}
 	return b.String()
+}
+
+// The pack as an MCP tool answers it: "what has been going on in this project" in one call,
+// where the alternative was a list_sessions and then a session_brief per row — dozens of
+// calls to recover the context one pack holds.
+//
+// It is the JSONL form's content with three differences an agent's context forces. The
+// conclusion is folded to one line and capped as in the Markdown form: the whole of it is
+// one get_session away, and twenty whole conclusions can outgrow what a client accepts
+// from one tool call. There is no transcript path: over stdio there may be no HTTP server
+// to follow it to, so each session is referred to by what the other tools take — its
+// sessionId and source. And full does not inline whole transcripts: it carries a window of
+// each session's latest messages, because the rule that get_messages returns a window
+// rather than a session holds here for the same reason.
+const (
+	defaultPackSessionsFull = 5  // mode=full carries messages, so it defaults to fewer sessions
+	defaultPackWindow       = 10 // mode=full: how many of each session's latest messages
+)
+
+// packData assembles the pack as one structured answer, oldest first like every pack.
+// window is the number of latest messages a full pack carries per session.
+func (a *SessionQueryAPI) packData(q packQuery, window int) map[string]any {
+	entries, matching := a.packEntries(q)
+	summary := summarizePack(entries, matching, q.mode)
+	sessions := make([]map[string]any, 0, len(entries))
+	for i, entry := range entries {
+		sessions = append(sessions, packSessionData(entry, i+1, q.mode, window))
+	}
+	out := map[string]any{
+		"sessions": sessions,
+		"returned": len(sessions),
+		// how many sessions the selection held: limit keeps the most recent of them
+		"matching": matching,
+		"sources":  summary.sources,
+		"mode":     q.mode,
+		"notice":   packNoticeLine,
+	}
+	// Times rather than the header's days: a caller coming back for what happened since
+	// wants the instant to pass as since
+	if !summary.from.IsZero() {
+		out["from"] = summary.from.UTC().Format(time.RFC3339)
+	}
+	if !summary.to.IsZero() {
+		out["to"] = summary.to.UTC().Format(time.RFC3339)
+	}
+	return out
+}
+
+// packSessionData is one session of the MCP pack: the ask and the outcome, and what it takes
+// to follow it up — the sessionId and source that session_brief, list_rounds and
+// get_messages take, and the command that resumes it.
+func packSessionData(entry packEntry, index int, mode string, window int) map[string]any {
+	item := entry.rec.Public()
+	record := map[string]any{
+		"index":     index,
+		"sessionId": item["sessionId"],
+		"source":    item["source"],
+		"project":   item["project"],
+		"updatedAt": item["updatedAt"],
+		"status":    item["status"],
+		"asked":     packAsk(entry.source, entry.rec, item),
+	}
+	// Optional in the list's own shape, and so here: absent says "not recorded"
+	for _, key := range []string{"createdAt", "branch", "resumeCommand"} {
+		if value, ok := item[key]; ok {
+			record[key] = value
+		}
+	}
+	if active, _ := item["isActive"].(bool); active {
+		record["isActive"] = true
+	}
+	final := safeParse(entry.source.Mode(), "the final result", func() map[string]any {
+		return entry.source.Final(entry.rec)
+	})
+	if final != nil {
+		if text := strings.TrimSpace(source.ToStr(final["text"])); text != "" {
+			record["concluded"] = packQuote(text)
+		}
+		if reason := source.ToStr(final["stopReason"]); reason != "" && reason != "stop" {
+			record["stopReason"] = reason
+		}
+		if n, ok := asCount(final["messageCount"]); ok {
+			record["messageCount"] = n
+		}
+	}
+	if mode == packModeFull {
+		// One more than the window, so the answer can say whether earlier messages exist
+		// without counting the session. The latest ones, because the ask is already above
+		// and the end is where a session's state is.
+		messages := safeParse(entry.source.Mode(), "messages", func() []map[string]any {
+			return entry.source.Messages(entry.rec, source.MessageQuery{Limit: window + 1, FromEnd: true})
+		})
+		earlier := len(messages) > window
+		if earlier {
+			messages = messages[len(messages)-window:]
+		}
+		if messages == nil {
+			messages = []map[string]any{}
+		}
+		record["messages"] = messages
+		record["earlierMessages"] = earlier
+	}
+	return record
 }
 
 // A pack entry leads with the opening message, and an opening message is not always a

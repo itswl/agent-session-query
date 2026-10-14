@@ -34,6 +34,7 @@ span a Claude Code session and a Codex one in the same answer.
 | "What did I ask about X?" | `search_sessions(query=…, role="user")` | `role=user` drops the answers that merely repeat the question |
 | "What was in that one session?" | `search_sessions(pattern=<id>, query=…)` | Scopes the scan to one session instead of all of them |
 | "What did we work on last week?" | `list_sessions(since="7d")` | Filter by `source` / `project` too |
+| "What has been going on in this repo lately?" | `get_session_pack(project=…, since="7d")` | One call: each session's ask and conclusion, oldest first, with the sessionId to follow up on |
 | "Have I used agent X on repo Y?" | `list_projects` then `list_sessions(project=…)` | Projects are cwds |
 | "What did I do on that branch?" | `list_sessions(branch=…)` | The branch the session opened on, as its CLI recorded it then. Claude Code sessions carry one; the others do not |
 | "How did that end?" | `get_session(pattern=<id>)` | Metadata plus the final result — usually the whole answer, for about a kilobyte |
@@ -84,9 +85,14 @@ much of the session it holds — read that line before trusting it.
 
 ## Handing work to another agent
 
-`GET /export?project=&since=` assembles **many sessions into one document**, oldest first:
-one entry per session, each carrying what was asked and what that session concluded. It is
-the right shape for "here is what I have been doing, catch up".
+`get_session_pack(project=…, since=…)` returns **many sessions as one answer**, oldest first:
+one entry per session, each carrying what was asked and what that session concluded, and
+its `sessionId` and `source` for `session_brief` or `get_messages`. It is the right shape for
+"here is what I have been doing, catch up". `mode="full"` adds each session's latest
+messages — keep that selection to a handful of sessions.
+
+When the pack should be a file instead, `GET /export?project=&since=` assembles the same
+thing as one document:
 
 ```
 GET /export?since=7d                    # a week of work, every source

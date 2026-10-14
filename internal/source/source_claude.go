@@ -3,7 +3,11 @@ package source
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -128,10 +132,13 @@ const claudeInterruptedPrefix = "[Request interrupted by user"
 //
 // names carries tool_use id → tool name across the scan: a tool_result row names only the
 // call it answers (tool_use_id), and the name that lets a reader see "the Bash call failed"
-// rather than "a tool failed" lives on the assistant row before it.
+// rather than "a tool failed" lives on the assistant row before it. root is the source's
+// projects directory, where the outputs Claude Code saved beside the transcript are looked
+// for (see claudePersistedPath).
 type claudeRow struct {
 	names map[string]string
 	full  bool
+	root  string
 }
 
 func (c claudeRow) parts(obj map[string]any) []map[string]any {
@@ -183,15 +190,140 @@ func (c claudeRow) textOrEvent(text string) map[string]any {
 // toolResult pairs the result with its call and records how the call ended. is_error is
 // Claude's own verdict; the row-level toolUseResult says when the user interrupted the
 // command, and so does the placeholder text a stopped call gets as its result.
+//
+// An output too large for the transcript is saved to a file beside it, and the transcript
+// keeps a stub: a line naming the file and a 2 KB preview. A full read returns the file's
+// content in the stub's place — the end of a build log is exactly what the preview drops.
+// An ordinary read keeps the stub and marks it truncated however short it is, because the
+// output is not what it holds.
 func (c claudeRow) toolResult(obj, m map[string]any) map[string]any {
 	callID := strField(m, "tool_use_id")
 	text := ContentText(m["content"])
-	block := ToolResultBlock(callID, c.names[callID], text, c.full)
+	content := text
+	saved := claudePersistedPath(c.root, obj, text)
+	if saved != "" && c.full {
+		if whole, ok := readPersistedOutput(saved); ok {
+			content = whole
+		}
+	}
+	block := ToolResultBlock(callID, c.names[callID], content, c.full)
+	if saved != "" && !c.full {
+		block["truncated"] = true
+	}
 	outcome := ToolOutcome{Status: statusFromError(Truthy(m["is_error"]))}
 	if Truthy(getMap(obj, "toolUseResult")["interrupted"]) || strings.HasPrefix(strings.TrimSpace(text), claudeInterruptedPrefix) {
 		outcome.Status = StatusInterrupted
 	}
 	return outcome.Apply(block)
+}
+
+// claudeStubPath is the path a stub names on its first line, or "" when the result is not
+// a stub. Claude Code writes two: a command's output inside <persisted-output>, "Output too
+// large (30.5KB). Full output saved to: <path>", and an MCP tool's result over the token
+// limit, "Error: result (56,846 characters) exceeds maximum allowed tokens. Output has been
+// saved to <path>." Both are recognised by how they open, not by a path somewhere in the
+// text: a command whose output merely mentions a saved file is not a stub.
+func claudeStubPath(text string) string {
+	body := text
+	if rest, ok := strings.CutPrefix(text, "<persisted-output>"); ok {
+		body = strings.TrimLeft(rest, "\r\n")
+	} else if !strings.HasPrefix(text, "Error: result (") {
+		return ""
+	}
+	first, _, _ := strings.Cut(body, "\n")
+	_, path, ok := strings.Cut(first, "saved to")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(path, ":"))
+}
+
+// claudeSavedOutput takes the parts of a saved output's path from the project directory on,
+// which is all claudePersistedPath uses
+var claudeSavedOutput = regexp.MustCompile(`([^/\s]+)/([^/\s]+)/tool-results/([^/\s]+)$`)
+
+// claudePersistedPath is where a stub's output is on this machine, or "" when the result
+// is not a stub or its file is not there.
+//
+// Only the last parts of the recorded path are used — project, session, file — and they
+// are looked up under this source's own root. The recorded path is whatever the transcript
+// says: for a projects directory copied or mounted from another machine it names a path
+// there, and in a doctored transcript it could name any file on this one. Measured
+// locally: 77 stubs in transcripts and 155 in subagent transcripts, every one of them under
+// <project>/<session>/tool-results/, the session being the one the transcript belongs to
+// or, for a subagent, its parent.
+func claudePersistedPath(root string, obj map[string]any, text string) string {
+	if root == "" {
+		return ""
+	}
+	recorded := claudeStubPath(text)
+	if recorded == "" && strings.HasPrefix(text, "<persisted-output>") {
+		// The command's stub says the same on its row, which is the fallback when the
+		// stub's own wording has moved
+		recorded = ToStr(getMap(obj, "toolUseResult")["persistedOutputPath"])
+	}
+	if recorded == "" {
+		return ""
+	}
+	m := claudeSavedOutput.FindStringSubmatch(strings.ReplaceAll(recorded, "\\", "/"))
+	if m == nil {
+		return ""
+	}
+	project, session, file := m[1], m[2], strings.TrimSuffix(m[3], ".")
+	for _, part := range []string{project, session, file} {
+		if part == "." || part == ".." || part == "" {
+			return ""
+		}
+	}
+	path := filepath.Join(root, project, session, "tool-results", file)
+	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	return path
+}
+
+// persistedOutputLimit caps what a full read returns of one saved output, and
+// persistedOutputHead is how much of it comes from the start; the rest is the end, where a
+// build log says how it failed. Measured locally: 144 saved outputs, median 39 KB, nine in
+// ten under 130 KB — and one of 52 MB, which is what the cap is for.
+var (
+	persistedOutputLimit int64 = 8 << 20
+	persistedOutputHead  int64 = 1 << 20
+)
+
+// readPersistedOutput reads a saved output whole, or its start and its end with a line
+// between them saying how much of the middle was left out
+func readPersistedOutput(path string) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	size := info.Size()
+	if size <= persistedOutputLimit {
+		data, err := io.ReadAll(io.LimitReader(f, persistedOutputLimit))
+		if err != nil {
+			return "", false
+		}
+		return string(data), true
+	}
+	head := make([]byte, persistedOutputHead)
+	if _, err := io.ReadFull(f, head); err != nil {
+		return "", false
+	}
+	tail := make([]byte, persistedOutputLimit-persistedOutputHead)
+	if _, err := f.ReadAt(tail, size-int64(len(tail))); err != nil {
+		return "", false
+	}
+	// A cut can land inside a character; the bytes of half a character are dropped
+	gap := size - int64(len(head)) - int64(len(tail))
+	return strings.ToValidUTF8(string(head), "") +
+		fmt.Sprintf("\n\n… %d bytes of the middle left out; the whole output is %s …\n\n", gap, filepath.Base(path)) +
+		strings.ToValidUTF8(string(tail), ""), true
 }
 
 // claudeSystemEvent turns the system rows worth a reader's attention into event blocks:
@@ -298,7 +430,7 @@ func (s *ClaudeCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 	if path == "" {
 		return sink.result()
 	}
-	row := claudeRow{names: map[string]string{}, full: q.Full}
+	row := claudeRow{names: map[string]string{}, full: q.Full, root: s.root}
 	eachJSONL(path, func(obj map[string]any) bool {
 		if Truthy(obj["isSidechain"]) { // subagent messages are not part of the main thread
 			return true

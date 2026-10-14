@@ -2,9 +2,11 @@ package source
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestClaudeSource(t *testing.T) {
@@ -247,5 +249,119 @@ func TestClaudeSearchKeepsToTheRowsTheReaderDraws(t *testing.T) {
 	q.Role = ""
 	if hits := s.Search(context.Background(), byID["s2"], q); len(hits) != 0 {
 		t.Fatalf("a match only in a skill listing is not a hit: %v", hits)
+	}
+}
+
+// TestClaudePersistedOutput: an output too large for the transcript is saved beside it and
+// the transcript keeps a stub. A full read returns the saved output, found under the
+// source's own root whatever directory the stub names; an ordinary read keeps the stub,
+// marked truncated however short it is. Output that merely mentions a saved file is not a
+// stub, and a stub cannot reach outside the projects directory.
+func TestClaudePersistedOutput(t *testing.T) {
+	root := t.TempDir()
+	saved := strings.Repeat("build line\n", 60) + "FAIL: TestX\n"
+	results := filepath.Join(root, "proj", "s1", "tool-results")
+	if err := os.MkdirAll(results, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"toolu_big.txt": saved, "mcp-srv-tool-abc.txt": `{"items":[]}`} {
+		if err := os.WriteFile(filepath.Join(results, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	call := func(id, name string) string {
+		return `{"type":"assistant","timestamp":"2026-10-14T08:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"` + id + `","name":"` + name + `","input":{}}]}}`
+	}
+	result := func(id, text string) string {
+		return `{"type":"user","timestamp":"2026-10-14T08:00:01Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id + `","content":` + text + `}]}}`
+	}
+	write(t, filepath.Join(root, "proj", "s1.jsonl"),
+		`{"type":"user","sessionId":"s1","cwd":"/w","timestamp":"2026-10-14T07:59:00Z","message":{"role":"user","content":"run the build"}}`,
+		// The path is the one on the machine that wrote it; only its last parts count
+		call("toolu_big", "Bash"),
+		result("toolu_big", `"<persisted-output>\nOutput too large (30.5KB). Full output saved to: /home/elsewhere/.claude/projects/proj/s1/tool-results/toolu_big.txt\n\nPreview (first 2KB):\nbuild line\n</persisted-output>"`),
+		call("toolu_mcp", "mcp__srv__tool"),
+		result("toolu_mcp", `"Error: result (56,846 characters) exceeds maximum allowed tokens. Output has been saved to /x/proj/s1/tool-results/mcp-srv-tool-abc.txt.\nFormat: JSON"`),
+		// A command whose output mentions a saved file
+		call("toolu_grep", "Bash"),
+		result("toolu_grep", `"notes.md: Full output saved to: /x/proj/s1/tool-results/toolu_big.txt"`),
+		// A stub naming a file outside the projects directory
+		call("toolu_out", "Bash"),
+		result("toolu_out", `"<persisted-output>\nOutput too large (1KB). Full output saved to: /x/../../tool-results/passwd\n</persisted-output>"`),
+	)
+
+	src := NewClaudeSource(root)
+	list := src.List()
+	if len(list) != 1 {
+		t.Fatalf("list = %d records, want 1", len(list))
+	}
+	byCall := func(msgs []map[string]any) map[string]map[string]any {
+		out := map[string]map[string]any{}
+		for _, m := range msgs {
+			for _, b := range m["content"].([]map[string]any) {
+				if b["type"] == "toolResult" {
+					out[ToStr(b["callId"])] = b
+				}
+			}
+		}
+		return out
+	}
+
+	full := byCall(src.Messages(list[0], MessageQuery{Limit: 50, Full: true}))
+	if full["toolu_big"]["content"] != saved {
+		t.Errorf("a full read of the command's stub = %q, want the saved output", full["toolu_big"]["content"])
+	}
+	if full["toolu_mcp"]["content"] != `{"items":[]}` {
+		t.Errorf("a full read of the MCP stub = %q, want the saved result", full["toolu_mcp"]["content"])
+	}
+	if !strings.HasPrefix(ToStr(full["toolu_grep"]["content"]), "notes.md:") {
+		t.Errorf("output that mentions a saved file was replaced: %q", full["toolu_grep"]["content"])
+	}
+	if !strings.HasPrefix(ToStr(full["toolu_out"]["content"]), "<persisted-output>") {
+		t.Errorf("a stub reached outside the projects directory: %q", full["toolu_out"]["content"])
+	}
+
+	preview := byCall(src.Messages(list[0], MessageQuery{Limit: 50}))
+	if !strings.HasPrefix(ToStr(preview["toolu_big"]["content"]), "<persisted-output>") || preview["toolu_big"]["truncated"] != true {
+		t.Errorf("an ordinary read = %v, want the stub, truncated", preview["toolu_big"])
+	}
+	// Shorter than any preview cut, and still not the output
+	if preview["toolu_mcp"]["truncated"] != true {
+		t.Errorf("a short stub is not marked truncated: %v", preview["toolu_mcp"])
+	}
+	if preview["toolu_grep"]["truncated"] != nil || preview["toolu_out"]["truncated"] != nil {
+		t.Errorf("results that are not stubs of a file here are marked truncated: %v / %v", preview["toolu_grep"], preview["toolu_out"])
+	}
+}
+
+// TestReadPersistedOutputCap: an output over the cap comes back as its start and its end
+// with a line saying how much of the middle was left out, cut on whole characters.
+func TestReadPersistedOutputCap(t *testing.T) {
+	defer func(limit, head int64) { persistedOutputLimit, persistedOutputHead = limit, head }(persistedOutputLimit, persistedOutputHead)
+	persistedOutputLimit, persistedOutputHead = 40, 10
+
+	path := filepath.Join(t.TempDir(), "out.txt")
+	// Three-byte characters, so both cuts land inside one
+	body := "start" + strings.Repeat("中", 100) + "the end"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := readPersistedOutput(path)
+	if !ok {
+		t.Fatal("the output was not read")
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("the cut split a character: %q", got)
+	}
+	if !strings.HasPrefix(got, "start") || !strings.HasSuffix(got, "the end") || !strings.Contains(got, "bytes of the middle left out; the whole output is out.txt") {
+		t.Fatalf("capped output = %q", got)
+	}
+
+	small := filepath.Join(t.TempDir(), "small.txt")
+	if err := os.WriteFile(small, []byte("whole"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := readPersistedOutput(small); !ok || got != "whole" {
+		t.Fatalf("an output under the cap = %q, %v", got, ok)
 	}
 }

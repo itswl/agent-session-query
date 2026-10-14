@@ -242,6 +242,20 @@ page of two hundred messages carrying every build log in full is megabytes. A fu
 reading why a command failed needs: the end of the output is exactly the part a preview
 drops. The page fetches a cut block's message again with `full=1` when asked.
 
+Claude Code does not keep every output in the transcript either. One too large for it is
+saved to `<project>/<session>/tool-results/<file>` and the transcript gets a stub: a line
+naming the file and a 2 KB preview, inside `<persisted-output>` for a command's output, or
+`Error: result (…) exceeds maximum allowed tokens. Output has been saved to …` for an MCP
+tool's result. Measured locally: 144 saved outputs, median 39 KB, nine in ten under
+130 KB, the largest 52 MB. A full read returns the saved file in the stub's place, and an
+ordinary read marks the stub `truncated` however short it is, so the page offers to read
+it whole. A stub is recognised by how it opens, not by a path somewhere in the text — a
+command whose output mentions a saved file is not one — and only the last parts of the
+path it names (project, session, file) are used, looked up under the source's own root:
+the recorded path is on whatever machine wrote it, and a doctored transcript could name
+any file. Over 8 MB the read returns the first megabyte and the last seven, with a line
+between them saying how much was left out.
+
 ### Rounds and the brief
 
 `brief.go` segments a session at each real user message (`isRoundStart`: a user row with

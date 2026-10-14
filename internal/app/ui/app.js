@@ -1668,8 +1668,21 @@ let streamDay = '';
 
 function blockNode(block) {
   switch (block.type || 'unknown') {
-    case 'text':
-      return markdownNode(block.content, el('div', 'block text md'));
+    case 'text': {
+      // The blocks a harness closed the words with fold away under them: the model read
+      // them, so they stay, but they are not what was said
+      const text = String(block.content || '');
+      const words = stripHarness(text);
+      const node = markdownNode(words, el('div', 'block text md'));
+      const tail = text.trimEnd().slice(words.length).trim();
+      if (tail) {
+        const fold = el('details', 'harness-tail');
+        fold.appendChild(el('summary', '', 'added by the harness'));
+        fold.appendChild(el('pre', '', tail));
+        node.appendChild(fold);
+      }
+      return node;
+    }
     case 'thinking':
       return el('div', 'block thinking', block.content);
     case 'event':
@@ -2094,7 +2107,11 @@ function messageNode(message, index, options) {
   node.appendChild(head);
 
   blocks.forEach(({ position, node: rendered, block }) => {
-    const plain = rendered.textContent || '';
+    // Measured without a harness's closing blocks: they fold on their own, and counted
+    // they would fold every short prompt T3 Code ever sent away behind its own notes
+    const tail = rendered.querySelector(':scope > .harness-tail');
+    const plain = (rendered.textContent || '').slice(0, (rendered.textContent || '').length -
+      (tail ? (tail.textContent || '').length : 0));
     // The reply is what you came to read, so it folds only when it is very long; an
     // injected row is never the human speaking and folds whatever its size
     const limit = message.injected ? 0 : opts.extraClass === 'final' ? FOLD_FINAL_AT : (FOLD_AT[block.type] || 600);
@@ -3344,7 +3361,13 @@ function revealTarget(target, needle) {
   const node = $('messages').querySelector(targetSelector(target));
   if (!node) return false;
   clearMarks();
-  flashInView(node, needle ? markMatches(node, needle) : null);
+  const mark = needle ? markMatches(node, needle) : null;
+  // A match inside a fold — a long block, a harness's closing blocks — is opened to, or
+  // the page would scroll to words it does not show
+  for (let fold = mark && mark.closest('details:not([open])'); fold; fold = fold.parentElement && fold.parentElement.closest('details:not([open])')) {
+    fold.open = true;
+  }
+  flashInView(node, mark);
   return true;
 }
 

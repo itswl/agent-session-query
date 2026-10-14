@@ -383,10 +383,12 @@ own before a model reads it. T3 Code closes every prompt it hands Grok with
 became the title and the asked line of every such session — 57 asked lines across five
 sessions here. `StripHarnessBlocks` drops them when they close a message, in either order
 and with the blanks between, and leaves the same tag written mid-question alone. Titles, a
-round's asked line, a pack's opening and the page's table of contents read through it; the
-transcript keeps the blocks, because the model did read them. Grok's own stored title can
-be the prompt's opening words cut short, stopping inside a block, and such a title is cut
-where the block opens.
+round's asked line, a pack's opening and the page's table of contents read through it. The
+transcript keeps the blocks, because the model did read them, and the page folds them
+under the words they closed ("added by the harness") — a thousand characters of them under
+every prompt, measured without them when deciding whether a bubble is long enough to fold.
+Grok's own stored title can be the prompt's opening words cut short, stopping inside a
+block, and such a title is cut where the block opens.
 
 The extraction runs inside the `fileRecordCache` build callback, so it costs nothing on
 unchanged files; the first read after a change reads up to the head-scan cap, which is
@@ -580,7 +582,8 @@ hit inside the window that the page found nothing at is in text the window holds
 start of — a cut tool output — and becomes a target that is read whole (`full=1` on the one
 message) when the walk reaches it; with no cut block there, the words are in something the
 page does not draw at all (a field beside the transcript, or a row that is not a message)
-and the target is the nearest message, shown without marks. Matching runs over what the page
+and the target is the nearest message, shown without marks. A match inside a fold — a long
+block, a harness's closing blocks — opens the fold it is in. Matching runs over what the page
 draws: a call's argument *values*, not its JSON — a key is not text on the screen, and
 Bash's own `timeout` argument made every command a match for "timeout". An anchored window
 that comes back empty — the instant lies before the first message — is fetched again from

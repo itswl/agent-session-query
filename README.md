@@ -306,6 +306,7 @@ long-running.
 | [docs/sources.md](docs/sources.md) | Data sources, and `--path` for sessions outside the default home |
 | [docs/development.md](docs/development.md) | Layout, tests, releasing, adding a source |
 | [docs/internals.md](docs/internals.md) | Implementation: per-source parsing, performance, search, cross-platform |
+| [docs/roadmap.md](docs/roadmap.md) | What has shipped, what is still open and how worth doing it looks, and what is not planned |
 
 ## License
 

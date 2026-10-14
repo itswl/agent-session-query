@@ -37,9 +37,11 @@ go vet ./...
 node --check internal/app/ui/app.js   # where node exists; the suite runs this too, and CI enforces it
 ```
 
-Releasing: [release.yml](../.github/workflows/release.yml) uses the tag annotation as the
-Release body, so tag with `--cleanup=verbatim` — otherwise git strips Markdown `##` headings
-as comment lines:
+Releasing: bring [roadmap.md](roadmap.md) up to date in the release's last commit — what
+shipped moves to its table, and the open items get a second look.
+[release.yml](../.github/workflows/release.yml) uses the tag annotation as the Release body,
+so tag with `--cleanup=verbatim` — otherwise git strips Markdown `##` headings as comment
+lines:
 
 ```bash
 git tag -a v0.3.0 --cleanup=verbatim -F notes.md

@@ -251,6 +251,7 @@ Docker：每次发版都会把多架构镜像发布到 GitHub Container Registry
 | [docs/sources.md](docs/sources.md) | 数据源与 `--path` 自定义路径 |
 | [docs/development.md](docs/development.md) | 目录结构、测试、发版、新增数据源 |
 | [docs/internals.md](docs/internals.md) | 实现细节：各源解析、性能、搜索、跨平台 |
+| [docs/roadmap.md](docs/roadmap.md) | 已经做了什么、还剩什么以及值不值得做、明确不做什么 |
 
 ## 许可证
 

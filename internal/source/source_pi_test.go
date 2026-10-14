@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -131,5 +132,46 @@ func TestPiToolResultPairing(t *testing.T) {
 	if len(result) != 1 || result[0]["type"] != "toolResult" || result[0]["callId"] != "c1" ||
 		result[0]["toolName"] != "bash" || result[0]["status"] != StatusError || result[0]["content"] != "boom" {
 		t.Fatalf("result = %v", result)
+	}
+}
+
+// TestPiSearchHitCarriesTheMessageTime: a hit's time is what a caller anchors a window at,
+// and pi's windows are cut by message.timestamp — the epoch the message was created at — not
+// by the row's own ISO time, written once the message was. A hit carrying the row's time
+// anchored an earliest-first window that began after the very message it was found in.
+func TestPiSearchHitCarriesTheMessageTime(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "proj", "2026-10-06T18-40-00-000Z_bbbb.jsonl"),
+		`{"type":"session","id":"pi-time","cwd":"/w"}`,
+		`{"type":"message","id":"m1","timestamp":"2026-10-06T18:40:00.400Z","message":{"role":"user","timestamp":1791312000000,"content":[{"type":"text","text":"set up the reverse proxy"}]}}`,
+		// written eleven seconds after the message was created
+		`{"type":"message","id":"m2","timestamp":"2026-10-06T18:40:20.500Z","message":{"role":"assistant","timestamp":1791312009500,"content":[{"type":"text","text":"use proxy_pass for that"}]}}`,
+	)
+	s := NewPiSource(root)
+	rec := s.List()[0]
+	hits := s.Search(context.Background(), rec, SearchQuery{Needle: "proxy_pass", Lowered: []byte("proxy_pass"), Limit: 1, PerSession: 5})
+	if len(hits) != 1 {
+		t.Fatalf("hits = %v", hits)
+	}
+	at := ToStr(hits[0]["timestamp"])
+	if at != "2026-10-06T18:40:09.500Z" {
+		t.Fatalf("hit time = %q, want the message's own time, to the millisecond", at)
+	}
+	anchor, ok := ParseTimestamp(at)
+	if !ok {
+		t.Fatalf("the hit time does not parse: %q", at)
+	}
+	window := s.Messages(rec, MessageQuery{Limit: 1, At: anchor})
+	if len(window) != 1 || window[0]["id"] != "m2" {
+		t.Fatalf("a window anchored at the hit = %v, want the message the hit is in", window)
+	}
+
+	// A labeled instance searches the way the source it wraps does
+	labeled := Label(NewPiSource(root), "pi:box2").(interface {
+		Search(context.Context, Record, SearchQuery) []map[string]any
+	})
+	hits = labeled.Search(context.Background(), rec, SearchQuery{Needle: "proxy_pass", Lowered: []byte("proxy_pass"), Limit: 1, PerSession: 5})
+	if len(hits) != 1 || ToStr(hits[0]["timestamp"]) != at {
+		t.Fatalf("labeled pi hits = %v, want the message's time %s", hits, at)
 	}
 }

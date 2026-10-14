@@ -150,7 +150,11 @@ pattern containing a colon needs URL encoding (`%3A`).
   `estimatedCostUsd` and `runtimeMs` stay present whenever the source recorded them — a
   recorded zero stays — so a missing one means "not recorded", not zero. A Grok session
   the user archived (it lives under `archived_sessions/`) carries `archived: true`
-- Search: the list fields plus `matches` (`snippet` + `role` + `timestamp`) and `matchCount`
+- Search: the list fields plus `matches` (`snippet` + `role` + `timestamp`) and `matchCount`.
+  A match's `timestamp` is the time of the message it is in — the one `messages?at=` cuts
+  windows by, so passing it there lands on the match. That is the row's own time for every
+  source but pi, whose rows are written after the message they carry (by seconds, sometimes
+  minutes) and whose matches carry the message's creation time, to the millisecond, instead
 - Messages: `content` is an array of blocks typed `text` / `thinking` / `toolCall` /
   `toolResult` / `event`. A `toolCall` carries `id`, `name` and `arguments`; a `toolResult`
   carries `callId` (the call it answers), `toolName`, `content`, and — when the source

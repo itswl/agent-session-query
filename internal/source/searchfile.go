@@ -30,6 +30,18 @@ func Cancelled(ctx context.Context) bool {
 
 // SearchFile scans one jsonl session file.
 func SearchFile(ctx context.Context, path string, q SearchQuery) []map[string]any {
+	return searchFileStamped(ctx, path, q, rowTime)
+}
+
+// rowTime is where a hit's time comes from for most sources: the row's own timestamp, which
+// is also the time their messages carry
+func rowTime(obj map[string]any) any { return obj["timestamp"] }
+
+// searchFileStamped is the scan with the hit's time taken by stamp. A hit's time is what a
+// caller anchors a window at (get_messages at=, the page landing on a hit), and the window
+// is cut by the times the messages carry — so a hit has to carry the time of the message it
+// is in, which is not the row's for every source (see PiSource.Search).
+func searchFileStamped(ctx context.Context, path string, q SearchQuery, stamp func(map[string]any) any) []map[string]any {
 	if path == "" || len(q.Lowered) == 0 {
 		return nil
 	}
@@ -47,7 +59,7 @@ func SearchFile(ctx context.Context, path string, q SearchQuery) []map[string]an
 		if !bytes.Contains(lower, q.Lowered) {
 			return true
 		}
-		if hit := buildHit(line, q); hit != nil {
+		if hit := buildHit(line, q, stamp); hit != nil {
 			// The role filter lives here rather than after the fact: filtering a
 			// per_session-sized slice would keep whichever hits came first in the file
 			// and could miss the one being asked for entirely.
@@ -62,7 +74,7 @@ func SearchFile(ctx context.Context, path string, q SearchQuery) []map[string]an
 
 // buildHit turns a matching line into a result; it returns nil when the match landed
 // only in a field name or an escape sequence.
-func buildHit(line []byte, q SearchQuery) map[string]any {
+func buildHit(line []byte, q SearchQuery, stamp func(map[string]any) any) map[string]any {
 	var obj map[string]any
 	if json.Unmarshal(line, &obj) != nil || obj == nil {
 		return nil
@@ -74,7 +86,7 @@ func buildHit(line []byte, q SearchQuery) map[string]any {
 	return map[string]any{
 		"snippet":   SnippetAround(text, string(q.Lowered), SearchSnippetRadius),
 		"role":      hitRole(obj),
-		"timestamp": hitTimestamp(obj["timestamp"]),
+		"timestamp": hitTimestamp(stamp(obj)),
 	}
 }
 
@@ -178,12 +190,18 @@ func hitRole(obj map[string]any) string {
 }
 
 // hitTimestamp renders a hit's time the way a message spells one. Most sources write an
-// ISO string and it passes straight through; Grok writes epoch seconds, and a bare integer
-// in the field every other source fills with text is not something a caller should have to
-// special-case.
+// ISO string and it passes straight through; Grok writes epoch seconds and pi's messages
+// epoch milliseconds, and a bare integer in the field every other source fills with text is
+// not something a caller should have to special-case. Milliseconds keep their precision:
+// cut to the second, the time would fall before the message it names.
 func hitTimestamp(v any) string {
 	if s, ok := v.(string); ok {
 		return s
+	}
+	if ms, ok := ToFloat(v); ok && ms > 1e11 {
+		if t, ok := epochToTime(ms); ok {
+			return t.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+		}
 	}
 	if iso := GrokTimestamp(v); iso != "" {
 		return iso

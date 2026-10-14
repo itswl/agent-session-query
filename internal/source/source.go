@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -287,6 +288,19 @@ func (s labeledSource) List() []Record {
 		}
 	}
 	return recs
+}
+
+// Search is the wrapped source's own search when it has one. A wrapper without it sent a
+// labeled instance down the generic one-file scan whatever it wrapped: a gemini conversation
+// split across files was searched in one of them, and a pi hit carried its row's time
+// instead of its message's.
+func (s labeledSource) Search(ctx context.Context, r Record, q SearchQuery) []map[string]any {
+	if inner, ok := s.SessionSource.(interface {
+		Search(context.Context, Record, SearchQuery) []map[string]any
+	}); ok {
+		return inner.Search(ctx, r, q)
+	}
+	return SearchFile(ctx, r.File, q)
 }
 
 func (s labeledSource) Final(r Record) map[string]any {

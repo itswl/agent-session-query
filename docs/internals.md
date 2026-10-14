@@ -541,7 +541,12 @@ Newer Hermes sessions live entirely in SQLite with no jsonl, so `JsonMapSource` 
 optional `searchableSource` interface and uses `LIKE` (SQLite's LIKE is already
 case-insensitive for ASCII). Sources whose sessions are not one file each — Gemini's split
 conversations, opencode's and openclaw's databases, the Hermes json-map entries — implement
-`Search` themselves; the rest take the generic per-file scan described above.
+`Search` themselves; the rest take the generic per-file scan described above. Pi takes that
+scan too, but stamps each hit with its message's time (`message.timestamp`, epoch
+milliseconds) rather than the row's: a hit's time is what a window is anchored at, windows
+are cut by the times messages carry, and pi writes a row up to minutes after the message in
+it was created. A labeled instance (`--path mode:label=`) searches with whatever the source
+it wraps does.
 
 ### Running in the background
 

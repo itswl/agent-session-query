@@ -485,6 +485,29 @@ reading**:
 - On first open the landing position follows the direction: latest scrolls to the bottom,
   earliest starts at the top
 
+Finding your way in a long session — the failures one at a time, and **find in the
+session** — works on **targets**: the places in the loaded window that draw what is looked
+for (a round's ask or reply, a bubble before the first ask, or a step), each with a key that
+survives a rebuild. Revealing one switches to a view that draws it, opens the round folding
+hides it in, opens the step, then centres it and flashes it; step nodes carry `data-step`
+and `data-index` so the place is found again after the stream is rebuilt. Where the walk
+starts is the last target shown while it is still on screen, and what is on screen
+otherwise, so scrolling away and asking again starts from where you are.
+
+Past the window's edges the server says what is there, and the window is anchored at it the
+way a list hit anchors it: `/rounds` names the rounds that failed (read once per state of
+the session, and only when a walk runs off the window), and a search scoped to the session
+(`/search?pattern=<id>`) places each hit before, after or inside the window by its time. A
+hit inside the window that the page found nothing at is in text the window holds only the
+start of — a cut tool output — and becomes a target that is read whole (`full=1` on the one
+message) when the walk reaches it; with no cut block there, the words are in something the
+page does not draw at all (a field beside the transcript, or a row that is not a message,
+like Claude Code's attachment rows) and the target is the nearest message, shown without
+marks. Matching runs over what the page draws: a call's argument *values*, not its JSON —
+a key is not text on the screen, and Bash's own `timeout` argument made every command a
+match for "timeout". An anchored window that comes back empty — the instant lies before the
+first message — is fetched again from the other side of it.
+
 ### Full-text search
 
 `/search` builds no index. An index has to be written somewhere, maintained, and reasoned about

@@ -72,7 +72,18 @@
     </aside>
 
     <section class="stream">
-      <div id="stream-head" class="stream-head"></div>
+      <div id="stream-head" class="stream-head idle">
+        <div id="stream-main"></div>
+        <!-- Find in the session. It lives outside the part of the head that is rebuilt on
+             every refresh, so the field keeps its focus and its text while you type. -->
+        <div id="find-bar" class="find-bar hidden" role="search">
+          <input id="find" type="search" placeholder="Find in this session" aria-label="Find in this session" autocomplete="off" spellcheck="false">
+          <span id="find-count" class="find-count" aria-live="polite"></span>
+          <button id="find-prev" class="ghost icon-btn" type="button" title="Previous match (Shift+Enter)" aria-label="Previous match"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.5 10 8 5.5l4.5 4.5"/></svg></button>
+          <button id="find-next" class="ghost icon-btn" type="button" title="Next match (Enter)" aria-label="Next match"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.5 6 8 10.5 12.5 6"/></svg></button>
+          <button id="find-close" class="ghost icon-btn" type="button" title="Close (Esc)" aria-label="Close find"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></button>
+        </div>
+      </div>
       <div id="messages" class="messages" tabindex="0">
         <p class="empty">Pick a session to read it</p>
       </div>
@@ -95,6 +106,8 @@
     <span><kbd>j</kbd><kbd>k</kbd> move between sessions</span>
     <span><kbd>/</kbd> focus search</span>
     <span><kbd>g</kbd><kbd>G</kbd> jump to start/end</span>
+    <span><kbd>f</kbd> find in session</span>
+    <span><kbd>[</kbd><kbd>]</kbd> previous/next failure</span>
     <span><kbd>r</kbd> refresh</span>
     <span><kbd>Enter</kbd> search message bodies</span>
     <span><kbd>Esc</kbd> clear / leave search</span>

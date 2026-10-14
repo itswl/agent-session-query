@@ -110,9 +110,15 @@ go build -o agent-session-query ./cmd/agent-session-query
   *72 steps · 61 commands · changed 2 files · 1 failed · 24m39s*。折叠时失败的步骤仍然留在视野里，
   带着输出的开头；连续的读文件和搜索合并成一条「explored — read 4 files, searched twice」；每一步点开
   能看到参数和输出，改动一律以 diff 形式展开，不管各家 CLI 怎么拼写这次编辑。结果会说明它是怎么结束的
-  （exit code、耗时），两轮之间发生的事（上下文压缩、用户中断、hook 失败）各自占一行。三种视图：
-  **all**、**conversation**（只看说了什么）和 **changes**（只看每轮改了什么）。工具栏下方是本窗口的
-  汇总：轮数、工具调用数、失败数、持续时长。默认打开最新 200 条，**向上滚到顶会自动加载上一页**
+  （exit code、耗时），两轮之间发生的事（上下文压缩、用户中断、hook 失败）各自占一行。五种视图：
+  **all**、**conversation**（只看说了什么），以及按轮只看某一类步骤：**changes**（改动的 diff）、
+  **commands**（执行过的每条命令）和 **failures**（每个失败的步骤，直接展开到输出）。工具栏下方是本窗口的
+  汇总：轮数、工具调用数、失败数、持续时长；失败数两侧的 ‹ › （或 <kbd>[</kbd> <kbd>]</kbd>）逐个跳到
+  失败的步骤，所在轮次自动展开，走出已加载的窗口时，会把窗口移到最近一个有失败的轮次。**会话内查找**
+  （放大镜，或 <kbd>f</kbd>）把这个词在消息流里出现的地方都高亮出来，<kbd>Enter</kbd> /
+  <kbd>Shift</kbd>+<kbd>Enter</kbd> 逐个跳转；它会说明已加载窗口之前、之后还有多少处，并接着跳过去；
+  匹配落在被截断的工具输出里时，先把那段输出完整读回再定位。在列表里点一条正文命中，打开时查找栏已经
+  填好这个词，匹配就在视野里。默认打开最新 200 条，**向上滚到顶会自动加载上一页**
   （从最早端阅读时则是滚到底加载下一页），头部的计数会告诉你已经读到会话的哪个位置。工具输出默认只给
   预览，「Show full output」再取全文。回复里的 Markdown 会被渲染出来（标题、列表、代码、表格、链接），
   消息时间在会话当天只显示时刻，其他日子前面带日期（悬停可见完整时间戳）。步骤按类别着色
@@ -140,7 +146,8 @@ go build -o agent-session-query ./cmd/agent-session-query
 
 快捷键：<kbd>j</kbd> <kbd>k</kbd> 切换会话（元数据命中与正文命中一并遍历）·
 <kbd>/</kbd> 聚焦搜索框 · <kbd>Enter</kbd> 立刻搜正文而不等待 ·
-<kbd>g</kbd> <kbd>G</kbd> 跳到消息流首尾 · <kbd>r</kbd> 刷新 · <kbd>Esc</kbd> 清空搜索。
+<kbd>g</kbd> <kbd>G</kbd> 跳到消息流首尾 · <kbd>f</kbd> 会话内查找 ·
+<kbd>[</kbd> <kbd>]</kbd> 上一个 / 下一个失败 · <kbd>r</kbd> 刷新 · <kbd>Esc</kbd> 清空搜索。
 
 ## 接口一览
 

@@ -64,6 +64,13 @@ const state = {
   contentAbort: null,  // AbortController for the search still in flight
   detail: null,        // { sessionId, signature, messages, final }
   focusAt: '',         // when set, the stream window is anchored at this time (a search hit)
+  find: null,          // find in the session: { query, sessionId, span, targets, current,
+                       //   lastKey, whole, server: { pending, before, after, inside, more } }
+  findTimer: null,
+  findAbort: null,     // the session-scoped search find asks the server
+  failureAt: '',       // the step key of the failure jumped to last
+  reveal: null,        // what to bring into view once the next window paints
+  roundsIndex: null,   // the open session's /rounds, read when a failure jump leaves the window
   exportFormat: 'md',  // md / jsonl / json / html
   loadingMore: false,  // a page is in flight
   edgeLock: '',        // after mobile paging, move away from the edge before paging again
@@ -191,6 +198,17 @@ function branchGlyph() {
     dot.setAttribute('r', '1.9');
     svg.appendChild(dot);
   }
+  return svg;
+}
+
+// findGlyph: the magnifier the session search box carries, drawn the same way
+function findGlyph() {
+  const svg = svgIcon('0 0 16 16', ['M10.6 10.6 14 14']);
+  const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  circle.setAttribute('cx', '7');
+  circle.setAttribute('cy', '7');
+  circle.setAttribute('r', '4.6');
+  svg.insertBefore(circle, svg.firstChild);
   return svg;
 }
 
@@ -765,7 +783,17 @@ function buildHit(rowId, sessionId) {
   item.tabIndex = -1;
   item.addEventListener('click', () => {
     const first = (item._hit && item._hit.matches && item._hit.matches[0]) || {};
+    // Land on the words, not only near them: the find bar takes the query, and the match
+    // the window is anchored at is the one shown
+    const keyword = state.keyword.trim();
+    if (keyword) {
+      $('find').value = keyword;
+      $('find-bar').classList.remove('hidden');
+      state.reveal = { kind: 'find', sessionId: item.dataset.sid, direction: 1, at: parseTime(first.timestamp) };
+    }
     selectSession(item.dataset.sid, first.timestamp || '');
+    // Already open at that very match, nothing is fetched and nothing would land it
+    if (state.reveal && !state.busy) settleReveal();
   });
 
   const row = el('div', 'row1');
@@ -850,8 +878,13 @@ function renderSources() {
 function renderStreamHead(record) {
   const head = $('stream-head');
   const settle = headSettler(head);
+  // The head is rebuilt into #stream-main only: the find bar beside it is never rebuilt,
+  // or a refresh landing while you type would take the field's focus and text with it
+  const main = $('stream-main');
+  head.classList.toggle('idle', !record);
   if (!record) {
-    head.replaceChildren();
+    main.replaceChildren();
+    closeFind();
     settle();
     return;
   }
@@ -921,19 +954,21 @@ function renderStreamHead(record) {
     },
     'order',
   ));
-  // Three views of the same rounds: everything, the words alone, the file changes alone
-  bar.appendChild(segmented(
-    [['all', 'all'], ['conversation', 'conversation'], ['changes', 'changes']],
-    state.view,
-    (value) => {
-      if (value === state.view) return;
-      state.view = value;
-      saveViewPrefs();
-      renderMessages();
-      renderStreamHead(record); // only to move the highlight onto the other button
-    },
-    'view',
-  ));
+  // Views of the same rounds: everything, the words alone, or one kind of step alone — the
+  // file changes, the commands run, the steps that failed
+  bar.appendChild(segmented(VIEWS, state.view, (value) => setView(value), 'view'));
+  // The same choice as a select, which is what a phone shows: five buttons do not fit
+  // beside the other controls there, and a row of their own is a row less to read in
+  const pick = el('select', 'view-select');
+  pick.setAttribute('aria-label', 'What to show of each round');
+  for (const [value, label] of VIEWS) {
+    const option = el('option', '', label);
+    option.value = value;
+    pick.appendChild(option);
+  }
+  pick.value = state.view;
+  pick.addEventListener('change', () => setView(pick.value));
+  bar.appendChild(pick);
   // Every round's work at once, when reading the whole thing. A per-round choice made
   // after this is kept until the switch is thrown again.
   const expand = button('ghost tiny expand-toggle', '', () => {
@@ -951,6 +986,13 @@ function renderStreamHead(record) {
   expand.setAttribute('aria-label', expand.title);
   expand.classList.toggle('hidden', state.view !== 'all');
   bar.appendChild(expand);
+  // The magnifier alone: the row is full, and the glyph says what it does
+  const find = button('ghost icon-btn find-toggle', '', () => openFind());
+  find.appendChild(findGlyph());
+  find.title = 'Find in this session (f)';
+  find.setAttribute('aria-label', 'Find in this session');
+  find.classList.toggle('on', !$('find-bar').classList.contains('hidden'));
+  bar.appendChild(find);
   box.appendChild(bar);
 
   const detail = state.detail;
@@ -993,7 +1035,7 @@ function renderStreamHead(record) {
     }
   }
 
-  head.replaceChildren(box);
+  main.replaceChildren(box);
   settle();
 }
 
@@ -1024,7 +1066,23 @@ function windowStats(detail, countLabel) {
     const failures = rounds.reduce((n, r) => n + r.summary.failures, 0);
     row.appendChild(el('span', '', asked + (asked === 1 ? ' round' : ' rounds')));
     row.appendChild(el('span', '', tools + (tools === 1 ? ' tool call' : ' tool calls')));
-    if (failures) row.appendChild(el('span', 'fail', failures + ' failed'));
+    // The count is also the way to the failures: step through them one by one, the
+    // folded rounds opening as needed, and on past the window when the session goes on
+    if (failures) {
+      const nav = el('span', 'fail-nav');
+      const prev = button('ghost icon-btn', '', () => gotoFailure(-1));
+      prev.appendChild(chevron('left'));
+      prev.title = 'Previous failure ([)';
+      prev.setAttribute('aria-label', 'Previous failure');
+      const count = button('ghost tiny fail', failures + ' failed', () => gotoFailure(1));
+      count.title = 'Next failure (])';
+      const next = button('ghost icon-btn', '', () => gotoFailure(1));
+      next.appendChild(chevron('right'));
+      next.title = 'Next failure (])';
+      next.setAttribute('aria-label', 'Next failure');
+      nav.append(prev, count, next);
+      row.appendChild(nav);
+    }
     // The work in this window, round by round, rather than first row to last: a session
     // left open over a weekend spans days, and reading that as how long the work took is
     // the same mistake a round made before its end was separated from its last row.
@@ -1038,6 +1096,12 @@ function windowStats(detail, countLabel) {
 // parseTime reads a timestamp the way relTime does: each source spells one differently
 function parseTime(iso) {
   if (!iso) return NaN;
+  // A bare epoch — pi stamps its messages in milliseconds — read by the server's rule: past
+  // 1e11 it is milliseconds, below it seconds
+  if (typeof iso === 'number' || /^\d{9,}(\.\d+)?$/.test(String(iso).trim())) {
+    const n = Number(iso);
+    return n > 1e11 ? n : n * 1000;
+  }
   let normalized = String(iso).trim().replace(' ', 'T');
   if (!/[Zz]|[+-]\d{2}:?\d{2}$/.test(normalized)) normalized += 'Z';
   return Date.parse(normalized);
@@ -1632,13 +1696,13 @@ function analyseRound(round) {
           steps.push({ kind: 'thinking', key, block, index, message, position });
           break;
         case 'event':
-          steps.push({ kind: 'event', key, block, index });
+          steps.push({ kind: 'event', key, block, index, position });
           break;
         case 'text':
           if (message.role === 'assistant' && i === finalAt) break; // the reply, rendered on its own
           if (!String(block.content || '').trim()) break;
-          if (message.injected) steps.push({ kind: 'injected', key, block, index });
-          else steps.push({ kind: 'note', key, block, index, role: message.role });
+          if (message.injected) steps.push({ kind: 'injected', key, block, index, position });
+          else steps.push({ kind: 'note', key, block, index, position, role: message.role });
           break;
         default:
           break;
@@ -1696,6 +1760,40 @@ function isFailedStep(step) {
 
 function isChangeStep(step) {
   return step.kind === 'tool' && !!step.call && toolKind(step.call.name) === 'write';
+}
+
+function isCommandStep(step) {
+  return step.kind === 'tool' && !!step.call && toolKind(step.call.name) === 'exec';
+}
+
+// STEP_VIEWS are the views that keep one kind of step, round by round: each round that has
+// one shows its ask and those steps, and the rest of the round is left out. open says
+// whether the steps come opened — a change is read as its diff and a failure as its output,
+// while a command reads on one line, a failed one keeping the start of its output in view.
+const STEP_VIEWS = {
+  changes: { test: isChangeStep, open: true, empty: 'No file changes in this window' },
+  commands: { test: isCommandStep, open: false, empty: 'No commands in this window' },
+  failures: { test: isFailedStep, open: true, empty: 'No failed steps in this window' },
+};
+
+// VIEWS are the stream's views, in the order the switch offers them
+const VIEWS = [['all', 'all'], ['conversation', 'conversation'], ['changes', 'changes'],
+  ['commands', 'commands'], ['failures', 'failures']];
+
+// stepView is the step view a name stands for, or null — own keys only, since a view name
+// can come back from storage as anything
+function stepView(view) {
+  return Object.prototype.hasOwnProperty.call(STEP_VIEWS, view) ? STEP_VIEWS[view] : null;
+}
+
+// setView switches the stream to another view and redraws what depends on it: the stream,
+// and the head, whose buttons say which view is on
+function setView(view) {
+  if (view === state.view) return;
+  state.view = view;
+  saveViewPrefs();
+  renderMessages();
+  renderStreamHead(state.byId.get(state.selectedId));
 }
 
 // The argument a tool names a file by, across the CLIs
@@ -1768,7 +1866,7 @@ function isRoundExpanded(round) {
 // emptyStreamNote names what the current view left empty
 function emptyStreamNote(count) {
   if (!count) return 'This session has no messages';
-  if (state.view === 'changes') return 'No file changes in this window';
+  if (stepView(state.view)) return stepView(state.view).empty;
   if (state.view === 'conversation') return 'No conversation in this window';
   return 'Nothing to show in this window';
 }
@@ -1857,7 +1955,8 @@ function messageNode(message, index, options) {
 // roundNode lays one round out: the ask, the work (folded to a line), the reply
 function roundNode(round) {
   const record = state.byId.get(state.selectedId);
-  if (state.view === 'changes' && !flatToolSteps(round.steps).some(isChangeStep)) return null;
+  const only = stepView(state.view);
+  if (only && !flatToolSteps(round.steps).some(only.test)) return null;
   const node = el('section', 'round' + (round.ask ? '' : ' lead'));
   node.dataset.round = round.no;
   if (round.ask) {
@@ -1871,10 +1970,11 @@ function roundNode(round) {
       : 'before the first ask'));
   }
 
-  if (state.view === 'changes') {
-    const list = el('div', 'steps changes');
+  if (only) {
+    const list = el('div', 'steps only ' + state.view);
     for (const step of flatToolSteps(round.steps)) {
-      if (isChangeStep(step)) list.appendChild(toolStepNode(step, round, { open: true }));
+      if (!only.test(step)) continue;
+      list.appendChild(toolStepNode(step, round, { open: only.open, pinned: !only.open && isFailedStep(step) }));
     }
     node.appendChild(list);
     return node;
@@ -1885,7 +1985,7 @@ function roundNode(round) {
   } else {
     // The conversation alone: what the agent said along the way, then its reply
     for (const step of round.steps) {
-      if (step.kind === 'note' && step.role !== 'user') node.appendChild(noteNode(step));
+      if (step.kind === 'note' && step.role !== 'user') node.appendChild(markStep(noteNode(step), step));
     }
   }
   if (round.final) {
@@ -1948,12 +2048,21 @@ function stepNode(step, round) {
   switch (step.kind) {
     case 'tool': return toolStepNode(step, round, {});
     case 'merged': return mergedStepNode(step, round);
-    case 'thinking': return thinkingStepNode(step);
-    case 'note': return noteNode(step);
-    case 'event': return el('div', 'event', eventLabel(step.block));
-    case 'injected': return injectedNode(step);
+    case 'thinking': return markStep(thinkingStepNode(step), step);
+    case 'note': return markStep(noteNode(step), step);
+    case 'event': return markStep(el('div', 'event', eventLabel(step.block)), step);
+    case 'injected': return markStep(injectedNode(step), step);
     default: return el('div', 'event', step.kind);
   }
+}
+
+// markStep labels a step's node with the step it draws and the message it came from, which
+// is how a failure or a match is found on screen again after the stream is rebuilt
+function markStep(node, step) {
+  node.dataset.step = step.key;
+  const index = step.kind === 'merged' ? step.children[0].index : step.index;
+  if (index !== undefined) node.dataset.index = index;
+  return node;
 }
 
 // stepGlyph says how a step ended at a glance
@@ -2042,6 +2151,7 @@ function toolStepNode(step, round, options) {
     (isFailed(result) ? ' failed' : '') +
     (result && result.status === 'interrupted' ? ' interrupted' : '') +
     (opts.pinned ? ' pinned' : ''));
+  markStep(row, step);
   const open = opts.open || state.openBlocks.has(step.key);
   const head = el('button', 'step-head');
   head.type = 'button';
@@ -2104,33 +2214,38 @@ function stepDetails(step) {
 // whole block into the loaded window, so a rebuild keeps it. The message is found again by
 // its key, which is stable across the two reads.
 async function loadFullBlock(step, node) {
-  const detail = state.detail;
   const message = step.resultMessage || step.message;
   const position = step.resultPosition !== undefined ? step.resultPosition : step.position;
-  if (!detail || !message || position === undefined) return;
+  if (!state.detail || !message || position === undefined) return;
   if (!message.timestamp) {
     setText(node, 'not available');
     return;
   }
   setText(node, 'Loading…');
   try {
-    const id = encodeURIComponent(detail.sessionId);
-    const data = await api('/sessions/' + id + '/messages?limit=8&order=asc&full=1&at=' +
-      encodeURIComponent(message.timestamp));
-    const want = messageKey(message);
-    const found = (data.messages || []).find((m) => messageKey(m) === want);
-    const block = found && Array.isArray(found.content) ? found.content[position] : null;
-    if (!block) {
-      setText(node, 'not found');
-      return;
-    }
-    message.content[position] = block;
-    roundsCache = { source: null, value: null }; // the steps point at the old block
-    renderMessages();
+    if (await fetchWhole(message, position)) renderMessages();
+    else setText(node, 'not found');
   } catch (err) {
     handleError(err);
     setText(node, 'failed');
   }
+}
+
+// fetchWhole reads one cut block whole and puts it into the window in place of its preview,
+// so every rebuild after keeps it. False when the block could not be found again.
+async function fetchWhole(message, position) {
+  const detail = state.detail;
+  if (!detail || !message.timestamp) return false;
+  const id = encodeURIComponent(detail.sessionId);
+  const data = await api('/sessions/' + id + '/messages?limit=8&order=asc&full=1&at=' +
+    encodeURIComponent(message.timestamp));
+  const want = messageKey(message);
+  const found = (data.messages || []).find((m) => messageKey(m) === want);
+  const block = found && Array.isArray(found.content) ? found.content[position] : null;
+  if (!block) return false;
+  message.content[position] = block;
+  roundsCache = { source: null, value: null }; // the steps point at the old block
+  return true;
 }
 
 // ---- Diffs ----
@@ -2274,7 +2389,7 @@ function mergedStepNode(step, round) {
       searches++;
     }
   }
-  const row = el('div', 'step merged tool-read' + (open ? ' open' : ''));
+  const row = markStep(el('div', 'step merged tool-read' + (open ? ' open' : '')), step);
   const head = el('button', 'step-head');
   head.type = 'button';
   head.setAttribute('aria-expanded', open ? 'true' : 'false');
@@ -2398,6 +2513,13 @@ function renderMessages() {
   if (!sameView) {
     pane.classList.add('fresh');
     setTimeout(() => pane.classList.remove('fresh'), 300);
+  }
+
+  // The match being shown keeps its marks through a rebuild: opening a step, a refresh
+  const find = state.find;
+  if (find && find.current >= 0 && find.targets[find.current]) {
+    const node = pane.querySelector(targetSelector(find.targets[find.current]));
+    if (node) markMatches(node, find.query);
   }
 
   if (!sameView) {
@@ -2865,8 +2987,8 @@ function tocPreviewOf(message, max) {
   return '';
 }
 
-// gotoRound scrolls a round's ask or reply into view and flashes it. The changes view
-// drops rounds without changes, so a miss there falls back to the whole view first.
+// gotoRound scrolls a round's ask or reply into view and flashes it. A step view drops the
+// rounds without its kind of step, so a miss there falls back to the whole view first.
 function gotoRound(no, part) {
   // On a phone the list of rounds is on the details screen and the rounds themselves on
   // the conversation screen behind it: step back to that first, and jump once it is up
@@ -2879,20 +3001,638 @@ function gotoRound(no, part) {
   const find = () => pane.querySelector('.round[data-round="' + no + '"]');
 
   let node = find();
-  if (!node && state.view === 'changes') {
-    state.view = 'all';
-    saveViewPrefs();
-    renderMessages();
-    renderStreamHead(state.byId.get(state.selectedId));
+  if (!node && stepView(state.view)) {
+    setView('all');
     node = find();
   }
   if (!node) return;
   const target = (part === 'final' && node.querySelector('.msg.final')) || node.querySelector('.msg') || node;
-  // Instant on a phone: the page is the scroller there, and a glide still under way when
-  // the next screen comes up would carry that screen off with it
-  target.scrollIntoView({ block: 'center', behavior: isPhone() ? 'auto' : 'smooth' });
-  target.classList.add('flash');
-  setTimeout(() => target.classList.remove('flash'), 1400);
+  flashInView(target);
+}
+
+// flashInView centres a node in the stream and flashes it, so the eye lands where the jump
+// went; focus, when given, is what gets centred instead — a word inside a tall node, which
+// may sit in a scrolling output box of its own. Instant on a phone: the page is the scroller
+// there, and a glide still under way when the next screen comes up would carry that screen
+// off with it.
+function flashInView(node, focus) {
+  (focus || node).scrollIntoView({ block: 'center', behavior: isPhone() ? 'auto' : 'smooth' });
+  node.classList.add('flash');
+  setTimeout(() => node.classList.remove('flash'), 1400);
+}
+
+// ---------------------------------------------------------------------------
+// Finding your way in a long session: the failures one at a time, and words inside it
+//
+// Both walk targets in the loaded window — the steps that failed, the places whose text
+// holds the words — and bring each into view: the view switched to one that draws it, its
+// round opened when folding hides it, the step opened, then centred and flashed. A session
+// longer than its window carries on past the window's edges, where the server says what is
+// there (the rounds that failed, the messages that match) and the window is anchored at it
+// the way a search hit from the list anchors it.
+// ---------------------------------------------------------------------------
+
+// windowMessages is the loaded window, in order
+function windowMessages() {
+  return (state.detail && state.detail.messages.messages) || [];
+}
+
+// windowIsWhole: the window holds every message of the session, so nothing lies past it
+function windowIsWhole() {
+  const detail = state.detail;
+  if (!detail) return true;
+  const total = Number(detail.final && detail.final.messageCount) || 0;
+  return total <= windowMessages().length;
+}
+
+// windowSpan is the earliest and latest time in the window: what lies outside it in time
+// lies outside the window. NaN when the window's rows carry no readable time.
+function windowSpan() {
+  let from = NaN;
+  let to = NaN;
+  for (const message of windowMessages()) {
+    const t = parseTime(message.timestamp);
+    if (isNaN(t)) continue;
+    if (isNaN(from) || t < from) from = t;
+    if (isNaN(to) || t > to) to = t;
+  }
+  return { from, to };
+}
+
+// targetIndex is the window position a target is drawn at; targetTime the time it happened
+function targetIndex(target) {
+  return target.kind === 'step' ? target.step.index : target.index;
+}
+function targetTime(target) {
+  if (target.hitAt !== undefined) return target.hitAt;
+  if (target.kind === 'step') {
+    const message = target.step.resultMessage || target.step.message || windowMessages()[target.step.index];
+    return parseTime(message && message.timestamp);
+  }
+  const message = windowMessages()[target.index];
+  return parseTime(message && message.timestamp);
+}
+
+// viewTopIndex is the window position of the first message showing at the top of the
+// stream — where "the next one" is counted from when there is no last jump to go on from
+function viewTopIndex() {
+  const pane = $('messages');
+  const top = isPhone() ? $('stream-head').getBoundingClientRect().bottom : pane.getBoundingClientRect().top;
+  for (const node of pane.querySelectorAll('[data-index]')) {
+    if (node.getBoundingClientRect().bottom > top) return Number(node.dataset.index);
+  }
+  return Infinity;
+}
+
+// nextFrom picks where a walk goes: on from the target it showed last while that one is
+// still on screen, and from what is on screen otherwise — so scrolling away and asking
+// again starts from where you are. -1 or the length when the window runs out that way.
+function nextFrom(targets, lastKey, direction) {
+  const last = lastKey ? targets.findIndex((t) => t.key === lastKey) : -1;
+  if (last >= 0 && onScreen($('messages').querySelector(targetSelector(targets[last])))) {
+    return last + direction;
+  }
+  const top = viewTopIndex();
+  if (direction > 0) {
+    const i = targets.findIndex((t) => targetIndex(t) >= top);
+    return i < 0 ? targets.length : i;
+  }
+  let i = -1;
+  targets.forEach((t, k) => { if (targetIndex(t) < top) i = k; });
+  return i;
+}
+
+// onScreen: some of the node shows in the stream right now — below the head that sticks
+// over the page on a phone, inside the pane on a wide screen
+function onScreen(node) {
+  if (!node) return false;
+  const pane = $('messages');
+  const top = isPhone() ? $('stream-head').getBoundingClientRect().bottom : pane.getBoundingClientRect().top;
+  const bottom = isPhone() ? document.documentElement.clientHeight : pane.getBoundingClientRect().bottom;
+  const box = node.getBoundingClientRect();
+  return box.bottom > top && box.top < bottom;
+}
+
+// targetSelector finds a target's node in the stream: a step by its key, a bubble by its
+// window position
+function targetSelector(target) {
+  if (target.kind === 'step') return '[data-step="' + CSS.escape(target.step.key) + '"]';
+  return '.msg[data-index="' + target.index + '"]';
+}
+
+// drawnIn says whether a view draws a target at all, folded or not
+function drawnIn(view, target) {
+  const only = stepView(view);
+  if (target.kind === 'step') {
+    if (only) return target.step.kind === 'tool' && only.test(target.step);
+    if (view === 'conversation') return target.step.kind === 'note' && target.step.role !== 'user';
+    return true;
+  }
+  if (only) return target.kind === 'ask' && flatToolSteps(target.round.steps).some(only.test);
+  if (view === 'conversation' && target.kind === 'preface') return hasWords(windowMessages()[target.index]);
+  return true;
+}
+
+// revealTarget brings a target into view and flashes it; needle, when given, is marked
+// wherever it appears in what was revealed. Opening is part of revealing: a step shows
+// what it holds — the output of a failure, the text a match is in — and a round folded
+// over the step opens. A failure needs no open round when it is one of the five a folded
+// round keeps in view.
+function revealTarget(target, needle) {
+  if (!drawnIn(state.view, target)) {
+    state.view = 'all';
+    saveViewPrefs();
+    renderStreamHead(state.byId.get(state.selectedId));
+  }
+  if (target.kind === 'step') {
+    const step = target.step;
+    state.openBlocks.add(step.key);
+    if (target.merged) state.openBlocks.add(target.merged.key);
+    if (state.view === 'all') {
+      const pinned = isFailedStep(step) && !target.merged &&
+        flatToolSteps(target.round.steps).filter(isFailedStep).indexOf(step) < 5;
+      if (!pinned || target.merged) state.roundOverrides.set(target.round.key, true);
+    }
+  }
+  renderMessages();
+  const node = $('messages').querySelector(targetSelector(target));
+  if (!node) return false;
+  clearMarks();
+  flashInView(node, needle ? markMatches(node, needle) : null);
+  return true;
+}
+
+// markMatches wraps each case-folded occurrence of the needle under node in a <mark>,
+// text node by text node — the page builds nothing from markup, and neither does this. It
+// returns the first mark, or null when the words are nowhere in what the node draws.
+//
+// A step's head and a fold's summary are left alone: each is one clipped line restating
+// what the opened step or block shows in full, and centring a word in one scrolled the
+// clipped line sideways, leaving a bar of colour where the command was.
+function markMatches(node, needle) {
+  const lower = needle.toLowerCase();
+  // Positions found in the folded text are used on the original, which holds only while
+  // folding keeps the length — not so for a few letters (İ folds to two code units)
+  if (lower.length !== needle.length) return null;
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  const texts = [];
+  while (walker.nextNode()) {
+    const value = walker.currentNode.nodeValue;
+    const folded = value.toLowerCase();
+    if (folded.length !== value.length || !folded.includes(lower)) continue;
+    if (walker.currentNode.parentElement.closest('.step-head, summary')) continue;
+    texts.push(walker.currentNode);
+  }
+  let first = null;
+  for (let text of texts) {
+    let at = text.nodeValue.toLowerCase().indexOf(lower);
+    while (at >= 0) {
+      const hit = text.splitText(at);
+      text = hit.splitText(needle.length);
+      const mark = el('mark', 'find-hit');
+      hit.parentNode.replaceChild(mark, hit);
+      mark.appendChild(hit);
+      if (!first) first = mark;
+      at = text.nodeValue.toLowerCase().indexOf(lower);
+    }
+  }
+  return first;
+}
+
+function clearMarks() {
+  for (const mark of $('messages').querySelectorAll('mark.find-hit')) {
+    const parent = mark.parentNode;
+    parent.replaceChild(document.createTextNode(mark.textContent), mark);
+    parent.normalize();
+  }
+}
+
+// ---- Failures, one at a time ----
+
+// failureTargets lists the window's failed steps in the order they ran
+function failureTargets() {
+  const out = [];
+  for (const round of roundsOf(windowMessages()).rounds) {
+    for (const step of flatToolSteps(round.steps)) {
+      if (isFailedStep(step)) out.push({ kind: 'step', key: step.key, round, step, merged: null });
+    }
+  }
+  return out;
+}
+
+// gotoFailure steps to the next (1) or previous (-1) failed step. Past the window's edge it
+// goes to the nearest round beyond it that failed; with nothing further that way it comes
+// round to the other end of the window.
+async function gotoFailure(direction) {
+  if (!state.detail || state.busy) return;
+  const targets = failureTargets();
+  let next = nextFrom(targets, state.failureAt, direction);
+  if (next < 0 || next >= targets.length) {
+    if (await failureBeyond(direction)) return;
+    if (!targets.length) {
+      setStatus('No failed steps in this session');
+      return;
+    }
+    next = direction > 0 ? 0 : targets.length - 1;
+  }
+  showFailure(targets[next]);
+}
+
+function showFailure(target) {
+  state.failureAt = target.key;
+  revealTarget(target);
+}
+
+// failureBeyond anchors the window at the nearest round past its edge that has a failure,
+// from the session's rounds as the server counts them. False when there is none that way,
+// or when the window cannot be placed in time.
+async function failureBeyond(direction) {
+  if (windowIsWhole()) return false;
+  const span = windowSpan();
+  if (isNaN(span.from)) return false;
+  let rounds;
+  try {
+    rounds = await sessionRoundsIndex();
+  } catch (err) {
+    handleError(err);
+    return false;
+  }
+  const endOf = (r) => r.endAt || r.lastAt || r.startAt;
+  let target = null;
+  for (const r of rounds) {
+    if (!(r.failures > 0)) continue;
+    if (direction > 0 && parseTime(r.startAt) > span.to) { target = r; break; }
+    if (direction < 0 && parseTime(endOf(r)) < span.from) target = r;
+  }
+  if (!target) return false;
+  state.reveal = {
+    kind: 'failure', sessionId: state.detail.sessionId, direction,
+    from: parseTime(target.startAt), to: parseTime(endOf(target)),
+  };
+  // The window takes the anchor the way it reads: ending there for the latest-first order,
+  // starting there for the earliest-first one — either way the round is in it
+  state.focusAt = state.order === 'desc' ? endOf(target) : target.startAt;
+  setStatus('Going to ' + (direction > 0 ? 'a later' : 'an earlier') + ' round that failed\u2026');
+  syncDetail({ force: true });
+  return true;
+}
+
+// sessionRoundsIndex is the open session's rounds from the server, read once per state of
+// the session: the whole session's failures, where the window only knows its own
+async function sessionRoundsIndex() {
+  const detail = state.detail;
+  const key = detail.sessionId + '|' + detail.signature;
+  if (state.roundsIndex && state.roundsIndex.key === key) return state.roundsIndex.rounds;
+  const data = await api('/sessions/' + encodeURIComponent(detail.sessionId) + '/rounds');
+  state.roundsIndex = { key, rounds: data.rounds || [] };
+  return state.roundsIndex.rounds;
+}
+
+// ---- Words in the session ----
+
+// searchableText is what find looks through in a block: the words, the thinking, a call's
+// name and the values of its arguments, a result's output, an event's text. Values, not the
+// arguments as JSON: a key is not something the page shows, and Bash's own timeout argument
+// made every command a match for "timeout".
+function searchableText(block) {
+  switch (block.type) {
+    case 'toolCall': return (block.name || '') + '\n' + argumentValues(block.arguments, 0);
+    case 'toolResult': return String(block.content || '');
+    case 'event': return eventLabel(block);
+    default: return String(block.content == null ? '' : block.content);
+  }
+}
+
+// argumentValues is the string values of a call's arguments, however deep, one to a line
+function argumentValues(value, depth) {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object' || depth > 6) return '';
+  return Object.values(value).map((v) => argumentValues(v, depth + 1)).filter(Boolean).join('\n');
+}
+
+// blockPlaces maps each block of the window to the place that draws it: a bubble draws all
+// of a message ('*'), a reply only its words ('text'), and every other block is a step's
+function blockPlaces(all) {
+  const { preface, rounds } = roundsOf(all);
+  const indexOf = new Map(all.map((message, index) => [message, index]));
+  const places = new Map();
+  for (const { index } of preface) {
+    places.set(index + ':*', { kind: 'preface', key: 'm:' + index, index });
+  }
+  for (const round of rounds) {
+    if (round.ask) places.set(round.ask.index + ':*', { kind: 'ask', key: 'a:' + round.key, round, index: round.ask.index });
+    if (round.final) places.set(round.final.index + ':text', { kind: 'final', key: 'f:' + round.key, round, index: round.final.index });
+    for (const step of round.steps) {
+      for (const child of step.kind === 'merged' ? step.children : [step]) {
+        const target = { kind: 'step', key: child.key, round, step: child, merged: step.kind === 'merged' ? step : null };
+        if (child.position !== undefined) places.set(child.index + ':' + child.position, target);
+        if (child.resultMessage) places.set(indexOf.get(child.resultMessage) + ':' + child.resultPosition, target);
+      }
+    }
+  }
+  return places;
+}
+
+function placeOf(places, index, block, position) {
+  return places.get(index + ':' + position) || places.get(index + ':*') ||
+    (block.type === 'text' ? places.get(index + ':text') : null) || null;
+}
+
+// ownTargets lists the places whose text in the window holds the needle, in order. One
+// place is one target, however many of its blocks match.
+function ownTargets(needle, places) {
+  const lower = needle.toLowerCase();
+  const out = [];
+  const seen = new Set();
+  windowMessages().forEach((message, index) => {
+    (message.content || []).forEach((block, position) => {
+      if (!searchableText(block).toLowerCase().includes(lower)) return;
+      const target = placeOf(places, index, block, position);
+      if (target && !seen.has(target.key)) {
+        seen.add(target.key);
+        out.push(target);
+      }
+    });
+  });
+  return out;
+}
+
+// cutTargets are the matches the window holds but cannot see. A server hit inside the window
+// at a time where the page found nothing lies past the start of a block the window carries
+// only the beginning of — tool output, thinking — so it becomes a target on the message's cut
+// block, read whole when the walk gets there. With no cut block at that time the words are
+// in something the page does not draw at all: a field a source keeps beside its transcript,
+// or a row of its own that is not a message (Claude Code's attachment and progress rows).
+// The message at that time, or the one nearest the row — an attachment comes just before
+// the prompt it belongs to, a progress row just after the call — is still where they are,
+// so it is a target too, shown without marks. hitAt keeps the hit's own time for the jumps
+// that look for it.
+function cutTargets(times, places, own) {
+  const all = windowMessages();
+  const covered = new Set(own.map(targetTime));
+  const keys = new Set(own.map((t) => t.key));
+  const out = [];
+  const placeIn = (index, accept, extra) => (all[index].content || []).some((block, position) => {
+    if (!accept(block)) return false;
+    const place = placeOf(places, index, block, position);
+    if (!place || keys.has(place.key)) return false;
+    keys.add(place.key);
+    out.push(Object.assign({}, place, extra(all[index], position)));
+    return true;
+  });
+  for (const time of times) {
+    if (covered.has(time)) continue;
+    covered.add(time);
+    const at = [];
+    let nearest = -1;
+    let gap = Infinity;
+    all.forEach((message, index) => {
+      const t = parseTime(message.timestamp);
+      if (t === time) at.push(index);
+      if (Math.abs(t - time) < gap) {
+        nearest = index;
+        gap = Math.abs(t - time);
+      }
+    });
+    const cut = (message, position) => ({ cut: { message, position }, hitAt: time });
+    const unseen = () => ({ unseen: true, hitAt: time });
+    if (at.some((index) => placeIn(index, (block) => block.truncated, cut))) continue;
+    if (at.some((index) => placeIn(index, () => true, unseen))) continue;
+    if (nearest >= 0) placeIn(nearest, () => true, unseen);
+  }
+  return out;
+}
+
+// listTargets is every match in the window, in the order the stream draws them: the page's
+// own, and the server's that the page cannot see. A place already read whole that still
+// shows no words is not cut any more, only unseen: the server's hit is there all the same.
+function listTargets(find) {
+  const places = blockPlaces(windowMessages());
+  const own = ownTargets(find.query, places);
+  const cut = find.server.inside
+    ? cutTargets(find.server.inside, places, own)
+      .map((t) => (find.whole.has(t.key) ? Object.assign({}, t, { cut: null, unseen: true }) : t))
+    : [];
+  return own.concat(cut).sort((a, b) => targetIndex(a) - targetIndex(b));
+}
+
+// openFind shows the find bar with the cursor in it. The words already there stay, so f
+// and then Enter carries on where the last search left off.
+function openFind() {
+  if (!state.detail) return;
+  const bar = $('find-bar');
+  if (bar.classList.contains('hidden')) {
+    bar.classList.remove('hidden');
+    const toggle = document.querySelector('.find-toggle');
+    if (toggle) toggle.classList.add('on');
+    if ($('find').value.trim()) refreshFind();
+  }
+  $('find').focus();
+  $('find').select();
+}
+
+function closeFind() {
+  const bar = $('find-bar');
+  if (bar.classList.contains('hidden')) return;
+  bar.classList.add('hidden');
+  if (state.findTimer) clearTimeout(state.findTimer);
+  if (state.findAbort) state.findAbort.abort();
+  state.find = null;
+  clearMarks();
+  setText($('find-count'), '');
+  const toggle = document.querySelector('.find-toggle');
+  if (toggle) toggle.classList.remove('on');
+}
+
+// refreshFind lists the matches for what is in the field against the window as it is now.
+// The place shown last stays the current one while the window still holds it. The server is
+// asked once per window span — a refresh that changes nothing about where the window lies
+// keeps its answer — and its answer is shared by every listing of that span.
+function refreshFind() {
+  const query = $('find').value.trim();
+  const detail = state.detail;
+  if (!query || !detail || $('find-bar').classList.contains('hidden')) {
+    state.find = null;
+    clearMarks();
+    setText($('find-count'), '');
+    return null;
+  }
+  const old = state.find;
+  const span = windowSpan();
+  const same = old && old.query === query && old.sessionId === detail.sessionId;
+  const sameSpan = same && old.span.from === span.from && old.span.to === span.to;
+  const find = {
+    query, sessionId: detail.sessionId, span,
+    lastKey: same ? old.lastKey : '',
+    whole: same ? old.whole : new Set(), // places read whole already
+    server: sameSpan ? old.server : { pending: null, before: null, after: null, inside: null, more: false },
+  };
+  find.targets = listTargets(find);
+  find.current = find.targets.findIndex((t) => t.key === find.lastKey);
+  state.find = find;
+  if (!find.server.pending) find.server.pending = askServer(find);
+  renderFindCount();
+  return find;
+}
+
+// askServer runs the search scoped to this session's file and places each hit by its time:
+// before the window, after it, or inside it. Inside, a hit the page has no match for is in
+// text the window holds only the start of.
+async function askServer(find) {
+  const server = find.server;
+  if (state.findAbort) state.findAbort.abort();
+  const controller = new AbortController();
+  state.findAbort = controller;
+  try {
+    const record = state.byId.get(find.sessionId);
+    const data = await api('/search?q=' + encodeURIComponent(find.query) +
+      '&pattern=' + encodeURIComponent(find.sessionId) +
+      (record && record.source ? '&source=' + encodeURIComponent(record.source) : '') +
+      '&limit=1&per_session=500', { signal: controller.signal });
+    const hits = ((data.results || [])[0] || {}).matches || [];
+    const whole = windowIsWhole();
+    // The window was opened at this instant (a hit from the list, a jump to one): a hit at
+    // it is in the window, even when its row is not one the messages are drawn from
+    const anchor = parseTime(state.detail && state.detail.anchor);
+    server.before = [];
+    server.after = [];
+    server.inside = [];
+    for (const hit of hits) {
+      const time = parseTime(hit.timestamp);
+      if (isNaN(time)) continue;
+      if (time === anchor) server.inside.push(time);
+      else if (!whole && time < find.span.from) server.before.push(hit);
+      else if (!whole && time > find.span.to) server.after.push(hit);
+      else server.inside.push(time);
+    }
+    // The hits come in file order and stop at the cap, so a cut drops the latest ones
+    server.more = !!(data.truncated && data.truncated.hits);
+    const current = state.find;
+    if (current && current.server === server) {
+      current.targets = listTargets(current);
+      current.current = current.targets.findIndex((t) => t.key === current.lastKey);
+      renderFindCount();
+    }
+  } catch (err) {
+    if (err.name !== 'AbortError') handleError(err);
+  }
+}
+
+function renderFindCount() {
+  const find = state.find;
+  if (!find) {
+    setText($('find-count'), '');
+    return;
+  }
+  const n = find.targets.length;
+  const earlier = find.server.before ? find.server.before.length : 0;
+  const later = find.server.after ? find.server.after.length : 0;
+  const parts = [];
+  if (find.current >= 0) parts.push((find.current + 1) + ' / ' + n);
+  else if (n) parts.push(n + (n === 1 ? ' match' : ' matches'));
+  else parts.push(earlier || later ? 'none here' : 'No matches');
+  if (earlier) parts.push(earlier + ' earlier');
+  if (later || find.server.more) parts.push(later + (find.server.more ? '+' : '') + ' later');
+  setText($('find-count'), parts.join(' · '));
+  $('find-count').classList.toggle('none', !n && !earlier && !later);
+}
+
+// findStep moves to the next (1) or previous (-1) match: through the window, then on past
+// its edges where the server found more. With nothing further that way it comes round to
+// the other end of the session, which lies past the window's other edge when there are
+// matches there.
+async function findStep(direction) {
+  if (!state.detail || state.busy) return;
+  let find = state.find;
+  if (!find || find.query !== $('find').value.trim() || find.sessionId !== state.detail.sessionId) {
+    find = refreshFind();
+  }
+  if (!find) return;
+  let next = nextFrom(find.targets, find.lastKey, direction);
+  if (next < 0 || next >= find.targets.length) {
+    // Whether there is more past the edge is the server's to say: wait for its answer
+    // rather than come round to the other end of a window the session goes on beyond
+    await find.server.pending;
+    find = state.find;
+    if (!find) return;
+    next = nextFrom(find.targets, find.lastKey, direction);
+  }
+  if (next < 0 || next >= find.targets.length) {
+    const before = find.server.before || [];
+    const after = find.server.after || [];
+    const beyond = direction > 0 ? after[0] || before[0] : before[before.length - 1] || after[after.length - 1];
+    if (beyond && beyond.timestamp) {
+      state.reveal = { kind: 'find', sessionId: state.detail.sessionId, direction, at: parseTime(beyond.timestamp) };
+      state.focusAt = beyond.timestamp;
+      syncDetail({ force: true });
+      return;
+    }
+    if (!find.targets.length) return;
+    next = direction > 0 ? 0 : find.targets.length - 1;
+  }
+  showMatch(find, next);
+}
+
+// showMatch shows one match. A match in cut text reads its block whole first, and is then
+// found again among the matches the page can see — the same place, with its words marked.
+async function showMatch(find, i) {
+  const target = find.targets[i];
+  if (target.cut) {
+    find.whole.add(target.key);
+    try {
+      await fetchWhole(target.cut.message, target.cut.position);
+    } catch (err) {
+      handleError(err);
+    }
+    // The same place again, read whole now: marked when the words are in what it draws,
+    // unmarked when they are not (listTargets keeps it as unseen then). A message can hold
+    // more than one cut block; when this one was not it, the server's hit moves on to the
+    // next, which is read whole in turn.
+    const again = state.find === find ? refreshFind() : null;
+    if (!again) return;
+    let j = again.targets.findIndex((t) => t.key === target.key);
+    if (j < 0) j = again.targets.findIndex((t) => targetTime(t) === targetTime(target));
+    if (j >= 0) showMatch(again, j);
+    return;
+  }
+  find.current = i;
+  find.lastKey = target.key;
+  renderFindCount();
+  revealTarget(target, target.unseen ? '' : find.query);
+}
+
+// settleReveal finishes a jump that had to load another window first: what it was going
+// to is looked for again in the window that came back, by the time it was found at
+async function settleReveal() {
+  const reveal = state.reveal;
+  state.reveal = null;
+  if (!reveal || !state.detail || reveal.sessionId !== state.detail.sessionId) return;
+  if (reveal.kind === 'failure') {
+    const targets = failureTargets();
+    const inside = targets.filter((t) => {
+      const at = targetTime(t);
+      return at >= reveal.from && at <= reveal.to;
+    });
+    const pool = inside.length ? inside : targets;
+    const target = reveal.direction > 0 ? pool[0] : pool[pool.length - 1];
+    if (target) showFailure(target);
+    setStatus(idleStatus());
+    return;
+  }
+  let find = refreshFind();
+  if (!find) return;
+  // The match it was going to may be one only the server can see: wait for its answer
+  await find.server.pending;
+  find = state.find;
+  if (!find || !find.targets.length) return;
+  let pick = -1;
+  if (reveal.direction > 0) {
+    pick = find.targets.findIndex((t) => !(targetTime(t) < reveal.at));
+  } else {
+    find.targets.forEach((t, i) => { if (!(targetTime(t) > reveal.at)) pick = i; });
+  }
+  if (pick < 0) pick = reveal.direction > 0 ? 0 : find.targets.length - 1;
+  showMatch(find, pick);
 }
 
 // selectSession opens a session. focusAt, when given, anchors the message window at that
@@ -3060,6 +3800,7 @@ async function loadMore(edge) {
     messages: edge === 'older' ? fresh.concat(msgs) : msgs.concat(fresh),
   });
   renderMessages();
+  refreshFind();
   const record = state.byId.get(state.selectedId);
   renderStreamHead(record);
   renderSide(record);
@@ -3118,6 +3859,8 @@ async function syncDetail(options) {
     // old content on screen and avoids a flash
     state.openBlocks.clear();
     state.roundOverrides.clear();
+    state.failureAt = '';
+    state.roundsIndex = null;
     $('messages').replaceChildren(loadingNodes());
     $('messages').dataset.view = '';
     $('side').replaceChildren();
@@ -3130,16 +3873,26 @@ async function syncDetail(options) {
     const id = encodeURIComponent(record.sessionId);
     // The anchor travels with the request, not with the session: it belongs to how this
     // session was opened and goes away the moment you page to an end yourself
-    const at = state.focusAt ? '&at=' + encodeURIComponent(state.focusAt) : '';
-    const [messages, final] = await Promise.all([
+    const anchor = state.focusAt;
+    const at = anchor ? '&at=' + encodeURIComponent(anchor) : '';
+    let [messages, final] = await Promise.all([
       api('/sessions/' + id + '/messages?limit=' + MESSAGE_LIMIT + '&order=' + state.order + at),
       api('/sessions/' + id + '/final'),
     ]);
+    // An anchored window can come back empty: the instant lies before the session's first
+    // message and the window asked for the ones up to it, or after its last and the window
+    // asked for the ones from it. A hit in a row that is not a message lands there — Claude
+    // Code writes an attachment row just before the prompt it belongs to. The other side of
+    // the instant is the window then; an empty stream said the session had no messages.
+    if (anchor && !(messages.messages || []).length) {
+      const other = state.order === 'desc' ? 'asc' : 'desc';
+      messages = await api('/sessions/' + id + '/messages?limit=' + MESSAGE_LIMIT + '&order=' + other + at);
+    }
     // Another session may have been picked while this was in flight; its own fetch (or
     // the pending re-run below) owns the stream now, and painting this one would show
     // the wrong session under the right highlight
     if (state.selectedId !== record.sessionId) return;
-    state.detail = { sessionId: record.sessionId, signature, messages, final };
+    state.detail = { sessionId: record.sessionId, signature, messages, final, anchor };
     painted = true;
     // Learn the count for sources that do not report one on list, and refresh the row's
     // badge — the incremental patch only touches what actually changed.
@@ -3154,6 +3907,9 @@ async function syncDetail(options) {
     renderStreamHead(record);
     renderMessages();
     renderSide(record);
+    // A jump that needed this window lands now; an open find counts again over it
+    if (state.reveal && anchor === state.focusAt) settleReveal();
+    else refreshFind();
   } catch (err) {
     handleError(err);
     clearDetail('Failed to load: ' + err.message);
@@ -3162,9 +3918,12 @@ async function syncDetail(options) {
     // A queued call is only worth re-running when this fetch did not already paint the
     // selection it belongs to — otherwise a double r fires the same request pair twice
     // and rebuilds the stream (and any text selection) for no new data
+    // A window anchored somewhere else since this fetch left counts as unpainted: a jump
+    // to a failure or a match moves the anchor and asks again, and the answer to the
+    // earlier question is not the window it wants.
     if (state.pendingDetail) {
       state.pendingDetail = false;
-      if (!painted) syncDetail({ force: true });
+      if (!painted || (state.detail && state.detail.anchor !== state.focusAt)) syncDetail({ force: true });
     }
   }
 }
@@ -3306,6 +4065,18 @@ document.addEventListener('keydown', (event) => {
     case 'g':
       scrollMessages(false);
       break;
+    case 'f':
+      if (state.detail) {
+        event.preventDefault(); // or the f lands in the field it just focused
+        openFind();
+      }
+      break;
+    case ']':
+      gotoFailure(1);
+      break;
+    case '[':
+      gotoFailure(-1);
+      break;
     case 'G':
       scrollMessages(true);
       break;
@@ -3372,6 +4143,33 @@ $('search').addEventListener('keydown', (event) => {
     clearSearch();
   }
 });
+
+// Find in the session: typing counts the matches, Enter walks them, Shift+Enter walks back
+$('find').addEventListener('input', () => {
+  if (state.findTimer) clearTimeout(state.findTimer);
+  state.findTimer = setTimeout(() => {
+    state.findTimer = null;
+    refreshFind();
+  }, SEARCH_DEBOUNCE_MS);
+});
+$('find').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    if (state.findTimer) {
+      clearTimeout(state.findTimer);
+      state.findTimer = null;
+    }
+    findStep(event.shiftKey ? -1 : 1);
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation(); // Esc here closes the find bar, not the list's search
+    closeFind();
+    $('messages').focus({ preventScroll: true });
+  }
+});
+$('find-prev').addEventListener('click', () => findStep(-1));
+$('find-next').addEventListener('click', () => findStep(1));
+$('find-close').addEventListener('click', closeFind);
 
 // List grouping: by time / by project
 $('grouping').addEventListener('change', (event) => {
@@ -3503,7 +4301,7 @@ function applyViewPrefs() {
   }
   if (typeof prefs.source === 'string') state.source = prefs.source;
   if (prefs.order === 'asc' || prefs.order === 'desc') state.order = prefs.order;
-  if (['all', 'conversation', 'changes'].indexOf(prefs.view) >= 0) state.view = prefs.view;
+  if (prefs.view === 'all' || prefs.view === 'conversation' || stepView(prefs.view)) state.view = prefs.view;
   // The earlier filters were by speaker; a saved one maps onto the nearest view
   else if (prefs.role === 'user' || prefs.role === 'assistant') state.view = 'conversation';
   if (typeof prefs.expandAll === 'boolean') state.expandAll = prefs.expandAll;

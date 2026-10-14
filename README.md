@@ -122,9 +122,18 @@ when the server was started with `--hook_token`, and it stays in the browser's l
   "explored — read 4 files, searched twice"; every step opens to its arguments and its
   output, and a change opens as a diff, whichever way the CLI spelled the edit. A result
   says how it ended — exit code, duration — and what happened between the turns (a
-  compaction, an interruption, a hook that failed) is a line of its own. Three views:
-  **all**, **conversation** (the words alone) and **changes** (the diffs alone, by round).
-  Under the toolbar, the window's sums: rounds, tool calls, failures, how long it ran. It
+  compaction, an interruption, a hook that failed) is a line of its own. Five views:
+  **all**, **conversation** (the words alone), and one kind of step alone, round by round:
+  **changes** (the diffs), **commands** (every command run) and **failures** (every step
+  that failed, opened to its output). Under the toolbar, the window's sums: rounds, tool
+  calls, failures, how long it ran — and the failure count steps through the failures one
+  at a time (‹ ›, or <kbd>[</kbd> <kbd>]</kbd>), opening the round each sits in; past the
+  loaded window it moves the window to the nearest round that failed. **Find in the
+  session** (the magnifier, or <kbd>f</kbd>) marks the words wherever the stream draws
+  them and walks the matches with <kbd>Enter</kbd> / <kbd>Shift</kbd>+<kbd>Enter</kbd>;
+  it says how many more lie before or after the loaded window and carries on there, and a
+  match inside cut tool output is read whole before it is shown. A body match picked in the
+  list opens with its words already in the find bar and the match in view. It
   opens on the latest 200 messages and **loads the previous page when you scroll to the
   top** (or the next one at the bottom, when reading from the earliest) — the count in the
   header says how far into the session you are. Tool output comes cut to a preview, and
@@ -172,7 +181,8 @@ and both remember what you chose.
 
 Shortcuts: <kbd>j</kbd> <kbd>k</kbd> move between sessions (metadata matches and body
 matches alike) · <kbd>/</kbd> focus search · <kbd>Enter</kbd> search the bodies now instead
-of waiting · <kbd>g</kbd> <kbd>G</kbd> jump to the start/end of the stream · <kbd>r</kbd>
+of waiting · <kbd>g</kbd> <kbd>G</kbd> jump to the start/end of the stream · <kbd>f</kbd>
+find in the session · <kbd>[</kbd> <kbd>]</kbd> previous/next failure · <kbd>r</kbd>
 refresh · <kbd>Esc</kbd> clear the search.
 
 ## Endpoints at a glance

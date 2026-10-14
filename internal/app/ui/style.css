@@ -48,6 +48,7 @@
   --ok-line: light-dark(rgba(63, 143, 79, 0.4), rgba(158, 206, 106, 0.55));
   --warn: light-dark(#b07d1e, #e0af68);
   --warn-soft: light-dark(rgba(176, 125, 30, 0.1), rgba(224, 175, 104, 0.12));
+  --find-hit: light-dark(rgba(176, 125, 30, 0.26), rgba(224, 175, 104, 0.3)); /* a found word, in the amber */
   --err: light-dark(#d5486c, #f7768e);
   --err-soft: light-dark(rgba(213, 72, 108, 0.1), rgba(247, 118, 142, 0.12));
   --read: light-dark(#3e6fe0, #7aa2f7);         /* tool categories without a state of their own */
@@ -501,7 +502,7 @@ body.hide-list #list, body.hide-side #side { display: none; }
      as you scrolled up, which read as the page jumping about; a head that never moves
      is worth the lines it occupies. */
 }
-.stream-head:empty { display: none; }
+.stream-head.idle { display: none; }
 /* The head's first row: the title, with the way back and the way to the details on a
    phone (the two buttons exist at every width and show only there) */
 .head-nav { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -541,6 +542,20 @@ body.hide-list #list, body.hide-side #side { display: none; }
 .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .toolbar .expand-toggle { display: inline-flex; align-items: center; gap: 5px; }
 .toolbar .expand-toggle .icon { font-size: 13px; line-height: 1; }
+.toolbar .find-toggle svg { width: 15px; height: 15px; }
+.toolbar .find-toggle.on { color: var(--accent); }
+.toolbar .view-select { display: none; } /* the phone's form of the view switch */
+
+/* Find in the session: a field, where you are among the matches, and the way through them */
+.find-bar { display: flex; align-items: center; gap: 2px; margin-top: 10px; min-width: 0; }
+.find-bar input[type=search] {
+  flex: 1 1 240px; min-width: 0; max-width: 420px; margin-right: 6px; padding-left: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%237a8290' stroke-width='1.6' stroke-linecap='round'%3E%3Ccircle cx='7' cy='7' r='4.6'/%3E%3Cpath d='M10.6 10.6 14 14'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: 10px 50%; background-size: 13px;
+}
+.find-count { color: var(--dim); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; margin-right: 4px; }
+.find-count.none { color: var(--err); }
+mark.find-hit { background: var(--find-hit); color: inherit; border-radius: 2px; padding: 0 1px; }
 
 .seg { display: inline-flex; gap: 2px; padding: 2px; background: var(--panel-2); border-radius: var(--r-md); }
 .seg .seg-btn {
@@ -641,13 +656,13 @@ body.hide-list #list, body.hide-side #side { display: none; }
 .toc-item .toc-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* The jump target flashes so the eye lands on it after the scroll */
-.msg.flash { animation: msg-flash 1.4s var(--ease); }
+.msg.flash, .step.flash, .note.flash, .event.flash, details.flash { animation: msg-flash 1.4s var(--ease); }
 @keyframes msg-flash {
   0%, 35% { box-shadow: 0 0 0 2px var(--accent-line), 0 0 0 7px var(--accent-soft); }
   100% { box-shadow: 0 0 0 2px transparent, 0 0 0 7px transparent; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .msg.flash { animation: none; }
+  .msg.flash, .step.flash, .note.flash, .event.flash, details.flash { animation: none; }
 }
 
 /* ---- Message timeline ---- */
@@ -828,9 +843,16 @@ details > summary .fold-size { flex: none; font-size: 11px; font-variant-numeric
    item keeps min-width:auto otherwise, and one long path with no space in it would widen
    the step, the round and the pane past the edge of a phone screen. */
 .round, .timeline, .timeline-toggle, .steps, .step, .step-head, .step-details, .msg { min-width: 0; max-width: 100%; }
+/* Every child of a run of steps, not only the steps: .steps is a grid, and its one column is
+   as wide as its widest child's minimum. A note along the way — a paragraph, a folded block
+   — kept the automatic minimum, so one long line in it set the column, and every step of
+   the round, wider than a phone's screen. */
+.steps > * { min-width: 0; }
 .step-head, .timeline-toggle { overflow: hidden; }
 .steps { margin-top: 4px; display: grid; gap: 1px; }
-.steps.changes { margin: 0 0 12px 8px; gap: 8px; }
+/* A step view: the one kind of step a round has, under its ask */
+.steps.only { margin: 0 0 12px 8px; gap: 8px; }
+.steps.only.commands { gap: 1px; }
 .steps.nested { margin: 0 0 6px 20px; }
 .step { border-radius: var(--r-md); min-width: 0; }
 .step-head {
@@ -913,6 +935,11 @@ details > summary .fold-size { flex: none; font-size: 11px; font-variant-numeric
   display: flex; gap: 4px 14px; flex-wrap: wrap; margin-top: 8px;
   color: var(--fg-mid); font-size: 12px; font-variant-numeric: tabular-nums;
 }
+/* The failure count is also the way through the failures: back, the count, on */
+.fail-nav { display: inline-flex; align-items: center; margin: -3px 0; }
+.fail-nav .icon-btn { width: 22px; height: 22px; color: var(--err); }
+.fail-nav .icon-btn svg { width: 13px; height: 13px; }
+.fail-nav button.tiny.fail { padding: 0 4px; color: var(--err); font-weight: 500; font-size: 12px; }
 
 /* Table of contents: two lines a round, the ask and the reply */
 .toc-round { display: grid; gap: 1px; margin: 0 0 6px; padding: 0 0 6px; border-bottom: 1px solid var(--line-soft); }
@@ -1070,11 +1097,18 @@ details > summary .fold-size { flex: none; font-size: 11px; font-variant-numeric
   .stream-head .meta { margin: 0 0 0 10px; gap: 8px; flex-wrap: nowrap; }
   .stream-head .meta .sub { display: none; } /* the path is in Details; the head keeps to where and when */
   .toolbar { margin: 8px 0 0 10px; gap: 6px; flex-wrap: nowrap; }
-  .toolbar .seg.view { flex: 1 1 auto; display: flex; }
-  .toolbar .seg.view .seg-btn { flex: 1; padding: 5px 4px; text-align: center; }
+  /* Five views beside the other controls would not fit: the switch is a select here */
+  .toolbar .seg.view { display: none; }
+  .toolbar .view-select { display: block; flex: 0 1 auto; min-width: 0; min-height: 32px; font-size: 13px; padding: 5px 26px 5px 10px; }
   .toolbar .seg.order .seg-label, .toolbar .expand-toggle .label { display: none; }
   .toolbar .seg .seg-btn, .toolbar .expand-toggle { min-height: 32px; }
   .toolbar .expand-toggle { padding: 0 9px; }
+  .toolbar .find-toggle { width: 32px; height: 32px; }
+  /* 16px, or iOS zooms the page in when the field takes focus */
+  .find-bar { margin: 8px 0 0 10px; }
+  .find-bar input[type=search] { flex: 1 1 auto; max-width: none; font-size: 16px; padding-top: 7px; padding-bottom: 7px; }
+  .find-bar .icon-btn { width: 36px; height: 36px; }
+  .fail-nav .icon-btn { width: 32px; height: 32px; }
   .stats { margin: 6px 0 0 10px; font-size: 11.5px; gap: 2px 10px; }
   .load-more { margin: 6px 0 0 10px; }
 

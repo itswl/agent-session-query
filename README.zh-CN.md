@@ -164,6 +164,7 @@ go build -o agent-session-query ./cmd/agent-session-query
 | `/sessions` | 是 | 列出全部会话（跨数据源合并，最新在前） |
 | `/sessions/<pattern>` | 是 | 单个会话；可接 `/messages`（支持 `order` / `limit` / `at`，`full=1` 让工具输出不截断）、`/final`、`/rounds`（按每条真实提问切轮，带每轮改了哪些文件、几次工具调用失败）、`/brief`（一轮的交接简报，附恢复命令）或 `/export`（不带 `limit` 即全文，文件标明覆盖范围；`format=jsonl` 取结构化形式）|
 | `/search?q=` | 是 | 跨全部数据源的**全文搜索**；`source` / `project` / `branch` / `since` / `until` 限定扫描哪些会话，`pattern` 限定在单个会话内，`role` 只看 user / assistant 的命中 |
+| `/files?path=` | 是 | **哪些会话动过某个文件**，从新到旧：改过它、读过它或跑过点名它的命令的那几轮，以及当时问的是什么。`changed=1` 只留改动 |
 | `/projects` | 是 | 按项目（cwd）分组的会话数 |
 | `/export?project=&since=` | 是 | **把多个会话导出成一份文档**——每个会话问了什么、得出了什么，按时间从旧到新。`mode=full` 则把正文一并内联 |
 | `/mcp` | 是 | MCP 的 Streamable HTTP 传输（`POST`） |
@@ -175,8 +176,9 @@ go build -o agent-session-query ./cmd/agent-session-query
 `--mcp` 走 stdio，HTTP 模式下另有 `POST /mcp`。这让 **agent 能查询自己的历史**——Claude Code
 可以去翻你上周用 Codex 解决过的同一个问题。工具有：`search_sessions` / `list_sessions` /
 `list_projects` / `recent_project_activity` / `get_session_pack` / `find_decisions` /
-`find_similar_question` / `get_session` / `get_messages` / `list_rounds` / `session_brief`。
-`get_session_pack` 一次调用拿到一组会话各自问了什么、得出了什么，按时间从旧到新。转写里的每个工具结果都带着它是
+`find_similar_question` / `get_session` / `get_messages` / `list_rounds` / `session_brief` / `file_history`。
+`get_session_pack` 一次调用拿到一组会话各自问了什么、得出了什么，按时间从旧到新；`file_history` 回答哪些会话改过某个文件、
+在哪一轮、当时问的是什么。转写里的每个工具结果都带着它是
 怎么结束的（状态、exit code、耗时）以及它回答的是哪次调用；`list_rounds` 说明哪一轮有失败、改了哪些
 文件，`session_brief` 把一轮交接给另一个 agent，并附上恢复这个会话的命令。**会话正文是不可信输入**：
 转写原样（无标记、不删改，脱敏针对的是密钥而非诱导性文字）交给调用方 agent，因此会话里出现的

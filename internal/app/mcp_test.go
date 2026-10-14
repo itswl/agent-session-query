@@ -347,6 +347,7 @@ func TestMCPEveryArgumentIsAdvertised(t *testing.T) {
 		"list_sessions":    {"source", "project", "branch", "since", "until", "limit", "cursor", "subagents"},
 		"get_session_pack": {"source", "project", "branch", "since", "until", "limit", "mode", "messages"},
 		"get_session":      {"pattern", "source"},
+		"file_history":     {"path", "changed_only", "project", "source", "branch", "since", "until", "limit", "subagents"},
 		"get_messages":     {"pattern", "source", "limit", "order", "role", "at", "full", "cursor"},
 		"list_rounds":      {"pattern", "source"},
 		"session_brief":    {"pattern", "source", "round", "at"},

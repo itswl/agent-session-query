@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"github.com/itswl/agent-session-query/internal/source"
 	"io"
 	"net/http"
@@ -575,5 +576,143 @@ func TestClaudeBranch(t *testing.T) {
 	}
 	if !strings.Contains(brief, "- branch: feature/rounds") {
 		t.Errorf("brief does not name the branch:\n%s", brief)
+	}
+}
+
+// TestToolCallFiles: the file a call names, under whichever key its CLI uses, or every file a
+// patch touches — Codex's apply_patch format or a unified diff
+func TestToolCallFiles(t *testing.T) {
+	cases := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"claude", map[string]any{"file_path": "/w/a.go", "old_string": "x"}, "/w/a.go"},
+		{"opencode", map[string]any{"filePath": "/w/a.go"}, "/w/a.go"},
+		{"pi", map[string]any{"path": "src/a.go", "edits": []any{}}, "src/a.go"},
+		{"grok's read", map[string]any{"target_file": "a.go"}, "a.go"},
+		{"codex patch", map[string]any{"input": "*** Begin Patch\n*** Update File: internal/a.go\n@@\n-x\n+y\n*** Add File: docs/b.md\n+hi\n*** Delete File: old.txt\n*** End Patch"}, "internal/a.go,docs/b.md,old.txt"},
+		{"a move", map[string]any{"patch": "*** Begin Patch\n*** Update File: a.go\n*** Move to: b.go\n*** End Patch"}, "a.go,b.go"},
+		{"unified diff", map[string]any{"diff": "--- a/x.go\n+++ b/x.go\n@@ -1 +1 @@\n-a\n+b\n--- a/gone.go\n+++ /dev/null"}, "x.go,gone.go"},
+		{"a command", map[string]any{"command": "ls"}, ""},
+	}
+	for _, c := range cases {
+		if got := strings.Join(toolCallFiles(c.args), ","); got != c.want {
+			t.Errorf("%s: files = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestSameFile: a relative path is read against the session's directory; an absolute
+// question wants that path, a relative one any path ending with it
+func TestSameFile(t *testing.T) {
+	cases := []struct {
+		named, cwd, want string
+		same             bool
+	}{
+		{"/w/repo/internal/a.go", "/w/repo", "/w/repo/internal/a.go", true},
+		{"internal/a.go", "/w/repo", "/w/repo/internal/a.go", true},
+		{"./internal/../internal/a.go", "/w/repo", "/w/repo/internal/a.go", true},
+		{"/w/repo/internal/a.go", "/w/repo", "internal/a.go", true},
+		{"/w/other/internal/a.go", "/w/other", "internal/a.go", true},
+		{"/w/repo/xinternal/a.go", "/w/repo", "internal/a.go", false},
+		{"/w/repo/internal/a.go", "/w/repo", "/w/elsewhere/internal/a.go", false},
+		{"C:\\w\\repo\\a.go", "", "C:/w/repo/a.go", true},
+	}
+	for _, c := range cases {
+		if got := sameFile(c.named, c.cwd, normPath(c.want)); got != c.same {
+			t.Errorf("sameFile(%q, %q, %q) = %v, want %v", c.named, c.cwd, c.want, got, c.same)
+		}
+	}
+	if n := commandsNaming([]string{"sed -i s/a/b/ internal/a.go", "cat /w/repo/internal/a.go", "ls internal"}, "/w/repo", "/w/repo/internal/a.go"); n != 2 {
+		t.Errorf("commands naming the file = %d, want 2", n)
+	}
+}
+
+// TestFileHistory: which sessions touched a file, newest first — the rounds that changed it
+// through a file tool, read it, or ran a command naming it; a failed edit is not a change,
+// an agent's edit is listed under its own id with the session it ran in, and changed=1
+// keeps the changes
+func TestFileHistory(t *testing.T) {
+	root := t.TempDir()
+	row := func(sid, kind, ts, extra, content string) string {
+		return `{"type":"` + kind + `","timestamp":"2026-10-14T` + ts + `Z","sessionId":"` + sid + `","cwd":"/w/repo"` + extra + `,"message":{"role":"` + kind + `","content":` + content + `}}`
+	}
+	call := func(id, name, input string) string {
+		return `[{"type":"tool_use","id":"` + id + `","name":"` + name + `","input":` + input + `}]`
+	}
+	result := func(id string, failed bool) string {
+		e := "false"
+		if failed {
+			e = "true"
+		}
+		return `[{"type":"tool_result","tool_use_id":"` + id + `","is_error":` + e + `,"content":"ok"}]`
+	}
+	dir := filepath.Join(root, "proj")
+	// The older session reads the file, then fails to edit it, then runs a command on it
+	write(t, filepath.Join(dir, "older.jsonl"),
+		row("older", "user", "09:00:00", "", `"look at the handler"`),
+		row("older", "assistant", "09:00:01", "", call("r1", "Read", `{"file_path":"/w/repo/internal/handler.go"}`)),
+		row("older", "user", "09:00:02", "", result("r1", false)),
+		row("older", "user", "09:01:00", "", `"fix the typo"`),
+		row("older", "assistant", "09:01:01", "", call("e1", "Edit", `{"file_path":"/w/repo/internal/handler.go","old_string":"a","new_string":"b"}`)),
+		row("older", "user", "09:01:02", "", result("e1", true)),
+		row("older", "assistant", "09:01:03", "", call("b1", "Bash", `{"command":"sed -i s/a/b/ internal/handler.go"}`)),
+		row("older", "user", "09:01:04", "", result("b1", false)),
+	)
+	// The newer one changes it, and hands a second change to a subagent
+	write(t, filepath.Join(dir, "newer.jsonl"),
+		row("newer", "user", "10:00:00", "", `"add the retry"`),
+		row("newer", "assistant", "10:00:01", "", call("e2", "Edit", `{"file_path":"/w/repo/internal/handler.go","old_string":"a","new_string":"b"}`)),
+		row("newer", "user", "10:00:02", "", result("e2", false)),
+		row("newer", "assistant", "10:30:00", "", `[{"type":"text","text":"done"}]`),
+	)
+	write(t, filepath.Join(dir, "newer", "subagents", "agent-aaa.jsonl"),
+		row("newer", "user", "10:10:00", `,"isSidechain":true,"agentId":"aaa"`, `"tidy the handler"`),
+		row("newer", "assistant", "10:10:01", `,"isSidechain":true,"agentId":"aaa"`, call("w1", "Write", `{"file_path":"/w/repo/internal/handler.go","content":"x"}`)),
+		row("newer", "user", "10:10:02", `,"isSidechain":true,"agentId":"aaa"`, result("w1", false)),
+	)
+	write(t, filepath.Join(dir, "newer", "subagents", "agent-aaa.meta.json"), `{"agentType":"general-purpose","description":"Tidy the handler"}`)
+	// A session that only talks about the file
+	write(t, filepath.Join(dir, "chat.jsonl"),
+		row("chat", "user", "11:00:00", "", `"what does handler.go do?"`),
+		row("chat", "assistant", "11:00:01", "", `[{"type":"text","text":"handler.go serves the routes"}]`),
+	)
+
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
+	history := func(path string, changed bool) []map[string]any {
+		found := api.fileHistory(context.Background(), fileHistoryQuery{
+			path: path, filter: sessionFilter{subagents: true}, changed: changed, limit: 20,
+		})
+		return found.sessions
+	}
+	ids := func(sessions []map[string]any) string {
+		out := []string{}
+		for _, s := range sessions {
+			out = append(out, source.ToStr(s["sessionId"]))
+		}
+		return strings.Join(out, ",")
+	}
+
+	all := history("/w/repo/internal/handler.go", false)
+	if got := ids(all); got != "newer,aaa,older" {
+		t.Fatalf("history = %s, want newer,aaa,older (the chat only talked about it)", got)
+	}
+	older := all[2]["rounds"].([]map[string]any)
+	if len(older) != 2 || older[0]["read"] != true || older[0]["changed"] != false {
+		t.Fatalf("older's first round = %v, want a read", older)
+	}
+	if older[1]["changed"] != false || older[1]["commands"] != 1 || older[1]["failures"] != 1 {
+		t.Fatalf("older's second round = %v, want no change (the edit failed, one failure) and one command naming it", older[1])
+	}
+	if agent := all[1]; agent["parentSessionId"] != "newer" || agent["changed"] != true || agent["agentType"] != "general-purpose" {
+		t.Fatalf("the agent's entry = %v", agent)
+	}
+
+	if got := ids(history("internal/handler.go", true)); got != "newer,aaa" {
+		t.Fatalf("changed=1 history = %s, want the two that changed it", got)
+	}
+	if got := ids(history("/w/elsewhere/internal/handler.go", false)); got != "" {
+		t.Fatalf("a file of the same name elsewhere = %s, want none", got)
 	}
 }

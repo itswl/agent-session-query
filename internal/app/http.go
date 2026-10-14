@@ -356,6 +356,7 @@ var rootEndpoints = []rootEndpoint{
 	{"GET", "/sessions/<pattern>/subagents", false, "the Claude Code subagents that ran under a session (or under a subagent), in the order they started"},
 	{"GET", "/sessions/<pattern>/brief?round=", false, "a handoff brief of one round (default the latest); ?at=<ts> picks the round a timestamp falls in, ?since=<ts|2h> briefs every round after a moment"},
 	{"GET", "/search?q=", false, "full-text search across every source; source, project, branch, since and until narrow it"},
+	{"GET", "/files?path=", false, "which sessions touched a file, newest first, with the rounds that read or changed it; changed=1 keeps the changes"},
 	{"GET", "/projects", false, "session counts grouped by project"},
 	{"GET", "/export?project=", false, "a pack: what was asked and concluded across sessions, oldest first"},
 	{"GET", "/api/<path>", false, "the same authenticated routes, under an /api prefix"},
@@ -516,6 +517,26 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			body["warnings"] = warnings
 		}
 		writeJSON(w, http.StatusOK, body)
+		return http.StatusOK
+	}
+
+	if path == "/files" {
+		q, err := s.parseFileHistoryQuery(r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return http.StatusBadRequest
+		}
+		found := s.api.fileHistory(r.Context(), q)
+		if source.Cancelled(r.Context()) {
+			return statusClientClosed
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"path":      q.path,
+			"sessions":  found.sessions,
+			"total":     len(found.sessions),
+			"scanned":   found.scanned,
+			"truncated": map[string]any{"scan": found.stopped},
+		})
 		return http.StatusOK
 	}
 
@@ -872,6 +893,43 @@ func (s *apiServer) parseSearchQuery(r *http.Request) (source.SearchQuery, error
 	return q, nil
 }
 
+// parseFileHistoryQuery reads /files: the file (a path, absolute or the tail of one), the
+// selection a search takes, changed=1 for the rounds that changed it rather than all that
+// touched it, and limit. Subagents are in the selection unless subagents=0: an agent's edit
+// is an edit.
+func (s *apiServer) parseFileHistoryQuery(r *http.Request) (fileHistoryQuery, error) {
+	values := r.URL.Query()
+	q := fileHistoryQuery{path: strings.TrimSpace(values.Get("path")), limit: defaultFileHistoryLimit}
+	if q.path == "" {
+		return q, errors.New("missing query parameter: path")
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(values.Get("limit"))); err == nil && n > 0 {
+		q.limit = n
+	}
+	if q.limit > s.maxLimit {
+		q.limit = s.maxLimit
+	}
+	q.changed = queryFlag(values.Get("changed"))
+	var err error
+	if q.filter.source, err = s.api.sourceName(values.Get("source")); err != nil {
+		return q, err
+	}
+	q.filter.project = strings.TrimSpace(values.Get("project"))
+	q.filter.branch = strings.TrimSpace(values.Get("branch"))
+	for key, into := range map[string]*time.Time{"since": &q.filter.since, "until": &q.filter.until} {
+		if raw := strings.TrimSpace(values.Get(key)); raw != "" {
+			t, err := parseSince(raw)
+			if err != nil {
+				return q, err
+			}
+			*into = t
+		}
+	}
+	raw := values.Get("subagents")
+	q.filter.subagents = raw == "" || queryFlag(raw)
+	return q, nil
+}
+
 // parseSince reads ?since=, accepting relative forms like 30d / 12h / 90m as well as a
 // date such as 2026-09-01.
 // parseSearchRole reads ?role= for /search, matching what get_messages accepts
@@ -1091,6 +1149,7 @@ var serverCapabilities = []string{
 	"export.pack",        // /export across sessions
 	"export.pack.branch", // /export?branch=
 	"export.session",     // /sessions/<id>/export
+	"files.history",      // /files?path= — which sessions touched a file, and in which rounds
 	"messages.at",        // /sessions/<id>/messages?at=
 	"messages.full",      // ?full=1 — tool output and thinking whole
 	"rounds",             // /sessions/<id>/rounds

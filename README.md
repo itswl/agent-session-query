@@ -201,6 +201,7 @@ marked "yes" require `Authorization: Bearer <token>`.
 | `/sessions` | yes | List every session (merged across sources, newest first) |
 | `/sessions/<pattern>` | yes | One session; add `/messages` (with `order` / `limit` / `at`, and `full=1` for tool output whole rather than cut to a preview), `/final`, `/rounds` (the session split at each real user message, with files changed and tool calls failed per round), `/brief` (a handoff brief of one round, resume command included), or `/export` (no `limit` means the whole session; `format=jsonl` for the data form) |
 | `/search?q=` | yes | **Full-text search** across every source; `source` / `project` / `branch` / `since` / `until` narrow which sessions are scanned, `pattern` scopes it to one session, `role` to `user` or `assistant` hits |
+| `/files?path=` | yes | **Which sessions touched a file**, newest first: the rounds that changed it, read it, or ran a command naming it, with what was asked there. `changed=1` keeps the changes |
 | `/projects` | yes | Session counts grouped by project (cwd) |
 | `/export?project=&since=` | yes | **A pack of several sessions as one document** — what was asked and what each concluded, oldest first. `mode=full` inlines the transcripts |
 | `/mcp` | yes | MCP's Streamable HTTP transport (`POST`) |
@@ -214,8 +215,9 @@ Full parameters, the `<pattern>` matching rules and every response field are in
 its own history** — Claude Code can go looking for the same problem you solved with Codex
 last week. The tools: `search_sessions` / `list_sessions` / `list_projects` /
 `recent_project_activity` / `get_session_pack` / `find_decisions` / `find_similar_question` /
-`get_session` / `get_messages` / `list_rounds` / `session_brief`. `get_session_pack` is the pack
-as one call: what each session in a selection asked and concluded, oldest first. A tool result in a transcript carries how
+`get_session` / `get_messages` / `list_rounds` / `session_brief` / `file_history`. `get_session_pack` is the pack
+as one call: what each session in a selection asked and concluded, oldest first; `file_history` says which
+sessions changed a file, in which round, and what was asked there. A tool result in a transcript carries how
 it ended (status, exit code, duration) and which call it answers; `list_rounds` says which
 round carried failures and which files it changed, and `session_brief` hands one round to
 another agent with the command that resumes the session. Session text is untrusted input:

@@ -1,12 +1,17 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"github.com/itswl/agent-session-query/internal/source"
+	"path"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 )
@@ -50,14 +55,17 @@ type round struct {
 	// hours later lands in whichever round was last and would otherwise stretch it, which
 	// is how a round of four commands came to report ninety-four hours. lastAt is that
 	// final row, kept because a search hit in one still has to resolve to this round.
-	startAt     string
-	endAt       string
-	lastAt      string
-	messages    int
-	toolCalls   int
-	failures    int
-	files       []string
-	changed     []string
+	startAt   string
+	endAt     string
+	lastAt    string
+	messages  int
+	toolCalls int
+	failures  int
+	files     []string
+	changed   []string
+	// commands are the shell commands the round ran, for what they name: an edit made with
+	// sed -i or a script names its file only there
+	commands    []string
 	kinds       map[string]int
 	asked       string
 	outcome     string
@@ -65,7 +73,7 @@ type round struct {
 
 	// pending holds the write-kind calls still waiting for their result, by call id, so
 	// that a failed edit does not count as a change
-	pending map[string]string
+	pending map[string][]string
 }
 
 // isRoundStart: a user message carrying human words that is not command plumbing, not one
@@ -123,23 +131,96 @@ func messageText(content any) string {
 	return b.String()
 }
 
-// filePathKeys: the argument keys a tool names a file by, across the CLIs
-var filePathKeys = []string{"file_path", "path", "notebook_path", "file"}
+// filePathKeys: the argument keys a tool names a file by, across the CLIs, compared with
+// case, underscores and dashes folded away — file_path and filePath are one key, and
+// target_file is the one Grok reads by. The first that is present wins.
+var filePathKeys = []string{"filepath", "path", "notebookpath", "file", "targetfile"}
 
-// appendFilePath pulls the file a tool call names out of its arguments, if any
-func appendFilePath(files []string, arguments any) []string {
+// toolCallFiles are the files a tool call names: the one its arguments name, or every file
+// a patch touches — Codex edits with apply_patch, whose one argument is the patch text, and
+// none of those edits reached a round's files before.
+func toolCallFiles(arguments any) []string {
 	args, ok := arguments.(map[string]any)
 	if !ok {
-		return files
+		return nil
 	}
 	for _, want := range filePathKeys {
 		for key, value := range args {
-			if !strings.EqualFold(key, want) {
+			if foldArgKey(key) != want {
 				continue
 			}
-			if s := source.ToStr(value); s != "" && !containsString(files, s) {
-				return append(files, s)
+			if s := strings.TrimSpace(source.ToStr(value)); s != "" {
+				return []string{s}
 			}
+		}
+	}
+	for _, key := range []string{"input", "patch"} {
+		if text, ok := args[key].(string); ok && strings.Contains(text, "*** Begin Patch") {
+			return patchFiles(text)
+		}
+	}
+	if text, ok := args["diff"].(string); ok {
+		return diffFiles(text)
+	}
+	return nil
+}
+
+// commandText is the command a shell call ran: a string, or the argv Codex's shell takes
+func commandText(arguments any) string {
+	args, ok := arguments.(map[string]any)
+	if !ok {
+		return ""
+	}
+	for _, key := range []string{"command", "cmd", "script", "input"} {
+		switch v := args[key].(type) {
+		case string:
+			return v
+		case []any:
+			parts := make([]string, 0, len(v))
+			for _, part := range v {
+				parts = append(parts, source.ToStr(part))
+			}
+			return strings.Join(parts, " ")
+		}
+	}
+	return ""
+}
+
+func foldArgKey(key string) string {
+	return strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(key))
+}
+
+// patchFiles are the files a patch in Codex's apply_patch format names: the file each
+// hunk updates, adds or deletes, and where a move takes it
+func patchFiles(text string) []string {
+	files := []string{}
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		for _, prefix := range []string{"*** Update File: ", "*** Add File: ", "*** Delete File: ", "*** Move to: "} {
+			if rest, ok := strings.CutPrefix(line, prefix); ok && strings.TrimSpace(rest) != "" {
+				files = appendUnique(files, strings.TrimSpace(rest))
+			}
+		}
+	}
+	return files
+}
+
+// diffFiles are the files a unified diff names on its +++ lines (the --- side when a file
+// was deleted)
+func diffFiles(text string) []string {
+	files := []string{}
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	for i, line := range lines {
+		rest, ok := strings.CutPrefix(line, "+++ ")
+		if !ok {
+			continue
+		}
+		name := strings.TrimSpace(rest)
+		if name == "/dev/null" && i > 0 {
+			name = strings.TrimSpace(strings.TrimPrefix(lines[i-1], "--- "))
+		}
+		name = strings.TrimPrefix(strings.TrimPrefix(name, "b/"), "a/")
+		if name != "" && name != "/dev/null" {
+			files = appendUnique(files, name)
 		}
 	}
 	return files
@@ -178,7 +259,7 @@ func splitRounds(messages []map[string]any) []round {
 				startAt: source.ToStr(m["timestamp"]),
 				asked:   strings.TrimSpace(source.StripHarnessBlocks(messageText(m["content"]))),
 				kinds:   map[string]int{},
-				pending: map[string]string{},
+				pending: map[string][]string{},
 			}
 		} else if cur == nil {
 			continue
@@ -197,11 +278,18 @@ func splitRounds(messages []map[string]any) []round {
 			case "toolCall":
 				work = true
 				cur.toolCalls++
-				cur.files = appendFilePath(cur.files, block["arguments"])
+				for _, file := range toolCallFiles(block["arguments"]) {
+					cur.files = appendUnique(cur.files, file)
+				}
 				kind := toolKindOf(source.ToStr(block["name"]))
 				cur.kinds[kind]++
 				if kind == "write" {
 					cur.noteWrite(source.ToStr(block["id"]), block["arguments"])
+				}
+				if kind == "exec" {
+					if command := commandText(block["arguments"]); command != "" {
+						cur.commands = append(cur.commands, command)
+					}
 				}
 			case "toolResult":
 				work = true
@@ -238,26 +326,30 @@ func splitRounds(messages []map[string]any) []round {
 // noteWrite records a write-kind call. One without an id cannot be paired with a result,
 // so it counts as a change on the spot; one with an id waits for its result.
 func (r *round) noteWrite(id string, arguments any) {
-	files := appendFilePath(nil, arguments)
+	files := toolCallFiles(arguments)
 	if len(files) == 0 {
 		return
 	}
 	if id == "" {
-		r.changed = appendUnique(r.changed, files[0])
+		for _, file := range files {
+			r.changed = appendUnique(r.changed, file)
+		}
 		return
 	}
-	r.pending[id] = files[0]
+	r.pending[id] = files
 }
 
 // settleWrite pairs a result with its write call: a failure is not a change
 func (r *round) settleWrite(callID string, failed bool) {
-	file, ok := r.pending[callID]
+	files, ok := r.pending[callID]
 	if !ok {
 		return
 	}
 	delete(r.pending, callID)
 	if !failed {
-		r.changed = appendUnique(r.changed, file)
+		for _, file := range files {
+			r.changed = appendUnique(r.changed, file)
+		}
 	}
 }
 
@@ -378,9 +470,7 @@ func (a *SessionQueryAPI) roundsOf(pattern, sourceWanted string) (sessionRoundsR
 	if !found {
 		return sessionRoundsRead{}, errNoSession
 	}
-	messages := safeParse(src.Mode(), "messages", func() []map[string]any {
-		return src.Messages(item, source.MessageQuery{Limit: briefScanCap, FromEnd: true})
-	})
+	messages := tailMessages(src, item)
 	final := safeParse(src.Mode(), "the final result", func() map[string]any {
 		return src.Final(item)
 	})
@@ -391,6 +481,240 @@ func (a *SessionQueryAPI) roundsOf(pattern, sourceWanted string) (sessionRoundsR
 		}
 	}
 	return sessionRoundsRead{src, item, splitRounds(messages), scanned, total}, nil
+}
+
+// tailMessages is the read rounds are cut from: the latest briefScanCap messages
+func tailMessages(src source.SessionSource, item source.Record) []map[string]any {
+	return safeParse(src.Mode(), "messages", func() []map[string]any {
+		return src.Messages(item, source.MessageQuery{Limit: briefScanCap, FromEnd: true})
+	})
+}
+
+// File history: which sessions touched a file, and where.
+//
+// The rounds already know what each one did to files — every file a tool named, and the
+// ones a write that did not fail changed — so the question is answered from them, not from
+// an index: the transcripts that mention the file's name at all are found by the same raw
+// scan a search runs, newest first, and only those are read and cut into rounds. The scan
+// stops once limit sessions have touched the file, as a search stops at its page.
+type fileHistoryQuery struct {
+	path    string
+	filter  sessionFilter
+	changed bool // only the rounds that changed the file, not those that only read it
+	limit   int
+}
+
+type fileHistoryResult struct {
+	sessions []map[string]any
+	scanned  int  // transcripts scanned for the file's name
+	stopped  bool // the scan stopped at limit; an older session may have touched it too
+}
+
+// fileHistoryRounds caps how many of a session's rounds an entry lists; the latest are kept
+const fileHistoryRounds = 10
+
+// defaultFileHistoryLimit is how many sessions a file history returns unless asked
+const defaultFileHistoryLimit = 20
+
+func (a *SessionQueryAPI) fileHistory(ctx context.Context, q fileHistoryQuery) fileHistoryResult {
+	want := normPath(q.path)
+	if want == "" || want == "." {
+		return fileHistoryResult{sessions: []map[string]any{}}
+	}
+	type candidate struct {
+		source source.SessionSource
+		rec    source.Record
+	}
+	all := []candidate{}
+	a.eachSession(q.filter, func(src source.SessionSource, rec source.Record) {
+		all = append(all, candidate{src, rec})
+	})
+	sort.SliceStable(all, func(i, j int) bool { return all[i].rec.NewerThan(all[j].rec) })
+
+	// The file's base name is what the scan looks for: a session may name it by a path
+	// relative to its directory (Codex's patches do), and only the name is sure to be there
+	name := path.Base(want)
+	needle := source.SearchQuery{Needle: name, Lowered: source.AppendLowerASCII(nil, []byte(name)), PerSession: 1}
+
+	entries := make([]map[string]any, len(all))
+	var scanned, found atomic.Int64
+	stopped := false
+	workers := runtime.GOMAXPROCS(0)
+	if workers > len(all) {
+		workers = len(all)
+	}
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				if source.Cancelled(ctx) {
+					continue
+				}
+				c := all[i]
+				scanned.Add(1)
+				hits := safeParse(c.source.Mode(), "file history", func() []map[string]any {
+					return searchOne(ctx, c.source, c.rec, needle)
+				})
+				if len(hits) == 0 {
+					continue
+				}
+				if entry := fileHistoryEntry(c.source, c.rec, want, q.changed); entry != nil {
+					entries[i] = entry
+					found.Add(1)
+				}
+			}
+		}()
+	}
+	for i := range all {
+		if source.Cancelled(ctx) {
+			break
+		}
+		if q.limit > 0 && found.Load() >= int64(q.limit) {
+			stopped = true
+			break
+		}
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+
+	out := fileHistoryResult{sessions: []map[string]any{}, scanned: int(scanned.Load()), stopped: stopped}
+	for _, entry := range entries {
+		if entry != nil && (q.limit <= 0 || len(out.sessions) < q.limit) {
+			out.sessions = append(out.sessions, entry)
+		}
+	}
+	return out
+}
+
+// fileHistoryEntry is one transcript's part in a file's history: the rounds that touched
+// the file, or nil when none did — the name came up only in passing
+func fileHistoryEntry(src source.SessionSource, rec source.Record, want string, changedOnly bool) map[string]any {
+	messages := tailMessages(src, rec)
+	rounds := []map[string]any{}
+	changedAny := false
+	lastAt := ""
+	for _, r := range splitRounds(messages) {
+		touched := matchingFiles(r.files, rec.Cwd, want)
+		changed := matchingFiles(r.changed, rec.Cwd, want)
+		named := commandsNaming(r.commands, rec.Cwd, want)
+		if (changedOnly && len(changed) == 0) || (len(touched) == 0 && named == 0) {
+			continue
+		}
+		changedAny = changedAny || len(changed) > 0
+		lastAt = r.endAt
+		entry := map[string]any{
+			"round":    r.index,
+			"startAt":  r.startAt,
+			"endAt":    r.endAt,
+			"asked":    capText(r.asked, 160),
+			"changed":  len(changed) > 0,
+			"read":     len(touched) > 0 && len(changed) == 0,
+			"failures": r.failures, // tool results in the round that failed: which change went badly
+		}
+		if len(touched) > 0 {
+			entry["files"] = touched
+		}
+		if named > 0 {
+			entry["commands"] = named
+		}
+		rounds = append(rounds, entry)
+	}
+	if len(rounds) == 0 {
+		return nil
+	}
+	entry := map[string]any{
+		"sessionId":     rec.SessionID,
+		"source":        rec.Source,
+		"shortKey":      rec.ShortKey,
+		"project":       rec.ProjectName(),
+		"updatedAt":     rec.UpdatedAt,
+		"changed":       changedAny,
+		"lastTouchedAt": lastAt,
+		"roundsTouched": len(rounds),
+	}
+	if len(rounds) > fileHistoryRounds {
+		rounds = rounds[len(rounds)-fileHistoryRounds:]
+	}
+	entry["rounds"] = rounds
+	if rec.Branch != "" {
+		entry["branch"] = rec.Branch
+	}
+	if rec.IsSubagent() {
+		entry["parentSessionId"] = rec.ParentSessionID
+		if rec.AgentType != "" {
+			entry["agentType"] = rec.AgentType
+		}
+	}
+	// The rounds cover the tail the brief reads; an older touch is past it
+	if len(messages) >= briefScanCap {
+		entry["partial"] = true
+	}
+	return entry
+}
+
+// commandsNaming counts the commands that name the file: its path, or — for a file inside
+// the session's directory — the path from there, the way a command run there would name it.
+// Whether a command read the file or rewrote it cannot be told from its text, so these are
+// counted apart from the changes the file tools record.
+func commandsNaming(commands []string, cwd, want string) int {
+	forms := []string{want}
+	if strings.HasPrefix(want, "/") && strings.HasPrefix(cwd, "/") {
+		if rel, ok := strings.CutPrefix(want, strings.TrimSuffix(path.Clean(cwd), "/")+"/"); ok {
+			forms = append(forms, rel)
+		}
+	}
+	n := 0
+	for _, command := range commands {
+		for _, form := range forms {
+			if strings.Contains(command, form) {
+				n++
+				break
+			}
+		}
+	}
+	return n
+}
+
+// matchingFiles are the paths in a round's list that are the file asked about
+func matchingFiles(files []string, cwd, want string) []string {
+	out := []string{}
+	for _, file := range files {
+		if sameFile(file, cwd, want) {
+			out = appendUnique(out, file)
+		}
+	}
+	return out
+}
+
+// sameFile reports whether a path a tool named is the file asked about. A relative path —
+// Codex's patches name files from the session's directory — is read against the session's
+// cwd; an absolute question then wants the same path, and a relative one any path that
+// ends with it.
+func sameFile(named, cwd, want string) bool {
+	p := normPath(named)
+	if p == "" || p == "." {
+		return false
+	}
+	if !strings.HasPrefix(p, "/") && strings.HasPrefix(cwd, "/") {
+		p = path.Join(cwd, p)
+	}
+	if strings.HasPrefix(want, "/") {
+		return p == want
+	}
+	return p == want || strings.HasSuffix(p, "/"+want)
+}
+
+// normPath folds a path to forward slashes and its clean form
+func normPath(p string) string {
+	p = strings.TrimSpace(strings.ReplaceAll(p, "\\", "/"))
+	if p == "" {
+		return ""
+	}
+	return path.Clean(p)
 }
 
 // asCount reads a message count without assuming which integer shape a source used

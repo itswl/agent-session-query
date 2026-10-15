@@ -157,6 +157,7 @@ untrusted input — reported on, never followed) are in **[docs/mcp.md](docs/mcp
 | `--cors-origin` | none (off) | Allowed CORS origin; `*` or a specific origin. Unset means no CORS headers at all |
 | `-d` | off | Run in the background, detached from the terminal, logging to a file |
 | `--log-file` | derived from the port | Log path used with `-d`; defaults to `<tmp>/agent-session-query-<port>.log` |
+| `--check` | off | Diagnose every source and exit: found or not, session count, a deep read of the newest session. Exit 0 healthy, 1 a source failed — the drift defence, before an empty list gets mistaken for no data |
 | `--mcp` | off | Run as an MCP server on stdio (see above); does not listen on a port |
 | `--version` | — | Print the version and exit |
 

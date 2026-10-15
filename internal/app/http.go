@@ -605,7 +605,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 				return http.StatusBadRequest
 			}
-			messages, ok := s.api.getMessages(pattern, "", query)
+			messages, ok := s.api.getMessages(pattern, r.URL.Query().Get("source"), query)
 			if !ok {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "Session not found"})
 				return http.StatusNotFound
@@ -706,7 +706,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 
 		case len(parts) == 2 && parts[0] != "" && parts[1] == "final":
 			pattern := unescapePattern(parts[0])
-			result, ok := s.api.getFinalMessage(pattern, "")
+			result, ok := s.api.getFinalMessage(pattern, r.URL.Query().Get("source"))
 			if !ok {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "Session not found"})
 				return http.StatusNotFound

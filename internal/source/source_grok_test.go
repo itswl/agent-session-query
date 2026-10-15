@@ -2,7 +2,9 @@ package source
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -36,6 +38,81 @@ func grokFixture(t *testing.T) (root, summary string) {
 		`{"timestamp":1790128666,"method":"_x.ai/session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"turn_completed","stop_reason":"end_turn","usage":{"inputTokens":15667,"outputTokens":53,"totalTokens":31344,"cachedReadTokens":15624,"reasoningTokens":10,"modelCalls":2}}}}`,
 	)
 	return root, summary
+}
+
+// TestGrokRunningSessionReadsChatHistory: a session still running has no updates.jsonl —
+// Grok flushes the ACP stream when the session ends — and carries chat_history.jsonl, one
+// whole message per line. That log is read instead, grouped the way the ACP stream is
+// grouped: the turn's reasoning, tool calls and results fold into one assistant message.
+// Measured against a real 1.0.52 session's chat_history.jsonl.
+func TestGrokRunningSessionReadsChatHistory(t *testing.T) {
+	root, summary := grokFixture(t)
+	dir := filepath.Dir(summary)
+	if err := os.Remove(filepath.Join(dir, "updates.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "chat_history.jsonl"),
+		`{"type":"system","content":"You are Grok released by xAI."}`,
+		`{"type":"user","content":[{"type":"text","text":"<user_query>\n运行 ls 列出当前目录的文件。\n</user_query>"}]}`,
+		`{"type":"reasoning","id":"","summary":[{"type":"summary_text","text":"The user wants a directory listing."}]}`,
+		`{"type":"assistant","tool_calls":[{"id":"call_1","name":"run_terminal_command","arguments":"{\"command\":\"ls -la\",\"description\":\"Run ls\"}"}],"model_id":"gemini-3.8-flash","content":""}`,
+		`{"type":"tool_result","tool_call_id":"call_1","content":"exit: 0\ntotal 4\nnote.txt"}`,
+		`{"type":"assistant","content":"共有 1 个文件：note.txt。","model_id":"gemini-3.8-flash"}`,
+	)
+	write(t, filepath.Join(dir, "usage.json"),
+		`{"sessionId":"s1","session":{"inputTokens":19219,"outputTokens":74,"cachedReadTokens":6832,"turnCount":1}}`)
+
+	s := NewGrokSource(root)
+	list := s.List()
+	if len(list) != 1 || !list[0].HasFile || filepath.Base(list[0].File) != "chat_history.jsonl" {
+		t.Fatalf("record = %v", list)
+	}
+	rec := list[0]
+	if rec.ShortKey == "" {
+		t.Fatalf("no title from chat_history")
+	}
+
+	msgs := s.Messages(rec, MessageQuery{Limit: 50})
+	if len(msgs) != 2 {
+		t.Fatalf("messages = %v", msgs)
+	}
+	if msgs[0]["role"] != "user" {
+		t.Fatalf("msg0 = %v", msgs[0])
+	}
+	turn := msgs[1]["content"].([]map[string]any)
+	if len(turn) != 4 || turn[0]["type"] != "thinking" || turn[1]["type"] != "toolCall" || turn[2]["type"] != "toolResult" || turn[3]["type"] != "text" {
+		t.Fatalf("turn blocks = %v", turn)
+	}
+	call := turn[1]
+	if call["name"] != "run_terminal_command" || call["arguments"].(map[string]any)["command"] != "ls -la" {
+		t.Fatalf("call = %v", call)
+	}
+	result := turn[2]
+	if result["toolName"] != "run_terminal_command" || result["callId"] != "call_1" || !strings.Contains(ToStr(result["content"]), "note.txt") {
+		t.Fatalf("result = %v", result)
+	}
+	if !strings.Contains(ToStr(turn[3]["content"]), "note.txt") {
+		t.Fatalf("the turn's closing words fold into the same message: %v", turn[3])
+	}
+
+	final := s.Final(rec)
+	if final == nil {
+		t.Fatal("no final from chat_history")
+	}
+	if final["isProcessing"] != true || final["isFinal"] != false {
+		t.Fatalf("a running session says so: %v", final)
+	}
+	if !strings.Contains(ToStr(final["text"]), "note.txt") {
+		t.Fatalf("final text = %v", final["text"])
+	}
+	// summary.json's current_model_id wins over the line's model_id, as on the ACP path
+	if final["model"] != "gpt-5.6-luna" {
+		t.Fatalf("model = %v", final["model"])
+	}
+	usage, _ := final["usage"].(map[string]any)
+	if usage["inputTokens"] != int64(19219) || usage["cacheReadTokens"] != int64(6832) {
+		t.Fatalf("usage = %v", usage)
+	}
 }
 
 func TestGrokSource(t *testing.T) {

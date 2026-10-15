@@ -65,6 +65,7 @@ func Run(args []string) int {
 	mcp := fs.Bool("mcp", false, "run as an MCP server on stdio for agents to call; does not listen on a port")
 	daemon := fs.Bool("d", false, "run in the background, detached from the terminal, logging to a file")
 	logPath := fs.String("log-file", "", "log path used with -d (default <tmp>/agent-session-query-<port>.log)")
+	check := fs.Bool("check", false, "diagnose every source and exit: found or not, session count, a deep read of the newest session (exit 0 healthy, 1 a source failed)")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 
 	if err := fs.Parse(args); err != nil {
@@ -84,6 +85,10 @@ func Run(args []string) int {
 	if *daemon && *mcp {
 		fmt.Fprintln(os.Stderr, "[FATAL] --mcp speaks a protocol over stdio; detaching from the terminal makes no sense, so it cannot be combined with -d")
 		return 2
+	}
+	// Diagnostics: no server starts, the sources are probed once and the findings printed
+	if *check {
+		return runCheck(*mode, paths, os.Stdout)
 	}
 	// Re-exec ourselves in the background; the parent prints the PID and exits once the
 	// probe succeeds

@@ -369,6 +369,13 @@ func (r *resolver) Sources() []SessionSource {
 			}
 			src = candidate
 			r.live[name] = src
+		} else if !src.Exists() {
+			// A source that was there and is not anymore — its directory was deleted
+			// or unmounted, which is how a relocated one goes away — drops out of the
+			// enabled set rather than answering every query with its last error. The
+			// instance is kept, so the source coming back is the same one, carrying its
+			// caches and whatever list error it had accumulated.
+			continue
 		}
 		enabled = append(enabled, src)
 	}
@@ -385,6 +392,108 @@ func (r *resolver) Sources() []SessionSource {
 		r.fallbackSrc = r.at("openclaw")
 	}
 	return []SessionSource{r.fallbackSrc}
+}
+
+// movableSources are the directory-shaped sources a --path can relocate; opencode's one
+// database moves the same way (a --path may name its data directory or the file itself)
+var movableSources = map[string]func(dir string) SessionSource{
+	"pi":       func(dir string) SessionSource { return NewPiSource(dir) },
+	"claude":   func(dir string) SessionSource { return NewClaudeSource(dir) },
+	"codex":    func(dir string) SessionSource { return NewCodexSource(dir) },
+	"gemini":   func(dir string) SessionSource { return NewGeminiSource(dir) },
+	"grok":     func(dir string) SessionSource { return NewGrokSource(dir) },
+	"opencode": func(dir string) SessionSource { return NewOpenCodeSource(openCodeDBPath(dir)) },
+}
+
+// defaultSource builds one source at the location its CLI puts it, the CLI's own
+// relocation variables honoured (see each source's own directory resolver)
+func defaultSource(name, home string) SessionSource {
+	switch name {
+	case "hermes":
+		return newJsonMapSource(hermesDef(home))
+	case "openclaw":
+		// 2026.9 OpenClaw is SQLite; the pre-SQLite sessions.json layout stays as the
+		// fallback for older installs
+		if dbs := openClawAgentDBs(home); len(dbs) > 0 {
+			return NewOpenClawSource(dbs)
+		}
+		return newJsonMapSource(openclawDef(home))
+	case "opencode":
+		return NewOpenCodeSource(filepath.Join(openCodeDataDir(home), "opencode.db"))
+	case "pi":
+		return NewPiSource(piSessionsDir(home))
+	case "claude":
+		return NewClaudeSource(claudeProjectsDir(home))
+	case "codex":
+		return NewCodexSource(codexSessionsDir(home))
+	case "gemini":
+		return NewGeminiSource(filepath.Join(home, ".gemini", "tmp"))
+	case "grok":
+		return NewGrokSource(filepath.Join(grokHome(home), "sessions"))
+	}
+	return nil
+}
+
+// atSource resolves one mode's source: relocated when --path said so, else its default
+func atSource(name, home string, replacements map[string]string) SessionSource {
+	if repl, moved := replacements[name]; moved {
+		if mv, ok := movableSources[name]; ok {
+			return mv(repl)
+		}
+	}
+	return defaultSource(name, home)
+}
+
+// CheckTarget is one source the way --check finds it: the instance when its data exists,
+// and where it would be when it does not.
+type CheckTarget struct {
+	Mode     string
+	Location string
+	Source   SessionSource // nil when the data is not there
+}
+
+// CheckTargets resolves the sources a --check should look at — every known mode in auto
+// and all, the one a named --mode asks for, each labeled --path instance beside them —
+// without dropping the ones whose data is missing, which is exactly what a check is for.
+func CheckTargets(mode string, paths []SourcePath) ([]CheckTarget, error) {
+	if _, err := NewResolver(mode, paths); err != nil {
+		return nil, err // validates the mode and the paths the same way the server does
+	}
+	home := defaultHome()
+	replacements := map[string]string{}
+	for _, p := range paths {
+		if p.Label == "" {
+			replacements[p.Mode] = p.Dir
+		}
+	}
+	names := KnownModes
+	if mode != "auto" && mode != "all" {
+		names = []string{mode}
+	}
+	out := []CheckTarget{}
+	for _, name := range names {
+		src := atSource(name, home, replacements)
+		if src == nil {
+			continue
+		}
+		target := CheckTarget{Mode: name, Location: src.Location()}
+		if src.Exists() {
+			target.Source = src
+		}
+		out = append(out, target)
+	}
+	for _, p := range paths {
+		if p.Label == "" {
+			continue
+		}
+		src := movableSources[p.Mode](p.Dir)
+		target := CheckTarget{Mode: p.Mode + ":" + p.Label, Location: src.Location()}
+		if src.Exists() {
+			target.Source = Label(src, p.Mode+":"+p.Label)
+		}
+		out = append(out, target)
+	}
+	return out, nil
 }
 
 // NewResolver wires up data sources according to the run mode and any --path overrides, and
@@ -407,31 +516,7 @@ func NewResolver(mode string, paths []SourcePath) (Resolver, error) {
 
 	// The five file-backed sources scan one directory, so that directory can move; the
 	// json-map and SQLite ones keep their layout across several files and stay at home
-	movable := map[string]func(dir string) SessionSource{
-		"pi":       func(dir string) SessionSource { return NewPiSource(dir) },
-		"claude":   func(dir string) SessionSource { return NewClaudeSource(dir) },
-		"codex":    func(dir string) SessionSource { return NewCodexSource(dir) },
-		"gemini":   func(dir string) SessionSource { return NewGeminiSource(dir) },
-		"grok":     func(dir string) SessionSource { return NewGrokSource(dir) },
-		"opencode": func(dir string) SessionSource { return NewOpenCodeSource(openCodeDBPath(dir)) },
-	}
-	factories := map[string]func() SessionSource{
-		"hermes": func() SessionSource { return newJsonMapSource(hermesDef(home)) },
-		"openclaw": func() SessionSource {
-			// 2026.9 OpenClaw is SQLite; the pre-SQLite sessions.json layout stays as the
-			// fallback for older installs
-			if dbs := openClawAgentDBs(home); len(dbs) > 0 {
-				return NewOpenClawSource(dbs)
-			}
-			return newJsonMapSource(openclawDef(home))
-		},
-		"opencode": func() SessionSource { return NewOpenCodeSource(filepath.Join(openCodeDataDir(home), "opencode.db")) },
-		"pi":       func() SessionSource { return NewPiSource(piSessionsDir(home)) },
-		"claude":   func() SessionSource { return NewClaudeSource(claudeProjectsDir(home)) },
-		"codex":    func() SessionSource { return NewCodexSource(codexSessionsDir(home)) },
-		"gemini":   func() SessionSource { return NewGeminiSource(filepath.Join(home, ".gemini", "tmp")) },
-		"grok":     func() SessionSource { return NewGrokSource(filepath.Join(grokHome(home), "sessions")) },
-	}
+	movable := movableSources
 
 	replacements := map[string]string{}
 	extra := make([]SessionSource, 0, len(paths))
@@ -453,14 +538,11 @@ func NewResolver(mode string, paths []SourcePath) (Resolver, error) {
 	}
 	// A source's directory, relocated when --path said so
 	at := func(name string) SessionSource {
-		if repl, moved := replacements[name]; moved {
-			return movable[name](repl)
-		}
-		return factories[name]()
+		return atSource(name, home, replacements)
 	}
 
 	if mode != "auto" && mode != "all" {
-		if _, ok := factories[mode]; !ok {
+		if !ValidMode(mode) {
 			return nil, fmt.Errorf("unknown mode %q (choose from: auto, all, %s)", mode, JoinModes())
 		}
 		return &resolver{mode: mode, at: at, extras: extra, fixed: append([]SessionSource{at(mode)}, extra...)}, nil

@@ -78,6 +78,29 @@ func grokUpdatesPath(summaryPath string) string {
 	return filepath.Join(filepath.Dir(summaryPath), "updates.jsonl")
 }
 
+// grokChatHistoryPath is the whole-message log beside a session's summary.json. Grok
+// appends each finished message to it as the turn runs; updates.jsonl — the chunk-level
+// ACP stream — is only flushed when the session ends, so a session still running carries
+// this and not that.
+func grokChatHistoryPath(summaryPath string) string {
+	return filepath.Join(filepath.Dir(summaryPath), "chat_history.jsonl")
+}
+
+// grokTranscriptPath is the file a session's transcript is read from: the ACP stream a
+// finished session flushed, else the whole-message log a running one has so far. When
+// neither exists the session was never prompted, and the updates path is returned so
+// behaviour degrades the way it always did.
+func grokTranscriptPath(summaryPath string) string {
+	updates := grokUpdatesPath(summaryPath)
+	if fileExists(updates) {
+		return updates
+	}
+	if history := grokChatHistoryPath(summaryPath); fileExists(history) {
+		return history
+	}
+	return updates
+}
+
 // readJSONObject reads one small whole-file JSON object. Only the per-session state files
 // go through here; a conversation is never read this way.
 func readJSONObject(path string) map[string]any {
@@ -123,7 +146,7 @@ func (s *GrokSource) List() []Record {
 		meta := readJSONObject(path)
 		info := getMap(meta, "info")
 		sid := StrOr(info["id"], filepath.Base(dir))
-		updates := grokUpdatesPath(path)
+		transcript := grokTranscriptPath(path)
 		// last_active_at tracks the conversation, updated_at the file; they agree in the
 		// normal case and last_active_at is the one that stays true when something
 		// rewrites the summary without a turn having happened.
@@ -138,7 +161,7 @@ func (s *GrokSource) List() []Record {
 		title := FirstNonEmpty(
 			TitleFromUserText(cutOpenHarnessBlock(ToStr(meta["generated_title"]))),
 			TitleFromUserText(cutOpenHarnessBlock(ToStr(meta["session_summary"]))),
-			grokUserTitle(updates),
+			grokUserTitle(transcript),
 			sid,
 		)
 		rec := Record{
@@ -146,8 +169,8 @@ func (s *GrokSource) List() []Record {
 			Key:       dir,
 			ShortKey:  title,
 			SessionID: sid,
-			File:      updates,
-			HasFile:   fileExists(updates),
+			File:      transcript,
+			HasFile:   fileExists(transcript),
 			Status:    "done",
 			Cwd:       grokCwd(info, filepath.Dir(dir)),
 			Model:     StrOr(meta["current_model_id"], ""),
@@ -255,6 +278,12 @@ func grokRole(u grokUpdate) string {
 //
 // It answers through grokRole so the search path and the transcript cannot drift apart.
 func GrokHitRole(obj map[string]any) string {
+	// chat_history.jsonl — the running session's log — is one whole message a line with
+	// the speaker in a plain type field
+	switch t := ToStr(obj["type"]); t {
+	case "user", "assistant":
+		return t
+	}
 	body := getMap(getMap(obj, "params"), "update")
 	if len(body) == 0 {
 		return ""
@@ -416,10 +445,122 @@ func (g *grokGrouper) reset() {
 	g.role, g.at, g.parts = "", nil, nil
 }
 
+// eachGrokHistoryMessage walks chat_history.jsonl — one whole message per line — and
+// groups them the way the ACP stream is grouped: a turn's reasoning, tool calls and
+// their results fold into the one assistant message that made them. The last model named
+// on an assistant line is returned, for the final result.
+//
+// The lines carry no timestamps (the times live in events.jsonl), so messages read here
+// have none; the file's order is the conversation's order.
+func eachGrokHistoryMessage(path string, full bool, emit func(map[string]any) bool) string {
+	parts := []map[string]any{}
+	thinking := []string{}
+	names := map[string]string{} // toolCallId -> tool name, so a result is labelled by its call
+	model := ""
+	count := 0
+	stopped := false
+	flush := func() bool {
+		if len(parts) == 0 && len(thinking) == 0 {
+			parts, thinking = nil, nil
+			return true
+		}
+		blocks := []map[string]any{}
+		if len(thinking) > 0 {
+			blocks = append(blocks, ThinkingBlock(strings.Join(thinking, "\n"), full))
+		}
+		blocks = append(blocks, parts...)
+		count++
+		ok := emit(map[string]any{
+			"id":        strconv.Itoa(count),
+			"role":      "assistant",
+			"timestamp": "",
+			"content":   blocks,
+		})
+		parts, thinking = nil, nil
+		if !ok {
+			stopped = true
+		}
+		return ok
+	}
+	eachJSONL(path, func(obj map[string]any) bool {
+		if stopped {
+			return false
+		}
+		switch obj["type"] {
+		case "user":
+			if !flush() {
+				return false
+			}
+			text, _ := blockArrayText(obj["content"])
+			if text == "" {
+				return true
+			}
+			count++
+			if !emit(map[string]any{
+				"id":        strconv.Itoa(count),
+				"role":      "user",
+				"timestamp": "",
+				"content":   []map[string]any{{"type": "text", "content": text}},
+			}) {
+				stopped = true
+				return false
+			}
+		case "reasoning":
+			// summary is a block array of {type: summary_text, text}
+			for _, item := range getSlice(obj, "summary") {
+				if m, ok := item.(map[string]any); ok {
+					if t := strField(m, "text"); t != "" {
+						thinking = append(thinking, t)
+					}
+				}
+			}
+		case "assistant":
+			if m := StrOr(obj["model_id"], ""); m != "" {
+				model = m
+			}
+			for _, item := range getSlice(obj, "tool_calls") {
+				call, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				id, name := StrOr(call["id"], ""), StrOr(call["name"], "")
+				if id != "" && name != "" {
+					names[id] = name
+				}
+				// arguments ride as a JSON string; a reader wants the object
+				args := any(map[string]any{})
+				if raw := StrOr(call["arguments"], ""); raw != "" {
+					var decoded map[string]any
+					if json.Unmarshal([]byte(raw), &decoded) == nil {
+						args = decoded
+					} else {
+						args = raw
+					}
+				}
+				parts = append(parts, ToolCallBlock(id, name, args))
+			}
+			if text, _ := blockArrayText(obj["content"]); text != "" {
+				parts = append(parts, map[string]any{"type": "text", "content": text})
+			}
+		case "tool_result":
+			// chat_history names no status, so the result carries no outcome
+			text, _ := blockArrayText(obj["content"])
+			parts = append(parts, ToolResultBlock(StrOr(obj["tool_call_id"], ""), names[StrOr(obj["tool_call_id"], "")], text, full))
+		}
+		return true
+	})
+	flush()
+	return model
+}
+
 func (s *GrokSource) Messages(r Record, q MessageQuery) []map[string]any {
 	sink := newMessageSink(q)
 	path := r.File
 	if path == "" {
+		return sink.result()
+	}
+	if filepath.Base(path) == "chat_history.jsonl" {
+		eachGrokHistoryMessage(path, q.Full, sink.add)
 		return sink.result()
 	}
 	g := newGrokGrouper(sink.add, q.Full)
@@ -449,9 +590,14 @@ func grokCountMessages(summaryPath string, from int64) (int, bool) {
 		n, _ := grokCountMessages(summaryPath, 0)
 		return n, false
 	}
+	path := grokTranscriptPath(summaryPath)
 	n := 0
+	if filepath.Base(path) == "chat_history.jsonl" {
+		eachGrokHistoryMessage(path, false, func(map[string]any) bool { n++; return true })
+		return n, true
+	}
 	g := newGrokGrouper(func(map[string]any) bool { n++; return true }, false)
-	eachGrokUpdate(grokUpdatesPath(summaryPath), g.add)
+	eachGrokUpdate(path, g.add)
 	g.flush()
 	return n, true
 }
@@ -462,6 +608,9 @@ func (s *GrokSource) Final(r Record) map[string]any {
 	// transcript at all; that is the "no session file yet" the interface means.
 	if path == "" || !fileExists(path) {
 		return nil
+	}
+	if filepath.Base(path) == "chat_history.jsonl" {
+		return s.finalFromHistory(path, r)
 	}
 
 	count := 0
@@ -543,4 +692,61 @@ func (s *GrokSource) Final(r Record) map[string]any {
 		"toolCalls":    toolCalls,
 		"usage":        totals.result(),
 	}
+}
+
+// finalFromHistory answers for a session still running on its chat_history.jsonl: the
+// newest assistant words are the result so far, usage comes from the usage.json Grok
+// keeps current per turn, and no stop reason exists yet — the session has not stopped.
+func (s *GrokSource) finalFromHistory(path string, r Record) map[string]any {
+	count := 0
+	var last map[string]any
+	scannedModel := eachGrokHistoryMessage(path, false, func(m map[string]any) bool {
+		count++
+		if m["role"] == "assistant" {
+			last = m
+		}
+		return true
+	})
+	model := FirstNonEmpty(r.Model, scannedModel)
+	var totals usageTotals
+	totals.add(getMap(readJSONObject(filepath.Join(filepath.Dir(path), "usage.json")), "session"))
+	base := map[string]any{
+		"status":       "done",
+		"isFinal":      false,
+		"isProcessing": true,
+		"messageCount": count,
+		"source":       "grok",
+		"usage":        totals.result(),
+	}
+	if last == nil {
+		base["text"], base["thinking"] = "", ""
+		return base
+	}
+	texts := []string{}
+	thoughts := []string{}
+	toolCalls := []any{}
+	parts, _ := last["content"].([]map[string]any)
+	for _, p := range parts {
+		switch p["type"] {
+		case "text":
+			if c := strField(p, "content"); c != "" {
+				texts = append(texts, c)
+			}
+		case "thinking":
+			if c := strField(p, "content"); c != "" {
+				thoughts = append(thoughts, c)
+			}
+		case "toolCall":
+			toolCalls = append(toolCalls, map[string]any{
+				"name":      strField(p, "name"),
+				"arguments": GetOr(p, "arguments", map[string]any{}),
+			})
+		}
+	}
+	base["id"] = GetOr(last, "id", "")
+	base["model"] = model
+	base["text"] = strings.Join(texts, "\n")
+	base["thinking"] = strings.Join(thoughts, "\n")
+	base["toolCalls"] = toolCalls
+	return base
 }

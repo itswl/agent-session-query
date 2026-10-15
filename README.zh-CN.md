@@ -149,6 +149,7 @@ go build -o agent-session-query ./cmd/agent-session-query
 | `--cors-origin` | 无（关闭） | 允许的 CORS 来源；`*` 或具体来源。不设则完全不发 CORS 头 |
 | `-d` | 关闭 | 后台运行，脱离终端，日志写入文件 |
 | `--log-file` | 由端口推导 | `-d` 模式的日志路径，默认 `<tmp>/agent-session-query-<port>.log` |
+| `--check` | 关闭 | 自检每个数据源后退出：是否存在、会话数、最新会话的深读。健康退出 0，有源失败退出 1——格式漂移的防御，别把空列表当成没数据 |
 | `--mcp` | 关闭 | 以 MCP server 身份跑在 stdio 上（见上），不监听端口 |
 | `--version` | — | 打印版本并退出 |
 

@@ -42,6 +42,19 @@ func TestResolverSeesSourcesCreatedAfterStartup(t *testing.T) {
 	if modes := modesOf(resolver.Sources()); !containsString(modes, "opencode") {
 		t.Fatalf("opencode was not picked up after its database appeared: %v", modes)
 	}
+
+	// The database going away drops the source again — a deleted or unmounted directory
+	// must not stay listed forever (and the same instance comes back when it returns)
+	if err := os.Remove(filepath.Join(xdg, "opencode", "opencode.db")); err != nil {
+		t.Fatal(err)
+	}
+	if modes := modesOf(resolver.Sources()); containsString(modes, "opencode") {
+		t.Fatalf("opencode stayed enabled after its database disappeared: %v", modes)
+	}
+	write(t, filepath.Join(xdg, "opencode", "opencode.db"), ``)
+	if modes := modesOf(resolver.Sources()); !containsString(modes, "opencode") {
+		t.Fatalf("opencode was not picked up again after its database returned: %v", modes)
+	}
 }
 
 func modesOf(sources []SessionSource) []string {

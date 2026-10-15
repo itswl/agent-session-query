@@ -9,6 +9,7 @@ decided against for now.
 
 | Release | What it brought |
 |---|---|
+| v0.36.0 | **The drift defence**: `--check` names every source with found-or-not, a session count and a deep read of the newest session (exit 1 when one fails); a Grok session still running is read from its `chat_history.jsonl` — `isProcessing`, usage from `usage.json` — instead of waiting for the ACP stream Grok only flushes at the end; a source whose directory disappears drops out of the enabled set instead of lingering in `/health`; `?source=` reaches `/messages` and `/final` the way it already reached rounds and briefs |
 | v0.35.0 | **All eight sources follow their CLI's own relocation, verified against the CLIs themselves**: Grok's `GROK_HOME`, Hermes's `HERMES_HOME` and OpenClaw's `OPENCLAW_STATE_DIR` join the others — every source installed and one GLM-5.3 session driven through each, read back through this service. Gemini CLI has no such variable; its fixed `~/.gemini` is official and read as is |
 | v0.34.0 | **Each CLI's own relocation followed**: pi's `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR`, Claude Code's `CLAUDE_CONFIG_DIR` and Codex's `CODEX_HOME` are read the way the CLIs read them; no tool-specific layouts anywhere — a hosted directory is a `--path`, a moved one an environment variable |
 | v0.33.1 | **Hosted pi by `--path`, not by a host's directory shape**: the flat `--session-dir` layout stays; the scan of one host's state layout is gone — a hosted directory is pointed at explicitly, like every other session store outside the defaults |

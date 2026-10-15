@@ -34,6 +34,15 @@ func NewGrokSource(root string) *GrokSource {
 	return &GrokSource{root: root, cache: newFileRecordCache(grokCountMessages)}
 }
 
+// grokHome follows Grok CLI's own resolution: GROK_HOME moves the whole ~/.grok —
+// sessions, config and credentials together
+func grokHome(home string) string {
+	if d := os.Getenv("GROK_HOME"); d != "" {
+		return d
+	}
+	return filepath.Join(home, ".grok")
+}
+
 func (s *GrokSource) Mode() string     { return "grok" }
 func (s *GrokSource) Location() string { return s.root }
 

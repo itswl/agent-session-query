@@ -166,9 +166,10 @@ func TestBuildSourcesLabeledMissingDirEnabledAnyway(t *testing.T) {
 
 // TestBuildSourcesRelocationEnvs: the CLIs that can move their data by environment
 // variable are resolved the way they resolve it themselves — pi (PI_CODING_AGENT_DIR,
-// and PI_CODING_AGENT_SESSION_DIR, the flat shape), claude (CLAUDE_CONFIG_DIR) and codex
-// (CODEX_HOME); opencode's XDG_DATA_HOME has its own test. A variable the service never
-// sees changes nothing, which is why these read the service's own environment.
+// and PI_CODING_AGENT_SESSION_DIR, the flat shape), claude (CLAUDE_CONFIG_DIR), codex
+// (CODEX_HOME), grok (GROK_HOME), hermes (HERMES_HOME) and openclaw (OPENCLAW_STATE_DIR);
+// opencode's XDG_DATA_HOME has its own test. A variable the service never sees changes
+// nothing, which is why these read the service's own environment.
 func TestBuildSourcesRelocationEnvs(t *testing.T) {
 	home := t.TempDir()
 	setHome(t, home)
@@ -176,12 +177,23 @@ func TestBuildSourcesRelocationEnvs(t *testing.T) {
 	t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(moved, "pi-agent"))
 	t.Setenv("CODEX_HOME", filepath.Join(moved, "codex-home"))
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(moved, "claude-config"))
+	t.Setenv("GROK_HOME", filepath.Join(moved, "grok-home"))
+	t.Setenv("HERMES_HOME", filepath.Join(moved, "hermes-home"))
+	t.Setenv("OPENCLAW_STATE_DIR", filepath.Join(moved, "openclaw-state"))
 
 	write(t, filepath.Join(moved, "pi-agent", "sessions", "p", "2026-10-01T10-00-00-000Z_aaaa.jsonl"),
 		`{"type":"session","id":"pi-env","cwd":"/w/pi"}`)
 	writeClaudeFixture(t, filepath.Join(moved, "claude-config", "projects"), "p", "cccc", "/w/claude")
 	write(t, filepath.Join(moved, "codex-home", "sessions", "2026", "10", "01", "rollout-x.jsonl"),
 		`{"type":"session_meta","payload":{"id":"codex-env","cwd":"/w/codex"}}`)
+	// Grok: a session is a directory of summary.json + updates.jsonl
+	write(t, filepath.Join(moved, "grok-home", "sessions", "%2Fw%2Fgrok", "grok-env", "summary.json"),
+		`{"info":{"id":"grok-env"},"last_active_at":"2026-10-01T10:00:00Z","num_messages":1}`)
+	write(t, filepath.Join(moved, "grok-home", "sessions", "%2Fw%2Fgrok", "grok-env", "updates.jsonl"), `{}`)
+	// Hermes: the 2026.9 SQLite layout is the one to see land in the moved home
+	write(t, filepath.Join(moved, "hermes-home", "state.db"), ``)
+	// OpenClaw: one agent database in the moved state directory
+	write(t, filepath.Join(moved, "openclaw-state", "agents", "default", "agent", "openclaw-agent.sqlite"), ``)
 
 	sources, err := BuildSources("auto", nil)
 	if err != nil {
@@ -191,7 +203,7 @@ func TestBuildSourcesRelocationEnvs(t *testing.T) {
 	for _, s := range sources {
 		found[s.Mode()] = s
 	}
-	for _, mode := range []string{"pi", "claude", "codex"} {
+	for _, mode := range []string{"pi", "claude", "codex", "grok", "hermes", "openclaw"} {
 		if found[mode] == nil {
 			t.Fatalf("%s was not enabled from its relocated directory: %v", mode, modeNames(sources))
 		}
@@ -205,6 +217,11 @@ func TestBuildSourcesRelocationEnvs(t *testing.T) {
 	if recs := found["codex"].List(); len(recs) != 1 || recs[0].SessionID != "codex-env" {
 		t.Fatalf("codex records = %v", recs)
 	}
+	if recs := found["grok"].List(); len(recs) != 1 || recs[0].SessionID != "grok-env" {
+		t.Fatalf("grok records = %v", recs)
+	}
+	// hermes and openclaw carry empty placeholder databases; enabled is what is asked —
+	// listing them is their own tests' business (hermes_sqlite_test, source_openclaw_test)
 }
 
 // TestPiSessionsDirEnv: PI_CODING_AGENT_SESSION_DIR replaces the sessions directory

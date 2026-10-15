@@ -430,7 +430,7 @@ func NewResolver(mode string, paths []SourcePath) (Resolver, error) {
 		"claude":   func() SessionSource { return NewClaudeSource(claudeProjectsDir(home)) },
 		"codex":    func() SessionSource { return NewCodexSource(codexSessionsDir(home)) },
 		"gemini":   func() SessionSource { return NewGeminiSource(filepath.Join(home, ".gemini", "tmp")) },
-		"grok":     func() SessionSource { return NewGrokSource(filepath.Join(home, ".grok", "sessions")) },
+		"grok":     func() SessionSource { return NewGrokSource(filepath.Join(grokHome(home), "sessions")) },
 	}
 
 	replacements := map[string]string{}
@@ -508,22 +508,33 @@ type jsonMapDef struct {
 }
 
 func hermesDef(home string) jsonMapDef {
+	root := hermesHome(home)
 	return jsonMapDef{
 		mode:            "hermes",
-		sessionsJSON:    filepath.Join(home, ".hermes", "sessions", "sessions.json"),
-		sessionsDir:     filepath.Join(home, ".hermes", "sessions"),
+		sessionsJSON:    filepath.Join(root, "sessions", "sessions.json"),
+		sessionsDir:     filepath.Join(root, "sessions"),
 		sessionIDField:  "session_id",
 		stopReasonField: "finish_reason",
-		stateDB:         filepath.Join(home, ".hermes", "state.db"),
+		stateDB:         filepath.Join(root, "state.db"),
 	}
 }
 
 func openclawDef(home string) jsonMapDef {
+	root := filepath.Join(openClawStateDir(home), "agents", "default")
 	return jsonMapDef{
 		mode:            "openclaw",
-		sessionsJSON:    filepath.Join(home, ".openclaw", "agents", "default", "sessions", "sessions.json"),
-		sessionsDir:     filepath.Join(home, ".openclaw", "agents", "default", "sessions"),
+		sessionsJSON:    filepath.Join(root, "sessions", "sessions.json"),
+		sessionsDir:     filepath.Join(root, "sessions"),
 		sessionIDField:  "sessionId",
 		stopReasonField: "stopReason",
 	}
+}
+
+// hermesHome follows Hermes's own resolution: HERMES_HOME moves the whole ~/.hermes —
+// sessions, state.db and configuration together
+func hermesHome(home string) string {
+	if d := os.Getenv("HERMES_HOME"); d != "" {
+		return d
+	}
+	return filepath.Join(home, ".hermes")
 }

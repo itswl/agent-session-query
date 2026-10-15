@@ -16,10 +16,12 @@ The sources read the session directories the agent CLIs write by default:
 Each directory is resolved the way the CLI itself resolves it, so a CLI whose data moved
 by environment variable is read where the variable says — pi's `PI_CODING_AGENT_DIR` and
 `PI_CODING_AGENT_SESSION_DIR` (the flat `--session-dir` layout), Claude Code's
-`CLAUDE_CONFIG_DIR`, Codex's `CODEX_HOME`, opencode's `XDG_DATA_HOME` / `LOCALAPPDATA`.
-The variables are read from this service's own environment, so a daemon has to be given
-the ones its CLIs run with (an `EnvironmentFile`, a unit's `Environment=`). Gemini CLI,
-Grok CLI, Hermes and OpenClaw define no such variable; their defaults are what is read.
+`CLAUDE_CONFIG_DIR`, Codex's `CODEX_HOME`, Grok CLI's `GROK_HOME`, Hermes's `HERMES_HOME`,
+OpenClaw's `OPENCLAW_STATE_DIR`, opencode's `XDG_DATA_HOME` / `LOCALAPPDATA`. The
+variables are read from this service's own environment, so a daemon has to be given
+the ones its CLIs run with (an `EnvironmentFile`, a unit's `Environment=`). Gemini CLI
+defines no such variable — `~/.gemini` is where it always writes — so its default is
+what is read.
 
 Sessions a CLI has archived — Grok's and Codex's moved into `archived_sessions`, OpenCode's
 marked `time_archived`, the ones Hermes hides (`archived`, or `hidden` in older schemas) —

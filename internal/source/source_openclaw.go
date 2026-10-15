@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -62,11 +63,20 @@ func NewOpenClawSource(dbPaths []string) *OpenClawSource {
 	return &OpenClawSource{dbPaths: dbPaths}
 }
 
-// openClawAgentDBs finds every agent database under ~/.openclaw/agents. The layout is
+// openClawStateDir follows OpenClaw's own resolution: OPENCLAW_STATE_DIR moves the whole
+// state directory — every agent database lives under its agents/ subdirectory
+func openClawStateDir(home string) string {
+	if d := os.Getenv("OPENCLAW_STATE_DIR"); d != "" {
+		return d
+	}
+	return filepath.Join(home, ".openclaw")
+}
+
+// openClawAgentDBs finds every agent database under the state directory. The layout is
 // uniform (~/.openclaw/agents/<id>/agent/openclaw-agent.sqlite), so additional isolated
 // agents pick up without further code.
 func openClawAgentDBs(home string) []string {
-	matches, _ := filepath.Glob(filepath.Join(home, ".openclaw", "agents", "*", "agent", "openclaw-agent.sqlite"))
+	matches, _ := filepath.Glob(filepath.Join(openClawStateDir(home), "agents", "*", "agent", "openclaw-agent.sqlite"))
 	return matches
 }
 

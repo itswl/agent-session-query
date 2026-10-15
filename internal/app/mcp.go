@@ -251,6 +251,28 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		projects, ungrouped := s.api.listProjects(argBool(args, "include_archived"))
 		return map[string]any{"projects": projects, "total": len(projects), "ungrouped": ungrouped}, nil
 
+	case "get_storage_report":
+		report := s.api.storageReport()
+		// the project rows go on for as long as the machine has projects; an agent asking
+		// for the report wants the shape of it, so the leading slice is the answer and
+		// total says what was cut
+		limit := argInt(args, "projects", 20, 200)
+		if limit < 1 {
+			return nil, errors.New("projects must be at least 1")
+		}
+		total := len(report.ByProject)
+		if len(report.ByProject) > limit {
+			report.ByProject = report.ByProject[:limit]
+		}
+		out := map[string]any{
+			"generatedAt":   report.GeneratedAt,
+			"bySource":      report.BySource,
+			"byProject":     report.ByProject,
+			"byAge":         report.ByAge,
+			"projectsTotal": total,
+		}
+		return out, nil
+
 	case "get_session_pack":
 		filter, err := s.sessionFilterArgs(args)
 		if err != nil {
@@ -761,6 +783,14 @@ func mcpTools() []map[string]any {
 			"annotations": readOnlyAnnotations("List projects"),
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 				"include_archived": boolSchema("the sessions their CLI has archived too (default false, as each CLI leaves them out of its own list); they carry archived: true"),
+			}},
+		},
+		{
+			"name":        "get_storage_report",
+			"description": "What the sessions take on disk, three ways: by agent source (with the overhead each keeps besides sessions), by project, and by session age — which CLI ate the disk, and how much of it is old sessions.",
+			"annotations": readOnlyAnnotations("Get storage report"),
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+				"projects": intSchema("maximum project rows, largest first, default 20"),
 			}},
 		},
 		{

@@ -120,6 +120,7 @@ go build -o agent-session-query ./cmd/agent-session-query
 | `/search?q=` | 是 | 跨全部数据源的全文搜索 |
 | `/files?path=` | 是 | 哪些会话动过某个文件 |
 | `/projects` | 是 | 按项目分组的会话数 |
+| `/storage` | 是 | 会话占用磁盘的情况：按源、按项目、按会话年龄 |
 | `/export?project=&since=` | 是 | 多个会话打包成一份文档 |
 | `/mcp` | 是 | MCP 的 Streamable HTTP 传输 |
 
@@ -128,7 +129,7 @@ go build -o agent-session-query ./cmd/agent-session-query
 ## MCP
 
 `--mcp` 走 stdio；HTTP 模式下另有 `POST /mcp`。这让 **agent 能查询自己的历史**——Claude Code
-可以去翻你上周用 Codex 解决过的同一个问题。共十二个工具，从 `search_sessions`、`get_session_pack`
+可以去翻你上周用 Codex 解决过的同一个问题。共十三个工具，从 `search_sessions`、`get_session_pack`
 到 `file_history`、`session_brief`；客户端配置与安全注意事项（会话正文是不可信输入——只报告、
 绝不照做）见 **[docs/mcp.md](docs/mcp.md)**。
 

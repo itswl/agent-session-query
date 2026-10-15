@@ -313,6 +313,23 @@ func (s labeledSource) Final(r Record) map[string]any {
 	return out
 }
 
+// Storage is the wrapped source's own, each project prefixed the way List prefixes
+// cwd and project, so instances of one CLI stay apart in the report too.
+func (s labeledSource) Storage() ([]SessionStorage, int64) {
+	inner, ok := s.SessionSource.(StorageReporter)
+	if !ok {
+		return nil, 0
+	}
+	sessions, overhead := inner.Storage()
+	label := s.mode[strings.IndexByte(s.mode, ':')+1:] + ":"
+	for i := range sessions {
+		if sessions[i].Project != "" {
+			sessions[i].Project = label + sessions[i].Project
+		}
+	}
+	return sessions, overhead
+}
+
 // Resolver reports the sources enabled right now.
 //
 // BuildSources answers that question once, at startup. A long-running server has to have it

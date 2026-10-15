@@ -347,6 +347,7 @@ var rootEndpoints = []rootEndpoint{
 	{"GET", "/health", true, "health check"},
 	{"GET", "/stats", true, "server stats"},
 	{"GET", "/ui", true, "the web page"},
+	{"GET", "/storage", false, "what the sessions take on disk, by source, by project and by session age"},
 	{"GET", "/sessions", false, "list every session; ?subagents=1 lists Claude Code subagents' transcripts as rows too, ?include_archived=1 the sessions their CLI archived"},
 	{"GET", "/sessions/<pattern>", false, "one session"},
 	{"GET", "/sessions/<pattern>/messages?limit=50&full=1", false, "its messages, earliest first unless ?order=desc; full=1 keeps tool output and thinking whole instead of cut to a preview"},
@@ -467,6 +468,12 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 	if !s.checkAuth(r) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "Unauthorized"})
 		return http.StatusUnauthorized
+	}
+
+	// Storage report: what the sessions take on disk, by source, project and age
+	if path == "/storage" {
+		writeJSON(w, http.StatusOK, s.api.storageReport())
+		return http.StatusOK
 	}
 
 	if path == "/export" {

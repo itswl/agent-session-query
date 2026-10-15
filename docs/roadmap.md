@@ -9,6 +9,7 @@ decided against for now.
 
 | Release | What it brought |
 |---|---|
+| v0.37.0 | **Storage, sight and live follow**: `/storage` and MCP `get_storage_report` size the history three ways — by source (with the overhead kept besides sessions), by project, by session age; the page's header panel shows which sources are on and what failed; an open, active session is followed as it grows, new rounds arriving marked |
 | v0.36.0 | **The drift defence**: `--check` names every source with found-or-not, a session count and a deep read of the newest session (exit 1 when one fails); a Grok session still running is read from its `chat_history.jsonl` — `isProcessing`, usage from `usage.json` — instead of waiting for the ACP stream Grok only flushes at the end; a source whose directory disappears drops out of the enabled set instead of lingering in `/health`; `?source=` reaches `/messages` and `/final` the way it already reached rounds and briefs |
 | v0.35.0 | **All eight sources follow their CLI's own relocation, verified against the CLIs themselves**: Grok's `GROK_HOME`, Hermes's `HERMES_HOME` and OpenClaw's `OPENCLAW_STATE_DIR` join the others — every source installed and one GLM-5.3 session driven through each, read back through this service. Gemini CLI has no such variable; its fixed `~/.gemini` is official and read as is |
 | v0.34.0 | **Each CLI's own relocation followed**: pi's `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR`, Claude Code's `CLAUDE_CONFIG_DIR` and Codex's `CODEX_HOME` are read the way the CLIs read them; no tool-specific layouts anywhere — a hosted directory is a `--path`, a moved one an environment variable |
@@ -28,12 +29,10 @@ Roughly in the order they look worth doing.
 
 | Item | What it would answer | How it looks |
 |---|---|---|
-| Live follow | A running session followed as it grows, with a mark where new content starts | Maybe. The page already refreshes every ten seconds; shorter polling for the open, active session would do most of it |
 | Bookmarks and notes | A session or a round marked to come back to | Maybe. Browser storage keeps the server read-only; worth it only if the list is hard to find things in |
 | Edits made with shell commands | `sed -i`, a redirect or a script counted as changing a file, not only as naming it | Maybe. A command's effect has to be guessed from its text, and a wrong guess is worse than the honest "named in a command" file history gives now |
 | Search inside saved outputs | Words in the large tool outputs Claude Code keeps beside the transcript | Maybe. They are read whole on demand already; searching them means scanning their size again on every query |
 | Config file and `--check` | Long multi-path setups out of service units and compose files | Maybe, once setups grow past a few flags |
-| Storage report | Disk used by source, project and age, as a read-only report | Maybe. Cheap to compute; the service never deletes anything |
 | Two-session compare | Two attempts at the same task side by side: conclusions, failures, files changed, time | Doubtful. Most of what it would line up is already per session in the pack, `/rounds` and file history; it needs a concrete case first |
 | `/metrics` | Prometheus scraping: latency, scan volume, queueing, source errors | Doubtful unless the service runs under monitoring; `/health` and `/stats` cover the rest |
 

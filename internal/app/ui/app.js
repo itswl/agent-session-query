@@ -55,6 +55,8 @@ const state = {
   openFiles: new Set(),   // files whose history is open in the details pane
   fileHistory: new Map(), // file → { loading } | { data } | { error }: /files, asked once
   selectedId: '',
+  followTimer: null,  // the live-follow poll of the open active session
+  liveNewSince: '',   // the newest message time before the latest refresh; newer rounds are marked
   keyword: '',
   source: '',
   view: 'all',         // all = rounds with their work / conversation = the words alone / changes = file changes alone
@@ -2893,6 +2895,9 @@ function renderMessages() {
     const node = roundNode(round);
     if (!node) continue;
     node.dataset.anchor = 'r:' + round.key;
+    // a round whose latest message is newer than the last paint just arrived
+    if (state.liveNewSince && round.last && round.last.timestamp &&
+        round.last.timestamp > state.liveNewSince) node.classList.add('just-arrived');
     box.appendChild(node);
     shown++;
   }
@@ -2909,6 +2914,7 @@ function renderMessages() {
     pane.classList.add('fresh');
     setTimeout(() => pane.classList.remove('fresh'), 300);
   }
+  state.liveNewSince = ''; // the marks are painted; a later rebuild marks only what is newer still
 
   // The match being shown keeps its marks through a rebuild: opening a step, a refresh
   const find = state.find;
@@ -4429,9 +4435,15 @@ async function syncDetail(options) {
       messages = await api('/sessions/' + id + '/messages?limit=' + MESSAGE_LIMIT + '&order=' + other + at);
     }
     // Another session may have been picked while this was in flight; its own fetch (or
-    // the pending re-run below) owns the stream now, and painting this one would show
-    // the wrong session under the right highlight
+    // the pending re-run below) owns the stream now, and painting this one would show the
+    // wrong session under the right highlight
     if (state.selectedId !== record.sessionId) return;
+    // Live follow: what arrived since the last paint of this session gets its round
+    // marked, easing out; a session just opened marks nothing
+    const prevMessages = (state.detail && state.detail.sessionId === record.sessionId && state.detail.messages.messages) || [];
+    state.liveNewSince = switched || !prevMessages.length
+      ? ''
+      : (prevMessages[prevMessages.length - 1].timestamp || '');
     state.detail = { sessionId: record.sessionId, signature, messages, final, anchor };
     painted = true;
     // Learn the count for sources that do not report one on list, and refresh the row's
@@ -4467,6 +4479,111 @@ async function syncDetail(options) {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Sources and storage panel
+// ---------------------------------------------------------------------------
+
+// The header's storage button opens this: which sources are on, which failed to read,
+// and what the sessions take on disk — the facts that tell an empty list apart from a
+// broken one, which the list itself cannot.
+let servicesCache = null; // { at, health, storage } — a minute old at most
+
+function humanBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return '0 B';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let value = n, unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+  return (unit === 0 ? value : value.toFixed(1)) + ' ' + units[unit];
+}
+
+function toggleServicesPanel() {
+  const panel = $('services-panel');
+  const opening = panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', !opening);
+  $('services').setAttribute('aria-expanded', String(opening));
+  if (opening) loadServicesPanel();
+}
+
+async function loadServicesPanel() {
+  const render = (html) => { $('services-panel').replaceChildren(html); };
+  if (servicesCache && Date.now() - servicesCache.at < 60000) {
+    render(servicesPanelNode(servicesCache));
+    return;
+  }
+  render(el('p', 'empty', 'Loading…'));
+  try {
+    const [health, storage] = await Promise.all([
+      fetch('/health').then((r) => r.json()),
+      api('/storage').catch(() => null),
+    ]);
+    servicesCache = { at: Date.now(), health, storage };
+    render(servicesPanelNode(servicesCache));
+  } catch (err) {
+    render(el('p', 'empty', 'Failed to load: ' + err.message));
+  }
+}
+
+function servicesPanelNode({ health, storage }) {
+  const box = el('div', 'services');
+  const head = el('div', 'services-head');
+  head.appendChild(el('span', 'services-title', 'Sources'));
+  head.appendChild(el('span', 'services-version', (health && health.version) || ''));
+  box.appendChild(head);
+
+  const warnings = (health && health.warnings) || [];
+  const warnBySource = new Map(warnings.map((w) => [w.source, w.error]));
+  const rows = el('table', 'services-table');
+  const tableHead = el('thead');
+  const headRow = el('tr');
+  for (const name of ['source', 'sessions', 'sessions on disk', 'kept besides']) {
+    headRow.appendChild(el('th', '', name));
+  }
+  tableHead.appendChild(headRow);
+  rows.appendChild(tableHead);
+  const bySource = new Map(((storage && storage.bySource) || []).map((r) => [r.source, r]));
+  const sources = (health && health.sources) || [];
+  for (const name of sources) {
+    const tr = el('tr', warnBySource.has(name) ? 'warn' : '');
+    tr.appendChild(el('td', 'services-source', name));
+    const size = bySource.get(name);
+    tr.appendChild(el('td', '', size ? String(size.sessions) : '—'));
+    tr.appendChild(el('td', '', size ? humanBytes(size.bytes) : '—'));
+    tr.appendChild(el('td', '', size && size.overhead ? humanBytes(size.overhead) : '—'));
+    rows.appendChild(tr);
+  }
+  if (!sources.length) {
+    const tr = el('tr');
+    tr.appendChild(el('td', 'empty', 'no source detected'));
+    rows.appendChild(tr);
+  }
+  box.appendChild(rows);
+
+  for (const warning of warnings) {
+    const note = el('p', 'services-warning', warning.source + ': ' + warning.error);
+    box.appendChild(note);
+  }
+
+  if (storage && Array.isArray(storage.byAge) && storage.byAge.length) {
+    const ages = el('div', 'services-ages');
+    ages.appendChild(el('span', 'services-ages-title', 'by age'));
+    for (const row of storage.byAge) {
+      ages.appendChild(el('span', 'services-age', row.bucket + ' · ' + humanBytes(row.bytes)));
+    }
+    box.appendChild(ages);
+  }
+  return box;
+}
+
+document.addEventListener('click', (event) => {
+  const panel = $('services-panel');
+  if (panel.classList.contains('hidden')) return;
+  const wrap = document.querySelector('.services-wrap');
+  if (wrap && !wrap.contains(event.target)) {
+    panel.classList.add('hidden');
+    $('services').setAttribute('aria-expanded', 'false');
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Refreshing and errors
@@ -4545,6 +4662,30 @@ function startAutoRefresh() {
     if (document.hidden) return; // do not call the API while the page is in the background
     refresh();
   }, REFRESH_MS);
+}
+
+// ---------------------------------------------------------------------------
+// Live follow
+// ---------------------------------------------------------------------------
+
+// An open, active session is followed as it grows: a light poll of that one session's
+// metadata, and a full refresh only when it actually moved — the new round arrives
+// marked, easing out, instead of appearing with no sign.
+const LIVE_MS = 2500;
+
+function startLiveFollow() {
+  if (state.followTimer) clearInterval(state.followTimer);
+  state.followTimer = setInterval(async () => {
+    if (document.hidden || !state.selectedId || state.busy || state.pendingDetail) return;
+    const record = state.byId.get(state.selectedId);
+    if (!record || !record.isActive) return;
+    try {
+      const fresh = await api('/sessions/' + encodeURIComponent(state.selectedId));
+      if (fresh && fresh.updatedAt && fresh.updatedAt !== record.updatedAt) refresh();
+    } catch {
+      /* the next full refresh reports what this could not */
+    }
+  }, LIVE_MS);
 }
 
 // ---------------------------------------------------------------------------
@@ -4778,6 +4919,7 @@ $('toggle-side').addEventListener('click', () => {
 
 $('refresh').addEventListener('click', () => refresh({ force: true }));
 $('theme').addEventListener('click', toggleTheme);
+$('services').addEventListener('click', toggleServicesPanel);
 // Following the system, a change of system theme changes the page; only the button's
 // words and the chrome colour need telling
 systemLight.addEventListener('change', () => {
@@ -4788,9 +4930,16 @@ $('auto').addEventListener('change', (event) => {
   saveViewPrefs();
   if (event.target.checked) {
     startAutoRefresh();
-  } else if (state.timer) {
-    clearInterval(state.timer);
-    state.timer = null;
+    startLiveFollow();
+  } else {
+    if (state.timer) {
+      clearInterval(state.timer);
+      state.timer = null;
+    }
+    if (state.followTimer) {
+      clearInterval(state.followTimer);
+      state.followTimer = null;
+    }
   }
 });
 
@@ -4972,6 +5121,7 @@ async function start() {
     selectSession(state.sessions[0].sessionId, '', true);
   }
   if ($('auto').checked) startAutoRefresh();
+  startLiveFollow();
 }
 
 (async function boot() {

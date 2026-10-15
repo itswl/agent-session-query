@@ -23,8 +23,13 @@ Eight sources; whichever exist are queried, and they can be merged in one query:
 | Grok CLI | `~/.grok/sessions/<url-encoded-cwd>/<session-id>/` (`summary.json` + `updates.jsonl`), plus `~/.grok/archived_sessions/` | `info.id` in `summary.json` |
 
 The `~` in that table resolves to the running user's home: `$HOME` on Linux and macOS,
-`%USERPROFILE%` on Windows (so `C:\Users\<you>\.claude\projects` and the like). Per-source
-parsing details are in [docs/internals.md](docs/internals.md).
+`%USERPROFILE%` on Windows (so `C:\Users\<you>\.claude\projects` and the like). Each
+directory is also resolved the way its CLI resolves it — `CLAUDE_CONFIG_DIR`,
+`CODEX_HOME`, `GROK_HOME`, `HERMES_HOME`, `OPENCLAW_STATE_DIR`, pi's
+`PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR` and opencode's `XDG_DATA_HOME` are
+honoured, read from this service's own environment. Per-source parsing details are in
+[docs/internals.md](docs/internals.md); relocations and extra instances in
+[docs/sources.md](docs/sources.md).
 
 ## Quick start
 
@@ -101,99 +106,50 @@ see **[docs/deploy.md](docs/deploy.md)**.
 ## Web page (`/ui`)
 
 Three panes: **session list / message stream / final result**. A token is only requested
-when the server was started with `--hook_token`, and it stays in the browser's localStorage.
+when the server was started with `--hook_token`; it stays in the browser's localStorage.
 
-- **Left**: each session shows a readable name — opencode's own session title, or for the
-  other sources the first real user message — instead of a bare sessionId. Typing filters
-  sessionId, path and cwd instantly, and the same keystrokes also
-  **search the message bodies** on the server. Body matches are appended below the metadata
-  ones under a "N more in message bodies" divider, carrying the matching snippet, so one
-  query covers both without a mode to switch; with a source picked in the filter, the body
-  search runs within that source. <kbd>Enter</kbd> only skips the wait. The list
-  can be grouped by time or by project — project headers fold away when clicked — and a
-  session written within the last couple of minutes gets a pulsing dot (recent activity,
-  not a liveness check — hovering it says how long ago). Rows carry the session's message count
-  — counted from the file in the background the first time it is listed, so the count
-  appears a moment after the page does rather than being paid for on the request path. A
-  Claude Code session that handed work to **subagents** says how many ("▸ 12 agents"), and
-  unfolds them under it, nested the way they were spawned; each opens as a transcript of
-  its own, with a link back to the session, and an `Agent` step in the session leads to the
-  transcript it started. Sessions a CLI has archived stay out of the list, as they do in the
-  CLI; when there are some, an **Archived** switch above the list brings them in, marked
-- **Middle**: the conversation, read by rounds — you asked, the agent worked, the agent
-  answered. The work between an ask and its reply folds to one line: *72 steps · 61
-  commands · changed 2 files · 1 failed · 24m39s*. A failed step stays in view when the
-  rest is folded, with the start of its output; a run of reads and searches folds to
-  "explored — read 4 files, searched twice"; every step opens to its arguments and its
-  output, and a change opens as a diff, whichever way the CLI spelled the edit. A result
-  says how it ended — exit code, duration — and what happened between the turns (a
-  compaction, an interruption, a hook that failed) is a line of its own. Five views:
-  **all**, **conversation** (the words alone), and one kind of step alone, round by round:
-  **changes** (the diffs), **commands** (every command run) and **failures** (every step
-  that failed, opened to its output). Under the toolbar, the window's sums: rounds, tool
-  calls, failures, how long it ran — and the failure count steps through the failures one
-  at a time (‹ ›, or <kbd>[</kbd> <kbd>]</kbd>), opening the round each sits in; past the
-  loaded window it moves the window to the nearest round that failed. **Find in the
-  session** (the magnifier, or <kbd>f</kbd>) marks the words wherever the stream draws
-  them and walks the matches with <kbd>Enter</kbd> / <kbd>Shift</kbd>+<kbd>Enter</kbd>;
-  it says how many more lie before or after the loaded window and carries on there, and a
-  match inside cut tool output is read whole before it is shown. A body match picked in the
-  list opens with its words already in the find bar and the match in view. It
-  opens on the latest 200 messages and **loads the previous page when you scroll to the
-  top** (or the next one at the bottom, when reading from the earliest) — the count in the
-  header says how far into the session you are. Tool output comes cut to a preview, and
-  "Show full output" fetches the rest. Replies render their Markdown — headings, lists,
-  code, tables, links — and a message's time shows the clock alone on the session's own
-  day, the date in front on any other (the full timestamp is in the tooltip). Steps are
-  coloured by category (run / read / write / search / network / delegate). **Copying** is
-  where the thing is: a code block in a reply copies itself, a round's ask copies that
-  round's brief, and an opened step copies its command, its change as a diff, or its output
-  — read whole first when the window holds only its start
-- **Right**: the final result stays visible — stopReason, the answer, the thinking — then
-  the **conversation table of contents**: two lines a round — what you asked, and what the
-  agent concluded, with how many steps it took and a red mark when one failed or the round
-  was interrupted — click either to jump to it in the stream (it covers the loaded window
-  and says so when the session is longer). Below it the session's facts: the command that
-  reopens it in its own CLI (copied with the `cd` it needs), the file path, one click to
-  export in any of the four formats (Markdown, JSONL, JSON or a standalone HTML page),
-  usage and cost, and the other sessions of the same project — with the project's **pack**
-  (what each of its latest sessions asked and concluded, oldest first) to copy into another
-  agent or save as a file; a project's header in the list saves it too
+- **Left — the list**: every session under a readable name (opencode's own title, or the
+  first real user message elsewhere), grouped by time or project, with a pulsing dot for
+  recent activity and a message count filled in by a background scan. Claude Code
+  subagents nest under the session that spawned them (▸ 12 agents), and an **Archived**
+  switch brings in the sessions a CLI put away. Typing filters sessionId / path / cwd
+  and, in the same query, **searches message bodies** on the server — body hits append
+  under a divider with their snippets, and a source picked in the filter scopes the body
+  search to it
+- **Middle — the conversation, read by rounds**: you asked, the agent worked, the agent
+  answered. The work between an ask and its reply folds to one line (*72 steps · 61
+  commands · changed 2 files · 1 failed · 24m39s*), keeping failures in view; runs of
+  reads and searches fold to "explored". Every step opens to its arguments and output,
+  edits as diffs whatever way the CLI spelled them, results with exit code and duration;
+  what happened between turns (a compaction, an interruption, a failed hook) gets a line.
+  Five views: **all**, **conversation**, and one kind of step alone — **changes**,
+  **commands**, **failures**. Under the toolbar the window's sums, and the failure count
+  steps through failures one at a time. **Find** (<kbd>f</kbd>) marks words across the
+  session and walks matches beyond the loaded window; a body match picked in the list
+  opens with its words already in the find bar. It opens on the latest 200 messages and
+  pages on scroll; tool output is cut to a preview with "Show full output"; Markdown
+  renders; steps are coloured by category. Copying is where the thing is: a code block,
+  a round's brief, a step's command, diff or output — whole, when the window held only
+  its start
+- **Right — the result and the map**: stopReason, the answer and the thinking stay
+  visible; then the **conversation table of contents** — two lines a round, what was
+  asked and what was concluded, a red mark when something failed — clicking either jumps
+  into the stream. Below, the session's facts: the resume command with its `cd`, the
+  file path, export to Markdown / JSONL / JSON / a standalone HTML page, usage and cost,
+  and the project's other sessions with its **pack** — what each latest session asked
+  and concluded — to copy into another agent or save as a file
 
-It installs as a web app: open `/ui` on a phone and "Add to Home Screen" gives it an
-icon, a name and a window without browser chrome, and it honours the notch and home
-indicator when it does. After an upgrade of the server an open page reloads itself on its
-next refresh, since an installed app is never reloaded by hand; the Details screen ends
-with a card naming the server's version and how the page was opened. (The icons are drawn
-by `go run tools/icongen.go` — standard library only, so the same source produces the same
-bytes anywhere.)
+It installs as a web app ("Add to Home Screen" on a phone) and reloads itself after a
+server upgrade. On a phone the three panes are screens behind one another, and the
+system's back gesture walks the same way back. It refreshes every 10 seconds without
+disturbing what you are reading — expanded blocks, opened rounds and your place are
+kept — and your view controls survive a reload. `/ui#<sessionId>` is a deep link. Light
+and dark follow the system, with a manual switch; each side pane folds away to a slim
+rail and remembers.
 
-On a phone the three panes are screens behind one another, the way an app lays them out:
-the session list is the home screen, picking a session slides its conversation in over it,
-and the conversation's head carries the way back and the way to the details, which slide
-in over the conversation. The system's back gesture walks the same way back. Each screen
-scrolls as a page does on a phone, its head fixed at the top, and keeps its place while
-another screen is up. The search box and list filters belong to the list —
-they do nothing to a conversation or a details screen, so neither opens with five rows of
-controls it cannot use. It refreshes every 10 seconds without disturbing
-what you are reading (expanded blocks, opened rounds and your place in the text are kept —
-a rebuild holds the round you were reading where it was, even when something above it
-changed), your view
-controls — grouping, source filter, order, filters, folded groups — survive a reload, and
-`/ui#<sessionId>` works as a deep link. Light and dark follow the system; the half-disc
-button in the header switches, and switching back to what the system shows hands control
-back to the system.
-
-Each side pane has a bar of its own — its name, and the controls that act on it: "Collapse
-all" over the project groups, and a chevron at the edge that folds the pane away, giving the
-conversation the whole width. A folded pane keeps a slim rail with the chevron pointing back,
-and both remember what you chose.
-
-Shortcuts: <kbd>j</kbd> <kbd>k</kbd> move between sessions (metadata matches and body
-matches alike) · <kbd>/</kbd> focus search · <kbd>Enter</kbd> search the bodies now instead
-of waiting · <kbd>g</kbd> <kbd>G</kbd> jump to the start/end of the stream · <kbd>f</kbd>
-find in the session · <kbd>[</kbd> <kbd>]</kbd> previous/next failure · <kbd>r</kbd>
-refresh · <kbd>Esc</kbd> clear the search.
+Shortcuts: <kbd>j</kbd> <kbd>k</kbd> sessions · <kbd>/</kbd> search · <kbd>Enter</kbd>
+bodies now · <kbd>g</kbd> <kbd>G</kbd> start/end · <kbd>f</kbd> find · <kbd>[</kbd>
+<kbd>]</kbd> failures · <kbd>r</kbd> refresh · <kbd>Esc</kbd> clear.
 
 ## Endpoints at a glance
 
@@ -241,7 +197,7 @@ repository are in **[docs/mcp.md](docs/mcp.md)**.
 | `--host` | `127.0.0.1` | Bind address; use `0.0.0.0` to expose it (refused without `--hook_token`) |
 | `--port` | `8080` | Listen port |
 | `--mode` | `auto` | `auto` (enable whatever exists) / `all` (enable all eight) / `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` / `opencode` / `grok` |
-| `--path` | none | Relocate or duplicate a file-backed source (`pi`, `claude`, `codex`, `gemini`, `grok`): `--path claude=/mnt/disk/.claude/projects` points the source elsewhere; `--path claude:box2=/mnt/box2/.claude/projects` adds a second instance named `claude:box2` in the source list, the page's source filter and project grouping. Repeatable |
+| `--path` | none | Relocate or duplicate a source: `--path claude=/mnt/disk/.claude/projects` points the source elsewhere; `--path claude:box2=/mnt/box2/.claude/projects` adds a second instance named `claude:box2`. Directory-shaped sources (`pi`, `claude`, `codex`, `gemini`, `grok`) and opencode's database (its data dir or the `opencode.db` file). Repeatable — the way a pi hosted behind a wrapper's `--session-dir` is pointed at |
 | `--hook_token` | none | Bearer token; without it the API is unauthenticated |
 | `--max-connections` | `50` | Maximum concurrent connections; anything past it queues |
 | `--accept-queue` | `0` (auto) | Queue slots when at capacity; `0` means `2 × max-connections`, never below 32. A full queue returns 503 immediately |

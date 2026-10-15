@@ -21,6 +21,7 @@
 │                              #   console_{windows,other}.go, daemon*.go (background mode)
 ├── docs/internals.md          # parsing details and performance
 ├── docs/sources.md            # data sources and --path overrides
+├── docs/ui.md                 # the web page, pane by pane
 ├── .github/workflows/test.yml     # push / PR: tests on three platforms, gofmt/vet, and a
 │                                  #   cross-compile check over all six release targets
 ├── .github/workflows/release.yml  # on a tag: tests on three platforms, then cross-compile

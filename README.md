@@ -47,12 +47,9 @@ curl -fsSL https://raw.githubusercontent.com/itswl/agent-session-query/main/inst
 irm https://raw.githubusercontent.com/itswl/agent-session-query/main/install.ps1 | iex
 ```
 
-The script automatically detects your OS/architecture (`darwin` / `linux` / `windows` ×
-`amd64` / `arm64`), downloads the latest release, **verifies it against the release's
-published `SHA256SUMS`**, unpacks it, and installs it. On Windows it also clears the
-download's trust marking and adds the install directory to your user PATH; on macOS and
-Linux, `curl` downloads carry no quarantine attribute to clear, and the script prints a
-PATH note only when it had to fall back to `~/.local/bin`.
+The script detects your OS/architecture, downloads the latest release, **verifies it
+against the published `SHA256SUMS`**, and installs it (on Windows it also clears the
+download's trust marking and adds the install directory to your PATH).
 
 ### Manual download
 
@@ -72,9 +69,8 @@ Expand-Archive agent-session-query-windows-amd64.zip -DestinationPath .
 .\agent-session-query.exe --port 8080
 ```
 
-The artifacts are unsigned, so the OS will stop you once: on macOS run
-`xattr -d com.apple.quarantine agent-session-query`; on Windows, when SmartScreen says
-"Windows protected your PC", choose "More info → Run anyway".
+The artifacts are unsigned, so the OS will stop you once: on macOS
+`xattr -d com.apple.quarantine agent-session-query`; on Windows, "More info → Run anyway".
 
 ### Build locally
 
@@ -105,51 +101,16 @@ see **[docs/deploy.md](docs/deploy.md)**.
 
 ## Web page (`/ui`)
 
-Three panes: **session list / message stream / final result**. A token is only requested
-when the server was started with `--hook_token`; it stays in the browser's localStorage.
+Three panes: **session list / conversation read by rounds / final result**. The list
+carries every session under a readable name, with body search in the same query as
+filtering; the conversation folds each round's work to one line, in five views (all /
+words / changes / commands / failures); the result pane keeps the answer visible beside a
+round-by-round table of contents, the resume command, exports and the project's pack.
+Installs as a web app, works as three screens on a phone, refreshes without disturbing
+what you are reading.
 
-- **Left — the list**: every session under a readable name (opencode's own title, or the
-  first real user message elsewhere), grouped by time or project, with a pulsing dot for
-  recent activity and a message count filled in by a background scan. Claude Code
-  subagents nest under the session that spawned them (▸ 12 agents), and an **Archived**
-  switch brings in the sessions a CLI put away. Typing filters sessionId / path / cwd
-  and, in the same query, **searches message bodies** on the server — body hits append
-  under a divider with their snippets, and a source picked in the filter scopes the body
-  search to it
-- **Middle — the conversation, read by rounds**: you asked, the agent worked, the agent
-  answered. The work between an ask and its reply folds to one line (*72 steps · 61
-  commands · changed 2 files · 1 failed · 24m39s*), keeping failures in view; runs of
-  reads and searches fold to "explored". Every step opens to its arguments and output,
-  edits as diffs whatever way the CLI spelled them, results with exit code and duration;
-  what happened between turns (a compaction, an interruption, a failed hook) gets a line.
-  Five views: **all**, **conversation**, and one kind of step alone — **changes**,
-  **commands**, **failures**. Under the toolbar the window's sums, and the failure count
-  steps through failures one at a time. **Find** (<kbd>f</kbd>) marks words across the
-  session and walks matches beyond the loaded window; a body match picked in the list
-  opens with its words already in the find bar. It opens on the latest 200 messages and
-  pages on scroll; tool output is cut to a preview with "Show full output"; Markdown
-  renders; steps are coloured by category. Copying is where the thing is: a code block,
-  a round's brief, a step's command, diff or output — whole, when the window held only
-  its start
-- **Right — the result and the map**: stopReason, the answer and the thinking stay
-  visible; then the **conversation table of contents** — two lines a round, what was
-  asked and what was concluded, a red mark when something failed — clicking either jumps
-  into the stream. Below, the session's facts: the resume command with its `cd`, the
-  file path, export to Markdown / JSONL / JSON / a standalone HTML page, usage and cost,
-  and the project's other sessions with its **pack** — what each latest session asked
-  and concluded — to copy into another agent or save as a file
-
-It installs as a web app ("Add to Home Screen" on a phone) and reloads itself after a
-server upgrade. On a phone the three panes are screens behind one another, and the
-system's back gesture walks the same way back. It refreshes every 10 seconds without
-disturbing what you are reading — expanded blocks, opened rounds and your place are
-kept — and your view controls survive a reload. `/ui#<sessionId>` is a deep link. Light
-and dark follow the system, with a manual switch; each side pane folds away to a slim
-rail and remembers.
-
-Shortcuts: <kbd>j</kbd> <kbd>k</kbd> sessions · <kbd>/</kbd> search · <kbd>Enter</kbd>
-bodies now · <kbd>g</kbd> <kbd>G</kbd> start/end · <kbd>f</kbd> find · <kbd>[</kbd>
-<kbd>]</kbd> failures · <kbd>r</kbd> refresh · <kbd>Esc</kbd> clear.
+The full walkthrough — subagents, archived sessions, find, paging, copy affordances,
+shortcuts — is in **[docs/ui.md](docs/ui.md)**.
 
 ## Endpoints at a glance
 
@@ -159,36 +120,25 @@ marked "yes" require `Authorization: Bearer <token>`.
 | Endpoint | Auth | What it does |
 |----------|------|--------------|
 | `/` `/health` `/stats` | no | Service info and health check |
-| `/ui` `/favicon.ico` | no | The embedded page (which holds no data) |
-| `/sessions` | yes | List every session (merged across sources, newest first) |
-| `/sessions/<pattern>` | yes | One session; add `/messages` (with `order` / `limit` / `at`, and `full=1` for tool output whole rather than cut to a preview), `/final`, `/rounds` (the session split at each real user message, with files changed and tool calls failed per round), `/brief` (a handoff brief of one round, resume command included), or `/export` (no `limit` means the whole session; `format=jsonl` for the data form) |
-| `/search?q=` | yes | **Full-text search** across every source; `source` / `project` / `branch` / `since` / `until` narrow which sessions are scanned, `pattern` scopes it to one session, `role` to `user` or `assistant` hits |
-| `/files?path=` | yes | **Which sessions touched a file**, newest first: the rounds that changed it, read it, or ran a command naming it, with what was asked there. `changed=1` keeps the changes |
-| `/projects` | yes | Session counts grouped by project (cwd) |
-| `/export?project=&since=` | yes | **A pack of several sessions as one document** — what was asked and what each concluded, oldest first. `mode=full` inlines the transcripts |
-| `/mcp` | yes | MCP's Streamable HTTP transport (`POST`) |
+| `/ui` | no | The embedded page (holds no data) |
+| `/sessions` | yes | List every session, merged across sources |
+| `/sessions/<pattern>/…` | yes | One session: `/messages`, `/final`, `/rounds`, `/brief`, `/export` |
+| `/search?q=` | yes | Full-text search across every source |
+| `/files?path=` | yes | Which sessions touched a file |
+| `/projects` | yes | Session counts by project |
+| `/export?project=&since=` | yes | Several sessions as one pack document |
+| `/mcp` | yes | MCP's Streamable HTTP transport |
 
 Full parameters, the `<pattern>` matching rules and every response field are in
 **[docs/api.md](docs/api.md)**.
 
 ## MCP
 
-`--mcp` runs on stdio, and in HTTP mode there is also `POST /mcp`. That lets **an agent query
+`--mcp` runs on stdio; in HTTP mode there is also `POST /mcp`. That lets **an agent query
 its own history** — Claude Code can go looking for the same problem you solved with Codex
-last week. The tools: `search_sessions` / `list_sessions` / `list_projects` /
-`recent_project_activity` / `get_session_pack` / `find_decisions` / `find_similar_question` /
-`get_session` / `get_messages` / `list_rounds` / `session_brief` / `file_history`. `get_session_pack` is the pack
-as one call: what each session in a selection asked and concluded, oldest first; `file_history` says which
-sessions changed a file, in which round, and what was asked there. A tool result in a transcript carries how
-it ended (status, exit code, duration) and which call it answers; `list_rounds` says which
-round carried failures and which files it changed, and `session_brief` hands one round to
-another agent with the command that resumes the session. Session text is untrusted input:
-transcripts are handed to calling agents as data, unmarked and unmodified — redaction
-covers secrets, not persuasion — so instructions found inside a session are content to
-report on, never commands to follow.
-
-Client configuration, the security notes, and the Claude Code skill that ships with the
-repository are in **[docs/mcp.md](docs/mcp.md)**.
+last week. Twelve tools, from `search_sessions` and `get_session_pack` to `file_history`
+and `session_brief`; client configuration and the security notes (session text is
+untrusted input — reported on, never followed) are in **[docs/mcp.md](docs/mcp.md)**.
 
 ## Configuration
 
@@ -263,9 +213,10 @@ long-running.
 | | |
 |---|---|
 | [docs/api.md](docs/api.md) | The full HTTP API: parameters, matching rules, response fields |
+| [docs/ui.md](docs/ui.md) | The web page, pane by pane: views, search, find, shortcuts, mobile |
 | [docs/mcp.md](docs/mcp.md) | MCP: both transports, client configuration, the tool table |
 | [docs/deploy.md](docs/deploy.md) | Supervised deployment: systemd / launchd / Windows scheduled task / Docker |
-| [docs/sources.md](docs/sources.md) | Data sources, and `--path` for sessions outside the default home |
+| [docs/sources.md](docs/sources.md) | Data sources, relocations and `--path` for sessions outside the default home |
 | [docs/development.md](docs/development.md) | Layout, tests, releasing, adding a source |
 | [docs/internals.md](docs/internals.md) | Implementation: per-source parsing, performance, search, cross-platform |
 | [docs/roadmap.md](docs/roadmap.md) | What has shipped, what is still open and how worth doing it looks, and what is not planned |

@@ -46,10 +46,8 @@ curl -fsSL https://raw.githubusercontent.com/itswl/agent-session-query/main/inst
 irm https://raw.githubusercontent.com/itswl/agent-session-query/main/install.ps1 | iex
 ```
 
-脚本会自动检测系统与架构（`darwin` / `linux` / `windows` × `amd64` / `arm64`），拉取最新 Release
-产物、**用 `SHA256SUMS` 校验**、解压安装。Windows 上会解除下载文件的信任标记并把安装目录加进用户
-PATH；macOS / Linux 上 `curl` 下载不带隔离属性、无需解除，只有在回退安装到 `~/.local/bin` 时才会
-提示 PATH。（v0.25.0 之前的发布没有 `SHA256SUMS`，脚本会说明并跳过校验。）
+脚本自动检测系统与架构，拉取最新 Release 产物、**用 `SHA256SUMS` 校验**后安装
+（Windows 上会解除下载的信任标记并把安装目录加进 PATH）。
 
 ### 手动下载构建产物
 
@@ -70,8 +68,7 @@ Expand-Archive agent-session-query-windows-amd64.zip -DestinationPath .
 ```
 
 产物没有签名，所以系统会拦你一次：macOS 上执行
-`xattr -d com.apple.quarantine agent-session-query`；Windows 上 SmartScreen 提示
-"Windows 已保护你的电脑"时，选"更多信息 → 仍要运行"。
+`xattr -d com.apple.quarantine agent-session-query`；Windows 上选"更多信息 → 仍要运行"。
 
 ### 本地构建
 
@@ -101,36 +98,13 @@ go build -o agent-session-query ./cmd/agent-session-query
 
 ## 网页（`/ui`）
 
-三栏：**会话列表 / 消息流 / 最终结果**。只有服务端带 `--hook_token` 启动时才会要求填 token，
-填完存在浏览器的 localStorage 里。
+三栏：**会话列表 / 按轮阅读的对话 / 最终结果**。列表里每个会话都有可读的名字，
+过滤和正文搜索同一次完成；对话把每轮的工作折叠成一行，有五种视图（全部 / 只看文字 /
+ 改动 / 命令 / 失败）；结果栏常驻答案，配对话目录、恢复命令、导出和项目 pack。
+可装成 Web 应用，手机上是三个屏幕，刷新不打断阅读。
 
-- **左栏——列表**：每个会话都有一个可读的名字（opencode 用它自带的标题，其他源取首条真实
-  用户消息），可按时间或项目分组；最近有新消息的会话带呼吸绿点（悬停可看多久之前），消息数由
-  后台统计补上。Claude Code 的**子 agent** 按派生关系缩在所属会话下面（「▸ 12 agents」），
-  CLI 归档的会话由 **Archived** 开关带回来。输入即过滤 sessionId / 路径 / cwd，同一次查询还会在
-  服务端**搜索消息正文**——正文命中带片段附在分隔线下方；来源过滤选了某个来源时，正文搜索只在该来源内
-- **中栏——按轮阅读的对话**：你提问，agent 干活，agent 回答。提问与回复之间的工作折叠成一行
-  （*72 steps · 61 commands · changed 2 files · 1 failed · 24m39s*），失败步骤保持在视野里，
-  连续的读和搜合并成「explored」。每一步点开是参数与输出，编辑一律以 diff 展开，结果带 exit code
-  与耗时；两轮之间的事（压缩、中断、hook 失败）各占一行。五种视图：**all**、**conversation**，
-  以及单看一类：**changes** / **commands** / **failures**。工具栏下方是本窗口汇总，失败数可逐个
-  跳转。**会话内查找**（<kbd>f</kbd>）全篇标记、跨窗口跳转；从列表点开的正文命中会预填查找栏。
-  默认打开最新 200 条、滚动自动翻页；工具输出先给预览、「Show full output」取全文；Markdown
-  渲染，步骤按类别着色。复制就在内容旁边：代码块、一轮的交接摘要、步骤的命令 / diff / 输出
-  （只加载了开头时先读全再复制）
-- **右栏——结果与地图**：stopReason、答案与思考常驻；**对话目录**每轮两行——问了什么、得出了
-  什么，有失败带红点——点哪行跳到消息流对应位置。往下是会话信息：恢复命令（连 `cd` 一起复制）、
-  文件路径、导出（Markdown / JSONL / JSON / 独立 HTML）、用量与成本，以及同项目的其他会话和它的
-  **pack**（最近各会话问了什么、得出了什么），可复制或下载交给另一个 agent
-
-它可以装成 Web 应用（手机上「添加到主屏幕」），服务端升级后页面自行重载。手机上三栏是一层压一层
-的三个屏幕，系统返回手势按原路退回。页面每 10 秒刷新一次且不打断阅读（展开的块、打开的轮次和
-位置都保留），视图设置刷新后仍在；`/ui#<sessionId>` 可作深链接。明暗跟随系统并可手动切换；
-左右两栏可折叠成窄条，状态被记住。
-
-快捷键：<kbd>j</kbd> <kbd>k</kbd> 切换会话 · <kbd>/</kbd> 聚焦搜索 · <kbd>Enter</kbd> 立刻搜
-正文 · <kbd>g</kbd> <kbd>G</kbd> 跳首尾 · <kbd>f</kbd> 会话内查找 · <kbd>[</kbd> <kbd>]</kbd>
-上/下一个失败 · <kbd>r</kbd> 刷新 · <kbd>Esc</kbd> 清空搜索。
+完整功能——子 agent、归档开关、会话内查找、翻页、复制、快捷键——见
+**[docs/ui.md](docs/ui.md)**。
 
 ## 接口一览
 
@@ -140,31 +114,23 @@ go build -o agent-session-query ./cmd/agent-session-query
 | 接口 | 鉴权 | 作用 |
 |------|------|------|
 | `/` `/health` `/stats` | 否 | 服务信息与健康检查 |
-| `/ui` `/favicon.ico` | 否 | 内嵌页面（本身不含任何数据） |
-| `/sessions` | 是 | 列出全部会话（跨数据源合并，最新在前） |
-| `/sessions/<pattern>` | 是 | 单个会话；可接 `/messages`（支持 `order` / `limit` / `at`，`full=1` 让工具输出不截断）、`/final`、`/rounds`（按每条真实提问切轮，带每轮改了哪些文件、几次工具调用失败）、`/brief`（一轮的交接简报，附恢复命令）或 `/export`（不带 `limit` 即全文，文件标明覆盖范围；`format=jsonl` 取结构化形式）|
-| `/search?q=` | 是 | 跨全部数据源的**全文搜索**；`source` / `project` / `branch` / `since` / `until` 限定扫描哪些会话，`pattern` 限定在单个会话内，`role` 只看 user / assistant 的命中 |
-| `/files?path=` | 是 | **哪些会话动过某个文件**，从新到旧：改过它、读过它或跑过点名它的命令的那几轮，以及当时问的是什么。`changed=1` 只留改动 |
-| `/projects` | 是 | 按项目（cwd）分组的会话数 |
-| `/export?project=&since=` | 是 | **把多个会话导出成一份文档**——每个会话问了什么、得出了什么，按时间从旧到新。`mode=full` 则把正文一并内联 |
-| `/mcp` | 是 | MCP 的 Streamable HTTP 传输（`POST`） |
+| `/ui` | 否 | 内嵌页面（本身不含数据） |
+| `/sessions` | 是 | 列出全部会话，跨数据源合并 |
+| `/sessions/<pattern>/…` | 是 | 单个会话：`/messages`、`/final`、`/rounds`、`/brief`、`/export` |
+| `/search?q=` | 是 | 跨全部数据源的全文搜索 |
+| `/files?path=` | 是 | 哪些会话动过某个文件 |
+| `/projects` | 是 | 按项目分组的会话数 |
+| `/export?project=&since=` | 是 | 多个会话打包成一份文档 |
+| `/mcp` | 是 | MCP 的 Streamable HTTP 传输 |
 
 完整参数、`<pattern>` 的匹配规则和每个响应字段见 **[docs/api.md](docs/api.md)**。
 
 ## MCP
 
-`--mcp` 走 stdio，HTTP 模式下另有 `POST /mcp`。这让 **agent 能查询自己的历史**——Claude Code
-可以去翻你上周用 Codex 解决过的同一个问题。工具有：`search_sessions` / `list_sessions` /
-`list_projects` / `recent_project_activity` / `get_session_pack` / `find_decisions` /
-`find_similar_question` / `get_session` / `get_messages` / `list_rounds` / `session_brief` / `file_history`。
-`get_session_pack` 一次调用拿到一组会话各自问了什么、得出了什么，按时间从旧到新；`file_history` 回答哪些会话改过某个文件、
-在哪一轮、当时问的是什么。转写里的每个工具结果都带着它是
-怎么结束的（状态、exit code、耗时）以及它回答的是哪次调用；`list_rounds` 说明哪一轮有失败、改了哪些
-文件，`session_brief` 把一轮交接给另一个 agent，并附上恢复这个会话的命令。**会话正文是不可信输入**：
-转写原样（无标记、不删改，脱敏针对的是密钥而非诱导性文字）交给调用方 agent，因此会话里出现的
-"指令"只能当作内容来报告，绝不照做。
-
-客户端配置和安全注意事项见 **[docs/mcp.md](docs/mcp.md)**。
+`--mcp` 走 stdio；HTTP 模式下另有 `POST /mcp`。这让 **agent 能查询自己的历史**——Claude Code
+可以去翻你上周用 Codex 解决过的同一个问题。共十二个工具，从 `search_sessions`、`get_session_pack`
+到 `file_history`、`session_brief`；客户端配置与安全注意事项（会话正文是不可信输入——只报告、
+绝不照做）见 **[docs/mcp.md](docs/mcp.md)**。
 
 ## 配置
 
@@ -226,9 +192,10 @@ Docker：每次发版都会把多架构镜像发布到 GitHub Container Registry
 | | |
 |---|---|
 | [docs/api.md](docs/api.md) | 完整 HTTP API：参数、匹配规则、响应字段 |
+| [docs/ui.md](docs/ui.md) | 网页逐栏详解：视图、搜索、查找、快捷键、手机端 |
 | [docs/mcp.md](docs/mcp.md) | MCP：两种传输、客户端配置、工具表 |
 | [docs/deploy.md](docs/deploy.md) | 常驻部署：systemd / launchd / Windows 计划任务 / Docker |
-| [docs/sources.md](docs/sources.md) | 数据源与 `--path` 自定义路径 |
+| [docs/sources.md](docs/sources.md) | 数据源、目录迁移与 `--path` 自定义路径 |
 | [docs/development.md](docs/development.md) | 目录结构、测试、发版、新增数据源 |
 | [docs/internals.md](docs/internals.md) | 实现细节：各源解析、性能、搜索、跨平台 |
 | [docs/roadmap.md](docs/roadmap.md) | 已经做了什么、还剩什么以及值不值得做、明确不做什么 |

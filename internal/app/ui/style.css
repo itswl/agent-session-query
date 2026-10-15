@@ -1300,3 +1300,24 @@ button.icon-copy:hover { color: var(--fg); }
 .services-ages { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; font-size: 12px; }
 .services-ages-title { font-weight: 600; opacity: .7; }
 .services-age { opacity: .8; }
+
+/* On a phone the panel is a sheet of its own, centred over whatever screen is up — the
+   header's button is not its anchor there, and a right-anchored dropdown would run off
+   the narrow viewport */
+@media (max-width: 860px) {
+  .services-panel {
+    position: fixed;
+    top: calc(10px + var(--safe-top, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    right: auto;
+    width: calc(100vw - 16px);
+    min-width: 0;
+    max-width: calc(100vw - 16px);
+    max-height: min(80vh, 560px);
+  }
+  .services-table th:nth-child(3), .services-table td:nth-child(3),
+  .services-table th:nth-child(4), .services-table td:nth-child(4) { text-align: right; }
+  .services-table td { white-space: normal; overflow-wrap: anywhere; }
+  .services-age { white-space: nowrap; }
+}

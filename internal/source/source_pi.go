@@ -3,6 +3,7 @@ package source
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -16,6 +17,25 @@ type PiSource struct {
 
 func NewPiSource(root string) *PiSource {
 	return &PiSource{root: root, cache: newFileRecordCache(piCountMessages)}
+}
+
+// piAgentDir follows pi's own resolution (its config module): PI_CODING_AGENT_DIR moves
+// the whole agent directory off ~/.pi/agent
+func piAgentDir(home string) string {
+	if d := os.Getenv("PI_CODING_AGENT_DIR"); d != "" {
+		return d
+	}
+	return filepath.Join(home, ".pi", "agent")
+}
+
+// piSessionsDir resolves the sessions directory the way pi does: PI_CODING_AGENT_SESSION_DIR
+// replaces it outright — the flat --session-dir layout — and otherwise it is the sessions
+// directory under the agent dir
+func piSessionsDir(home string) string {
+	if d := os.Getenv("PI_CODING_AGENT_SESSION_DIR"); d != "" {
+		return d
+	}
+	return filepath.Join(piAgentDir(home), "sessions")
 }
 
 func (s *PiSource) Mode() string     { return "pi" }

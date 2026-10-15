@@ -9,6 +9,7 @@ decided against for now.
 
 | Release | What it brought |
 |---|---|
+| v0.34.0 | **Each CLI's own relocation followed**: pi's `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR`, Claude Code's `CLAUDE_CONFIG_DIR` and Codex's `CODEX_HOME` are read the way the CLIs read them; no tool-specific layouts anywhere — a hosted directory is a `--path`, a moved one an environment variable |
 | v0.33.1 | **Hosted pi by `--path`, not by a host's directory shape**: the flat `--session-dir` layout stays; the scan of one host's state layout is gone — a hosted directory is pointed at explicitly, like every other session store outside the defaults |
 | v0.33.0 | **Sessions outside the default locations**: pi's flat `--session-dir` layout read, and each agent's pi that Larkin hosts found as its own labeled instance; `--path` relocates and labels opencode's single database |
 | v0.32.0 | **Copy and pack buttons in the page**: a code block, a round's brief, a step's command, diff or output; a project's pack copied or saved from the details pane or its header in the list. Epoch-millisecond times are exact, so a pi output reads whole again |

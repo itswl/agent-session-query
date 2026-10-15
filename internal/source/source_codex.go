@@ -2,6 +2,7 @@ package source
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -40,6 +41,15 @@ type CodexSource struct {
 
 func NewCodexSource(root string) *CodexSource {
 	return &CodexSource{root: root, cache: newFileRecordCache(codexCountMessages)}
+}
+
+// codexSessionsDir follows Codex's own resolution: CODEX_HOME moves the whole ~/.codex
+// directory, sessions and archived_sessions with it
+func codexSessionsDir(home string) string {
+	if d := os.Getenv("CODEX_HOME"); d != "" {
+		return filepath.Join(d, "sessions")
+	}
+	return filepath.Join(home, ".codex", "sessions")
 }
 
 func (s *CodexSource) Mode() string     { return "codex" }

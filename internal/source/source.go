@@ -426,9 +426,9 @@ func NewResolver(mode string, paths []SourcePath) (Resolver, error) {
 			return newJsonMapSource(openclawDef(home))
 		},
 		"opencode": func() SessionSource { return NewOpenCodeSource(filepath.Join(openCodeDataDir(home), "opencode.db")) },
-		"pi":       func() SessionSource { return NewPiSource(filepath.Join(home, ".pi", "agent", "sessions")) },
-		"claude":   func() SessionSource { return NewClaudeSource(filepath.Join(home, ".claude", "projects")) },
-		"codex":    func() SessionSource { return NewCodexSource(filepath.Join(home, ".codex", "sessions")) },
+		"pi":       func() SessionSource { return NewPiSource(piSessionsDir(home)) },
+		"claude":   func() SessionSource { return NewClaudeSource(claudeProjectsDir(home)) },
+		"codex":    func() SessionSource { return NewCodexSource(codexSessionsDir(home)) },
 		"gemini":   func() SessionSource { return NewGeminiSource(filepath.Join(home, ".gemini", "tmp")) },
 		"grok":     func() SessionSource { return NewGrokSource(filepath.Join(home, ".grok", "sessions")) },
 	}

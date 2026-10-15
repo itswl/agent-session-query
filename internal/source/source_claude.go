@@ -24,6 +24,15 @@ func NewClaudeSource(root string) *ClaudeCodeSource {
 	return &ClaudeCodeSource{root: root, cache: newFileRecordCache(claudeCountMessages)}
 }
 
+// claudeProjectsDir follows Claude Code's own resolution: CLAUDE_CONFIG_DIR moves the
+// whole configuration directory off ~/.claude
+func claudeProjectsDir(home string) string {
+	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
+		return filepath.Join(d, "projects")
+	}
+	return filepath.Join(home, ".claude", "projects")
+}
+
 func (s *ClaudeCodeSource) Mode() string     { return "claude" }
 func (s *ClaudeCodeSource) Location() string { return s.root }
 

@@ -164,6 +164,78 @@ func TestBuildSourcesLabeledMissingDirEnabledAnyway(t *testing.T) {
 	t.Fatalf("claude:ghost missing from %v", modeNames(sources))
 }
 
+// TestBuildSourcesRelocationEnvs: the CLIs that can move their data by environment
+// variable are resolved the way they resolve it themselves — pi (PI_CODING_AGENT_DIR,
+// and PI_CODING_AGENT_SESSION_DIR, the flat shape), claude (CLAUDE_CONFIG_DIR) and codex
+// (CODEX_HOME); opencode's XDG_DATA_HOME has its own test. A variable the service never
+// sees changes nothing, which is why these read the service's own environment.
+func TestBuildSourcesRelocationEnvs(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+	moved := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(moved, "pi-agent"))
+	t.Setenv("CODEX_HOME", filepath.Join(moved, "codex-home"))
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(moved, "claude-config"))
+
+	write(t, filepath.Join(moved, "pi-agent", "sessions", "p", "2026-10-01T10-00-00-000Z_aaaa.jsonl"),
+		`{"type":"session","id":"pi-env","cwd":"/w/pi"}`)
+	writeClaudeFixture(t, filepath.Join(moved, "claude-config", "projects"), "p", "cccc", "/w/claude")
+	write(t, filepath.Join(moved, "codex-home", "sessions", "2026", "10", "01", "rollout-x.jsonl"),
+		`{"type":"session_meta","payload":{"id":"codex-env","cwd":"/w/codex"}}`)
+
+	sources, err := BuildSources("auto", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]SessionSource{}
+	for _, s := range sources {
+		found[s.Mode()] = s
+	}
+	for _, mode := range []string{"pi", "claude", "codex"} {
+		if found[mode] == nil {
+			t.Fatalf("%s was not enabled from its relocated directory: %v", mode, modeNames(sources))
+		}
+	}
+	if recs := found["pi"].List(); len(recs) != 1 || recs[0].SessionID != "pi-env" {
+		t.Fatalf("pi records = %v", recs)
+	}
+	if recs := found["claude"].List(); len(recs) != 1 || recs[0].SessionID != "cccc" {
+		t.Fatalf("claude records = %v", recs)
+	}
+	if recs := found["codex"].List(); len(recs) != 1 || recs[0].SessionID != "codex-env" {
+		t.Fatalf("codex records = %v", recs)
+	}
+}
+
+// TestPiSessionsDirEnv: PI_CODING_AGENT_SESSION_DIR replaces the sessions directory
+// outright — the flat --session-dir layout — and wins over PI_CODING_AGENT_DIR
+func TestPiSessionsDirEnv(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+	flat := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(t.TempDir(), "pi-agent"))
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", flat)
+	write(t, filepath.Join(flat, "2026-10-14T08-10-05-693Z_01a13976-env.jsonl"),
+		`{"type":"session","id":"01a13976-env","cwd":"/w/bot"}`)
+
+	sources, err := BuildSources("auto", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range sources {
+		if s.Mode() == "pi" {
+			if s.Location() != flat {
+				t.Fatalf("pi location = %q, want the session dir %q", s.Location(), flat)
+			}
+			if recs := s.List(); len(recs) != 1 || recs[0].SessionID != "01a13976-env" {
+				t.Fatalf("pi records = %v", recs)
+			}
+			return
+		}
+	}
+	t.Fatal("pi was not enabled")
+}
+
 // TestBuildSourcesHostedPi: pi behind a host's --session-dir stores flat in the directory
 // it was given, never reaching ~/.pi/agent/sessions — the hosted directory is pointed at
 // explicitly, as its own labeled instance, and the flat shape lists like any other.

@@ -9,6 +9,7 @@ decided against for now.
 
 | Release | What it brought |
 |---|---|
+| v0.33.0 | **Sessions outside the default locations**: pi's flat `--session-dir` layout read, and each agent's pi that Larkin hosts found as its own labeled instance; `--path` relocates and labels opencode's single database |
 | v0.32.0 | **Copy and pack buttons in the page**: a code block, a round's brief, a step's command, diff or output; a project's pack copied or saved from the details pane or its header in the list. Epoch-millisecond times are exact, so a pi output reads whole again |
 | v0.31.0 | **Archived sessions, one rule for all**: what Grok, Codex, OpenCode and Hermes put away is read the same way — left out by default as each CLI does, brought in by `include_archived` or the page's *Archived* switch, marked `archived` |
 | v0.30.0 | **File history** — which sessions touched a file, in which round, and what was asked there (`/files?path=`, MCP `file_history`, and the page's *Files changed* card); rounds now see every file a call names, Codex's patches included |
@@ -39,7 +40,7 @@ Decided against for now (2026-10-14), kept for when that changes.
 | Item | What it would answer | Why not now |
 |---|---|---|
 | Remote sources | One view over several machines: another instance's sessions read through its HTTP API, labelled like a `--path` instance | Each machine's own page and API answer for its sessions today; joining them is the larger piece of work, with a network in the middle |
-| `--path` for the database sources | Hermes, OpenClaw and OpenCode data on a mounted disk, a backup or a container volume | No such copy waiting to be read |
+| `--path` for the remaining database sources | Hermes and OpenClaw data on a mounted disk, a backup or a container volume | Their layout spans several files and a whole data directory, not the one database opencode turns out to be; no such copy waiting to be read |
 
 ## Not planned
 

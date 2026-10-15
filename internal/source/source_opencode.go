@@ -106,6 +106,16 @@ func openCodeDataDir(home string) string {
 	return filepath.Join(home, ".local", "share", "opencode")
 }
 
+// openCodeDBPath turns a --path value into the database file: the file itself when that
+// is what was given, else the opencode.db inside the directory — the shape a redirected
+// XDG_DATA_HOME leaves behind, which is the whole reason opencode accepts --path
+func openCodeDBPath(dirOrFile string) string {
+	if filepath.Base(dirOrFile) == "opencode.db" {
+		return dirOrFile
+	}
+	return filepath.Join(dirOrFile, "opencode.db")
+}
+
 func (s *OpenCodeSource) Mode() string     { return "opencode" }
 func (s *OpenCodeSource) Location() string { return s.dbPath }
 func (s *OpenCodeSource) Exists() bool     { return fileExists(s.dbPath) }

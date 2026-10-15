@@ -14,7 +14,7 @@ MCP server**。它不会修改任何会话数据。
 |--------|--------------|---------|
 | Hermes | `~/.hermes/sessions/`（`sessions.json`）或 `~/.hermes/state.db`（较新版本，全 SQLite） | `sessions.json` 里的 `session_id` / `sessions` 表里的 `id` |
 | OpenClaw | `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite`（SQLite，2026.9+；旧版 `sessions.json` 布局仍可读） | `session_windows` 表的 `session_id` |
-| Pi | `~/.pi/agent/sessions/<project>/*.jsonl` | session 行上的 `id` |
+| Pi | `~/.pi/agent/sessions/<project>/*.jsonl`，以及 `--session-dir` 目录下平铺的 `*.jsonl`（Larkin 托管的目录会自动发现） | session 行上的 `id` |
 | Claude Code | `~/.claude/projects/<project>/*.jsonl` | 文件名（一个 uuid）/ `sessionId` 字段 |
 | Codex | `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl`，以及 `~/.codex/archived_sessions/` | 元数据行上的 `payload.session_id` |
 | Gemini CLI | `~/.gemini/tmp/<project>/chats/session-*.jsonl` | 首行的 `sessionId` |

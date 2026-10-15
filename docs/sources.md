@@ -4,7 +4,7 @@ The sources read the session directories the agent CLIs write by default:
 
 | Source | Default location |
 |--------|------------------|
-| pi | `~/.pi/agent/sessions` |
+| pi | `~/.pi/agent/sessions`, plus `~/.larkin/state/agents/*/runtime/pi-sessions` (see below) |
 | claude | `~/.claude/projects` |
 | codex | `~/.codex/sessions`, plus `~/.codex/archived_sessions` beside it |
 | gemini | `~/.gemini/tmp` |
@@ -18,6 +18,19 @@ marked `time_archived`, the ones Hermes hides (`archived`, or `hidden` in older 
 are read like any other and marked `archived: true`, and left out of the list, the search,
 the pack, file history and the project counts unless `include_archived=1` (or the MCP
 argument of the same name) asks for them, as each CLI leaves them out of its own list.
+
+## Hosted pi sessions
+
+pi has two storage layouts, both read: the interactive default nests one directory per
+project under `~/.pi/agent/sessions`, while `--session-dir <dir>` — the convention a
+host or wrapper uses to embed pi — stores the `*.jsonl` files flat in the directory it
+was given. [Larkin](https://www.npmjs.com/package/larkin) is one such host: each agent
+runs pi with `--session-dir ~/.larkin/state/agents/<id>/runtime/pi-sessions`, so those
+sessions never reach `~/.pi/agent/sessions`. Every directory of that shape is found
+automatically and added as its own labeled instance (`pi:larkin-<id>`), the same thing
+`--path pi:larkin-<id>=<dir>` would add — found once at startup, so a new Larkin agent
+is picked up with a restart. A `--path` pointing at the same directory keeps precedence,
+so the sessions are not listed twice.
 
 ## `--path`
 
@@ -42,9 +55,11 @@ disk, a backup, agent containers whose sessions land on a host bind mount:
 - Finding a session by the bare mode name still reaches into labeled instances, so an MCP
   client holding `claude` keeps working
 
-Supported: the directory-shaped sources `pi`, `claude`, `codex`, `gemini` and `grok`. The JSON-map
-and SQLite sources (`hermes`, `openclaw`, `opencode`) keep their layout across several
-files and reject `--path`.
+Supported: the directory-shaped sources `pi`, `claude`, `codex`, `gemini` and `grok`, and
+`opencode` — it is one SQLite file, so both the data directory (the shape a redirected
+`XDG_DATA_HOME` leaves behind) and the database file itself relocate it. The JSON-map and
+SQLite sources that keep their layout across several files (`hermes`, `openclaw`) reject
+`--path`.
 
 In `auto` and `all`, which sources exist is re-checked while the process runs, not only at
 startup: a CLI you use for the first time after the server started creates its data

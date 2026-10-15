@@ -7,7 +7,8 @@ import (
 	"strings"
 )
 
-// Pi: ~/.pi/agent/sessions/<project>/<time>_<uuid>.jsonl
+// Pi: ~/.pi/agent/sessions/<project>/<time>_<uuid>.jsonl, or <time>_<uuid>.jsonl flat
+// in the directory a wrapper gave --session-dir (the hosting convention Larkin uses)
 type PiSource struct {
 	root  string
 	cache *fileRecordCache
@@ -23,11 +24,18 @@ func (s *PiSource) Location() string { return s.root }
 func (s *PiSource) Exists() bool { return fileExists(s.root) }
 
 func (s *PiSource) files() []string {
+	// Two layouts, both pi's own: the interactive default nests one directory per
+	// project, and a wrapper's --session-dir stores flat in the directory it gave. The
+	// two globs cannot match the same file (one path depth apart), so no dedup is due.
 	files, err := filepath.Glob(filepath.Join(s.root, "*", "*.jsonl"))
 	if err != nil {
 		return nil
 	}
-	return files
+	flat, err := filepath.Glob(filepath.Join(s.root, "*.jsonl"))
+	if err != nil {
+		return nil
+	}
+	return append(files, flat...)
 }
 
 // piHeadLines caps how far the scan for the session row goes (a defensive backstop;

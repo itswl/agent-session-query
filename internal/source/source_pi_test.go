@@ -49,6 +49,26 @@ func TestPiSource(t *testing.T) {
 	}
 }
 
+// TestPiFlatSessionDir: --session-dir stores the <time>_<uuid>.jsonl files flat in the
+// directory it was given — the hosting convention Larkin points at its own state — while
+// the interactive default nests one directory per project. A root holding the flat shape
+// must list its sessions all the same.
+func TestPiFlatSessionDir(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "2026-10-14T08-10-05-693Z_01a13976-21f3-7461-a370-8f4009a9589b.jsonl"),
+		`{"type":"session","version":3,"id":"01a13976-21f3-7461-a370-8f4009a9589b","cwd":"/w/hosted"}`,
+		`{"type":"message","id":"m1","message":{"role":"user","timestamp":1791312000000,"content":[{"type":"text","text":"run"}]}}`,
+	)
+
+	list := NewPiSource(root).List()
+	if len(list) != 1 {
+		t.Fatalf("list = %d", len(list))
+	}
+	if list[0].SessionID != "01a13976-21f3-7461-a370-8f4009a9589b" || list[0].Cwd != "/w/hosted" {
+		t.Fatalf("record = %v", list[0])
+	}
+}
+
 // TestPiSessionLineNotFirst: when the session row is not the first line, another row's id
 // must not become the session id. The original code took the first line's id
 // unconditionally, and a model_change record carries its own id — measured locally, this

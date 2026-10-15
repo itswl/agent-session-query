@@ -38,6 +38,10 @@ func TestPathFlagSet(t *testing.T) {
 	if p[1].Label != "box-2" || p[1].Dir != "/other/dir" {
 		t.Fatalf("labeled = %v", p[1])
 	}
+	// opencode is one SQLite file: the whole source moves with it
+	if err := p.Set("opencode=/xdg/data/opencode"); err != nil {
+		t.Fatal(err)
+	}
 	for _, bad := range []string{
 		"claude",          // no =dir
 		"claude=",         // empty dir
@@ -45,7 +49,7 @@ func TestPathFlagSet(t *testing.T) {
 		"claude:=/d",      // empty label
 		"nope=/d",         // unknown source
 		"auto=/d",         // not a source
-		"hermes=/d",       // not a directory-shaped source
+		"hermes=/d",       // not a single-file source
 		"openclaw:lab=/d", // …labeled or not
 	} {
 		if err := p.Set(bad); err == nil {
@@ -158,4 +162,54 @@ func TestBuildSourcesLabeledMissingDirEnabledAnyway(t *testing.T) {
 		}
 	}
 	t.Fatalf("claude:ghost missing from %v", modeNames(sources))
+}
+
+// TestBuildSourcesLarkinPiSessions: Larkin hosts pi behind --session-dir in its own
+// state, so those sessions never reach ~/.pi/agent/sessions. Each hosted directory
+// becomes a labeled pi instance without any flag — and a --path pointing at the same
+// directory keeps its own label, so the sessions are not listed twice.
+func TestBuildSourcesLarkinPiSessions(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+	larkin := filepath.Join(home, ".larkin", "state", "agents", "cli_ab12", "runtime", "pi-sessions")
+	write(t, filepath.Join(larkin, "2026-10-14T08-10-05-693Z_01a13976-hosted.jsonl"),
+		`{"type":"session","id":"01a13976-hosted","cwd":"/w/bot"}`)
+
+	sources, err := BuildSources("auto", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hosted SessionSource
+	n := 0
+	for _, s := range sources {
+		if strings.HasPrefix(s.Mode(), "pi") {
+			hosted = s
+			n++
+		}
+	}
+	if n != 1 || hosted.Mode() != "pi:larkin-cli_ab12" {
+		t.Fatalf("larkin instance = %d × %v", n, modeNames(sources))
+	}
+	recs := hosted.List()
+	if len(recs) != 1 || recs[0].Source != "pi:larkin-cli_ab12" {
+		t.Fatalf("records = %v", recs)
+	}
+	if recs[0].Cwd != "larkin-cli_ab12:/w/bot" {
+		t.Fatalf("cwd = %q; the label keeps the instance apart", recs[0].Cwd)
+	}
+
+	// The same directory given by --path keeps its own label; discovery stands down
+	sources, err = BuildSources("auto", []SourcePath{{Mode: "pi", Label: "bot", Dir: larkin}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n = 0
+	for _, s := range sources {
+		if strings.HasPrefix(s.Mode(), "pi") {
+			n++
+		}
+	}
+	if n != 1 || !containsString(modeNames(sources), "pi:bot") {
+		t.Fatalf("--path should own the directory: %v", modeNames(sources))
+	}
 }

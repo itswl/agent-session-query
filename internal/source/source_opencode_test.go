@@ -3,6 +3,7 @@ package source
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -406,5 +407,57 @@ func TestOpenCodeMessagesStreamed(t *testing.T) {
 	tail := s.Messages(rec, MessageQuery{Limit: 2, FromEnd: true})
 	if len(tail) != 2 || tail[0]["id"] != "msg_c" || tail[1]["id"] != "msg_d" {
 		t.Errorf("latest two = %v", tail)
+	}
+}
+
+// TestOpenCodeRelocatedByPath: opencode is one SQLite file, so --path can move it — the
+// escape hatch for a wrapper that points XDG_DATA_HOME somewhere other than the default.
+// Both spellings relocate: the data directory (the shape the redirected home leaves) and
+// the database file itself.
+func TestOpenCodeRelocatedByPath(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+	dataDir := filepath.Join(t.TempDir(), "opencode")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dataDir, "opencode.db")
+	db, err := sql.Open("sqlite", sqliteURI(dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{openCodeSchema,
+		`INSERT INTO session VALUES ('ses_moved', '/w/wrapped', 'hosted session', 'hosted',
+			NULL, 1789697128684, 1789697262019, NULL, 0, 0, 0, 0, 0, 0)`} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("executing %q failed: %v", stmt, err)
+		}
+	}
+	db.Close()
+
+	for name, spec := range map[string]string{
+		"the data directory": dataDir,
+		"the database file":  dbPath,
+	} {
+		sources, err := BuildSources("auto", []SourcePath{{Mode: "opencode", Dir: spec}})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var opencode SessionSource
+		for _, s := range sources {
+			if s.Mode() == "opencode" {
+				opencode = s
+			}
+		}
+		if opencode == nil {
+			t.Fatalf("%s: the relocated source was not enabled: %v", name, modeNames(sources))
+		}
+		if opencode.Location() != dbPath {
+			t.Fatalf("%s: location = %q, want %q", name, opencode.Location(), dbPath)
+		}
+		recs := opencode.List()
+		if len(recs) != 1 || recs[0].SessionID != "ses_moved" {
+			t.Fatalf("%s: records = %v", name, recs)
+		}
 	}
 }

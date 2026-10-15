@@ -1300,21 +1300,29 @@ button.icon-copy:hover { color: var(--fg); }
 .services-ages { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; font-size: 12px; }
 .services-ages-title { font-weight: 600; opacity: .7; }
 .services-age { opacity: .8; }
+.services-meta { display: inline-flex; align-items: center; gap: 10px; }
+.services-close { font-size: 12px; padding: 2px 8px; }
 
-/* On a phone the panel is a sheet of its own, centred over whatever screen is up — the
-   header's button is not its anchor there, and a right-anchored dropdown would run off
-   the narrow viewport */
+/* On a phone the panel is a sheet from the bottom — the header's button is not its
+   anchor there, and a top-centred box fights the notch and the status bar an installed
+   app runs under */
 @media (max-width: 860px) {
+  #services { width: 36px; height: 36px; }
   .services-panel {
     position: fixed;
-    top: calc(10px + var(--safe-top, 0px));
-    left: 50%;
-    transform: translateX(-50%);
-    right: auto;
-    width: calc(100vw - 16px);
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    transform: none;
+    width: auto;
     min-width: 0;
-    max-width: calc(100vw - 16px);
-    max-height: min(80vh, 560px);
+    max-width: none;
+    max-height: min(72dvh, 560px);
+    border-radius: 14px 14px 0 0;
+    border-bottom: none;
+    box-shadow: 0 -12px 32px rgba(0,0,0,.2);
+    padding: 10px 16px calc(12px + var(--safe-bottom));
   }
   .services-table th:nth-child(3), .services-table td:nth-child(3),
   .services-table th:nth-child(4), .services-table td:nth-child(4) { text-align: right; }

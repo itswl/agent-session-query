@@ -4528,7 +4528,16 @@ function servicesPanelNode({ health, storage }) {
   const box = el('div', 'services');
   const head = el('div', 'services-head');
   head.appendChild(el('span', 'services-title', 'Sources'));
-  head.appendChild(el('span', 'services-version', (health && health.version) || ''));
+  const meta = el('span', 'services-meta');
+  meta.appendChild(el('span', 'services-version', (health && health.version) || ''));
+  const close = el('button', 'ghost tiny services-close');
+  close.textContent = 'Close';
+  close.addEventListener('click', () => {
+    $('services-panel').classList.add('hidden');
+    $('services').setAttribute('aria-expanded', 'false');
+  });
+  meta.appendChild(close);
+  head.appendChild(meta);
   box.appendChild(head);
 
   const warnings = (health && health.warnings) || [];

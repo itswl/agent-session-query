@@ -15,7 +15,7 @@ Eight sources; whichever exist are queried, and they can be merged in one query:
 |--------|---------------------|------------|
 | Hermes | `~/.hermes/sessions/` (`sessions.json`) or `~/.hermes/state.db` (newer, all SQLite) | `session_id` in `sessions.json` / `id` in the `sessions` table |
 | OpenClaw | `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite` (SQLite, 2026.9+; older `sessions.json` layouts still read) | `session_id` in `session_windows` |
-| Pi | `~/.pi/agent/sessions/<project>/*.jsonl`, plus flat `*.jsonl` under a `--session-dir` (Larkin's hosted dirs are found automatically) | `id` on the session row |
+| Pi | `~/.pi/agent/sessions/<project>/*.jsonl`, plus flat `*.jsonl` under a `--session-dir` | `id` on the session row |
 | Claude Code | `~/.claude/projects/<project>/*.jsonl` | the filename (a uuid) / the `sessionId` field |
 | Codex | `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl`, plus `~/.codex/archived_sessions/` | `payload.session_id` on the metadata row |
 | Gemini CLI | `~/.gemini/tmp/<project>/chats/session-*.jsonl` | `sessionId` on the first line |

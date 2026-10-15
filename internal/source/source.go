@@ -387,32 +387,6 @@ func (r *resolver) Sources() []SessionSource {
 	return []SessionSource{r.fallbackSrc}
 }
 
-// larkinPiSources finds the pi sessions Larkin hosts: it runs pi behind --session-dir
-// inside its own state, one flat directory per agent under
-// ~/.larkin/state/agents/<id>/runtime/pi-sessions, so those sessions never reach
-// ~/.pi/agent/sessions. Each becomes the labeled instance --path pi:larkin-<id>=<dir>
-// would add — told apart on the page, and a new agent picks up with a restart, the way
-// the openclaw agent databases are found. A --path that points at the same directory
-// keeps precedence, so the sessions are not listed twice.
-func larkinPiSources(home string, paths []SourcePath) []SessionSource {
-	dirs, _ := filepath.Glob(filepath.Join(home, ".larkin", "state", "agents", "*", "runtime", "pi-sessions"))
-	given := map[string]bool{}
-	for _, p := range paths {
-		if p.Mode == "pi" {
-			given[p.Dir] = true
-		}
-	}
-	out := []SessionSource{}
-	for _, dir := range dirs {
-		if given[dir] {
-			continue
-		}
-		id := filepath.Base(filepath.Dir(filepath.Dir(dir)))
-		out = append(out, labeledSource{SessionSource: NewPiSource(dir), mode: "pi:larkin-" + id})
-	}
-	return out
-}
-
 // NewResolver wires up data sources according to the run mode and any --path overrides, and
 // returns something that can be asked again later (see Resolver). The selection rules are
 // the ones BuildSources has always applied:
@@ -477,7 +451,6 @@ func NewResolver(mode string, paths []SourcePath) (Resolver, error) {
 		}
 		extra = append(extra, labeledSource{SessionSource: source, mode: p.Mode + ":" + p.Label})
 	}
-	extra = append(extra, larkinPiSources(home, paths)...)
 	// A source's directory, relocated when --path said so
 	at := func(name string) SessionSource {
 		if repl, moved := replacements[name]; moved {

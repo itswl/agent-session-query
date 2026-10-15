@@ -164,52 +164,34 @@ func TestBuildSourcesLabeledMissingDirEnabledAnyway(t *testing.T) {
 	t.Fatalf("claude:ghost missing from %v", modeNames(sources))
 }
 
-// TestBuildSourcesLarkinPiSessions: Larkin hosts pi behind --session-dir in its own
-// state, so those sessions never reach ~/.pi/agent/sessions. Each hosted directory
-// becomes a labeled pi instance without any flag — and a --path pointing at the same
-// directory keeps its own label, so the sessions are not listed twice.
-func TestBuildSourcesLarkinPiSessions(t *testing.T) {
+// TestBuildSourcesHostedPi: pi behind a host's --session-dir stores flat in the directory
+// it was given, never reaching ~/.pi/agent/sessions — the hosted directory is pointed at
+// explicitly, as its own labeled instance, and the flat shape lists like any other.
+func TestBuildSourcesHostedPi(t *testing.T) {
 	home := t.TempDir()
 	setHome(t, home)
-	larkin := filepath.Join(home, ".larkin", "state", "agents", "cli_ab12", "runtime", "pi-sessions")
-	write(t, filepath.Join(larkin, "2026-10-14T08-10-05-693Z_01a13976-hosted.jsonl"),
+	hosted := t.TempDir()
+	write(t, filepath.Join(hosted, "2026-10-14T08-10-05-693Z_01a13976-hosted.jsonl"),
 		`{"type":"session","id":"01a13976-hosted","cwd":"/w/bot"}`)
 
-	sources, err := BuildSources("auto", nil)
+	sources, err := BuildSources("auto", []SourcePath{{Mode: "pi", Label: "host", Dir: hosted}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var hosted SessionSource
-	n := 0
+	var pi SessionSource
 	for _, s := range sources {
 		if strings.HasPrefix(s.Mode(), "pi") {
-			hosted = s
-			n++
+			pi = s
 		}
 	}
-	if n != 1 || hosted.Mode() != "pi:larkin-cli_ab12" {
-		t.Fatalf("larkin instance = %d × %v", n, modeNames(sources))
+	if pi == nil || pi.Mode() != "pi:host" {
+		t.Fatalf("hosted instance = %v", modeNames(sources))
 	}
-	recs := hosted.List()
-	if len(recs) != 1 || recs[0].Source != "pi:larkin-cli_ab12" {
+	recs := pi.List()
+	if len(recs) != 1 || recs[0].Source != "pi:host" {
 		t.Fatalf("records = %v", recs)
 	}
-	if recs[0].Cwd != "larkin-cli_ab12:/w/bot" {
+	if recs[0].Cwd != "host:/w/bot" {
 		t.Fatalf("cwd = %q; the label keeps the instance apart", recs[0].Cwd)
-	}
-
-	// The same directory given by --path keeps its own label; discovery stands down
-	sources, err = BuildSources("auto", []SourcePath{{Mode: "pi", Label: "bot", Dir: larkin}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	n = 0
-	for _, s := range sources {
-		if strings.HasPrefix(s.Mode(), "pi") {
-			n++
-		}
-	}
-	if n != 1 || !containsString(modeNames(sources), "pi:bot") {
-		t.Fatalf("--path should own the directory: %v", modeNames(sources))
 	}
 }

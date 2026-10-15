@@ -4,7 +4,7 @@ The sources read the session directories the agent CLIs write by default:
 
 | Source | Default location |
 |--------|------------------|
-| pi | `~/.pi/agent/sessions`, plus `~/.larkin/state/agents/*/runtime/pi-sessions` (see below) |
+| pi | `~/.pi/agent/sessions` |
 | claude | `~/.claude/projects` |
 | codex | `~/.codex/sessions`, plus `~/.codex/archived_sessions` beside it |
 | gemini | `~/.gemini/tmp` |
@@ -24,13 +24,12 @@ argument of the same name) asks for them, as each CLI leaves them out of its own
 pi has two storage layouts, both read: the interactive default nests one directory per
 project under `~/.pi/agent/sessions`, while `--session-dir <dir>` — the convention a
 host or wrapper uses to embed pi — stores the `*.jsonl` files flat in the directory it
-was given. [Larkin](https://www.npmjs.com/package/larkin) is one such host: each agent
-runs pi with `--session-dir ~/.larkin/state/agents/<id>/runtime/pi-sessions`, so those
-sessions never reach `~/.pi/agent/sessions`. Every directory of that shape is found
-automatically and added as its own labeled instance (`pi:larkin-<id>`), the same thing
-`--path pi:larkin-<id>=<dir>` would add — found once at startup, so a new Larkin agent
-is picked up with a restart. A `--path` pointing at the same directory keeps precedence,
-so the sessions are not listed twice.
+was given. Those sessions never reach `~/.pi/agent/sessions`, so a hosted directory is
+pointed at explicitly, as its own labeled instance:
+
+```
+--path pi:host=/path/to/the/session-dir
+```
 
 ## `--path`
 

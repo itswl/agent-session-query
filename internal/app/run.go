@@ -7,7 +7,6 @@
 //	Hermes      ~/.hermes/sessions/sessions.json
 //	OpenClaw    ~/.openclaw/agents/default/sessions/sessions.json
 //	Pi          ~/.pi/agent/sessions/<project>/*.jsonl, and flat *.jsonl under a --session-dir
-//	            (the hosting convention Larkin uses — those dirs are found too)
 //	Claude Code ~/.claude/projects/<project>/*.jsonl
 //	Codex       ~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl
 //	Gemini CLI  ~/.gemini/tmp/<project>/chats/session-*.jsonl

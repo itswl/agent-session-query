@@ -50,7 +50,7 @@ func TestPiSource(t *testing.T) {
 }
 
 // TestPiFlatSessionDir: --session-dir stores the <time>_<uuid>.jsonl files flat in the
-// directory it was given — the hosting convention Larkin points at its own state — while
+// directory it was given — the convention a host or wrapper embedding pi uses — while
 // the interactive default nests one directory per project. A root holding the flat shape
 // must list its sessions all the same.
 func TestPiFlatSessionDir(t *testing.T) {

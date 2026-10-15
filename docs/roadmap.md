@@ -9,6 +9,7 @@ decided against for now.
 
 | Release | What it brought |
 |---|---|
+| v0.33.1 | **Hosted pi by `--path`, not by a host's directory shape**: the flat `--session-dir` layout stays; the scan of one host's state layout is gone — a hosted directory is pointed at explicitly, like every other session store outside the defaults |
 | v0.33.0 | **Sessions outside the default locations**: pi's flat `--session-dir` layout read, and each agent's pi that Larkin hosts found as its own labeled instance; `--path` relocates and labels opencode's single database |
 | v0.32.0 | **Copy and pack buttons in the page**: a code block, a round's brief, a step's command, diff or output; a project's pack copied or saved from the details pane or its header in the list. Epoch-millisecond times are exact, so a pi output reads whole again |
 | v0.31.0 | **Archived sessions, one rule for all**: what Grok, Codex, OpenCode and Hermes put away is read the same way — left out by default as each CLI does, brought in by `include_archived` or the page's *Archived* switch, marked `archived` |

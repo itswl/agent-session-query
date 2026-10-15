@@ -8,7 +8,7 @@ import (
 )
 
 // Pi: ~/.pi/agent/sessions/<project>/<time>_<uuid>.jsonl, or <time>_<uuid>.jsonl flat
-// in the directory a wrapper gave --session-dir (the hosting convention Larkin uses)
+// in the directory a wrapper's --session-dir was pointed at
 type PiSource struct {
 	root  string
 	cache *fileRecordCache

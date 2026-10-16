@@ -412,6 +412,13 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 
 	// Root: unauthenticated
 	if path == "/" || path == "" {
+		// A browser arriving at the host wants the page, not the endpoint list: navigating
+		// asks for text/html, and that ask is honored with a redirect. curl and every API
+		// client send */* (or nothing) and keep getting the index they always did.
+		if acceptsHTML(r) {
+			http.Redirect(w, r, "/ui", http.StatusFound)
+			return http.StatusFound
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"name":    "Agent Session API",
 			"mode":    s.mode,
@@ -792,6 +799,13 @@ func (s *apiServer) parseMessageQuery(r *http.Request, ceiling int) (source.Mess
 		q.Offset = 0
 	}
 	return q, nil
+}
+
+// acceptsHTML reports whether the request asks for a page: a browser's navigation sends
+// text/html in Accept, curl and API clients send */* (or nothing) and keep the JSON index.
+// The substring test is enough — no real client puts "text/html" inside another media type.
+func acceptsHTML(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
 // queryFlag reads a boolean query parameter: 1 / true / yes turn it on, anything else

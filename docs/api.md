@@ -6,7 +6,7 @@ no alias.
 
 | Endpoint | Auth | What it does |
 |----------|------|--------------|
-| `/` `/health` `/stats` | no | Service info and health check. `/` is the one to read first: it lists every endpoint below and says which of them need a token. `/health` adds the enabled sources, the version, `authRequired` and connection stats |
+| `/` `/health` `/stats` | no | Service info and health check. `/` is the one to read first: it lists every endpoint below and says which of them need a token — a request that asks for `text/html` (a browser's address bar) is redirected to `/ui` instead, so curl's output is unchanged. `/health` adds the enabled sources, the version, `authRequired` and connection stats |
 | `/sessions` | yes | List every session (merged across sources, newest first). A Claude Code session whose work was handed to subagents says how many in `subagents`; `?subagents=1` lists the subagents as rows of their own too, each with `parentSessionId`, `agentType`, `agentDepth` (1 for one the session spawned, 2 for one an agent spawned), `parentAgentId` when an agent spawned it and `parentToolUseId` when a call did |
 | `/export?project=&branch=&since=&until=&source=&mode=index` | yes | **Export several sessions as one document.** Oldest first, because a pack answers "how did this get here" where the list answers "what am I doing". `mode=index` (the default) gives one block per session — when, where, what was asked, what it concluded, and the id to check it against; `mode=full` inlines the transcripts. `format=md` (default) or `jsonl`. `limit` defaults to 20 sessions of the matching set, and the header always states how many of that set it holds |
 | `/sessions/<pattern>` | yes | One session's metadata |

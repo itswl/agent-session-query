@@ -111,6 +111,50 @@ func readBody(t *testing.T, resp *http.Response) string {
 	return string(buf)
 }
 
+// TestRootRedirectsBrowsers: a navigation arrives at the host with Accept: text/html and
+// lands on the page; curl and API clients send */* (or nothing) and keep the JSON index.
+func TestRootRedirectsBrowsers(t *testing.T) {
+	srv, _ := newTestServer(t, "secret")
+
+	// Not following the redirect is the only way to see it
+	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	browser := strings.Join([]string{
+		"text/html", "application/xhtml+xml", "application/xml;q=0.9", "image/avif", "*/*;q=0.8",
+	}, ",")
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
+	req.Header.Set("Accept", browser)
+	resp, err := noFollow.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/ui" {
+		t.Fatalf("GET / with a browser Accept = %d %q, want 302 /ui", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	// And the redirect answers with the page when followed
+	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/", nil)
+	req.Header.Set("Accept", browser)
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 200 ||
+		!strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+		t.Fatalf("following it = %v %v %s, want the page", resp, err, resp.Header.Get("Content-Type"))
+	}
+
+	// curl's two shapes still get the index
+	for _, accept := range []string{"", "*/*", "application/json"} {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
+		if accept != "" {
+			req.Header.Set("Accept", accept)
+		}
+		status, body := get(t, req.URL.String(), "")
+		if status != 200 || body["name"] != "Agent Session API" {
+			t.Fatalf("GET / with Accept %q = %d %v, want the JSON index", accept, status, body)
+		}
+	}
+}
+
 // TestFaviconRoute: browsers request /favicon.ico from the root on any page, and leaving
 // it unhandled puts a 404 in the log on every visit (a 401 once a token is configured).
 func TestFaviconRoute(t *testing.T) {

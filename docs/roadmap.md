@@ -9,6 +9,7 @@ decided against for now.
 
 | Release | What it brought |
 |---|---|
+| v0.38.6 | **The host opens the page**: a browser arriving at `/` — a navigation asks for `text/html` — is redirected to `/ui`; curl and API clients keep the endpoint index they always got |
 | v0.38.5 | **File history is gone** — "which other sessions changed this file" was a question the detail pane answered that nobody kept asking: `/files`, MCP `file_history` and the page's *Files changed* card are removed. A round's own `files` / `filesChanged` stay where they were — in the rounds index, the brief, and the timeline's fold |
 | v0.38.4 | **The page shows nothing — fixed**: the storage removal swept `refresh()` (and the error/version/warmup helpers beside it) out of app.js with the panel, so the page booted into an empty list while the API kept answering; the functions are back, and a test now guards the boot path's names |
 | v0.38.3 | **The storage report is gone** — a byte count answered a question nobody kept asking, and the walk over every file it cost went with it; the page's header button and panel too. `/usage` and MCP `get_usage_report` are where the numbers live |

@@ -226,27 +226,6 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		}
 		return out, nil
 
-	case "file_history":
-		file := strings.TrimSpace(argString(args, "path"))
-		if file == "" {
-			return nil, errors.New("missing argument: path")
-		}
-		filter, err := s.sessionFilterArgs(args)
-		if err != nil {
-			return nil, err
-		}
-		// An agent's edit is an edit: subagents are in unless asked out
-		_, given := args["subagents"]
-		filter.subagents = !given || argBool(args, "subagents")
-		found := s.api.fileHistory(ctx, fileHistoryQuery{
-			path: file, filter: filter, changed: argBool(args, "changed_only"),
-			limit: argInt(args, "limit", defaultFileHistoryLimit, s.maxLimit),
-		})
-		return map[string]any{
-			"path": file, "sessions": found.sessions, "returned": len(found.sessions),
-			"scanned": found.scanned, "truncated": map[string]any{"scan": found.stopped},
-		}, nil
-
 	case "list_projects":
 		projects, ungrouped := s.api.listProjects(argBool(args, "include_archived"))
 		return map[string]any{"projects": projects, "total": len(projects), "ungrouped": ungrouped}, nil
@@ -756,32 +735,6 @@ func mcpTools() []map[string]any {
 					"messages":         intSchema("with mode=full, how many of each session's latest messages to include, default 10"),
 					"include_archived": boolSchema("the sessions their CLI has archived too (default false, as each CLI leaves them out of its own list); they carry archived: true"),
 				},
-			},
-		},
-		{
-			"name": "file_history",
-			"description": "Which sessions touched a file — read it or changed it — newest first, across every agent CLI: " +
-				"for each, the rounds that did, what was asked there, and whether the round changed the file " +
-				"(a write that did not fail). Answers \"who changed this, when, and why\". path is absolute, or the " +
-				"tail of a path (internal/app/api.go matches it in any repository; narrow with project). " +
-				"changed_only keeps the changes. Built from the tool calls the transcripts record: an edit made " +
-				"through a shell command (sed -i, a redirect) is not one of them.",
-			"annotations": readOnlyAnnotations("File history"),
-			"inputSchema": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path":             strSchema("the file: an absolute path, or the end of one"),
-					"changed_only":     boolSchema("only the rounds that changed the file, not those that only read it"),
-					"project":          strSchema("only sessions whose project path (cwd) contains this"),
-					"source":           strSchema("only one source: " + strings.Join(source.KnownModes, " / ")),
-					"branch":           strSchema("only sessions that opened on a git branch containing this"),
-					"since":            strSchema("only sessions updated after this, e.g. 30d / 12h / 2026-09-01"),
-					"until":            strSchema("only sessions updated before this, e.g. 7d / 2026-09-01"),
-					"limit":            intSchema("how many sessions at most, newest first, default 20"),
-					"subagents":        boolSchema("include Claude Code subagents' transcripts (default true: an agent's edit is an edit)"),
-					"include_archived": boolSchema("the sessions their CLI has archived too (default false, as each CLI leaves them out of its own list); they carry archived: true"),
-				},
-				"required": []string{"path"},
 			},
 		},
 		{

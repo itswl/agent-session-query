@@ -336,24 +336,6 @@ off the patch's own `*** Update File:` lines, and a unified diff is read off its
 before that, no Codex edit reached a round's files at all. A write is a change once its
 result does not fail, for every file it named.
 
-### File history
-
-`/files?path=` and MCP's `file_history` answer "which sessions touched this file, and why"
-from the rounds rather than from an index. The transcripts that mention the file's name at
-all are found by the raw scan a search runs, newest first, and only those are read and cut
-into rounds; a round touched the file when one of its file tool calls named it — `changed`
-when it was a write that did not fail, `read` otherwise — or when a shell command it ran
-named it (`commands`). The name is all the scan looks for, because a session may name the
-file by a path relative to its directory, and the match is then made on whole paths: a
-relative path is read against the session's cwd, an absolute question wants that path,
-and a relative one (`internal/app/api.go`) any path that ends with it. A command's text says
-which file it names, not what it did to it, so commands are counted beside the changes
-rather than as changes: an agent that edits with `sed -i` or a script leaves no change a
-file tool would record, only commands naming the file. Subagents' transcripts are read too.
-The scan stops once `limit` sessions have touched the file; measured locally, 0.6 s for a
-file over 540 transcripts, a few seconds when the service has just started and is still
-counting messages in the background.
-
 ### The branch a session opened on
 
 Claude Code writes `gitBranch` on nearly every row, so `List()` picks it up in the head

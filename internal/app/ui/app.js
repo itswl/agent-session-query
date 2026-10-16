@@ -52,8 +52,6 @@ const state = {
   revealedFor: '',        // the selection whose session's subagents were last unfolded for it
   showArchived: false,    // the sessions their CLI archived are listed too
   archivedTotal: 0,       // how many there are, listed or not (/sessions says)
-  openFiles: new Set(),   // files whose history is open in the details pane
-  fileHistory: new Map(), // file → { loading } | { data } | { error }: /files, asked once
   selectedId: '',
   followTimer: null,  // the live-follow poll of the open active session
   liveNewSince: '',   // the newest message time before the latest refresh; newer rounds are marked
@@ -3271,8 +3269,6 @@ function renderSide(record) {
   const box = document.createDocumentFragment();
   box.appendChild(finalCard(detail.final || {}));
   box.appendChild(tocCard());
-  const files = filesCard(record);
-  if (files) box.appendChild(files);
   box.appendChild(sessionCard(record, detail.final));
   const usage = usageCard((detail.final && detail.final.usage) || {});
   if (usage) box.appendChild(usage);
@@ -3283,128 +3279,6 @@ function renderSide(record) {
   const prevScroll = paneShown(side) ? paneMetrics(side).top : null;
   side.replaceChildren(box);
   if (prevScroll !== null) scrollPaneTo(side, prevScroll);
-}
-
-// changedFiles are the files the loaded window changed — a write that did not fail, by the
-// path its call named or every file its patch touched — as absolute paths, each with the
-// name the call gave it
-function changedFiles(record) {
-  const files = new Map();
-  for (const round of roundsOf(windowMessages()).rounds) {
-    for (const step of flatToolSteps(round.steps)) {
-      if (!step.call || toolKind(stepName(step)) !== 'write' || isFailed(step.result)) continue;
-      const one = fileOf(step.call.arguments);
-      const named = one ? [one] : (diffOf(step.call) || [])
-        .filter((line) => line.type === 'file')
-        .map((line) => line.text.replace(/^\u2192 /, ''));
-      for (const file of named) files.set(absolutePath(file, record.cwd), file);
-    }
-  }
-  return files;
-}
-
-// absolutePath reads a path a call named against the session's directory
-function absolutePath(file, cwd) {
-  const f = String(file).replace(/\\/g, '/');
-  if (f.startsWith('/') || /^[A-Za-z]:\//.test(f) || !/^\//.test(cwd || '')) return f;
-  return cwd.replace(/\/+$/, '') + '/' + f.replace(/^\.\//, '');
-}
-
-// filesCard lists the files this window changed, each with the way to the other sessions
-// that changed it: who else touched this, when, and what they were asked
-function filesCard(record) {
-  const files = changedFiles(record);
-  if (!files.size) return null;
-  const card = el('section', 'card files-card');
-  const head = el('h3', '', 'Files changed');
-  head.appendChild(el('span', 'count', files.size));
-  card.appendChild(head);
-  const list = el('ul', 'file-list');
-  let shown = 0;
-  for (const [abs, named] of files) {
-    if (shown++ >= FILES_SHOWN) {
-      list.appendChild(el('li', 'dim small', '+' + (files.size - FILES_SHOWN) + ' more'));
-      break;
-    }
-    const item = el('li');
-    const row = el('div', 'file-row');
-    const name = el('span', 'file-name', shortenPath(named, record.cwd));
-    name.title = abs;
-    row.appendChild(name);
-    const open = state.openFiles.has(abs);
-    const toggle = button('ghost tiny', open ? 'hide' : 'history', () => toggleFileHistory(abs));
-    toggle.title = 'The other sessions that changed this file';
-    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-    row.appendChild(toggle);
-    item.appendChild(row);
-    if (open) item.appendChild(fileHistoryNode(abs, record));
-    list.appendChild(item);
-  }
-  card.appendChild(list);
-  return card;
-}
-
-// FILES_SHOWN caps the card: a window that rewrote a whole tree lists the first ones
-const FILES_SHOWN = 12;
-
-async function toggleFileHistory(abs) {
-  // The pane is redrawn for whatever is selected when the answer comes back: a refresh
-  // in between replaces the record it was drawn for
-  const redraw = () => {
-    const current = state.byId.get(state.selectedId);
-    if (current) renderSide(current);
-  };
-  if (state.openFiles.has(abs)) {
-    state.openFiles.delete(abs);
-    redraw();
-    return;
-  }
-  state.openFiles.add(abs);
-  const known = state.fileHistory.get(abs);
-  if (!known || known.error) {
-    state.fileHistory.set(abs, { loading: true });
-    redraw();
-    try {
-      const data = await api('/files?path=' + encodeURIComponent(abs) + '&changed=1&limit=8');
-      state.fileHistory.set(abs, { data });
-    } catch (err) {
-      state.fileHistory.set(abs, { error: err.message });
-    }
-  }
-  redraw();
-}
-
-// fileHistoryNode is a file's other sessions, newest first: when it was last changed there,
-// by what, and the ask it was changed for. A click opens the session at that change.
-function fileHistoryNode(abs, record) {
-  const known = state.fileHistory.get(abs) || {};
-  if (known.loading) return el('p', 'dim small file-history', 'Looking through the sessions\u2026');
-  if (known.error) return el('p', 'dim small file-history', 'Could not read its history: ' + known.error);
-  const others = ((known.data && known.data.sessions) || []).filter((s) => s.sessionId !== record.sessionId);
-  if (!others.length) return el('p', 'dim small file-history', 'No other session changed it');
-  const list = el('ul', 'file-history');
-  for (const s of others) {
-    const rounds = s.rounds || [];
-    const last = rounds[rounds.length - 1] || {};
-    const item = el('li');
-    const title = s.parentSessionId
-      ? (s.shortKey || s.sessionId) + ' (agent)'
-      : s.shortKey || s.sessionId;
-    const link = button('linkish', title, () => selectSession(s.sessionId, last.endAt || last.startAt || ''));
-    link.title = 'Open it at the change: ' + (last.endAt || last.startAt || '');
-    item.appendChild(link);
-    const meta = [relTime(s.lastTouchedAt || s.updatedAt), s.source];
-    if (s.roundsTouched > 1) meta.push(s.roundsTouched + ' rounds');
-    item.appendChild(el('div', 'dim small', meta.filter(Boolean).join(' · ')));
-    // The ask it was changed for, unless it is the session's title over again — the first
-    // round's ask usually is
-    const titled = String(s.shortKey || '').replace(/\u2026$/, '').trim();
-    if (last.asked && !(titled && last.asked.startsWith(titled))) {
-      item.appendChild(el('div', 'small file-asked', last.asked));
-    }
-    list.appendChild(item);
-  }
-  return list;
 }
 
 // pageCard says which server the page is talking to, how it was opened and, on a phone,

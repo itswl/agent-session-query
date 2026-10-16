@@ -24,7 +24,6 @@ no alias.
 | `json` | `application/json` | the same data as one document, for a consumer that wants a single parse |
 | `html` | `text/html` | a page that stands on its own: inline stylesheet, no scripts, no requests, so it opens from disk and can be attached to anything |
 | `/search?q=&limit=30&per_session=3&since=30d&until=&source=&project=&branch=&pattern=&role=` | yes | **Full-text search** across every source; `source` / `project` / `branch` / `since` / `until` narrow which sessions are scanned, `pattern` scopes it to one session, `role` keeps only `user` or `assistant` hits. A hit is in something the transcript shows: Claude Code's hook output and reminders are not searched (a prompt typed while the agent was busy is). A subagent's transcript is searched with the session it ran in: its hits come back in that session's result, each carrying `agentId` (the transcript to open), `agent` and `agentType`; `subagents=0` leaves them out |
-| `/files?path=&changed=&project=&source=&branch=&since=&until=&limit=20&subagents=` | yes | **Which sessions touched a file**, newest first. `path` is absolute, or the end of a path (`internal/app/api.go` matches it in any repository — narrow with `project`). Each session lists the rounds that touched it (the latest 10, with `roundsTouched` counting them all): `changed` when a write through a file tool did not fail — Codex's patches included — `read` when a file tool only named it, and `commands` counting the shell commands that named it, which may have read it or rewritten it. Each round carries its `startAt` / `endAt`, what was `asked`, and how many of its tool results `failures` reported. `changed=1` keeps the rounds that changed it. Subagents' transcripts are read too (an entry for one carries `parentSessionId`) unless `subagents=0`. The scan stops once `limit` sessions have touched the file, and `truncated.scan` says so |
 | `/projects` | yes | Session counts grouped by project (cwd) |
 | `/usage` | yes | **What the sessions consumed**: `windows` (24h / 3d / 7d / 30d / all, rolling — sessions, model calls, tokens), `byModel`, `byDay` (the last 30 days), `bySource` and `byProject`, each row carrying `cacheHit` — the share of prompt tokens served from cache (`cacheRead / (input + cacheRead)`; 0 where a source records no cache numbers). A session's usage lands where it was last updated. No cost: that would mean maintaining a price table. Cached like the session lists |
 | `/mcp` | yes | MCP's Streamable HTTP transport, `POST`; see [mcp.md](mcp.md) |
@@ -50,7 +49,7 @@ refused too.
 
 **Archived sessions**: a session its CLI has archived — Grok's and Codex's moved into
 `archived_sessions`, OpenCode's marked `time_archived`, the ones Hermes hides — is left out
-of `/sessions`, `/search`, `/export`, `/files` and `/projects`, as each CLI leaves it out of
+of `/sessions`, `/search`, `/export` and `/projects`, as each CLI leaves it out of
 its own list, and `include_archived=1` on any of them reads it too, marked `archived: true`.
 `/sessions` says how many there are either way (`archived`, present when there are some),
 and one still opens by its id.

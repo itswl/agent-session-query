@@ -4557,10 +4557,10 @@ function servicesPanelNode({ health, storage, usage }) {
   // what the week consumed, and which models did the work — the numbers the usage
   // report answers, at the top where the panel is opened for them
   if (usage && usage.windows) {
-    const week = usage.windows['this week'] || {};
+    const week = usage.windows['7d'] || {};
     const block = el('div', 'services-usage');
     const title = el('div', 'services-usage-title');
-    title.appendChild(el('span', 'services-ages-title', 'this week'));
+    title.appendChild(el('span', 'services-ages-title', 'last 7 days'));
     block.appendChild(title);
     block.appendChild(el('div', 'services-usage-tokens',
       humanTokens(week.tokens) + cacheHitLabel(week.cacheHit)));

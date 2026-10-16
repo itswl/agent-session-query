@@ -43,13 +43,16 @@ func TestUsageReport(t *testing.T) {
 	if report.ByModel[0].CacheHit != report.Windows["all"].CacheHit {
 		t.Fatalf("the model row carries the same hit: %v", report.ByModel[0])
 	}
-	// the recent session lands in today, this week and this month; the two-day-old one
-	// only in this month when the month is old enough — assert no more than the fresh one
-	if report.Windows["today"].Sessions != 1 || report.Windows["today"].Tokens["inputTokens"] != 50 {
-		t.Fatalf("today = %v", report.Windows["today"])
+	// the rolling windows: the fresh session is in every one, the two-day-old one from
+	// 3d out (a calendar window would answer differently depending on the day it ran)
+	if w := report.Windows["24h"]; w.Sessions != 1 || w.Tokens["inputTokens"] != 50 {
+		t.Fatalf("24h = %v", w)
 	}
-	if report.Windows["this week"].Tokens["inputTokens"] != 1050 {
-		t.Fatalf("this week = %v", report.Windows["this week"])
+	if w := report.Windows["3d"]; w.Sessions != 2 || w.Tokens["inputTokens"] != 1050 {
+		t.Fatalf("3d = %v", w)
+	}
+	if w := report.Windows["7d"]; w.Tokens["inputTokens"] != 1050 {
+		t.Fatalf("7d = %v", w)
 	}
 	if len(report.ByModel) != 1 || report.ByModel[0].Model != "glm-5.3" {
 		t.Fatalf("byModel = %v", report.ByModel)

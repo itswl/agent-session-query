@@ -8,9 +8,10 @@ import (
 )
 
 // The usage report: what the sessions consumed, grouped the ways the questions come —
-// "how much this week", "which model eats the tokens", "where did the money go". The
-// numbers are the session totals the finals already compute, so a session's usage lands
-// where the session was last updated; a session still running reports so far.
+// "how much in the last day", "which model eats the tokens". The windows are rolling
+// (24h / 3d / 7d / 30d / all): a calendar window answers differently depending on what
+// day it is. The numbers are the session totals the finals already compute, so a
+// session's usage lands where it was last updated; a session still running reports so far.
 
 type usageTotalsRow struct {
 	Sessions int              `json:"sessions"`
@@ -36,7 +37,7 @@ type usageDayRow struct {
 
 type usageReport struct {
 	GeneratedAt string                    `json:"generatedAt"`
-	Windows     map[string]usageTotalsRow `json:"windows"` // today / this week / this month / all
+	Windows     map[string]usageTotalsRow `json:"windows"` // 24h / 3d / 7d / 30d / all, rolling
 	ByModel     []usageModelRow           `json:"byModel"`
 	ByDay       []usageDayRow             `json:"byDay"` // the last 30 days, days with usage only
 	BySource    []usageTotalsRow2         `json:"bySource"`
@@ -157,18 +158,23 @@ func usageReportFor(sources []source.SessionSource, now time.Time) usageReport {
 		ByProject:   []usageProjectRow2{},
 	}
 	windows := map[string]*usageTotalsRow{
-		"today": {}, "this week": {}, "this month": {}, "all": {},
+		"24h": {}, "3d": {}, "7d": {}, "30d": {}, "all": {},
 	}
 	for _, w := range windows {
 		w.Tokens = map[string]int64{}
 	}
+	// rolling cutoffs, newest first: a session lands in every window it is young enough for
+	rolling := []struct {
+		name   string
+		cutoff time.Time
+	}{
+		{"24h", now.Add(-24 * time.Hour)},
+		{"3d", now.Add(-72 * time.Hour)},
+		{"7d", now.AddDate(0, 0, -7)},
+		{"30d", now.AddDate(0, 0, -30)},
+	}
 
 	utcDay := func(t time.Time) string { return t.UTC().Format("2006-01-02") }
-	today := utcDay(now)
-	weekAgo := now.AddDate(0, 0, -7)
-	// "this month" reads as the calendar month; a rolling 30 days would answer a
-	// different question
-	monthStart := time.Date(now.UTC().Year(), now.UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
 	cutoffDay := utcDay(now.AddDate(0, 0, -29))
 
 	models := map[string]*usageModelRow{}
@@ -189,17 +195,11 @@ func usageReportFor(sources []source.SessionSource, now time.Time) usageReport {
 			}
 
 			if ts, ok := source.ParseTimestamp(session.updatedAt); ok {
-				if utcDay(ts) == today {
-					windows["today"].addUsage(session.tokens, session.calls)
-					windows["today"].Sessions++
-				}
-				if ts.After(weekAgo) {
-					windows["this week"].addUsage(session.tokens, session.calls)
-					windows["this week"].Sessions++
-				}
-				if ts.After(monthStart) {
-					windows["this month"].addUsage(session.tokens, session.calls)
-					windows["this month"].Sessions++
+				for _, window := range rolling {
+					if ts.After(window.cutoff) {
+						windows[window.name].addUsage(session.tokens, session.calls)
+						windows[window.name].Sessions++
+					}
 				}
 				if day := utcDay(ts); day >= cutoffDay {
 					entry, ok := days[day]

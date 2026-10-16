@@ -9,6 +9,7 @@ decided against for now.
 
 | Release | What it brought |
 |---|---|
+| v0.38.2 | **Rolling windows**: the usage report answers 24h / 3d / 7d / 30d / all — a calendar window reads differently depending on which day it is asked |
 | v0.38.1 | **Cost out, cache hit in**: the usage report carries no dollar figure — that would mean maintaining a price table — and every row carries `cacheHit` instead, the share of prompt tokens served from cache |
 | v0.38.0 | **What the sessions consumed**: `/usage` and MCP `get_usage_report` — tokens and cost for today / this week / this month / all, by model, by day, by source, by project; Claude Code's closing `cost-state` row is read for the cost no message row knows; the page's services panel opens with the week and the models that did the work |
 | v0.37.0 | **Storage, sight and live follow**: `/storage` and MCP `get_storage_report` size the history three ways — by source (with the overhead kept besides sessions), by project, by session age; the page's header panel shows which sources are on and what failed; an open, active session is followed as it grows, new rounds arriving marked |

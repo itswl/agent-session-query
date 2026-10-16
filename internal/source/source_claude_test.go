@@ -9,8 +9,7 @@ import (
 	"unicode/utf8"
 )
 
-func TestClaudeSource(t *testing.T) {
-	root := t.TempDir()
+func TestClaudeSource(t *testing.T) {	root := t.TempDir()
 	path := filepath.Join(root, "proj-x", "11111111-2222-3333-4444-555555555555.jsonl")
 	write(t, path,
 		`{"type":"user","uuid":"u1","sessionId":"cccc","cwd":"/home/imwl/proj","timestamp":"2026-09-14T07:14:06.596Z","message":{"role":"user","content":"write a greeting"}}`,
@@ -513,5 +512,28 @@ func TestClaudeQueuedPrompts(t *testing.T) {
 	}
 	if n, _ := claudeCountMessages(path, 0); n != len(msgs) {
 		t.Errorf("the list counts %d messages, the reader returns %d", n, len(msgs))
+	}
+}
+
+// TestClaudeCostStateRow: the session's cost lives on the cost-state row Claude Code
+// writes at the end (totalCostUSD), not on any assistant row — the final result reports
+// it as the usage total's estimatedCostUsd, where summing per-message usage alone would
+// answer zero.
+func TestClaudeCostStateRow(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "p", "cccc.jsonl")
+	write(t, path,
+		`{"type":"user","uuid":"u1","sessionId":"cccc","cwd":"/w","message":{"role":"user","content":"hi"}}`,
+		`{"type":"assistant","uuid":"a1","timestamp":"2026-09-14T07:14:09.100Z","message":{"model":"claude-x","stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":20},"content":[{"type":"text","text":"hello"}]}}`,
+		`{"type":"cost-state","sessionId":"cccc","totalCostUSD":0.035695}`,
+	)
+
+	final := NewClaudeSource(root).Final(NewClaudeSource(root).List()[0])
+	usage, _ := final["usage"].(map[string]any)
+	if usage["estimatedCostUsd"] != 0.035695 {
+		t.Fatalf("cost = %v, want the cost-state row's total", usage["estimatedCostUsd"])
+	}
+	if usage["inputTokens"] != int64(100) {
+		t.Fatalf("tokens = %v", usage)
 	}
 }

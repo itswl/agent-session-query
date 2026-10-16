@@ -4487,7 +4487,7 @@ async function syncDetail(options) {
 // The header's storage button opens this: which sources are on, which failed to read,
 // and what the sessions take on disk — the facts that tell an empty list apart from a
 // broken one, which the list itself cannot.
-let servicesCache = null; // { at, health, storage } — a minute old at most
+let servicesCache = null; // { at, health, storage, usage } — a minute old at most
 
 function humanBytes(n) {
   if (!Number.isFinite(n) || n <= 0) return '0 B';
@@ -4495,6 +4495,13 @@ function humanBytes(n) {
   let value = n, unit = 0;
   while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
   return (unit === 0 ? value : value.toFixed(1)) + ' ' + units[unit];
+}
+
+// token counts read as millions and thousands: "70.7M in · 913K out"
+function humanTokens(tokens) {
+  const part = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'K' : String(n || 0);
+  const t = tokens || {};
+  return part(t.inputTokens) + ' in · ' + part(t.outputTokens) + ' out';
 }
 
 function toggleServicesPanel() {
@@ -4513,18 +4520,19 @@ async function loadServicesPanel() {
   }
   render(el('p', 'empty', 'Loading…'));
   try {
-    const [health, storage] = await Promise.all([
+    const [health, storage, usage] = await Promise.all([
       fetch('/health').then((r) => r.json()),
       api('/storage').catch(() => null),
+      api('/usage').catch(() => null),
     ]);
-    servicesCache = { at: Date.now(), health, storage };
+    servicesCache = { at: Date.now(), health, storage, usage };
     render(servicesPanelNode(servicesCache));
   } catch (err) {
     render(el('p', 'empty', 'Failed to load: ' + err.message));
   }
 }
 
-function servicesPanelNode({ health, storage }) {
+function servicesPanelNode({ health, storage, usage }) {
   const box = el('div', 'services');
   const head = el('div', 'services-head');
   head.appendChild(el('span', 'services-title', 'Sources'));
@@ -4539,6 +4547,26 @@ function servicesPanelNode({ health, storage }) {
   meta.appendChild(close);
   head.appendChild(meta);
   box.appendChild(head);
+
+  // what the week consumed, and which models did the work — the numbers the usage
+  // report answers, at the top where the panel is opened for them
+  if (usage && usage.windows) {
+    const week = usage.windows['this week'] || {};
+    const block = el('div', 'services-usage');
+    const title = el('div', 'services-usage-title');
+    title.appendChild(el('span', 'services-ages-title', 'this week'));
+    const cost = Number(week.estimatedCostUsd) || 0;
+    if (cost > 0) title.appendChild(el('span', 'services-usage-cost', '$' + cost.toFixed(2)));
+    block.appendChild(title);
+    block.appendChild(el('div', 'services-usage-tokens', humanTokens(week.tokens)));
+    const models = el('div', 'services-usage-models');
+    for (const m of (usage.byModel || []).slice(0, 3)) {
+      const row = el('span', 'services-age', m.model + ' · ' + humanTokens(m.tokens));
+      models.appendChild(row);
+    }
+    if (models.childElementCount) block.appendChild(models);
+    box.appendChild(block);
+  }
 
   const warnings = (health && health.warnings) || [];
   const warnBySource = new Map(warnings.map((w) => [w.source, w.error]));

@@ -291,6 +291,71 @@ func openClawEventMillis(v any) string {
 	return ""
 }
 
+// Usage answers every session's accounting in one query per agent database: the usage
+// each message event carries, folded per session — the final result reports only the
+// closing message's, which undercounts a session that worked in many turns.
+func (s *OpenClawSource) Usage() []SessionUsage {
+	out := []SessionUsage{}
+	for _, dbPath := range s.dbPaths {
+		db, err := s.open(dbPath)
+		if err != nil {
+			continue
+		}
+		rows, err := db.Query(`
+			SELECT w.session_id,
+			       (SELECT COALESCE(json_extract(te0.event_json, '$.cwd'), '')
+			          FROM transcript_events te0
+			         WHERE te0.session_id = w.session_id
+			         ORDER BY te0.seq LIMIT 1),
+			       COALESCE(w.transcript_updated_at, w.updated_at),
+			       COALESCE((SELECT json_extract(te1.event_json, '$.message.model')
+			          FROM transcript_events te1
+			         WHERE te1.session_id = w.session_id AND json_extract(te1.event_json, '$.message.model') IS NOT NULL
+			         ORDER BY te1.seq DESC LIMIT 1), ''),
+			       COALESCE(SUM(CAST(json_extract(te.event_json, '$.message.usage.input') AS REAL)), 0),
+			       COALESCE(SUM(CAST(json_extract(te.event_json, '$.message.usage.output') AS REAL)), 0),
+			       COALESCE(SUM(CAST(json_extract(te.event_json, '$.message.usage.cacheRead') AS REAL)), 0),
+			       COALESCE(SUM(CAST(json_extract(te.event_json, '$.message.usage.cacheWrite') AS REAL)), 0),
+			       COALESCE(SUM(CAST(json_extract(te.event_json, '$.message.usage.cost.total') AS REAL)), 0)
+			FROM session_windows w
+			LEFT JOIN transcript_events te
+			  ON te.session_id = w.session_id
+			 AND json_extract(te.event_json, '$.type') = 'message'
+			GROUP BY w.session_id`)
+		if err != nil {
+			db.Close()
+			continue
+		}
+		for rows.Next() {
+			var sid, cwd, model sql.NullString
+			var updated sql.NullInt64
+			var in, out2, cacheRead, cacheWrite, cost sql.NullFloat64
+			if err := rows.Scan(&sid, &cwd, &updated, &model, &in, &out2, &cacheRead, &cacheWrite, &cost); err != nil {
+				break
+			}
+			if !sid.Valid || sid.String == "" {
+				continue
+			}
+			out = append(out, SessionUsage{
+				SessionID: sid.String,
+				Project:   cwd.String,
+				Model:     model.String,
+				UpdatedAt: millisToISO(updated),
+				Usage: map[string]any{
+					"inputTokens":     int64(in.Float64),
+					"outputTokens":    int64(out2.Float64),
+					"cacheReadTokens": int64(cacheRead.Float64),
+					"cacheWrite":      int64(cacheWrite.Float64),
+				},
+				Cost: cost.Float64,
+			})
+		}
+		rows.Close()
+		db.Close()
+	}
+	return out
+}
+
 func (s *OpenClawSource) Final(r Record) map[string]any {
 	sessionID := r.SessionID
 	if sessionID == "" {

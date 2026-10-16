@@ -236,6 +236,59 @@ func sqliteHotJournal(err error) bool {
 // The error is returned alongside the records rather than only logged: a database this
 // cannot read is not an empty database, and a caller that cannot tell the two apart reports
 // the first as the second.
+// hermesSQLiteUsage answers every session's accounting from the columns the sessions
+// table already totals, in one query — the report layer needs no per-session reads here.
+func hermesSQLiteUsage(dbPath string) []SessionUsage {
+	var out []SessionUsage
+	err := readHermesDB(dbPath, func(db *sql.DB) error {
+		rows, err := db.Query(`
+			SELECT s.id, COALESCE(s.cwd, ''),
+			       COALESCE((SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id), s.ended_at),
+			       COALESCE(s.message_count, 0), COALESCE(s.model, ''),
+			       COALESCE(SUM(s.input_tokens), 0), COALESCE(SUM(s.output_tokens), 0),
+			       COALESCE(SUM(s.reasoning_tokens), 0), COALESCE(SUM(s.estimated_cost_usd), 0)
+			FROM sessions s GROUP BY s.id`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var sid, cwd, model sql.NullString
+			var lastMsg sql.NullFloat64
+			var calls, in, out2, reasoning sql.NullInt64
+			var cost sql.NullFloat64
+			if err := rows.Scan(&sid, &cwd, &lastMsg, &calls, &model, &in, &out2, &reasoning, &cost); err != nil {
+				return err
+			}
+			if !sid.Valid || sid.String == "" {
+				continue
+			}
+			updatedAt := ""
+			if _, iso, ok := utcFromSeconds(lastMsg.Float64); ok {
+				updatedAt = iso
+			}
+			out = append(out, SessionUsage{
+				SessionID: sid.String,
+				Project:   cwd.String,
+				Model:     model.String,
+				UpdatedAt: updatedAt,
+				Calls:     int(calls.Int64),
+				Usage: map[string]any{
+					"inputTokens":     in.Int64,
+					"outputTokens":    out2.Int64,
+					"reasoningTokens": reasoning.Int64,
+				},
+				Cost: cost.Float64,
+			})
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
 func hermesSQLiteList(dbPath, mode string, skip map[string]bool) ([]Record, error) {
 	var out []Record
 	err := readHermesDB(dbPath, func(db *sql.DB) (err error) {

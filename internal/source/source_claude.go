@@ -495,12 +495,14 @@ func claudeSystemEvent(obj map[string]any) map[string]any {
 // one rule Messages, Final and the background counter all follow, so the number in the
 // list is the number of rows the reader will get.
 type claudeProbe struct {
-	Type        string            `json:"type"`
-	Subtype     string            `json:"subtype"`
-	IsSidechain bool              `json:"isSidechain"`
-	HookErrors  []json.RawMessage `json:"hookErrors"`
-	Message     struct {
-		Usage json.RawMessage `json:"usage"`
+	Type         string            `json:"type"`
+	Subtype      string            `json:"subtype"`
+	IsSidechain  bool              `json:"isSidechain"`
+	TotalCostUSD float64           `json:"totalCostUSD"`
+	HookErrors   []json.RawMessage `json:"hookErrors"`
+	Message      struct {
+		Usage   json.RawMessage `json:"usage"`
+		CostUSD float64         `json:"costUSD"`
 	} `json:"message"`
 	Attachment struct {
 		Type        string `json:"type"`
@@ -661,10 +663,17 @@ func (s *ClaudeCodeSource) Final(r Record) map[string]any {
 	// card is read as. The scan already walks every line, so this costs one small decode
 	// per assistant message.
 	var totals usageTotals
+	// the cost-state row Claude Code writes at the end carries the session's own cost
+	// total, which no assistant row knows (the per-message costUSD of some providers
+	// aside); it is the authoritative number when it is there
+	sessionCost := 0.0
 	subagent := r.IsSubagent()
 	EachJSONLLine(path, func(line []byte) bool {
 		var probe claudeProbe
 		if json.Unmarshal(line, &probe) != nil || !probe.counts(subagent) {
+			if probe.Type == "cost-state" && probe.TotalCostUSD > 0 {
+				sessionCost = probe.TotalCostUSD
+			}
 			return true
 		}
 		count++
@@ -673,6 +682,11 @@ func (s *ClaudeCodeSource) Final(r Record) map[string]any {
 			if len(probe.Message.Usage) > 0 {
 				var u map[string]any
 				if json.Unmarshal(probe.Message.Usage, &u) == nil {
+					// costUSD rides on the message, not in usage; it is part of the
+					// same accounting and the usage report wants it
+					if probe.Message.CostUSD != 0 {
+						u["costUSD"] = probe.Message.CostUSD
+					}
 					totals.add(u)
 				}
 			}
@@ -723,6 +737,15 @@ func (s *ClaudeCodeSource) Final(r Record) map[string]any {
 	}
 	stopReason := StrOr(msg["stop_reason"], "")
 	isFinal := stopReason == "end_turn" || stopReason == "stop" || stopReason == "stop_sequence"
+	usage := totals.result()
+	if sessionCost > 0 {
+		if usage == nil {
+			usage = map[string]any{}
+		}
+		// the session's own total, where the per-message numbers of some providers
+		// would only have counted their own rows
+		usage["estimatedCostUsd"] = sessionCost
+	}
 	return map[string]any{
 		"status":       "done",
 		"isFinal":      isFinal,
@@ -736,6 +759,6 @@ func (s *ClaudeCodeSource) Final(r Record) map[string]any {
 		"text":         strings.Join(texts, "\n"),
 		"thinking":     strings.Join(thoughts, "\n"),
 		"toolCalls":    toolCalls,
-		"usage":        totals.result(),
+		"usage":        usage,
 	}
 }

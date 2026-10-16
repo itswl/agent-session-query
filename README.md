@@ -127,6 +127,7 @@ marked "yes" require `Authorization: Bearer <token>`.
 | `/files?path=` | yes | Which sessions touched a file |
 | `/projects` | yes | Session counts by project |
 | `/storage` | yes | What the sessions take on disk: by source, by project, by session age |
+| `/usage` | yes | What the sessions consumed: tokens and cost, by window, model, day and project |
 | `/export?project=&since=` | yes | Several sessions as one pack document |
 | `/mcp` | yes | MCP's Streamable HTTP transport |
 
@@ -137,7 +138,7 @@ Full parameters, the `<pattern>` matching rules and every response field are in
 
 `--mcp` runs on stdio; in HTTP mode there is also `POST /mcp`. That lets **an agent query
 its own history** — Claude Code can go looking for the same problem you solved with Codex
-last week. Thirteen tools, from `search_sessions` and `get_session_pack` to `get_storage_report`
+last week. Fourteen tools, from `search_sessions` and `get_session_pack` to `get_usage_report`
 and `session_brief`; client configuration and the security notes (session text is
 untrusted input — reported on, never followed) are in **[docs/mcp.md](docs/mcp.md)**.
 

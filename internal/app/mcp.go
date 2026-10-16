@@ -273,6 +273,35 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		}
 		return out, nil
 
+	case "get_usage_report":
+		report := s.api.usageReport()
+		// the project rows run long, like the storage report's; the leading slice answers
+		// and total says what was cut
+		limit := argInt(args, "projects", 20, 200)
+		if limit < 1 {
+			return nil, errors.New("projects must be at least 1")
+		}
+		total := len(report.ByProject)
+		if len(report.ByProject) > limit {
+			report.ByProject = report.ByProject[:limit]
+		}
+		dayLimit := argInt(args, "days", 30, 90)
+		if dayLimit < 1 {
+			return nil, errors.New("days must be at least 1")
+		}
+		if len(report.ByDay) > dayLimit {
+			report.ByDay = report.ByDay[len(report.ByDay)-dayLimit:]
+		}
+		return map[string]any{
+			"generatedAt":   report.GeneratedAt,
+			"windows":       report.Windows,
+			"byModel":       report.ByModel,
+			"byDay":         report.ByDay,
+			"bySource":      report.BySource,
+			"byProject":     report.ByProject,
+			"projectsTotal": total,
+		}, nil
+
 	case "get_session_pack":
 		filter, err := s.sessionFilterArgs(args)
 		if err != nil {
@@ -791,6 +820,15 @@ func mcpTools() []map[string]any {
 			"annotations": readOnlyAnnotations("Get storage report"),
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 				"projects": intSchema("maximum project rows, largest first, default 20"),
+			}},
+		},
+		{
+			"name":        "get_usage_report",
+			"description": "What the sessions consumed: tokens and cost for today / this week / this month / all, by model, by day (last 30), by source and by project. A session's usage lands where it was last updated; cost appears where the CLI recorded one.",
+			"annotations": readOnlyAnnotations("Get usage report"),
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+				"projects": intSchema("maximum project rows, largest first, default 20"),
+				"days":     intSchema("maximum day rows, latest last, default 30"),
 			}},
 		},
 		{

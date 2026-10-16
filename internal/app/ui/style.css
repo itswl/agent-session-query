@@ -1329,3 +1329,10 @@ button.icon-copy:hover { color: var(--fg); }
   .services-table td { white-space: normal; overflow-wrap: anywhere; }
   .services-age { white-space: nowrap; }
 }
+
+/* What the week consumed, at the top of the services panel */
+.services-usage { margin: 0 0 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line-soft, var(--line)); }
+.services-usage-title { display: flex; justify-content: space-between; align-items: baseline; }
+.services-usage-cost { font-weight: 600; }
+.services-usage-tokens { font-size: 13px; margin: 2px 0 4px; }
+.services-usage-models { display: flex; flex-direction: column; gap: 2px; }

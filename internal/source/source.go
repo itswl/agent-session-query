@@ -313,6 +313,25 @@ func (s labeledSource) Final(r Record) map[string]any {
 	return out
 }
 
+// Usage is the wrapped source's own, projects prefixed the way List prefixes them.
+func (s labeledSource) Usage() []SessionUsage {
+	inner, ok := s.SessionSource.(UsageReporter)
+	if !ok {
+		return nil
+	}
+	rows := inner.Usage()
+	if rows == nil {
+		return nil
+	}
+	label := s.mode[strings.IndexByte(s.mode, ':')+1:] + ":"
+	for i := range rows {
+		if rows[i].Project != "" {
+			rows[i].Project = label + rows[i].Project
+		}
+	}
+	return rows
+}
+
 // Storage is the wrapped source's own, each project prefixed the way List prefixes
 // cwd and project, so instances of one CLI stay apart in the report too.
 func (s labeledSource) Storage() ([]SessionStorage, int64) {

@@ -159,6 +159,15 @@ func (s *GrokSource) Storage() ([]SessionStorage, int64) {
 	})
 }
 
+// Usage answers the sessions' accounting from Hermes's database when the all-SQLite
+// layout is the one in use; the jsonl layout answers through its finals instead.
+func (s *JsonMapSource) Usage() []SessionUsage {
+	if s.def.stateDB != "" && fileExists(s.def.stateDB) && !fileExists(s.def.sessionsJSON) {
+		return hermesSQLiteUsage(s.def.stateDB)
+	}
+	return nil
+}
+
 // Storage sizes the sessions the json-map layout keeps: one jsonl per session, the
 // index file beside them is overhead. Hermes's newer all-SQLite layout keeps no jsonl
 // at all — its database is sized instead.

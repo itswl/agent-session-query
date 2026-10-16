@@ -116,6 +116,103 @@ func openCodeDBPath(dirOrFile string) string {
 	return filepath.Join(dirOrFile, "opencode.db")
 }
 
+// Usage answers every session's token accounting in one query per layout — the 2.x rows
+// carry their tokens inline in session_message.data, the 1.x session row carries column
+// totals. json_extract does the folding where the database does it best.
+func (s *OpenCodeSource) Usage() []SessionUsage {
+	db, err := s.open()
+	if err != nil {
+		return nil
+	}
+	defer db.Close()
+
+	out := []SessionUsage{}
+	collect := func(rows *sql.Rows, fromV2 bool) {
+		for rows.Next() {
+			var sid, directory, model sql.NullString
+			var updated, calls sql.NullInt64
+			var in, out2, cacheRead, cacheWrite, reasoning sql.NullFloat64
+			var cost sql.NullFloat64
+			if fromV2 {
+				if err := rows.Scan(&sid, &directory, &updated, &calls, &model, &in, &out2, &cacheRead, &cacheWrite, &reasoning, &cost); err != nil {
+					break
+				}
+			} else if err := rows.Scan(&sid, &directory, &updated, &calls, &model, &in, &out2, &reasoning, &cost); err != nil {
+				break
+			}
+			if !sid.Valid || sid.String == "" {
+				continue
+			}
+			out = append(out, SessionUsage{
+				SessionID: sid.String,
+				Project:   directory.String,
+				Model:     model.String,
+				UpdatedAt: millisToISO(updated),
+				Calls:     int(calls.Int64),
+				Usage: map[string]any{
+					"inputTokens":      int64(in.Float64),
+					"outputTokens":     int64(out2.Float64),
+					"cacheReadTokens":  int64(cacheRead.Float64),
+					"cacheWriteTokens": int64(cacheWrite.Float64),
+					"reasoningTokens":  int64(reasoning.Float64),
+				},
+				Cost: cost.Float64,
+			})
+		}
+		rows.Close()
+	}
+
+	if openCodeHasV2(db) {
+		if rows, err := db.Query(`
+			SELECT s.id, s.directory, s.time_updated,
+			       (SELECT COUNT(*) FROM session_message m
+			         WHERE m.session_id = s.id AND m.type = 'assistant'),
+			       (SELECT COALESCE(json_extract(m2.data, '$.modelID'), '')
+			          FROM session_message m2
+			         WHERE m2.session_id = s.id AND m2.type = 'assistant'
+			         ORDER BY m2.seq DESC LIMIT 1),
+			       COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.input') AS REAL)), 0),
+			       COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.output') AS REAL)), 0),
+			       COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.cache.read') AS REAL)), 0),
+			       COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.cache.write') AS REAL)), 0),
+			       COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.reasoning') AS REAL)), 0),
+			       COALESCE(SUM(CAST(json_extract(m.data, '$.cost') AS REAL)), 0)
+			FROM session_v2 s
+			LEFT JOIN session_message m ON m.session_id = s.id AND m.type = 'assistant'
+			GROUP BY s.id`); err == nil {
+			collect(rows, true)
+		}
+		if openCodeHasTable(db, "session") {
+			// the V1 sessions that never migrated are history too, with the columns the
+			// 1.x schema kept on the session row itself
+			if rows, err := db.Query(`
+				SELECT s.id, s.directory, s.time_updated,
+				       (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id
+					          AND NOT EXISTS (SELECT 1 FROM session_v2 v WHERE v.id = m.session_id)),
+				       COALESCE(s.model->>'providerID', '') || CASE WHEN s.model->>'providerID' IS NOT NULL AND s.model->>'id' IS NOT NULL THEN '/' ELSE '' END || COALESCE(s.model->>'id', ''),
+				       COALESCE(SUM(s.tokens_input), 0), COALESCE(SUM(s.tokens_output), 0),
+				       COALESCE(SUM(s.tokens_reasoning), 0), COALESCE(SUM(s.cost), 0)
+				FROM session s
+				WHERE NOT EXISTS (SELECT 1 FROM session_v2 v WHERE v.id = s.id)
+				GROUP BY s.id`); err == nil {
+				collect(rows, false)
+			}
+		}
+		return out
+	}
+	if rows, err := db.Query(`
+		SELECT s.id, s.directory, s.time_updated,
+		       (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id),
+		       COALESCE(s.model->>'providerID', '') || CASE WHEN s.model->>'providerID' IS NOT NULL AND s.model->>'id' IS NOT NULL THEN '/' ELSE '' END || COALESCE(s.model->>'id', ''),
+		       COALESCE(SUM(s.tokens_input), 0), COALESCE(SUM(s.tokens_output), 0),
+		       COALESCE(SUM(s.tokens_reasoning), 0), COALESCE(SUM(s.cost), 0)
+		FROM session s
+		GROUP BY s.id`); err == nil {
+		collect(rows, false)
+	}
+	return out
+}
+
 func (s *OpenCodeSource) Mode() string     { return "opencode" }
 func (s *OpenCodeSource) Location() string { return s.dbPath }
 func (s *OpenCodeSource) Exists() bool     { return fileExists(s.dbPath) }

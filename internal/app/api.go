@@ -31,6 +31,32 @@ type SessionQueryAPI struct {
 	// the storage report, TTL cached like the session lists (see storageReport)
 	storageAt     time.Time
 	storageCached storageReport
+
+	// the usage report, TTL cached the same way — its first pass reads a final per
+	// session on the file-shaped sources, and no page needs it fresh to the second
+	usageAt     time.Time
+	usageCached usageReport
+}
+
+// usageReport answers what the sessions consumed, grouped the ways the questions come.
+// TTL cached: the first pass over a long history reads every session's final.
+func (a *SessionQueryAPI) usageReport() usageReport {
+	if a.cacheTTL > 0 {
+		a.mu.Lock()
+		if !a.usageAt.IsZero() && time.Since(a.usageAt) < a.cacheTTL {
+			cached := a.usageCached
+			a.mu.Unlock()
+			return cached
+		}
+		a.mu.Unlock()
+	}
+	report := usageReportFor(a.activeSources(), time.Now())
+	if a.cacheTTL > 0 {
+		a.mu.Lock()
+		a.usageAt, a.usageCached = time.Now(), report
+		a.mu.Unlock()
+	}
+	return report
 }
 
 // storageReport answers what the sources take on disk, grouped by source, project and

@@ -9,6 +9,7 @@ decided against for now.
 
 | Release | What it brought |
 |---|---|
+| v0.38.4 | **The page shows nothing — fixed**: the storage removal swept `refresh()` (and the error/version/warmup helpers beside it) out of app.js with the panel, so the page booted into an empty list while the API kept answering; the functions are back, and a test now guards the boot path's names |
 | v0.38.3 | **The storage report is gone** — a byte count answered a question nobody kept asking, and the walk over every file it cost went with it; the page's header button and panel too. `/usage` and MCP `get_usage_report` are where the numbers live |
 | v0.38.2 | **Rolling windows**: the usage report answers 24h / 3d / 7d / 30d / all — a calendar window reads differently depending on which day it is asked |
 | v0.38.1 | **Cost out, cache hit in**: the usage report carries no dollar figure — that would mean maintaining a price table — and every row carries `cacheHit` instead, the share of prompt tokens served from cache |

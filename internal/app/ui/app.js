@@ -4481,6 +4481,85 @@ async function syncDetail(options) {
 }
 
 // ---------------------------------------------------------------------------
+// Refreshing and errors
+// ---------------------------------------------------------------------------
+
+function handleError(err) {
+  if (err && err.status === 401) {
+    state.authRequired = true;
+    showGate('That token was rejected — paste it again');
+    if (state.timer) clearInterval(state.timer);
+    state.timer = null;
+  }
+}
+
+// serverChanged reloads the page when the server answering it is no longer the version
+// that served it. An installed web app on a phone is never reloaded by hand, so without
+// this the previous version's page would run against the new API until the phone
+// discarded it — and a layout fix would never arrive.
+function serverChanged(version) {
+  if (!version) return false;
+  if (!state.serverVersion) {
+    state.serverVersion = version;
+    return false;
+  }
+  if (version === state.serverVersion) return false;
+  location.reload();
+  return true;
+}
+
+function scheduleCountWarmup() {
+  const missing = state.sessions.some((session) =>
+    ['pi', 'claude', 'codex', 'gemini', 'grok'].includes(session.source) &&
+    !Number(session.messageCount) && !state.msgCounts.has(session.sessionId));
+  if (!missing || state.countWarmAttempts >= 12) {
+    if (!missing) state.countWarmAttempts = 0;
+    return;
+  }
+  if (state.countWarmTimer) return;
+  state.countWarmAttempts++;
+  state.countWarmTimer = setTimeout(() => {
+    state.countWarmTimer = null;
+    refresh();
+  }, 700);
+}
+
+// refresh refetches the list, then updates the stream. force marks an explicit refresh
+// (r, the button): the stream is refetched even when the reader has paged back — a
+// background refresh must not replace a paged window under them, but a pressed key is a
+// deliberate "update this now".
+async function refresh(options) {
+  const force = !!(options && options.force);
+  try {
+    const data = await api('/sessions?subagents=1' + (state.showArchived ? '&include_archived=1' : ''));
+    if (serverChanged(data.version)) return;
+    state.archivedTotal = Number(data.archived) || 0;
+    syncArchivedButton();
+    const all = data.sessions || [];
+    state.sessions = all.filter((s) => !s.parentSessionId);
+    state.byId = new Map(all.map((s) => [s.sessionId, s]));
+    indexAgents(all.filter((s) => s.parentSessionId));
+    state.loadedAt = new Date().toLocaleTimeString();
+    renderSources();
+    renderList();
+    scheduleCountWarmup();
+    await syncDetail(force ? { force: true } : {});
+    setStatus(idleStatus());
+  } catch (err) {
+    handleError(err);
+    setStatus('Refresh failed: ' + err.message);
+  }
+}
+
+function startAutoRefresh() {
+  if (state.timer) clearInterval(state.timer);
+  state.timer = setInterval(() => {
+    if (document.hidden) return; // do not call the API while the page is in the background
+    refresh();
+  }, REFRESH_MS);
+}
+
+// ---------------------------------------------------------------------------
 // Live follow
 // ---------------------------------------------------------------------------
 

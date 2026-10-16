@@ -1271,64 +1271,6 @@ button.icon-copy:hover { color: var(--fg); }
   100% { box-shadow: inset 2px 0 0 transparent; background: transparent; }
 }
 
-/* The header's sources-and-storage panel */
-.services-wrap { position: relative; display: inline-flex; }
-.services-panel {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  z-index: 60;
-  min-width: 340px;
-  max-width: min(420px, calc(100vw - 24px));
-  max-height: min(70vh, 480px);
-  overflow: auto;
-  background: var(--panel, #fff);
-  border: 1px solid var(--line, rgba(0,0,0,.12));
-  border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(0,0,0,.18);
-  padding: 12px 14px;
-}
-.services-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
-.services-title { font-weight: 600; }
-.services-version { opacity: .65; font-size: 12px; }
-.services-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.services-table th { text-align: left; font-weight: 500; opacity: .6; padding: 2px 8px 6px 0; }
-.services-table td { padding: 3px 8px 3px 0; white-space: nowrap; }
-.services-table tr.warn td:first-child::after { content: " ⚠"; }
-.services-source { font-weight: 600; }
-.services-warning { margin: 8px 0 0; font-size: 12px; color: var(--danger, #b91c1c); word-break: break-word; }
-.services-ages { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; font-size: 12px; }
-.services-ages-title { font-weight: 600; opacity: .7; }
-.services-age { opacity: .8; }
-.services-meta { display: inline-flex; align-items: center; gap: 10px; }
-.services-close { font-size: 12px; padding: 2px 8px; }
-
-/* On a phone the panel is a sheet from the bottom — the header's button is not its
-   anchor there, and a top-centred box fights the notch and the status bar an installed
-   app runs under */
-@media (max-width: 860px) {
-  #services { width: 36px; height: 36px; }
-  .services-panel {
-    position: fixed;
-    top: auto;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    transform: none;
-    width: auto;
-    min-width: 0;
-    max-width: none;
-    max-height: min(72dvh, 560px);
-    border-radius: 14px 14px 0 0;
-    border-bottom: none;
-    box-shadow: 0 -12px 32px rgba(0,0,0,.2);
-    padding: 10px 16px calc(12px + var(--safe-bottom));
-  }
-  .services-table th:nth-child(3), .services-table td:nth-child(3),
-  .services-table th:nth-child(4), .services-table td:nth-child(4) { text-align: right; }
-  .services-table td { white-space: normal; overflow-wrap: anywhere; }
-  .services-age { white-space: nowrap; }
-}
 
 /* What the week consumed, at the top of the services panel */
 .services-usage { margin: 0 0 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line-soft, var(--line)); }

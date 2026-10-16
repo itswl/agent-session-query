@@ -24,6 +24,15 @@ type JsonMapSource struct {
 
 func newJsonMapSource(def jsonMapDef) *JsonMapSource { return &JsonMapSource{def: def} }
 
+// Usage answers the sessions' accounting from Hermes's database when the all-SQLite
+// layout is the one in use; the jsonl layout answers through its finals instead.
+func (s *JsonMapSource) Usage() []SessionUsage {
+	if s.def.stateDB != "" && fileExists(s.def.stateDB) && !fileExists(s.def.sessionsJSON) {
+		return hermesSQLiteUsage(s.def.stateDB)
+	}
+	return nil
+}
+
 func (s *JsonMapSource) Mode() string { return s.def.mode }
 
 // setListError records how the last list went; nil means it went fine, so this also clears

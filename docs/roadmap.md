@@ -9,6 +9,7 @@ decided against for now.
 
 | Release | What it brought |
 |---|---|
+| v0.38.3 | **The storage report is gone** — a byte count answered a question nobody kept asking, and the walk over every file it cost went with it; the page's header button and panel too. `/usage` and MCP `get_usage_report` are where the numbers live |
 | v0.38.2 | **Rolling windows**: the usage report answers 24h / 3d / 7d / 30d / all — a calendar window reads differently depending on which day it is asked |
 | v0.38.1 | **Cost out, cache hit in**: the usage report carries no dollar figure — that would mean maintaining a price table — and every row carries `cacheHit` instead, the share of prompt tokens served from cache |
 | v0.38.0 | **What the sessions consumed**: `/usage` and MCP `get_usage_report` — tokens and cost for today / this week / this month / all, by model, by day, by source, by project; Claude Code's closing `cost-state` row is read for the cost no message row knows; the page's services panel opens with the week and the models that did the work |

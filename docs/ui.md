@@ -85,14 +85,6 @@ gesture walks the same way back. Each screen scrolls as a page does, its head fi
 the top, and keeps its place while another screen is up; the search box and list filters
 belong to the list, so a conversation or a details screen opens straight into content.
 
-## The header's services panel
-
-The bar-chart button opens the sources-and-storage panel: which sources are on (a ⚠
-beside one that failed to read, with the error below), how many sessions each holds and
-what they take on disk — beside what the source keeps anyway — and the age split of the
-whole history. It is the difference between "no sessions" and "a source broke", stated
-in one place; the data comes from `/health` and `/storage` and is cached for a minute.
-
 ## Live follow
 
 A session still being written is followed as it grows: while the open session is active,

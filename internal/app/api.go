@@ -28,12 +28,9 @@ type SessionQueryAPI struct {
 	mu    sync.Mutex
 	cache map[string]*cachedRecords
 
-	// the storage report, TTL cached like the session lists (see storageReport)
-	storageAt     time.Time
-	storageCached storageReport
-
-	// the usage report, TTL cached the same way — its first pass reads a final per
-	// session on the file-shaped sources, and no page needs it fresh to the second
+	// the usage report, TTL cached like the session lists — its first pass reads a
+	// final per session on the file-shaped sources, and no page needs it fresh to the
+	// second
 	usageAt     time.Time
 	usageCached usageReport
 }
@@ -54,28 +51,6 @@ func (a *SessionQueryAPI) usageReport() usageReport {
 	if a.cacheTTL > 0 {
 		a.mu.Lock()
 		a.usageAt, a.usageCached = time.Now(), report
-		a.mu.Unlock()
-	}
-	return report
-}
-
-// storageReport answers what the sources take on disk, grouped by source, project and
-// session age — TTL cached, because sizing every session is a walk over every file and
-// no page needs it fresh to the second.
-func (a *SessionQueryAPI) storageReport() storageReport {
-	if a.cacheTTL > 0 {
-		a.mu.Lock()
-		if !a.storageAt.IsZero() && time.Since(a.storageAt) < a.cacheTTL {
-			cached := a.storageCached
-			a.mu.Unlock()
-			return cached
-		}
-		a.mu.Unlock()
-	}
-	report := storageReportFor(a.activeSources(), time.Now())
-	if a.cacheTTL > 0 {
-		a.mu.Lock()
-		a.storageAt, a.storageCached = time.Now(), report
 		a.mu.Unlock()
 	}
 	return report

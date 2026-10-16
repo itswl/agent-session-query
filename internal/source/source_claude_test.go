@@ -9,7 +9,8 @@ import (
 	"unicode/utf8"
 )
 
-func TestClaudeSource(t *testing.T) {	root := t.TempDir()
+func TestClaudeSource(t *testing.T) {
+	root := t.TempDir()
 	path := filepath.Join(root, "proj-x", "11111111-2222-3333-4444-555555555555.jsonl")
 	write(t, path,
 		`{"type":"user","uuid":"u1","sessionId":"cccc","cwd":"/home/imwl/proj","timestamp":"2026-09-14T07:14:06.596Z","message":{"role":"user","content":"write a greeting"}}`,

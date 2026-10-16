@@ -246,7 +246,7 @@ func hermesSQLiteUsage(dbPath string) []SessionUsage {
 			       COALESCE((SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id), s.ended_at),
 			       COALESCE(s.message_count, 0), COALESCE(s.model, ''),
 			       COALESCE(SUM(s.input_tokens), 0), COALESCE(SUM(s.output_tokens), 0),
-			       COALESCE(SUM(s.reasoning_tokens), 0), COALESCE(SUM(s.estimated_cost_usd), 0)
+			       COALESCE(SUM(s.reasoning_tokens), 0)
 			FROM sessions s GROUP BY s.id`)
 		if err != nil {
 			return err
@@ -256,8 +256,7 @@ func hermesSQLiteUsage(dbPath string) []SessionUsage {
 			var sid, cwd, model sql.NullString
 			var lastMsg sql.NullFloat64
 			var calls, in, out2, reasoning sql.NullInt64
-			var cost sql.NullFloat64
-			if err := rows.Scan(&sid, &cwd, &lastMsg, &calls, &model, &in, &out2, &reasoning, &cost); err != nil {
+			if err := rows.Scan(&sid, &cwd, &lastMsg, &calls, &model, &in, &out2, &reasoning); err != nil {
 				return err
 			}
 			if !sid.Valid || sid.String == "" {
@@ -278,7 +277,6 @@ func hermesSQLiteUsage(dbPath string) []SessionUsage {
 					"outputTokens":    out2.Int64,
 					"reasoningTokens": reasoning.Int64,
 				},
-				Cost: cost.Float64,
 			})
 		}
 		return rows.Err()

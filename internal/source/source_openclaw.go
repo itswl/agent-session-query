@@ -315,8 +315,7 @@ func (s *OpenClawSource) Usage() []SessionUsage {
 			       COALESCE(SUM(CAST(json_extract(te.event_json, '$.message.usage.input') AS REAL)), 0),
 			       COALESCE(SUM(CAST(json_extract(te.event_json, '$.message.usage.output') AS REAL)), 0),
 			       COALESCE(SUM(CAST(json_extract(te.event_json, '$.message.usage.cacheRead') AS REAL)), 0),
-			       COALESCE(SUM(CAST(json_extract(te.event_json, '$.message.usage.cacheWrite') AS REAL)), 0),
-			       COALESCE(SUM(CAST(json_extract(te.event_json, '$.message.usage.cost.total') AS REAL)), 0)
+			       COALESCE(SUM(CAST(json_extract(te.event_json, '$.message.usage.cacheWrite') AS REAL)), 0)
 			FROM session_windows w
 			LEFT JOIN transcript_events te
 			  ON te.session_id = w.session_id
@@ -329,8 +328,8 @@ func (s *OpenClawSource) Usage() []SessionUsage {
 		for rows.Next() {
 			var sid, cwd, model sql.NullString
 			var updated sql.NullInt64
-			var in, out2, cacheRead, cacheWrite, cost sql.NullFloat64
-			if err := rows.Scan(&sid, &cwd, &updated, &model, &in, &out2, &cacheRead, &cacheWrite, &cost); err != nil {
+			var in, out2, cacheRead, cacheWrite sql.NullFloat64
+			if err := rows.Scan(&sid, &cwd, &updated, &model, &in, &out2, &cacheRead, &cacheWrite); err != nil {
 				break
 			}
 			if !sid.Valid || sid.String == "" {
@@ -347,7 +346,6 @@ func (s *OpenClawSource) Usage() []SessionUsage {
 					"cacheReadTokens": int64(cacheRead.Float64),
 					"cacheWrite":      int64(cacheWrite.Float64),
 				},
-				Cost: cost.Float64,
 			})
 		}
 		rows.Close()

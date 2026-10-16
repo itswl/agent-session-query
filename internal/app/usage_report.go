@@ -16,7 +16,7 @@ type usageTotalsRow struct {
 	Sessions int              `json:"sessions"`
 	Calls    int              `json:"modelCalls"`
 	Tokens   map[string]int64 `json:"tokens"`
-	Cost     float64          `json:"estimatedCostUsd"`
+	CacheHit float64          `json:"cacheHit"` // cacheRead / (input + cacheRead), 0..1
 }
 
 type usageModelRow struct {
@@ -24,14 +24,14 @@ type usageModelRow struct {
 	Sessions int              `json:"sessions"`
 	Calls    int              `json:"modelCalls"`
 	Tokens   map[string]int64 `json:"tokens"`
-	Cost     float64          `json:"estimatedCostUsd"`
+	CacheHit float64          `json:"cacheHit"`
 }
 
 type usageDayRow struct {
 	Day      string           `json:"day"`
 	Sessions int              `json:"sessions"`
 	Tokens   map[string]int64 `json:"tokens"`
-	Cost     float64          `json:"estimatedCostUsd"`
+	CacheHit float64          `json:"cacheHit"`
 }
 
 type usageReport struct {
@@ -47,14 +47,14 @@ type usageTotalsRow2 struct {
 	Source   string           `json:"source"`
 	Sessions int              `json:"sessions"`
 	Tokens   map[string]int64 `json:"tokens"`
-	Cost     float64          `json:"estimatedCostUsd"`
+	CacheHit float64          `json:"cacheHit"`
 }
 
 type usageProjectRow2 struct {
 	Project  string           `json:"project"`
 	Sessions int              `json:"sessions"`
 	Tokens   map[string]int64 `json:"tokens"`
-	Cost     float64          `json:"estimatedCostUsd"`
+	CacheHit float64          `json:"cacheHit"`
 }
 
 // usageTokenOrder is what a tokens map holds — everything but the cost, which rides as
@@ -63,14 +63,24 @@ var usageTokenOrder = []string{
 	"inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens",
 }
 
-func (r *usageTotalsRow) addUsage(tokens map[string]any, cost float64, calls int) {
+func (r *usageTotalsRow) addUsage(tokens map[string]any, calls int) {
 	r.Calls += calls
-	r.Cost += cost
 	for _, name := range usageTokenOrder {
 		if n, ok := toInt64(tokens[name]); ok {
 			r.Tokens[name] += n
 		}
 	}
+}
+
+// cacheHitOf is the share of prompt tokens served from cache: cacheRead over everything
+// that would otherwise have been input. 0 when the source records no cache numbers —
+// not a 0% hit rate, but the honest "unknown" a report can carry as a zero.
+func cacheHitOf(tokens map[string]int64) float64 {
+	denom := tokens["inputTokens"] + tokens["cacheReadTokens"]
+	if denom <= 0 {
+		return 0
+	}
+	return float64(tokens["cacheReadTokens"]) / float64(denom)
 }
 
 func toInt64(v any) (int64, bool) {
@@ -85,25 +95,12 @@ func toInt64(v any) (int64, bool) {
 	return 0, false
 }
 
-func toFloat64(v any) (float64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return n, true
-	case int64:
-		return float64(n), true
-	case int:
-		return float64(n), true
-	}
-	return 0, false
-}
-
 // oneSessionUsage is what a single session contributed, read from the source that owns it
 type oneSessionUsage struct {
 	project   string
 	model     string
 	updatedAt string
 	tokens    map[string]any
-	cost      float64
 	calls     int
 }
 
@@ -117,7 +114,7 @@ func usageSessionsOf(src source.SessionSource) []oneSessionUsage {
 			for _, row := range rows {
 				out = append(out, oneSessionUsage{
 					project: row.Project, model: row.Model, updatedAt: row.UpdatedAt,
-					tokens: row.Usage, cost: row.Cost, calls: row.Calls,
+					tokens: row.Usage, calls: row.Calls,
 				})
 			}
 			return out
@@ -133,17 +130,13 @@ func usageSessionsOf(src source.SessionSource) []oneSessionUsage {
 		if len(tokens) == 0 {
 			continue
 		}
-		cost := 0.0
-		if c, ok := toFloat64(tokens["estimatedCostUsd"]); ok {
-			cost = c // a cost is a fraction of a dollar; an integer cast would zero it
-		}
 		calls := 0
 		if n, ok := toInt64(final["messageCount"]); ok {
 			calls = int(n)
 		}
 		out = append(out, oneSessionUsage{
 			project: rec.ProjectName(), model: toString(final["model"]), updatedAt: rec.UpdatedAt,
-			tokens: tokens, cost: cost, calls: calls,
+			tokens: tokens, calls: calls,
 		})
 	}
 	return out
@@ -186,10 +179,9 @@ func usageReportFor(sources []source.SessionSource, now time.Time) usageReport {
 	for _, src := range sources {
 		srcRow := &usageTotalsRow2{Source: src.Mode(), Tokens: map[string]int64{}}
 		for _, session := range usageSessionsOf(src) {
-			windows["all"].addUsage(session.tokens, session.cost, session.calls)
+			windows["all"].addUsage(session.tokens, session.calls)
 			windows["all"].Sessions++
 			srcRow.Sessions++
-			srcRow.Cost += session.cost
 			for _, name := range usageTokenOrder {
 				if n, ok := toInt64(session.tokens[name]); ok {
 					srcRow.Tokens[name] += n
@@ -198,15 +190,15 @@ func usageReportFor(sources []source.SessionSource, now time.Time) usageReport {
 
 			if ts, ok := source.ParseTimestamp(session.updatedAt); ok {
 				if utcDay(ts) == today {
-					windows["today"].addUsage(session.tokens, session.cost, session.calls)
+					windows["today"].addUsage(session.tokens, session.calls)
 					windows["today"].Sessions++
 				}
 				if ts.After(weekAgo) {
-					windows["this week"].addUsage(session.tokens, session.cost, session.calls)
+					windows["this week"].addUsage(session.tokens, session.calls)
 					windows["this week"].Sessions++
 				}
 				if ts.After(monthStart) {
-					windows["this month"].addUsage(session.tokens, session.cost, session.calls)
+					windows["this month"].addUsage(session.tokens, session.calls)
 					windows["this month"].Sessions++
 				}
 				if day := utcDay(ts); day >= cutoffDay {
@@ -216,7 +208,6 @@ func usageReportFor(sources []source.SessionSource, now time.Time) usageReport {
 						days[day] = entry
 					}
 					entry.Sessions++
-					entry.Cost += session.cost
 					for _, name := range usageTokenOrder {
 						if n, ok := toInt64(session.tokens[name]); ok {
 							entry.Tokens[name] += n
@@ -236,7 +227,6 @@ func usageReportFor(sources []source.SessionSource, now time.Time) usageReport {
 			}
 			entry.Sessions++
 			entry.Calls += session.calls
-			entry.Cost += session.cost
 			for _, name := range usageTokenOrder {
 				if n, ok := toInt64(session.tokens[name]); ok {
 					entry.Tokens[name] += n
@@ -253,7 +243,6 @@ func usageReportFor(sources []source.SessionSource, now time.Time) usageReport {
 				projects[project] = proj
 			}
 			proj.Sessions++
-			proj.Cost += session.cost
 			for _, name := range usageTokenOrder {
 				if n, ok := toInt64(session.tokens[name]); ok {
 					proj.Tokens[name] += n
@@ -265,26 +254,31 @@ func usageReportFor(sources []source.SessionSource, now time.Time) usageReport {
 		}
 	}
 	for name, row := range windows {
+		row.CacheHit = cacheHitOf(row.Tokens)
 		report.Windows[name] = *row
 	}
 
 	for _, row := range models {
+		row.CacheHit = cacheHitOf(row.Tokens)
 		report.ByModel = append(report.ByModel, *row)
 	}
 	sort.Slice(report.ByModel, func(i, j int) bool {
 		return usageRowWeight(report.ByModel[i].Tokens) > usageRowWeight(report.ByModel[j].Tokens)
 	})
 	for _, row := range days {
+		row.CacheHit = cacheHitOf(row.Tokens)
 		report.ByDay = append(report.ByDay, *row)
 	}
 	sort.Slice(report.ByDay, func(i, j int) bool { return report.ByDay[i].Day < report.ByDay[j].Day })
 	for _, row := range perSource {
+		row.CacheHit = cacheHitOf(row.Tokens)
 		report.BySource = append(report.BySource, *row)
 	}
 	sort.Slice(report.BySource, func(i, j int) bool {
 		return usageRowWeight(report.BySource[i].Tokens) > usageRowWeight(report.BySource[j].Tokens)
 	})
 	for _, row := range projects {
+		row.CacheHit = cacheHitOf(row.Tokens)
 		report.ByProject = append(report.ByProject, *row)
 	}
 	sort.Slice(report.ByProject, func(i, j int) bool {

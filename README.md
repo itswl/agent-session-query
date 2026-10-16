@@ -127,7 +127,7 @@ marked "yes" require `Authorization: Bearer <token>`.
 | `/files?path=` | yes | Which sessions touched a file |
 | `/projects` | yes | Session counts by project |
 | `/storage` | yes | What the sessions take on disk: by source, by project, by session age |
-| `/usage` | yes | What the sessions consumed: tokens and cost, by window, model, day and project |
+| `/usage` | yes | What the sessions consumed: tokens and cache hit rate, by window, model, day and project |
 | `/export?project=&since=` | yes | Several sessions as one pack document |
 | `/mcp` | yes | MCP's Streamable HTTP transport |
 

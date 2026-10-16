@@ -824,7 +824,7 @@ func mcpTools() []map[string]any {
 		},
 		{
 			"name":        "get_usage_report",
-			"description": "What the sessions consumed: tokens and cost for today / this week / this month / all, by model, by day (last 30), by source and by project. A session's usage lands where it was last updated; cost appears where the CLI recorded one.",
+			"description": "What the sessions consumed: tokens (input, output, cache reads and writes, reasoning) for today / this week / this month / all, with the cache hit rate, by model, by day (last 30), by source and by project. A session's usage lands where it was last updated.",
 			"annotations": readOnlyAnnotations("Get usage report"),
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 				"projects": intSchema("maximum project rows, largest first, default 20"),

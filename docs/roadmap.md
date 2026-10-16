@@ -9,6 +9,7 @@ decided against for now.
 
 | Release | What it brought |
 |---|---|
+| v0.38.1 | **Cost out, cache hit in**: the usage report carries no dollar figure — that would mean maintaining a price table — and every row carries `cacheHit` instead, the share of prompt tokens served from cache |
 | v0.38.0 | **What the sessions consumed**: `/usage` and MCP `get_usage_report` — tokens and cost for today / this week / this month / all, by model, by day, by source, by project; Claude Code's closing `cost-state` row is read for the cost no message row knows; the page's services panel opens with the week and the models that did the work |
 | v0.37.0 | **Storage, sight and live follow**: `/storage` and MCP `get_storage_report` size the history three ways — by source (with the overhead kept besides sessions), by project, by session age; the page's header panel shows which sources are on and what failed; an open, active session is followed as it grows, new rounds arriving marked |
 | v0.36.0 | **The drift defence**: `--check` names every source with found-or-not, a session count and a deep read of the newest session (exit 1 when one fails); a Grok session still running is read from its `chat_history.jsonl` — `isProcessing`, usage from `usage.json` — instead of waiting for the ACP stream Grok only flushes at the end; a source whose directory disappears drops out of the enabled set instead of lingering in `/health`; `?source=` reaches `/messages` and `/final` the way it already reached rounds and briefs |

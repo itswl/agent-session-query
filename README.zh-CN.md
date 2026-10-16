@@ -121,7 +121,7 @@ go build -o agent-session-query ./cmd/agent-session-query
 | `/files?path=` | 是 | 哪些会话动过某个文件 |
 | `/projects` | 是 | 按项目分组的会话数 |
 | `/storage` | 是 | 会话占用磁盘的情况：按源、按项目、按会话年龄 |
-| `/usage` | 是 | 会话消耗了多少：token 与成本，按窗口、模型、天、项目 |
+| `/usage` | 是 | 会话消耗了多少：token 与缓存命中率，按窗口、模型、天、项目 |
 | `/export?project=&since=` | 是 | 多个会话打包成一份文档 |
 | `/mcp` | 是 | MCP 的 Streamable HTTP 传输 |
 

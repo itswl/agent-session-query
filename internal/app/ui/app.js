@@ -4504,6 +4504,12 @@ function humanTokens(tokens) {
   return part(t.inputTokens) + ' in · ' + part(t.outputTokens) + ' out';
 }
 
+// the share of prompt tokens served from cache, when the source records cache at all
+function cacheHitLabel(hit) {
+  if (!Number.isFinite(hit) || hit <= 0) return '';
+  return ' · cache ' + Math.round(hit * 100) + '%';
+}
+
 function toggleServicesPanel() {
   const panel = $('services-panel');
   const opening = panel.classList.contains('hidden');
@@ -4555,13 +4561,12 @@ function servicesPanelNode({ health, storage, usage }) {
     const block = el('div', 'services-usage');
     const title = el('div', 'services-usage-title');
     title.appendChild(el('span', 'services-ages-title', 'this week'));
-    const cost = Number(week.estimatedCostUsd) || 0;
-    if (cost > 0) title.appendChild(el('span', 'services-usage-cost', '$' + cost.toFixed(2)));
     block.appendChild(title);
-    block.appendChild(el('div', 'services-usage-tokens', humanTokens(week.tokens)));
+    block.appendChild(el('div', 'services-usage-tokens',
+      humanTokens(week.tokens) + cacheHitLabel(week.cacheHit)));
     const models = el('div', 'services-usage-models');
     for (const m of (usage.byModel || []).slice(0, 3)) {
-      const row = el('span', 'services-age', m.model + ' · ' + humanTokens(m.tokens));
+      const row = el('span', 'services-age', m.model + ' · ' + humanTokens(m.tokens) + cacheHitLabel(m.cacheHit));
       models.appendChild(row);
     }
     if (models.childElementCount) block.appendChild(models);

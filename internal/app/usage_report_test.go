@@ -36,6 +36,13 @@ func TestUsageReport(t *testing.T) {
 	if report.Windows["all"].Tokens["inputTokens"] != 1050 {
 		t.Fatalf("input tokens = %v", report.Windows["all"].Tokens)
 	}
+	// cache hit: the only cache numbers are aaaa's 500 read against 1000+50 input
+	if hit := report.Windows["all"].CacheHit; hit < 0.31 || hit > 0.33 {
+		t.Fatalf("cacheHit = %v, want 500/1050", hit)
+	}
+	if report.ByModel[0].CacheHit != report.Windows["all"].CacheHit {
+		t.Fatalf("the model row carries the same hit: %v", report.ByModel[0])
+	}
 	// the recent session lands in today, this week and this month; the two-day-old one
 	// only in this month when the month is old enough — assert no more than the fresh one
 	if report.Windows["today"].Sessions != 1 || report.Windows["today"].Tokens["inputTokens"] != 50 {

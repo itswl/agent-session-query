@@ -132,12 +132,11 @@ func (s *OpenCodeSource) Usage() []SessionUsage {
 			var sid, directory, model sql.NullString
 			var updated, calls sql.NullInt64
 			var in, out2, cacheRead, cacheWrite, reasoning sql.NullFloat64
-			var cost sql.NullFloat64
 			if fromV2 {
-				if err := rows.Scan(&sid, &directory, &updated, &calls, &model, &in, &out2, &cacheRead, &cacheWrite, &reasoning, &cost); err != nil {
+				if err := rows.Scan(&sid, &directory, &updated, &calls, &model, &in, &out2, &cacheRead, &cacheWrite, &reasoning); err != nil {
 					break
 				}
-			} else if err := rows.Scan(&sid, &directory, &updated, &calls, &model, &in, &out2, &reasoning, &cost); err != nil {
+			} else if err := rows.Scan(&sid, &directory, &updated, &calls, &model, &in, &out2, &reasoning); err != nil {
 				break
 			}
 			if !sid.Valid || sid.String == "" {
@@ -156,7 +155,6 @@ func (s *OpenCodeSource) Usage() []SessionUsage {
 					"cacheWriteTokens": int64(cacheWrite.Float64),
 					"reasoningTokens":  int64(reasoning.Float64),
 				},
-				Cost: cost.Float64,
 			})
 		}
 		rows.Close()
@@ -175,8 +173,7 @@ func (s *OpenCodeSource) Usage() []SessionUsage {
 			       COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.output') AS REAL)), 0),
 			       COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.cache.read') AS REAL)), 0),
 			       COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.cache.write') AS REAL)), 0),
-			       COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.reasoning') AS REAL)), 0),
-			       COALESCE(SUM(CAST(json_extract(m.data, '$.cost') AS REAL)), 0)
+			       COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.reasoning') AS REAL)), 0)
 			FROM session_v2 s
 			LEFT JOIN session_message m ON m.session_id = s.id AND m.type = 'assistant'
 			GROUP BY s.id`); err == nil {
@@ -191,7 +188,7 @@ func (s *OpenCodeSource) Usage() []SessionUsage {
 					          AND NOT EXISTS (SELECT 1 FROM session_v2 v WHERE v.id = m.session_id)),
 				       COALESCE(s.model->>'providerID', '') || CASE WHEN s.model->>'providerID' IS NOT NULL AND s.model->>'id' IS NOT NULL THEN '/' ELSE '' END || COALESCE(s.model->>'id', ''),
 				       COALESCE(SUM(s.tokens_input), 0), COALESCE(SUM(s.tokens_output), 0),
-				       COALESCE(SUM(s.tokens_reasoning), 0), COALESCE(SUM(s.cost), 0)
+				       COALESCE(SUM(s.tokens_reasoning), 0)
 				FROM session s
 				WHERE NOT EXISTS (SELECT 1 FROM session_v2 v WHERE v.id = s.id)
 				GROUP BY s.id`); err == nil {
@@ -205,7 +202,7 @@ func (s *OpenCodeSource) Usage() []SessionUsage {
 		       (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id),
 		       COALESCE(s.model->>'providerID', '') || CASE WHEN s.model->>'providerID' IS NOT NULL AND s.model->>'id' IS NOT NULL THEN '/' ELSE '' END || COALESCE(s.model->>'id', ''),
 		       COALESCE(SUM(s.tokens_input), 0), COALESCE(SUM(s.tokens_output), 0),
-		       COALESCE(SUM(s.tokens_reasoning), 0), COALESCE(SUM(s.cost), 0)
+		       COALESCE(SUM(s.tokens_reasoning), 0)
 		FROM session s
 		GROUP BY s.id`); err == nil {
 		collect(rows, false)

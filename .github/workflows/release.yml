@@ -83,7 +83,7 @@ jobs:
       # and gh release create is not atomic: on v0.10.1 two jobs passed the "does it
       # exist" check in the same second and two releases appeared, each holding part of
       # the artifacts. One publisher removes the race rather than narrowing it.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: agent-session-query-${{ matrix.goos }}-${{ matrix.goarch }}
           path: agent-session-query-${{ matrix.goos }}-${{ matrix.goarch }}.*
@@ -92,7 +92,7 @@ jobs:
       # Named outside agent-session-query-*: the publish job downloads by that pattern and
       # must not see these
       - if: matrix.goos == 'linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: image-${{ matrix.goos }}-${{ matrix.goarch }}
           path: image/
@@ -111,7 +111,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: image-linux-*
           path: dist-image
@@ -119,16 +119,16 @@ jobs:
 
       # Multi-platform needs buildx. QEMU does not come into it: nothing runs during this
       # build, it is COPY and metadata only.
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -137,7 +137,7 @@ jobs:
             type=semver,pattern={{major}}
             type=raw,value=latest
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         env:
           # The build record is an artifact nobody reads here, and an extra artifact is one
           # more thing the publish job's download could trip over
@@ -165,7 +165,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           # Only the build matrix's artifacts. Without a pattern this fetched every artifact of
           # the run — including the image job's build record — and one failed download of

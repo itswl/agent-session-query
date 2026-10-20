@@ -1,15 +1,16 @@
 package source
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -342,15 +343,127 @@ func (r Record) MatchRank(patternLower string) int {
 // ---------------------------------------------------------------------------
 
 // maxLineBytes caps a single line (Claude Code tool output can get large). The buffer
-// grows on demand, so a normal file never needs more than the initial 64 KB. If a line
-// really does exceed the cap, Scanner aborts — note that means "nothing after this line
+// grows on demand, so a normal file never needs more than its first read. If a line
+// really does exceed the cap, the scan aborts — note that means "nothing after this line
 // is read", not "this line is skipped", which is why the error below must be surfaced.
 const maxLineBytes = 256 * 1024 * 1024
 
+// The scan buffer: every line of every session file is read through it — a full search,
+// the background message counts, every source's head and final. Sizing it by the file and
+// reusing it across scans removes the fresh 64 KB (and the repeated doubling) that a scan
+// used to cost; the cap keeps one pathologically long line from pinning a big buffer in
+// the pool.
+const (
+	scanBufSteady = 64 * 1024   // a scan's smallest, and the pool's usual resident
+	scanBufStart  = 1024 * 1024 // a scan starts at the file's own size, up to this
+	scanBufKeep   = 1024 * 1024 // large buffers are not returned to the pool
+)
+
+var scanBufPool = sync.Pool{New: func() any { b := make([]byte, scanBufSteady); return &b }}
+
+// lineReader walks a file line by line, keeping the bytes that follow a newline in its
+// own buffer instead of losing them to the next Read.
+type lineReader struct {
+	f    *os.File
+	buf  []byte
+	r, w int // unconsumed bytes are buf[r:w]
+	eof  bool
+}
+
+// next returns the next line without its newline, as a view into the reader's buffer
+// (valid until the following call). io.EOF when the file is done.
+func (r *lineReader) next() ([]byte, error) {
+	for {
+		if i := bytes.IndexByte(r.buf[r.r:r.w], '\n'); i >= 0 {
+			line := r.buf[r.r : r.r+i]
+			r.r += i + 1
+			return line, nil
+		}
+		// Everything still buffered belongs to one unfinished line: move it to the
+		// front, so a full buffer means the line alone fills it.
+		if r.r > 0 {
+			copy(r.buf, r.buf[r.r:r.w])
+			r.w -= r.r
+			r.r = 0
+		}
+		// A line longer than what is buffered: gather it once, at its own size, rather
+		// than doubling a buffer a fragment at a time.
+		if r.w == len(r.buf) {
+			return r.gather()
+		}
+		if r.eof {
+			if r.w == 0 {
+				return nil, io.EOF
+			}
+			line := r.buf[r.r:r.w]
+			r.r = r.w
+			return line, nil
+		}
+		n, err := r.f.Read(r.buf[r.w:])
+		r.w += n
+		if err != nil {
+			if err == io.EOF {
+				r.eof = true
+				continue
+			}
+			return nil, err
+		}
+	}
+}
+
+// gather reads the rest of a long line at the size it turns out to be: the buffer is
+// full and holds no newline, so the end is found by scanning the file (without keeping
+// what it passes) and then the line is read back in one pass, at its own length.
+func (r *lineReader) gather() ([]byte, error) {
+	end, err := r.f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return nil, err
+	}
+	lineStart := end - int64(r.w)
+	length := int64(r.w)
+	chunk := make([]byte, scanBufSteady)
+	terminated := false
+	for !terminated {
+		n, readErr := r.f.Read(chunk)
+		if i := bytes.IndexByte(chunk[:n], '\n'); i >= 0 {
+			length += int64(i)
+			terminated = true
+			// The bytes after the newline belong to the next line: put the file back at it
+			if _, err := r.f.Seek(lineStart+length+1, io.SeekStart); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		length += int64(n)
+		if length > maxLineBytes {
+			return nil, errLineTooLong
+		}
+		if readErr == io.EOF {
+			// The line runs to the end of the file
+			break
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
+	}
+	line := make([]byte, length)
+	if _, err := r.f.Seek(lineStart, io.SeekStart); err != nil {
+		return nil, err
+	}
+	if _, err := io.ReadFull(r.f, line); err != nil {
+		return nil, err
+	}
+	r.w, r.r = 0, 0
+	return line, nil
+}
+
+// errLineTooLong ends a scan at a line maxLineBytes cannot hold (see maxLineBytes)
+var errLineTooLong = errors.New("line longer than the scan cap")
+
 // EachJSONLLine walks raw bytes line by line. The slice handed to the callback is only
-// valid for that call (the buffer is reused); copy it to keep it. Scanner rather than
-// ReadBytes: Scanner.Bytes() is a view into the internal buffer, so no allocation per
-// line — measured ~40% faster than line-wise ReadBytes over a 3000-line session.
+// valid for that call (the buffer is reused); copy it to keep it. A line is returned as a
+// view into the read buffer, so there is no allocation per line — the callback decodes it
+// where it lies.
 func EachJSONLLine(path string, fn func(line []byte) bool) {
 	eachJSONLLineFrom(path, 0, fn)
 }
@@ -371,21 +484,49 @@ func eachJSONLLineFrom(path string, from int64, fn func(line []byte) bool) {
 		}
 	}
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
+	// Start at the size the file asks for, capped: most session files are one or a few
+	// reads, and the buffer is reused by the next scan (see scanBufPool).
+	want := scanBufSteady
+	if info, err := f.Stat(); err == nil {
+		if remaining := info.Size() - from; remaining > 0 && remaining < scanBufStart {
+			want = int(remaining)
+		} else if remaining >= scanBufStart {
+			want = scanBufStart
+		}
+	}
+	bufp := scanBufPool.Get().(*[]byte)
+	buf := *bufp
+	if cap(buf) < want {
+		buf = make([]byte, want)
+	}
+	buf = buf[:want]
+	defer func() {
+		if cap(buf) <= scanBufKeep {
+			*bufp = buf[:0]
+			scanBufPool.Put(bufp)
+		} else {
+			// The pool keeps whatever it had; a one-off huge buffer is left to the GC
+			scanBufPool.Put(bufp)
+		}
+	}()
+
+	reader := &lineReader{f: f, buf: buf}
+	for {
+		line, err := reader.next()
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] reading %s stopped; the rest of the file was not parsed: %v\n", path, err)
+			return
+		}
+		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
 		if !fn(line) {
 			return
 		}
-	}
-	// An over-long line or a read failure makes the rest of the file unreachable;
-	// truncating silently is far harder to diagnose than saying so
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "[WARN] reading %s stopped; the rest of the file was not parsed: %v\n", path, err)
 	}
 }
 

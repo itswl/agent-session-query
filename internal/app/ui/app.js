@@ -2108,6 +2108,40 @@ function fileOf(args) {
   return '';
 }
 
+// fileKindOf classifies a path by convention, the way the server's fileKind does: tests
+// first (a *_test.go is a test, not code), then docs, then config, everything else code
+function fileKindOf(path) {
+  const p = String(path).replace(/\\/g, '/').toLowerCase();
+  const parts = p.split('/');
+  const base = parts.pop();
+  const dirs = parts;
+  const hasDir = (...names) => dirs.some((d) => names.includes(d));
+  if (base.endsWith('_test.go') || base.endsWith('_test.py') ||
+      (base.startsWith('test_') && base.endsWith('.py')) ||
+      base.includes('.test.') || base.includes('.spec.') ||
+      hasDir('test', 'tests', '__tests__', 'spec', 'specs')) return 'test';
+  if (base.endsWith('.md') || base.endsWith('.mdx') || base.endsWith('.rst') ||
+      hasDir('docs', 'doc', 'documentation') ||
+      /^(readme|changelog|license|contributing)/.test(base)) return 'docs';
+  if (/\.(json|ya?ml|toml|ini|cfg|conf|lock)$/.test(base) ||
+      ['go.mod', 'go.sum', 'go.work', 'dockerfile', '.gitignore', '.dockerignore'].includes(base) ||
+      (base.startsWith('.') && base.endsWith('rc'))) return 'config';
+  return 'code';
+}
+
+// fileKindSplit is "4 code · 2 tests · 1 doc" for the files a round changed
+function fileKindSplit(files) {
+  const counts = { code: 0, test: 0, docs: 0, config: 0 };
+  for (const file of files) counts[fileKindOf(file)]++;
+  const words = [['code', 'code', 'code'], ['test', 'test', 'tests'], ['docs', 'doc', 'docs'], ['config', 'config', 'config']];
+  const out = [];
+  for (const [kind, one, many] of words) {
+    if (!counts[kind]) continue;
+    out.push(counts[kind] + ' ' + (counts[kind] === 1 ? one : many));
+  }
+  return out;
+}
+
 // summarizeRound is the folded line: steps, commands, files changed, failures, time
 // isWorkRow: the agent's own rows. The ask is one by definition; a row that only carries
 // text the CLI put in the user's mouth (a task notification, a reminder, a block of
@@ -2153,6 +2187,7 @@ function summarizeRound(round) {
     steps: tools.length,
     commands,
     filesChanged: changed.size,
+    filesByKind: fileKindSplit(changed),
     failures,
     durationMs,
     interrupted,
@@ -2334,7 +2369,10 @@ function timelineNode(round) {
   text.appendChild(el('b', '', count + (count === 1 ? ' step' : ' steps')));
   const parts = [];
   if (s.commands) parts.push([s.commands + (s.commands === 1 ? ' command' : ' commands'), '']);
-  if (s.filesChanged) parts.push(['changed ' + s.filesChanged + (s.filesChanged === 1 ? ' file' : ' files'), '']);
+  if (s.filesChanged) {
+    parts.push(['changed ' + s.filesChanged + (s.filesChanged === 1 ? ' file' : ' files'), '']);
+    for (const split of s.filesByKind || []) parts.push([split, '']);
+  }
   if (s.failures) parts.push([s.failures + ' failed', 'fail']);
   if (s.durationMs > 0) parts.push([formatDuration(s.durationMs), '']);
   for (const [label, cls] of parts) {

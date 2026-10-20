@@ -239,6 +239,13 @@ func sqliteHotJournal(err error) bool {
 // hermesSQLiteUsage answers every session's accounting from the columns the sessions
 // table already totals, in one query — the report layer needs no per-session reads here.
 func hermesSQLiteUsage(dbPath string) []SessionUsage {
+	out, _ := hermesSQLiteUsageErr(dbPath)
+	return out
+}
+
+// hermesSQLiteUsageErr is hermesSQLiteUsage with the read's failure kept: a caller that
+// caches the answer must not bank a failed read (see dbSnapshotCache)
+func hermesSQLiteUsageErr(dbPath string) ([]SessionUsage, error) {
 	var out []SessionUsage
 	err := readHermesDB(dbPath, func(db *sql.DB) error {
 		rows, err := db.Query(`
@@ -282,9 +289,9 @@ func hermesSQLiteUsage(dbPath string) []SessionUsage {
 		return rows.Err()
 	})
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return out
+	return out, nil
 }
 
 func hermesSQLiteList(dbPath, mode string, skip map[string]bool) ([]Record, error) {

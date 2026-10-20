@@ -25,7 +25,7 @@ words already in the find bar and the match in view.
 ### Middle — the conversation, read by rounds
 
 You asked, the agent worked, the agent answered. The work between an ask and its reply
-folds to one line (*72 steps · 61 commands · changed 2 files · 1 failed · 24m39s*),
+folds to one line (*72 steps · 61 commands · changed 2 files · 1 code · 1 test · 1 failed · 24m39s*),
 keeping failures in view with the start of their output; a run of reads and searches
 folds to "explored — read 4 files, searched twice". Every step opens to its arguments and
 output, edits as diffs whichever way the CLI spelled the edit, results with exit code and

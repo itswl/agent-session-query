@@ -16,8 +16,9 @@ import (
 // (<session-uuid>/subagents/agent-<id>.jsonl, with an agent-<id>.meta.json describing each;
 // a workflow's agents one level further down, in subagents/workflows/<run>/)
 type ClaudeCodeSource struct {
-	root  string
-	cache *fileRecordCache
+	root   string
+	cache  *fileRecordCache
+	finals finalCache
 }
 
 func NewClaudeSource(root string) *ClaudeCodeSource {
@@ -649,7 +650,17 @@ func (s *ClaudeCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 	return sink.result()
 }
 
+// Final is the session's final result, read once per version of its transcript (see
+// finalCache)
 func (s *ClaudeCodeSource) Final(r Record) map[string]any {
+	if r.File == "" {
+		return nil
+	}
+	return s.finals.load([]string{r.File}, func() map[string]any { return s.readFinal(r) })
+}
+
+// readFinal is Final's one pass over the files it is built from
+func (s *ClaudeCodeSource) readFinal(r Record) map[string]any {
 	path := r.File
 	if path == "" {
 		return nil

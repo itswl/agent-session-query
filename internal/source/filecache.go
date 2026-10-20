@@ -3,6 +3,7 @@ package source
 import (
 	"crypto/sha256"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -37,7 +38,7 @@ type fileRecordCache struct {
 	counts   map[string]fileCountEntry
 	counting map[string]bool // queued or in flight
 	queue    []countRequest
-	working  bool
+	working  int // count workers running
 
 	// countFile is the source's own rule for what counts as a message (claude skips
 	// sidechains, codex skips the developer row, ...), so the list and the session's final
@@ -122,29 +123,35 @@ func (c *fileRecordCache) queueCount(path string, mod time.Time, size int64) (in
 	return 0, false
 }
 
-// startCounting starts the worker when there is queued work and none is running
+// maxCountWorkers bounds the background counting: enough to warm a cold history in
+// parallel, few enough that its scans do not crowd out the reads requests are waiting on.
+const maxCountWorkers = 4
+
+// startCounting starts count workers for the queued work. The pool is bounded and grows
+// only to the queue: one worker is still the steady state, and a cold start uses what the
+// machine and the backlog allow (see maxCountWorkers).
 func (c *fileRecordCache) startCounting() {
 	if c.countFile == nil {
 		return
 	}
-	c.countMu.Lock()
-	start := !c.working && len(c.queue) > 0
-	if start {
-		c.working = true
+	limit := maxCountWorkers
+	if n := runtime.GOMAXPROCS(0); n < limit {
+		limit = n
 	}
-	c.countMu.Unlock()
-	if start {
+	c.countMu.Lock()
+	for c.working < limit && c.working < len(c.queue) {
+		c.working++
 		go c.countWorker()
 	}
+	c.countMu.Unlock()
 }
 
-// countWorker drains the queue one file at a time. A single worker is deliberate: this is
-// background work competing with the requests that are the point of the service.
+// countWorker drains the queue, one file at a time, and leaves when it is empty
 func (c *fileRecordCache) countWorker() {
 	for {
 		c.countMu.Lock()
 		if len(c.queue) == 0 {
-			c.working = false
+			c.working--
 			c.countMu.Unlock()
 			return
 		}

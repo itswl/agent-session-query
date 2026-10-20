@@ -38,6 +38,10 @@ import (
 type OpenClawSource struct {
 	dbPaths []string
 
+	// One entry per database path (see dbSnapshotCache): discovering agents/<id>/agent/
+	// keeps finding new databases, and each answers from its own fingerprint.
+	listCache dbSnapshotCache[[]Record]
+
 	// listErr is the failure the last List() hit (see ListErrorReporter): a database
 	// that cannot be opened or queried must read as "could not be read", not as
 	// "nothing there".
@@ -113,6 +117,13 @@ func (s *OpenClawSource) List() []Record {
 }
 
 func (s *OpenClawSource) listOne(dbPath string) ([]Record, error) {
+	return s.listCache.load(dbPath, func() ([]Record, error) {
+		return s.readListOne(dbPath)
+	})
+}
+
+// readListOne is listOne's one read of a database
+func (s *OpenClawSource) readListOne(dbPath string) ([]Record, error) {
 	db, err := s.open(dbPath)
 	if err != nil {
 		return nil, err

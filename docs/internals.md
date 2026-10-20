@@ -549,6 +549,24 @@ What clamping `?limit=` achieves (a 99 MB, 16444-message session with `?limit=99
 response drops from 14 MB to 0.9 MB, the request from 890 ms to 48 ms, and peak process RSS
 from 145 MB to 25 MB.
 
+The same "pay per change, not per ask" rule now covers the other two reads that repeat:
+
+- **SQLite sources** answer `List()` and `Usage()` from a fingerprint of `db` / `-wal` /
+  `-shm` / `-journal` (`(mtime, size)` each, `sqlitecache.go`). A poll that finds them
+  unchanged costs four stats; a write lands in the write-ahead log first, so watching only
+  the database file would serve last call's list forever. A failed read is never banked.
+  Measured over a 492 MB opencode database: `/usage` falls from ~70 ms per poll to ~1 ms.
+- **Finals** on the file-shaped sources (Claude / Codex / Gemini / Grok / pi) are cached by
+  the same fingerprint over the files the final was built from (`finalcache.go`), bounded at
+  4096 entries. `/usage` then re-reads only the sessions whose files moved; `/final` on an
+  unchanged session is a map lookup.
+- **Scanning** (`eachJSONLLineFrom`) reuses its buffer from a `sync.Pool`, starts it at the
+  file's own size (capped at 1 MB), and a line longer than the buffer is measured and then
+  gathered once at its length instead of doubling a buffer a fragment at a time.
+- **Message counting** keeps one worker per queued file up to four (and never more than
+  `GOMAXPROCS`): a cold history warms in parallel, and the bound keeps the scans from
+  crowding out the requests the page is waiting on.
+
 ### The page
 
 The page lives in `internal/app/ui/` and is baked in with `go:embed` — no npm, no build step,

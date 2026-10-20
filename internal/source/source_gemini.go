@@ -9,8 +9,9 @@ import (
 
 // Gemini CLI: ~/.gemini/tmp/<project>/chats/session-*.jsonl
 type GeminiSource struct {
-	root  string
-	cache *fileRecordCache
+	root   string
+	cache  *fileRecordCache
+	finals finalCache
 }
 
 func NewGeminiSource(root string) *GeminiSource {
@@ -378,7 +379,18 @@ func (s *GeminiSource) Search(ctx context.Context, r Record, q SearchQuery) []ma
 	return out
 }
 
+// Final is the session's final result, read once per version of its files (see
+// finalCache)
 func (s *GeminiSource) Final(r Record) map[string]any {
+	paths := geminiFilesOf(r)
+	if len(paths) == 0 {
+		return nil
+	}
+	return s.finals.load(paths, func() map[string]any { return s.readFinal(r) })
+}
+
+// readFinal is Final's one pass over the files it is built from
+func (s *GeminiSource) readFinal(r Record) map[string]any {
 	if len(geminiFilesOf(r)) == 0 {
 		return nil
 	}

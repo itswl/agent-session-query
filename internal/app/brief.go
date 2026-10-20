@@ -508,18 +508,19 @@ func (a *SessionQueryAPI) sessionRounds(pattern, sourceWanted string) (map[strin
 	list := make([]map[string]any, 0, len(rounds))
 	for _, r := range rounds {
 		list = append(list, map[string]any{
-			"round":        r.index,
-			"startAt":      r.startAt,
-			"endAt":        r.endAt,
-			"lastAt":       r.spanEnd(),
-			"messages":     r.messages,
-			"toolCalls":    r.toolCalls,
-			"failures":     r.failures,
-			"files":        nonNilStrings(r.files),
-			"filesChanged": nonNilStrings(r.changed),
-			"asked":        capText(r.asked, 160),
-			"outcome":      capText(r.outcome, 240),
-			"interrupted":  r.interrupted,
+			"round":         r.index,
+			"startAt":       r.startAt,
+			"endAt":         r.endAt,
+			"lastAt":        r.spanEnd(),
+			"messages":      r.messages,
+			"toolCalls":     r.toolCalls,
+			"failures":      r.failures,
+			"files":         nonNilStrings(r.files),
+			"filesChanged":  nonNilStrings(r.changed),
+			"changedByKind": fileKindCounts(r.changed),
+			"asked":         capText(r.asked, 160),
+			"outcome":       capText(r.outcome, 240),
+			"interrupted":   r.interrupted,
 		})
 	}
 	return map[string]any{
@@ -706,6 +707,9 @@ func renderBrief(item source.Record, rounds []round, selected []int, scanned, to
 			shortTime(first.startAt), shortTime(last.workEnd()))
 		if len(changed) > 0 {
 			fmt.Fprintf(&b, "- Changed: %s\n", joinFiles(changed))
+			if split := fileKindLine(changed); split != "" {
+				fmt.Fprintf(&b, "- Split: %s\n", split)
+			}
 		}
 		if len(files) > 0 {
 			fmt.Fprintf(&b, "- Files: %s\n", joinFiles(files))
@@ -736,6 +740,9 @@ func renderBrief(item source.Record, rounds []round, selected []int, scanned, to
 		fmt.Fprintf(&b, "- Asked: %s\n", capText(r.asked, 300))
 		if len(r.changed) > 0 {
 			fmt.Fprintf(&b, "- Changed: %s\n", joinFiles(r.changed))
+			if split := fileKindLine(r.changed); split != "" {
+				fmt.Fprintf(&b, "- Split: %s\n", split)
+			}
 		}
 		if len(r.files) > 0 {
 			fmt.Fprintf(&b, "- Files: %s\n", joinFiles(r.files))

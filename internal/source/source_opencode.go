@@ -42,6 +42,11 @@ import (
 type OpenCodeSource struct {
 	dbPath string
 
+	// The database answers the list and the usage from a fingerprint of itself (see
+	// dbSnapshotCache): a poll that finds db/-wal unchanged costs three stats.
+	listCache  dbSnapshotCache[[]Record]
+	usageCache dbSnapshotCache[[]SessionUsage]
+
 	// listErr is the failure the last List() hit (see ListErrorReporter). For a long
 	// time a moved schema or a locked database read as "you have no sessions" — the
 	// exact failure the mechanism exists to prevent.
@@ -120,9 +125,20 @@ func openCodeDBPath(dirOrFile string) string {
 // carry their tokens inline in session_message.data, the 1.x session row carries column
 // totals. json_extract does the folding where the database does it best.
 func (s *OpenCodeSource) Usage() []SessionUsage {
-	db, err := s.open()
+	out, err := s.usageCache.load(s.dbPath, func() ([]SessionUsage, error) {
+		return s.readUsage()
+	})
 	if err != nil {
 		return nil
+	}
+	return out
+}
+
+// readUsage is Usage's one read of the database
+func (s *OpenCodeSource) readUsage() ([]SessionUsage, error) {
+	db, err := s.open()
+	if err != nil {
+		return nil, err
 	}
 	defer db.Close()
 
@@ -161,7 +177,7 @@ func (s *OpenCodeSource) Usage() []SessionUsage {
 	}
 
 	if openCodeHasV2(db) {
-		if rows, err := db.Query(`
+		rows, err := db.Query(`
 			SELECT s.id, s.directory, s.time_updated,
 			       (SELECT COUNT(*) FROM session_message m
 			         WHERE m.session_id = s.id AND m.type = 'assistant'),
@@ -176,13 +192,15 @@ func (s *OpenCodeSource) Usage() []SessionUsage {
 			       COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.reasoning') AS REAL)), 0)
 			FROM session_v2 s
 			LEFT JOIN session_message m ON m.session_id = s.id AND m.type = 'assistant'
-			GROUP BY s.id`); err == nil {
-			collect(rows, true)
+			GROUP BY s.id`)
+		if err != nil {
+			return nil, err
 		}
+		collect(rows, true)
 		if openCodeHasTable(db, "session") {
 			// the V1 sessions that never migrated are history too, with the columns the
 			// 1.x schema kept on the session row itself
-			if rows, err := db.Query(`
+			rows, err := db.Query(`
 				SELECT s.id, s.directory, s.time_updated,
 				       (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id
 					          AND NOT EXISTS (SELECT 1 FROM session_v2 v WHERE v.id = m.session_id)),
@@ -191,23 +209,27 @@ func (s *OpenCodeSource) Usage() []SessionUsage {
 				       COALESCE(SUM(s.tokens_reasoning), 0)
 				FROM session s
 				WHERE NOT EXISTS (SELECT 1 FROM session_v2 v WHERE v.id = s.id)
-				GROUP BY s.id`); err == nil {
-				collect(rows, false)
+				GROUP BY s.id`)
+			if err != nil {
+				return nil, err
 			}
+			collect(rows, false)
 		}
-		return out
+		return out, nil
 	}
-	if rows, err := db.Query(`
+	rows, err := db.Query(`
 		SELECT s.id, s.directory, s.time_updated,
 		       (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id),
 		       COALESCE(s.model->>'providerID', '') || CASE WHEN s.model->>'providerID' IS NOT NULL AND s.model->>'id' IS NOT NULL THEN '/' ELSE '' END || COALESCE(s.model->>'id', ''),
 		       COALESCE(SUM(s.tokens_input), 0), COALESCE(SUM(s.tokens_output), 0),
 		       COALESCE(SUM(s.tokens_reasoning), 0)
 		FROM session s
-		GROUP BY s.id`); err == nil {
-		collect(rows, false)
+		GROUP BY s.id`)
+	if err != nil {
+		return nil, err
 	}
-	return out
+	collect(rows, false)
+	return out, nil
 }
 
 func (s *OpenCodeSource) Mode() string     { return "opencode" }
@@ -228,10 +250,19 @@ func (s *OpenCodeSource) open() (*sql.DB, error) {
 }
 
 func (s *OpenCodeSource) List() []Record {
+	out, err := s.listCache.load(s.dbPath, s.readList)
+	s.setListError(err)
+	if out == nil {
+		return nil
+	}
+	return out
+}
+
+// readList is List's one read of the database
+func (s *OpenCodeSource) readList() ([]Record, error) {
 	db, err := s.open()
 	if err != nil {
-		s.setListError(err)
-		return nil
+		return nil, err
 	}
 	defer db.Close()
 
@@ -252,8 +283,10 @@ func (s *OpenCodeSource) List() []Record {
 	} else {
 		out, listErr = s.listV1(db, "")
 	}
-	s.setListError(listErr)
-	return out
+	if listErr != nil {
+		return out, listErr
+	}
+	return out, nil
 }
 
 // listV2 lists the 2.x sessions. The columns are the ones every 2.x database has been seen

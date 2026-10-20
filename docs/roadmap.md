@@ -9,6 +9,7 @@ decided against for now.
 
 | Release | What it brought |
 |---|---|
+| v0.38.8 | **Pay per change, not per ask**: SQLite sources answer `List()` / `Usage()` from a fingerprint of `db` / `-wal` / `-shm` / `-journal` (a steady poll costs four stats — `/usage` on a 492 MB opencode database fell from ~70 ms to ~1 ms); file-shaped finals are remembered by `(mtime, size)` and re-read only when their files move; scans reuse a pooled buffer sized by the file, and a line longer than it is gathered once at its own length; message counts warm with up to four workers. Rounds, briefs and the page's fold line also count a round's changes as **code / test / docs / config** by path convention |
 | v0.38.6 | **The host opens the page**: a browser arriving at `/` — a navigation asks for `text/html` — is redirected to `/ui`; curl and API clients keep the endpoint index they always got |
 | v0.38.5 | **File history is gone** — "which other sessions changed this file" was a question the detail pane answered that nobody kept asking: `/files`, MCP `file_history` and the page's *Files changed* card are removed. A round's own `files` / `filesChanged` stay where they were — in the rounds index, the brief, and the timeline's fold |
 | v0.38.4 | **The page shows nothing — fixed**: the storage removal swept `refresh()` (and the error/version/warmup helpers beside it) out of app.js with the panel, so the page booted into an empty list while the API kept answering; the functions are back, and a test now guards the boot path's names |

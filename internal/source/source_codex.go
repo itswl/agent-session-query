@@ -35,8 +35,9 @@ import (
 // source's does: calls ride on assistant messages, a result is a role=tool message paired
 // with its call by id, an abort is a system event.
 type CodexSource struct {
-	root  string
-	cache *fileRecordCache
+	root   string
+	cache  *fileRecordCache
+	finals finalCache
 }
 
 func NewCodexSource(root string) *CodexSource {
@@ -624,7 +625,17 @@ func codexReasoningHasText(raw json.RawMessage) bool {
 	return false
 }
 
+// Final is the session's final result, read once per version of its rollout (see
+// finalCache)
 func (s *CodexSource) Final(r Record) map[string]any {
+	if r.File == "" {
+		return nil
+	}
+	return s.finals.load([]string{r.File}, func() map[string]any { return s.readFinal(r) })
+}
+
+// readFinal is Final's one pass over the files it is built from
+func (s *CodexSource) readFinal(r Record) map[string]any {
 	path := r.File
 	if path == "" {
 		return nil

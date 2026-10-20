@@ -11,8 +11,9 @@ import (
 // Pi: ~/.pi/agent/sessions/<project>/<time>_<uuid>.jsonl, or <time>_<uuid>.jsonl flat
 // in the directory a wrapper's --session-dir was pointed at
 type PiSource struct {
-	root  string
-	cache *fileRecordCache
+	root   string
+	cache  *fileRecordCache
+	finals finalCache
 }
 
 func NewPiSource(root string) *PiSource {
@@ -215,7 +216,17 @@ func piMessageTime(obj map[string]any) any {
 	return GetOr(getMap(obj, "message"), "timestamp", GetOr(obj, "timestamp", ""))
 }
 
+// Final is the session's final result, read once per version of its transcript (see
+// finalCache)
 func (s *PiSource) Final(r Record) map[string]any {
+	if r.File == "" {
+		return nil
+	}
+	return s.finals.load([]string{r.File}, func() map[string]any { return s.readFinal(r) })
+}
+
+// readFinal is Final's one pass over the files it is built from
+func (s *PiSource) readFinal(r Record) map[string]any {
 	path := r.File
 	if path == "" {
 		return nil

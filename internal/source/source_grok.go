@@ -26,8 +26,9 @@ import (
 // rather than frozen at the last completed turn, which matters because isActive only
 // looks back two minutes and a turn with tool calls in it routinely runs longer.
 type GrokSource struct {
-	root  string
-	cache *fileRecordCache
+	root   string
+	cache  *fileRecordCache
+	finals finalCache
 }
 
 func NewGrokSource(root string) *GrokSource {
@@ -602,7 +603,22 @@ func grokCountMessages(summaryPath string, from int64) (int, bool) {
 	return n, true
 }
 
+// Final is the session's final result, read once per version of the files it is built
+// from (see finalCache)
 func (s *GrokSource) Final(r Record) map[string]any {
+	if r.File == "" {
+		return nil
+	}
+	paths := []string{r.File}
+	// The history layout keeps its session usage beside the transcript
+	if usage := filepath.Join(filepath.Dir(r.File), "usage.json"); fileExists(usage) {
+		paths = append(paths, usage)
+	}
+	return s.finals.load(paths, func() map[string]any { return s.readFinal(r) })
+}
+
+// readFinal is Final's one pass over the files it is built from
+func (s *GrokSource) readFinal(r Record) map[string]any {
 	path := r.File
 	// A session that has been created but never prompted has a summary.json and no
 	// transcript at all; that is the "no session file yet" the interface means.

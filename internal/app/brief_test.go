@@ -330,6 +330,9 @@ func TestRoundFailuresAndChanges(t *testing.T) {
 	if row["failures"] != 1 || strings.Join(row["filesChanged"].([]string), ",") != "/x/b.go" {
 		t.Errorf("rounds row = %v", row)
 	}
+	if kinds := row["changedByKind"].(map[string]int); kinds[kindCode] != 1 || kinds[kindTest] != 0 || kinds[kindDocs] != 0 {
+		t.Errorf("changedByKind = %v, want one code file", kinds)
+	}
 
 	brief, err := api.sessionBrief("ffff", "", 0, "", "")
 	if err != nil {
@@ -337,6 +340,7 @@ func TestRoundFailuresAndChanges(t *testing.T) {
 	}
 	for _, want := range []string{
 		"- Changed: /x/b.go",
+		"- Split: 1 code",
 		"- Files: /x/readme.md, /x/a.go, /x/b.go",
 		"- Tools: read 1 · write 2 · failed 1",
 		// the cheapest handoff: the command that reopens the session, in its directory

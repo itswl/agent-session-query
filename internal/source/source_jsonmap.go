@@ -14,6 +14,11 @@ import (
 type JsonMapSource struct {
 	def jsonMapDef
 
+	// state.db answers the usage and (newer Hermes) the list from a fingerprint of itself
+	// (see dbSnapshotCache)
+	usageCache      dbSnapshotCache[[]SessionUsage]
+	hermesListCache dbSnapshotCache[[]Record]
+
 	// listErr is the failure the last List() hit, kept so that a source which could not be
 	// read is not reported as a source with nothing in it (see ListErrorReporter). The lock
 	// is for the whole-list-is-empty case: a scan can be running on one request's goroutine
@@ -28,7 +33,13 @@ func newJsonMapSource(def jsonMapDef) *JsonMapSource { return &JsonMapSource{def
 // layout is the one in use; the jsonl layout answers through its finals instead.
 func (s *JsonMapSource) Usage() []SessionUsage {
 	if s.def.stateDB != "" && fileExists(s.def.stateDB) && !fileExists(s.def.sessionsJSON) {
-		return hermesSQLiteUsage(s.def.stateDB)
+		out, err := s.usageCache.load(s.def.stateDB, func() ([]SessionUsage, error) {
+			return hermesSQLiteUsageErr(s.def.stateDB)
+		})
+		if err != nil {
+			return nil
+		}
+		return out
 	}
 	return nil
 }
@@ -230,9 +241,21 @@ func (s *JsonMapSource) List() []Record {
 				seen[sid] = true
 			}
 		}
-		var records []Record
-		var hermesErr error
-		records, hermesErr = hermesSQLiteList(s.def.stateDB, s.def.mode, seen)
+		// The database's own list is cached; the seen set belongs to the index read
+		// above, so it is applied to the cached rows rather than passed into the read —
+		// the index may change while the database does not.
+		records, hermesErr := s.hermesListCache.load(s.def.stateDB, func() ([]Record, error) {
+			return hermesSQLiteList(s.def.stateDB, s.def.mode, nil)
+		})
+		if hermesErr == nil && len(seen) > 0 {
+			kept := make([]Record, 0, len(records))
+			for _, r := range records {
+				if !seen[r.SessionID] {
+					kept = append(kept, r)
+				}
+			}
+			records = kept
+		}
 		out = append(out, records...)
 		if listErr == nil {
 			listErr = hermesErr

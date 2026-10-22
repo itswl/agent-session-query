@@ -86,7 +86,8 @@ func TestAntigravityList(t *testing.T) {
 		byID[r.SessionID] = r
 	}
 	one := byID["sess-1"]
-	if one.ShortKey != "Build fix" || one.Cwd != "/work/repo" || one.UpdatedAt != "2026-10-12T10:00:09Z" {
+	// workspace_uris is a file:// URI: the path it yields follows the OS
+	if one.ShortKey != "Build fix" || one.Cwd != filepath.FromSlash("/work/repo") || one.UpdatedAt != "2026-10-12T10:00:09Z" {
 		t.Fatalf("indexed session = %+v, want the summary's title, workspace and time", one)
 	}
 	if !one.HasFile || one.File == "" || one.Status != "done" {

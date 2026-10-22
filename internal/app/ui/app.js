@@ -355,7 +355,7 @@ function relTime(iso) {
 
 // Source / status tags. className only ever uses whitelisted values; source is a
 // server-side enum but is still never concatenated in directly
-const SOURCE_CLASSES = ['claude', 'codex', 'gemini', 'grok', 'hermes', 'openclaw', 'opencode', 'pi'];
+const SOURCE_CLASSES = ['claude', 'codex', 'gemini', 'grok', 'hermes', 'openclaw', 'opencode', 'pi', 'antigravity'];
 function sourceClass(source) {
   if (SOURCE_CLASSES.includes(source)) return 'tag ' + source;
   // A labeled instance (claude:box-2) is not one of the known CLIs; it still gets the
@@ -821,7 +821,7 @@ function fillItem(item, session) {
   // misleading blank that only gets filled after opening the session.
   const cached = state.msgCounts.get(session.sessionId);
   const n = Number(session.messageCount) || Number(cached) || 0;
-  const countable = ['pi', 'claude', 'codex', 'gemini', 'grok'].includes(session.source);
+  const countable = ['pi', 'claude', 'codex', 'gemini', 'grok', 'antigravity'].includes(session.source);
   setText(msgs, n ? n + (n === 1 ? ' msg' : ' msgs') : countable ? 'counting…' : '');
   setText(time, relTime(session.updatedAt));
   time.title = session.updatedAt || '';
@@ -4422,7 +4422,7 @@ function serverChanged(version) {
 
 function scheduleCountWarmup() {
   const missing = state.sessions.some((session) =>
-    ['pi', 'claude', 'codex', 'gemini', 'grok'].includes(session.source) &&
+    ['pi', 'claude', 'codex', 'gemini', 'grok', 'antigravity'].includes(session.source) &&
     !Number(session.messageCount) && !state.msgCounts.has(session.sessionId));
   if (!missing || state.countWarmAttempts >= 12) {
     if (!missing) state.countWarmAttempts = 0;

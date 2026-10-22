@@ -256,6 +256,21 @@ and deployment see the [README](../README.md).
   `info.cwd`; the group directory name is that same path URL-encoded, which is the fallback,
   and above 255 bytes Grok substitutes a slug plus a hash and records the real path in a
   `.cwd` file beside the sessions
+- **Antigravity**: the CLI and the IDE write one shape under `~/.gemini` — a directory per
+  conversation under `antigravity-cli/brain` or `antigravity/brain`, holding
+  `.system_generated/logs/transcript_full.jsonl`. A transcript line is a step
+  (`step_index`, `type`, `created_at`, `content`, token counters), and the CLI rewrites a
+  step's line as the turn finishes, so the file is read into a map by `step_index` with the
+  latest line winning and then walked in index order. `USER_INPUT` is the user's turn —
+  `content` wraps what was typed in `<USER_REQUEST>…</USER_REQUEST>` and appends context of
+  its own, so only the inner text is shown; `PLANNER_RESPONSE` is the model's, with status
+  `DONE` and the counters (`input_tokens` excludes cache, `output_tokens` includes
+  thinking); any other step kind stays visible as an event named by its type rather than
+  being dropped. `conversation_summaries.db` beside a brain (table
+  `conversation_summaries`) carries the title, `workspace_uris` (a `file://` URI array) and
+  `last_modified_time`, which the list uses instead of opening transcripts; a conversation
+  the index does not know is titled from its first `USER_INPUT` and timed by its steps.
+  The resume command is `agy --conversation <id>`.
 
 ### Archived sessions
 

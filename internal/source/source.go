@@ -166,7 +166,7 @@ func (s *messageSink) result() []map[string]any {
 }
 
 // Supported sources (the values --mode accepts); auto enables whichever exist
-var KnownModes = []string{"hermes", "openclaw", "pi", "claude", "codex", "gemini", "opencode", "grok"}
+var KnownModes = []string{"hermes", "openclaw", "pi", "claude", "codex", "gemini", "opencode", "grok", "antigravity"}
 
 // fileExists reports whether a path exists
 func fileExists(path string) bool {
@@ -233,8 +233,8 @@ func (p *PathFlag) Set(value string) error {
 	// its database can move the same way (a directory is accepted and joined with
 	// opencode.db — the shape a redirected XDG_DATA_HOME leaves behind). The json-map
 	// and SQLite sources that keep their layout across several files cannot.
-	if _, ok := map[string]bool{"pi": true, "claude": true, "codex": true, "gemini": true, "grok": true, "opencode": true}[mode]; !ok {
-		return fmt.Errorf("--path: %s cannot be relocated this way (supported: pi, claude, codex, gemini, grok, opencode)", mode)
+	if _, ok := map[string]bool{"pi": true, "claude": true, "codex": true, "gemini": true, "grok": true, "opencode": true, "antigravity": true}[mode]; !ok {
+		return fmt.Errorf("--path: %s cannot be relocated this way (supported: pi, claude, codex, gemini, grok, opencode, antigravity)", mode)
 	}
 	*p = append(*p, SourcePath{Mode: mode, Label: label, Dir: dir})
 	return nil
@@ -418,12 +418,13 @@ func (r *resolver) Sources() []SessionSource {
 // movableSources are the directory-shaped sources a --path can relocate; opencode's one
 // database moves the same way (a --path may name its data directory or the file itself)
 var movableSources = map[string]func(dir string) SessionSource{
-	"pi":       func(dir string) SessionSource { return NewPiSource(dir) },
-	"claude":   func(dir string) SessionSource { return NewClaudeSource(dir) },
-	"codex":    func(dir string) SessionSource { return NewCodexSource(dir) },
-	"gemini":   func(dir string) SessionSource { return NewGeminiSource(dir) },
-	"grok":     func(dir string) SessionSource { return NewGrokSource(dir) },
-	"opencode": func(dir string) SessionSource { return NewOpenCodeSource(openCodeDBPath(dir)) },
+	"pi":          func(dir string) SessionSource { return NewPiSource(dir) },
+	"claude":      func(dir string) SessionSource { return NewClaudeSource(dir) },
+	"codex":       func(dir string) SessionSource { return NewCodexSource(dir) },
+	"gemini":      func(dir string) SessionSource { return NewGeminiSource(dir) },
+	"grok":        func(dir string) SessionSource { return NewGrokSource(dir) },
+	"opencode":    func(dir string) SessionSource { return NewOpenCodeSource(openCodeDBPath(dir)) },
+	"antigravity": func(dir string) SessionSource { return NewAntigravitySource(dir) },
 }
 
 // defaultSource builds one source at the location its CLI puts it, the CLI's own
@@ -451,6 +452,9 @@ func defaultSource(name, home string) SessionSource {
 		return NewGeminiSource(filepath.Join(home, ".gemini", "tmp"))
 	case "grok":
 		return NewGrokSource(filepath.Join(grokHome(home), "sessions"))
+	case "antigravity":
+		// the CLI and the IDE share ~/.gemini, each with its own brain under it
+		return NewAntigravitySource(filepath.Join(home, ".gemini"))
 	}
 	return nil
 }

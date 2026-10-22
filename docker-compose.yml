@@ -38,6 +38,10 @@ services:
       - ~/.claude/projects:/root/.claude/projects:ro
       - ~/.codex/sessions:/root/.codex/sessions:ro
       - ~/.gemini/tmp:/root/.gemini/tmp:ro
+      # Antigravity: the agy CLI and the IDE each keep their own brain beside the
+      # summaries database they list from
+      - ~/.gemini/antigravity-cli:/root/.gemini/antigravity-cli:ro
+      - ~/.gemini/antigravity:/root/.gemini/antigravity:ro
       - ~/.grok/sessions:/root/.grok/sessions:ro
       # opencode keeps one database in its XDG data directory (~/.local/share/opencode on
       # every Unix-like, macOS included)

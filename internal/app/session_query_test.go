@@ -1125,6 +1125,7 @@ func TestResumeCommand(t *testing.T) {
 		{"hermes", "session_42", "hermes --resume session_42"},
 		{"opencode", "ses_abc", "opencode --session ses_abc"},
 		{"pi", "9f8e7d", "pi --session 9f8e7d"},
+		{"antigravity", "sess-1", "agy --conversation sess-1"},
 		// Gemini resumes by index into its own recent list, not by id
 		{"gemini", "g-1", ""},
 		// OpenClaw's "session key" could not be confirmed to be this id

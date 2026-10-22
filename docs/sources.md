@@ -12,6 +12,7 @@ The sources read the session directories the agent CLIs write by default:
 | hermes | `~/.hermes/sessions` (plus `state.db`) |
 | openclaw | `~/.openclaw/agents/*` |
 | opencode | The XDG data dir — `${XDG_DATA_HOME:-~/.local/share}/opencode`, macOS included (`%LOCALAPPDATA%\opencode` on Windows) |
+| antigravity | `~/.gemini/antigravity-cli/brain` (CLI) and `~/.gemini/antigravity/brain` (IDE), each with a `conversation_summaries.db` beside it |
 
 Each directory is resolved the way the CLI itself resolves it, so a CLI whose data moved
 by environment variable is read where the variable says — pi's `PI_CODING_AGENT_DIR` and
@@ -21,7 +22,10 @@ OpenClaw's `OPENCLAW_STATE_DIR`, opencode's `XDG_DATA_HOME` / `LOCALAPPDATA`. Th
 variables are read from this service's own environment, so a daemon has to be given
 the ones its CLIs run with (an `EnvironmentFile`, a unit's `Environment=`). Gemini CLI
 defines no such variable — `~/.gemini` is where it always writes — so its default is
-what is read.
+what is read. Antigravity shares that `~/.gemini` but no variable moves it: an `agy`
+started with a private `--gemini_dir` (an API-key provider profile) writes the same
+`antigravity-cli/brain` shape inside that directory, which is what
+`--path antigravity=/path/to/the/gemini_dir` points at.
 
 Sessions a CLI has archived — Grok's and Codex's moved into `archived_sessions`, OpenCode's
 marked `time_archived`, the ones Hermes hides (`archived`, or `hidden` in older schemas) —
@@ -64,7 +68,8 @@ disk, a backup, agent containers whose sessions land on a host bind mount:
 - Finding a session by the bare mode name still reaches into labeled instances, so an MCP
   client holding `claude` keeps working
 
-Supported: the directory-shaped sources `pi`, `claude`, `codex`, `gemini` and `grok`, and
+Supported: the directory-shaped sources `pi`, `claude`, `codex`, `gemini`, `grok` and
+`antigravity`, and
 `opencode` — it is one SQLite file, so both the data directory (the shape a redirected
 `XDG_DATA_HOME` leaves behind) and the database file itself relocate it. The JSON-map and
 SQLite sources that keep their layout across several files (`hermes`, `openclaw`) reject

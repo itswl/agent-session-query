@@ -9,7 +9,7 @@ A single binary (no cgo, no resident runtime) — `scp` it to any machine of the
 architecture and run it. The only external dependency is a pure-Go SQLite driver (for
 reading Hermes's `state.db`), so cross-compilation still works as usual.
 
-Eight sources; whichever exist are queried, and they can be merged in one query:
+Nine sources; whichever exist are queried, and they can be merged in one query:
 
 | Source | Where sessions live | Session ID |
 |--------|---------------------|------------|
@@ -21,13 +21,15 @@ Eight sources; whichever exist are queried, and they can be merged in one query:
 | Gemini CLI | `~/.gemini/tmp/<project>/chats/session-*.jsonl` | `sessionId` on the first line |
 | OpenCode | `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` (SQLite; `%LOCALAPPDATA%\opencode` on Windows; the 1.x `session` tables and the 2.x `session_v2` / `session_message` tables both) | `id` in the `session` or `session_v2` table |
 | Grok CLI | `~/.grok/sessions/<url-encoded-cwd>/<session-id>/` (`summary.json` + `updates.jsonl`), plus `~/.grok/archived_sessions/` | `info.id` in `summary.json` |
+| Antigravity | `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl` (the IDE writes `~/.gemini/antigravity/brain/`); `conversation_summaries.db` beside each brain holds the title and workspace | the directory name |
 
 The `~` in that table resolves to the running user's home: `$HOME` on Linux and macOS,
 `%USERPROFILE%` on Windows (so `C:\Users\<you>\.claude\projects` and the like). Each
 directory is also resolved the way its CLI resolves it — `CLAUDE_CONFIG_DIR`,
 `CODEX_HOME`, `GROK_HOME`, `HERMES_HOME`, `OPENCLAW_STATE_DIR`, pi's
 `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR` and opencode's `XDG_DATA_HOME` are
-honoured, read from this service's own environment. Per-source parsing details are in
+honoured, read from this service's own environment. Antigravity defines none of its own;
+its `--gemini_dir` profiles are pointed at with `--path`. Per-source parsing details are in
 [docs/internals.md](docs/internals.md); relocations and extra instances in
 [docs/sources.md](docs/sources.md).
 
@@ -146,8 +148,8 @@ untrusted input — reported on, never followed) are in **[docs/mcp.md](docs/mcp
 |------|---------|--------------|
 | `--host` | `127.0.0.1` | Bind address; use `0.0.0.0` to expose it (refused without `--hook_token`) |
 | `--port` | `8080` | Listen port |
-| `--mode` | `auto` | `auto` (enable whatever exists) / `all` (enable all eight) / `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` / `opencode` / `grok` |
-| `--path` | none | Relocate or duplicate a source: `--path claude=/mnt/disk/.claude/projects` points the source elsewhere; `--path claude:box2=/mnt/box2/.claude/projects` adds a second instance named `claude:box2`. Directory-shaped sources (`pi`, `claude`, `codex`, `gemini`, `grok`) and opencode's database (its data dir or the `opencode.db` file). Repeatable — the way a pi hosted behind a wrapper's `--session-dir` is pointed at |
+| `--mode` | `auto` | `auto` (enable whatever exists) / `all` (enable all nine) / `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` / `opencode` / `grok` / `antigravity` |
+| `--path` | none | Relocate or duplicate a source: `--path claude=/mnt/disk/.claude/projects` points the source elsewhere; `--path claude:box2=/mnt/box2/.claude/projects` adds a second instance named `claude:box2`. Directory-shaped sources (`pi`, `claude`, `codex`, `gemini`, `grok`, `antigravity`) and opencode's database (its data dir or the `opencode.db` file). Repeatable — the way a pi hosted behind a wrapper's `--session-dir` is pointed at |
 | `--hook_token` | none | Bearer token; without it the API is unauthenticated |
 | `--max-connections` | `50` | Maximum concurrent connections; anything past it queues |
 | `--accept-queue` | `0` (auto) | Queue slots when at capacity; `0` means `2 × max-connections`, never below 32. A full queue returns 503 immediately |

@@ -262,12 +262,13 @@ func (r Record) ProjectName() string {
 // openclaw take resume as a subcommand, grok takes -r, and pi and opencode resume by id
 // through --session while their own --resume is an interactive picker.
 var resumeCommands = map[string]string{
-	"claude":   "claude --resume",
-	"codex":    "codex resume",
-	"grok":     "grok -r",
-	"hermes":   "hermes --resume",
-	"opencode": "opencode --session",
-	"pi":       "pi --session",
+	"claude":      "claude --resume",
+	"codex":       "codex resume",
+	"grok":        "grok -r",
+	"hermes":      "hermes --resume",
+	"opencode":    "opencode --session",
+	"pi":          "pi --session",
+	"antigravity": "agy --conversation",
 }
 
 // ResumeCommand is how to reopen this session in the CLI that wrote it, or empty when

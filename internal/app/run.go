@@ -11,11 +11,13 @@
 //	Codex       ~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl
 //	Gemini CLI  ~/.gemini/tmp/<project>/chats/session-*.jsonl
 //	Grok CLI    ~/.grok/sessions/<url-encoded-cwd>/<session-id>/updates.jsonl
+//	Antigravity ~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl
+//	            (the IDE writes the same layout to ~/.gemini/antigravity/brain)
 //
 // The only external dependency is a pure-Go SQLite driver (for reading Hermes's
-// state.db). To start it:
+// state.db and Antigravity's conversation index). To start it:
 //
-//	agent-session-query [--port 8080] [--mode auto|all|hermes|openclaw|pi|claude|codex|gemini|opencode|grok]
+//	agent-session-query [--port 8080] [--mode auto|all|hermes|openclaw|pi|claude|codex|gemini|opencode|grok|antigravity]
 package app
 
 import (
@@ -54,7 +56,7 @@ func Run(args []string) int {
 	port := fs.Int("port", 8080, "listen port (default: 8080)")
 	mode := fs.String("mode", "auto", "mode: auto to detect, all to enable everything, or one of "+source.JoinModes())
 	var paths source.PathFlag
-	fs.Var(&paths, "path", "relocate or duplicate a file-backed source, mode[:label]=dir; repeatable, e.g. --path claude:box2=/mnt/box2/.claude/projects (supports pi, claude, codex, gemini, grok, opencode)")
+	fs.Var(&paths, "path", "relocate or duplicate a file-backed source, mode[:label]=dir; repeatable, e.g. --path claude:box2=/mnt/box2/.claude/projects (supports pi, claude, codex, gemini, grok, opencode, antigravity)")
 	hookToken := fs.String("hook_token", "", "Bearer token; once set, every /sessions endpoint requires it")
 	maxConnections := fs.Int("max-connections", 50, "maximum concurrent connections (default: 50)")
 	cacheTTL := fs.Float64("cache-ttl", 2.0, "seconds to cache the session list (default: 2; 0 rescans every time)")

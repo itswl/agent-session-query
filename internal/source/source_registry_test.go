@@ -76,6 +76,8 @@ func TestSourceRegistryConsistency(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", xdg)
 
 	// One plausible default location per source
+	write(t, filepath.Join(home, ".gemini", "antigravity-cli", "brain", "agy-1", ".system_generated", "logs", "transcript_full.jsonl"),
+		`{"step_index":0,"type":"USER_INPUT","created_at":"2026-10-01T10:00:00Z","content":"hello"}`)
 	write(t, filepath.Join(home, ".pi", "agent", "sessions", "p", "x.jsonl"), `{"type":"session","id":"x"}`)
 	write(t, filepath.Join(home, ".claude", "projects", "p", "x.jsonl"), `{"type":"user","uuid":"u","message":{"role":"user","content":"hi"}}`)
 	write(t, filepath.Join(home, ".codex", "sessions", "2026", "01", "01", "rollout-x.jsonl"), `{}`)
@@ -95,7 +97,7 @@ func TestSourceRegistryConsistency(t *testing.T) {
 	}
 	// A hard-coded universe rather than KnownModes itself: comparing against the variable
 	// under test would miss a mode removed from every list at once
-	wantModes := []string{"claude", "codex", "gemini", "grok", "hermes", "openclaw", "opencode", "pi"}
+	wantModes := []string{"antigravity", "claude", "codex", "gemini", "grok", "hermes", "openclaw", "opencode", "pi"}
 	gotSorted := append([]string{}, got...)
 	sort.Strings(gotSorted)
 	if !reflect.DeepEqual(gotSorted, wantModes) {
@@ -149,8 +151,8 @@ func TestSourceRegistryConsistency(t *testing.T) {
 
 	countable := jsList(`const countable = \[([^\]]*)\]`)
 	sort.Strings(countable)
-	wantCountable := []string{"claude", "codex", "gemini", "grok", "pi"}
+	wantCountable := []string{"antigravity", "claude", "codex", "gemini", "grok", "pi"}
 	if !reflect.DeepEqual(countable, wantCountable) {
-		t.Errorf("app.js countable = %v, want the five file-backed modes %v", countable, wantCountable)
+		t.Errorf("app.js countable = %v, want the six file-backed modes %v", countable, wantCountable)
 	}
 }

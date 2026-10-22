@@ -42,6 +42,10 @@ func TestPathFlagSet(t *testing.T) {
 	if err := p.Set("opencode=/xdg/data/opencode"); err != nil {
 		t.Fatal(err)
 	}
+	// Antigravity relocates a whole gemini dir (an agy --gemini_dir profile)
+	if err := p.Set("antigravity=/profile/agy"); err != nil {
+		t.Fatal(err)
+	}
 	for _, bad := range []string{
 		"claude",          // no =dir
 		"claude=",         // empty dir

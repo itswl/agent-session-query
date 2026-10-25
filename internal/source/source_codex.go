@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -38,6 +39,21 @@ type CodexSource struct {
 	root   string
 	cache  *fileRecordCache
 	finals finalCache
+
+	// A forked rollout copies its parent's turns, token records and all, so summing a
+	// fork's file counts the parent's turns twice (once here, once in the parent's own
+	// file). The turn ids survive the copy; the parent's set is what tells a copied turn
+	// from the fork's own. byID is refreshed by List, turnIDs by the first fork that
+	// needs a parent's set.
+	mu      sync.Mutex
+	byID    map[string]string
+	turnIDs map[string]codexTurnIDs
+}
+
+// codexTurnIDs is one rollout's turn ids, banked under the file version it was read at
+type codexTurnIDs struct {
+	stamp string
+	ids   map[string]bool
 }
 
 func NewCodexSource(root string) *CodexSource {
@@ -121,7 +137,7 @@ func codexUserTitle(path string) string {
 // List finds the metadata row; unchanged files come straight from the cache
 // (see fileRecordCache)
 func (s *CodexSource) List() []Record {
-	return s.cache.records(s.files(), func(path, modISO string) Record {
+	records := s.cache.records(s.files(), func(path, modISO string) Record {
 		// This used to read only the first line, losing everything when that line was not
 		// the metadata (truncated file, or a new preamble row upstream). Now: session_meta
 		// is the authoritative and complete row, so stop as soon as it appears; only when
@@ -170,6 +186,83 @@ func (s *CodexSource) List() []Record {
 			Archived:   s.archivedRoot() != "" && strings.HasPrefix(path, s.archivedRoot()+string(filepath.Separator)),
 		}, updated)
 	})
+	// Final needs a fork's parent file, and the id is all a fork's file knows about it
+	byID := make(map[string]string, len(records))
+	for _, r := range records {
+		byID[r.SessionID] = r.File
+	}
+	s.mu.Lock()
+	s.byID = byID
+	s.mu.Unlock()
+	return records
+}
+
+// pathOf is where a session id was last listed from, falling back to the files on disk
+// when no list has run yet (a direct Final call in a test, or a first request that lands
+// before the list is built)
+func (s *CodexSource) pathOf(id string) string {
+	if id == "" {
+		return ""
+	}
+	s.mu.Lock()
+	path := s.byID[id]
+	s.mu.Unlock()
+	if path != "" {
+		return path
+	}
+	suffix := "-" + id + ".jsonl"
+	for _, file := range s.files() {
+		if strings.HasSuffix(filepath.Base(file), suffix) {
+			s.mu.Lock()
+			if s.byID == nil {
+				s.byID = map[string]string{}
+			}
+			s.byID[id] = file
+			s.mu.Unlock()
+			return file
+		}
+	}
+	return ""
+}
+
+// parentTurns is the turn ids a fork copied: nil when the id is unknown or the file is
+// unreadable, in which case the fork is counted as it always was rather than guessed at
+func (s *CodexSource) parentTurns(id string) map[string]bool {
+	path := s.pathOf(id)
+	if path == "" {
+		return nil
+	}
+	stamp, ok := finalStamp([]string{path})
+	if !ok {
+		return nil
+	}
+	s.mu.Lock()
+	if entry, hit := s.turnIDs[path]; hit && entry.stamp == stamp {
+		s.mu.Unlock()
+		return entry.ids
+	}
+	s.mu.Unlock()
+
+	ids := map[string]bool{}
+	EachJSONLLine(path, func(line []byte) bool {
+		var probe struct {
+			Type    string `json:"type"`
+			Payload struct {
+				TurnID string `json:"turn_id"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(line, &probe) == nil && probe.Type == "turn_context" && probe.Payload.TurnID != "" {
+			ids[probe.Payload.TurnID] = true
+		}
+		return true
+	})
+	s.mu.Lock()
+	if s.turnIDs == nil {
+		s.turnIDs = map[string]codexTurnIDs{}
+	}
+	s.turnIDs[path] = codexTurnIDs{stamp: stamp, ids: ids}
+	s.mu.Unlock()
+	return ids
 }
 
 // codexSessionID is the id of the session a rollout file holds.
@@ -575,15 +668,19 @@ func (s *CodexSource) Messages(r Record, q MessageQuery) []map[string]any {
 // codexWalker.message — a row counts when it yields a message — so the list's number,
 // Final's and the reader's are one number.
 type codexProbe struct {
-	Type    string `json:"type"`
-	Payload struct {
-		Type    string          `json:"type"`
-		Role    string          `json:"role"`
-		Model   string          `json:"model"`
-		Summary json.RawMessage `json:"summary"`
-		Content json.RawMessage `json:"content"`
-		Usage   json.RawMessage `json:"usage"`
-		Info    json.RawMessage `json:"info"`
+	Type      string `json:"type"`
+	Timestamp string `json:"timestamp"`
+	Payload   struct {
+		Type       string          `json:"type"`
+		Role       string          `json:"role"`
+		Model      string          `json:"model"`
+		Summary    json.RawMessage `json:"summary"`
+		Content    json.RawMessage `json:"content"`
+		Usage      json.RawMessage `json:"usage"`
+		Info       json.RawMessage `json:"info"`
+		TurnID     string          `json:"turn_id"`
+		ForkedFrom string          `json:"forked_from_id"`
+		ParentID   string          `json:"parent_thread_id"`
 	} `json:"payload"`
 }
 
@@ -647,7 +744,26 @@ func (s *CodexSource) readFinal(r Record) map[string]any {
 	// where keeping only the last gave the final turn's (see source_claude). A rollout
 	// without those records has token_count events instead, whose info.total_token_usage
 	// is already cumulative, so the last one is the total.
-	var totals usageTotals
+	// Usage is counted per turn, not per record: a fork's file opens with its parent's
+	// turns copied in (the timestamps rewritten, the turn ids kept), and summing every
+	// record there counts those turns again. Keyed by turn id, a copied turn can be told
+	// from the fork's own by the parent's set (see parentTurns).
+	turns := map[string]map[string]any{}
+	rowNo := 0
+	currentTurn := ""
+	turnUsageKey := func(probe codexProbe) string {
+		switch {
+		case currentTurn != "":
+			return "turn:" + currentTurn
+		case probe.Timestamp != "":
+			// Old rollouts have no turn id; the row time is orca's fallback. Within one
+			// file it still separates turns; across files a fork's rewritten times do
+			// not line up, so these are not deduplicated against the parent.
+			return "ts:" + probe.Timestamp
+		}
+		return "row:" + strconv.Itoa(rowNo) // nothing to group by: never merge two rows
+	}
+	forkedFrom := ""
 	var lastTokenCount map[string]any
 	EachJSONLLine(path, func(line []byte) bool {
 		var probe codexProbe
@@ -656,14 +772,24 @@ func (s *CodexSource) readFinal(r Record) map[string]any {
 		}
 		switch {
 		case probe.Type == "token_usage_record":
+			rowNo++
 			if len(probe.Payload.Usage) > 0 {
 				var u map[string]any
 				if json.Unmarshal(probe.Payload.Usage, &u) == nil && len(u) > 0 {
-					totals.add(u)
+					key := turnUsageKey(probe)
+					if _, seen := turns[key]; !seen {
+						turns[key] = u
+					}
 				}
 			}
 			return true
+		case probe.Type == "session_meta":
+			if forkedFrom == "" {
+				forkedFrom = FirstNonEmpty(probe.Payload.ForkedFrom, probe.Payload.ParentID)
+			}
+			return true
 		case probe.Type == "turn_context":
+			currentTurn = probe.Payload.TurnID
 			if probe.Payload.Model != "" {
 				model = probe.Payload.Model
 			}
@@ -686,6 +812,19 @@ func (s *CodexSource) readFinal(r Record) map[string]any {
 		}
 		return true
 	})
+	// A fork's copied prefix belongs to the parent's file, not this one: drop the turns
+	// the parent also carries, so every turn is counted exactly once across the history.
+	copied := map[string]bool{}
+	if forkedFrom != "" {
+		copied = s.parentTurns(forkedFrom)
+	}
+	var totals usageTotals
+	for key, u := range turns {
+		if id, ok := strings.CutPrefix(key, "turn:"); ok && copied[id] {
+			continue
+		}
+		totals.add(u)
+	}
 	if !totals.seen && lastTokenCount != nil {
 		totals.add(lastTokenCount)
 	}

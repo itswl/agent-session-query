@@ -169,9 +169,16 @@ and deployment see the [README](../README.md).
   `event_msg` / `turn_aborted` becomes an `interrupted` event; the other events are
   bookkeeping. One rule — `codexProbe.counts` — decides what is a message for the list's
   background count, for `Final` and for the reader, so the three agree. Usage comes from
-  the `token_usage_record` rows summed, or, in a rollout without them, from the last
-  `event_msg` / `token_count` (`info.total_token_usage` is cumulative, so the last one is
-  the total). The model is on `turn_context`, which the metadata scan runs on to.
+  the `token_usage_record` rows summed by turn, or, in a rollout without them, from the
+  last `event_msg` / `token_count` (`info.total_token_usage` is cumulative, so the last
+  one is the total). A fork (resume, or a subagent's rollout) opens with the parent's
+  turns copied in — Codex rewrites their timestamps and keeps their `turn_id` — so the
+  records are keyed by the `turn_context` turn id (a record with none falls back to its
+  row time, and one with neither is never merged) and the fork's final drops the turns its
+  parent's file also carries: each real turn is counted once, in the session that ran it,
+  and a fork's own number no longer includes the copied prefix. A rollout old enough to
+  have no turn ids cannot be split that way and is summed as before. The model is on
+  `turn_context`, which the metadata scan runs on to.
   The metadata row is `type=session_meta` (authoritative and complete); only when it is
   absent does the scan salvage fields from later rows — measured against a real rollout,
   the row types are complementary: `turn_context` carries only `cwd`,

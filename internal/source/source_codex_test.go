@@ -2,6 +2,7 @@ package source
 
 import (
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -394,5 +395,119 @@ func TestCodexArchivedRollouts(t *testing.T) {
 	}
 	if NewCodexSource(t.TempDir()).archivedRoot() != "" {
 		t.Error("a root not named sessions has no archive beside it")
+	}
+}
+
+// TestCodexForkedTurnsCountedOnce: a fork's rollout opens with its parent's turns copied
+// in — Codex rewrites their timestamps but keeps the turn ids — so summing every
+// token_usage_record counts the prefix twice across the two files. Keyed by turn id and
+// subtracted against the parent's set, the fork counts only the turns it ran itself.
+//
+// The fork-of-a-fork case comes along: the middle session's turn set is what the leaf
+// subtracts, and it covers the whole copied chain.
+func TestCodexForkedTurnsCountedOnce(t *testing.T) {
+	root := t.TempDir()
+	day := filepath.Join(root, "2026", "10", "23")
+
+	meta := func(id, sessionID, fork string) string {
+		payload := `"session_id":"` + sessionID + `","id":"` + id + `","cwd":"/w"`
+		if fork != "" {
+			payload += `,"forked_from_id":"` + fork + `","parent_thread_id":"` + fork + `"`
+		}
+		return `{"type":"session_meta","payload":{` + payload + `}}`
+	}
+	turn := func(id string) string {
+		return `{"type":"turn_context","payload":{"turn_id":"` + id + `","model":"gpt-6"}}`
+	}
+	usage := func(in int, ts string) string {
+		return `{"timestamp":"` + ts + `","type":"token_usage_record","payload":{"usage":{"input_tokens":` +
+			strconv.Itoa(in) + `,"output_tokens":1}}}`
+	}
+
+	// The root ran t1 and t2
+	write(t, filepath.Join(day, "rollout-2026-10-23T10-00-00-parent-1.jsonl"),
+		meta("parent-1", "parent-1", ""),
+		turn("t1"), usage(10, "2026-10-23T10:00:01Z"),
+		turn("t2"), usage(20, "2026-10-23T10:00:02Z"),
+	)
+	// Its fork copied t1 and t2 (same ids, rewritten times) and ran t3
+	write(t, filepath.Join(day, "rollout-2026-10-23T11-00-00-child-1.jsonl"),
+		meta("child-1", "parent-1", "parent-1"),
+		turn("t1"), usage(10, "2026-10-23T11:00:00Z"),
+		turn("t2"), usage(20, "2026-10-23T11:00:01Z"),
+		turn("t3"), usage(40, "2026-10-23T11:00:02Z"),
+	)
+	// And a fork of the fork, which copied all three and ran t4
+	write(t, filepath.Join(day, "rollout-2026-10-23T12-00-00-leaf-1.jsonl"),
+		meta("leaf-1", "child-1", "child-1"),
+		turn("t1"), usage(10, "2026-10-23T12:00:00Z"),
+		turn("t2"), usage(20, "2026-10-23T12:00:01Z"),
+		turn("t3"), usage(40, "2026-10-23T12:00:02Z"),
+		turn("t4"), usage(80, "2026-10-23T12:00:03Z"),
+	)
+
+	s := NewCodexSource(root)
+	list := s.List()
+	byID := map[string]Record{}
+	for _, r := range list {
+		byID[r.SessionID] = r
+	}
+	want := map[string]int64{"parent-1": 30, "child-1": 40, "leaf-1": 80}
+	for id, input := range want {
+		rec, ok := byID[id]
+		if !ok {
+			t.Fatalf("%s was not listed: %v", id, list)
+		}
+		usage, _ := s.Final(rec)["usage"].(map[string]any)
+		if got := usage["inputTokens"]; got != input {
+			t.Errorf("%s inputTokens = %v, want %d (its own turns only)", id, got, input)
+		}
+	}
+
+	// Every real turn is counted exactly once across the three files
+	var total int64
+	for _, rec := range list {
+		usage, _ := s.Final(rec)["usage"].(map[string]any)
+		if n, ok := usage["inputTokens"].(int64); ok {
+			total += n
+		}
+	}
+	if total != 150 {
+		t.Fatalf("history total = %d, want 150 (t1..t4 counted once)", total)
+	}
+}
+
+// TestCodexUsageWithoutTurnIDsStaysAsItWas: an old rollout whose records carry neither a
+// turn id nor a usable turn boundary cannot have its copied prefix split off, and is
+// summed as before rather than guessed at
+func TestCodexUsageWithoutTurnIDsStaysAsItWas(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "2026", "10", "23", "rollout-x.jsonl"),
+		`{"type":"session_meta","payload":{"session_id":"s1","id":"s1"}}`,
+		`{"type":"token_usage_record","payload":{"usage":{"input_tokens":7}}}`,
+		`{"type":"token_usage_record","payload":{"usage":{"input_tokens":30}}}`,
+	)
+	s := NewCodexSource(root)
+	final := s.Final(s.List()[0])
+	usage, _ := final["usage"].(map[string]any)
+	if usage["inputTokens"] != int64(37) {
+		t.Fatalf("inputTokens = %v, want 37 (both records summed)", usage["inputTokens"])
+	}
+}
+
+// TestCodexTurnUsageRewrittenCountsOnce: a turn whose record appears twice (the CLI
+// rewriting a finished turn) contributes once, not twice
+func TestCodexTurnUsageRewrittenCountsOnce(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "2026", "10", "23", "rollout-y.jsonl"),
+		`{"type":"session_meta","payload":{"session_id":"s2","id":"s2"}}`,
+		`{"type":"turn_context","payload":{"turn_id":"t1","model":"gpt-6"}}`,
+		`{"type":"token_usage_record","payload":{"usage":{"input_tokens":10}}}`,
+		`{"type":"token_usage_record","payload":{"usage":{"input_tokens":10}}}`,
+	)
+	s := NewCodexSource(root)
+	usage, _ := s.Final(s.List()[0])["usage"].(map[string]any)
+	if usage["inputTokens"] != int64(10) {
+		t.Fatalf("inputTokens = %v, want 10 (one turn, one count)", usage["inputTokens"])
 	}
 }

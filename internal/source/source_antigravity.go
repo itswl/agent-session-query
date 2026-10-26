@@ -401,6 +401,16 @@ func (s *AntigravitySource) Messages(r Record, q MessageQuery) []map[string]any 
 			"timestamp": ToStr(step["created_at"]),
 			"content":   blocks,
 		}
+		if role == "assistant" {
+			if usage := UsageOf(map[string]any{
+				"input_tokens":       step["input_tokens"],
+				"output_tokens":      step["output_tokens"],
+				"cache_read_tokens":  step["cache_read_tokens"],
+				"cache_write_tokens": step["cache_write_tokens"],
+			}); usage != nil {
+				message["usage"] = usage
+			}
+		}
 		if !sink.add(message) {
 			break
 		}

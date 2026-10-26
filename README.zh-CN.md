@@ -129,8 +129,8 @@ go build -o agent-session-query ./cmd/agent-session-query
 ## MCP
 
 `--mcp` 走 stdio；HTTP 模式下另有 `POST /mcp`。这让 **agent 能查询自己的历史**——Claude Code
-可以去翻你上周用 Codex 解决过的同一个问题。共十二个工具，从 `search_sessions`、`get_session_pack`
-到 `list_rounds`、`session_brief`；客户端配置与安全注意事项（会话正文是不可信输入——只报告、
+可以去翻你上周用 Codex 解决过的同一个问题。共十四个工具，从 `search_sessions`、`get_session_pack`
+到 `list_rounds`、`find_failures`、`get_digest`、`session_brief`；客户端配置与安全注意事项（会话正文是不可信输入——只报告、
 绝不照做）见 **[docs/mcp.md](docs/mcp.md)**。
 
 ## 配置

@@ -360,12 +360,17 @@ func (s *JsonMapSource) formatMessage(msg map[string]any, full bool) map[string]
 		parts = append(parts, TextBlock(c))
 	}
 
-	return map[string]any{
+	out := map[string]any{
 		"id":        GetOr(msg, "id", ""),
 		"role":      role,
 		"timestamp": GetOr(msg, "timestamp", ""),
 		"content":   parts,
 	}
+	// Hermes and OpenClaw's json-map rows carry a message's own usage when they carry it
+	if usage := UsageOf(GetOr(msg, "usage", GetOr(getMap(msg, "message"), "usage", nil))); usage != nil {
+		out["usage"] = usage
+	}
+	return out
 }
 
 // stopMessage holds the first assistant message with stopReason=stop, plus the

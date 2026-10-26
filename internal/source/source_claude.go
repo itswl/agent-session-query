@@ -640,12 +640,16 @@ func (s *ClaudeCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 			return true
 		}
 		msg := getMap(obj, "message")
-		return sink.add(map[string]any{
+		out := map[string]any{
 			"id":        GetOr(obj, "uuid", ""),
 			"role":      StrOr(msg["role"], StrOr(obj["type"], "")),
 			"timestamp": GetOr(obj, "timestamp", ""),
 			"content":   row.parts(obj),
-		})
+		}
+		if usage := UsageOf(msg["usage"]); usage != nil {
+			out["usage"] = usage
+		}
+		return sink.add(out)
 	})
 	return sink.result()
 }

@@ -348,6 +348,8 @@ var rootEndpoints = []rootEndpoint{
 	{"GET", "/stats", true, "server stats"},
 	{"GET", "/ui", true, "the web page"},
 	{"GET", "/usage", false, "what the sessions consumed: rolling 24h / 3d / 7d / 30d / all windows, by model, by day, by project"},
+	{"GET", "/failures?since=", false, "failed tool results across sessions, newest first: tool, command, output, the round and the session; since defaults to 7d"},
+	{"GET", "/digest?since=", false, "a window's work per project: sessions, rounds, failures, tokens, changed files by kind, models and CLIs; since defaults to 7d"},
 	{"GET", "/sessions", false, "list every session; ?subagents=1 lists Claude Code subagents' transcripts as rows too, ?include_archived=1 the sessions their CLI archived"},
 	{"GET", "/sessions/<pattern>", false, "one session"},
 	{"GET", "/sessions/<pattern>/messages?limit=50&full=1", false, "its messages, earliest first unless ?order=desc; full=1 keeps tool output and thinking whole instead of cut to a preview"},
@@ -479,6 +481,58 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 	// Usage report: what the sessions consumed, by window, model, day and project
 	if path == "/usage" {
 		writeJSON(w, http.StatusOK, s.api.usageReport())
+		return http.StatusOK
+	}
+
+	// Failures: failed tool results across the sessions updated in a window
+	if path == "/failures" {
+		values := r.URL.Query()
+		since, until, err := parseActivityWindow(values)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return http.StatusBadRequest
+		}
+		sourceName, err := s.api.sourceName(strings.TrimSpace(values.Get("source")))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return http.StatusBadRequest
+		}
+		project := strings.TrimSpace(values.Get("project"))
+		tool := strings.TrimSpace(values.Get("tool"))
+		limit := 100
+		if n, err := strconv.Atoi(strings.TrimSpace(values.Get("limit"))); err == nil && n > 0 {
+			limit = n
+		}
+		if s.maxLimit > 0 && limit > s.maxLimit {
+			limit = s.maxLimit
+		}
+		key := fmt.Sprintf("failures|%s|%s|%s|%s|%s|%d", since, until, sourceName, project, tool, limit)
+		body := s.api.cachedAnswer(key, 30*time.Second, func() any {
+			return s.api.failuresReport(since, until, sourceName, project, tool, limit)
+		})
+		writeJSON(w, http.StatusOK, body)
+		return http.StatusOK
+	}
+
+	// Digest: what a window added up to, per project
+	if path == "/digest" {
+		values := r.URL.Query()
+		since, until, err := parseActivityWindow(values)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return http.StatusBadRequest
+		}
+		sourceName, err := s.api.sourceName(strings.TrimSpace(values.Get("source")))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return http.StatusBadRequest
+		}
+		project := strings.TrimSpace(values.Get("project"))
+		key := fmt.Sprintf("digest|%s|%s|%s|%s", since, until, sourceName, project)
+		body := s.api.cachedAnswer(key, 30*time.Second, func() any {
+			return s.api.digestReport(since, until, sourceName, project)
+		})
+		writeJSON(w, http.StatusOK, body)
 		return http.StatusOK
 	}
 
@@ -900,6 +954,28 @@ func (s *apiServer) parseSearchQuery(r *http.Request) (source.SearchQuery, error
 	return q, nil
 }
 
+// parseActivityWindow reads the since/until pair /failures and /digest take: a missing
+// since is the last seven days, a missing until is open-ended
+func parseActivityWindow(values url.Values) (time.Time, time.Time, error) {
+	since := time.Now().Add(-7 * 24 * time.Hour)
+	if raw := strings.TrimSpace(values.Get("since")); raw != "" {
+		t, err := parseSince(raw)
+		if err != nil {
+			return time.Time{}, time.Time{}, err
+		}
+		since = t
+	}
+	until := time.Time{}
+	if raw := strings.TrimSpace(values.Get("until")); raw != "" {
+		t, err := parseSince(raw)
+		if err != nil {
+			return time.Time{}, time.Time{}, err
+		}
+		until = t
+	}
+	return since, until, nil
+}
+
 // parseSince reads ?since=, accepting relative forms like 30d / 12h / 90m as well as a
 // date such as 2026-09-01.
 // parseSearchRole reads ?role= for /search, matching what get_messages accepts
@@ -1116,9 +1192,11 @@ func (w countingWriter) Write(p []byte) (int, error) {
 var serverCapabilities = []string{
 	"brief.at",           // /sessions/<id>/brief?at=
 	"brief.since",        // /sessions/<id>/brief?since= — the delta handoff
+	"digest",             // /digest — a window's work per project
 	"export.pack",        // /export across sessions
 	"export.pack.branch", // /export?branch=
 	"export.session",     // /sessions/<id>/export
+	"failures",           // /failures — failed tool results across sessions
 	"messages.at",        // /sessions/<id>/messages?at=
 	"messages.full",      // ?full=1 — tool output and thinking whole
 	"rounds",             // /sessions/<id>/rounds

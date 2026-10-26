@@ -654,14 +654,52 @@ func (s *CodexSource) Messages(r Record, q MessageQuery) []map[string]any {
 		return sink.result()
 	}
 	w := newCodexWalker(q.Full)
+	var last map[string]any // the turn's last assistant message, which a token record annotates
+	add := func(m map[string]any) bool {
+		if ToStr(m["role"]) == "assistant" {
+			last = m
+		}
+		return sink.add(m)
+	}
 	eachJSONL(path, func(obj map[string]any) bool {
+		// A turn's token record follows its messages and belongs to the turn, not to a
+		// row of its own: it is folded into the assistant message it closes, so a round
+		// can report what its turns cost.
+		if obj["type"] == "token_usage_record" {
+			if last != nil {
+				addUsage(last, UsageOf(getMap(obj, "payload")["usage"]))
+			}
+			return true
+		}
 		m := w.message(obj)
 		if m == nil {
 			return true
 		}
-		return sink.add(m)
+		return add(m)
 	})
 	return sink.result()
+}
+
+// addUsage folds one more usage object into a message's, so a message can close several
+// records (or one record rewritten) without losing what came before it
+func addUsage(message map[string]any, usage map[string]any) {
+	if len(usage) == 0 {
+		return
+	}
+	existing, _ := message["usage"].(map[string]any)
+	if existing == nil {
+		existing = map[string]any{}
+		message["usage"] = existing
+	}
+	for name, value := range usage {
+		if n, ok := ToFloat(value); ok {
+			if prev, ok := ToFloat(existing[name]); ok {
+				existing[name] = int64(prev) + int64(n)
+			} else {
+				existing[name] = int64(n)
+			}
+		}
+	}
 }
 
 // codexProbe is the small decode every whole-file scan does per row. counts mirrors

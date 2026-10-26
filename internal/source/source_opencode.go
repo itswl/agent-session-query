@@ -488,12 +488,16 @@ func (s *OpenCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 		if role == "" {
 			role = "unknown"
 		}
-		return sink.add(map[string]any{
+		out := map[string]any{
 			"id":        pending.id,
 			"role":      role,
 			"timestamp": openCodeJSONMillis(pending.data, "time", "created"),
 			"content":   pending.blocks,
-		})
+		}
+		if usage := openCodeMessageUsage(pending.data); usage != nil {
+			out["usage"] = usage
+		}
+		return sink.add(out)
 	}
 	for rows.Next() {
 		var id, msgData string
@@ -906,6 +910,9 @@ func openCodeMessageUsage(data map[string]any) map[string]any {
 	}
 	if n, ok := ToFloat(data["cost"]); ok {
 		out["estimatedCostUsd"] = n
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

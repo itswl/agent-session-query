@@ -58,6 +58,8 @@
     <button id="logout" class="ghost">Change token</button>
   </header>
 
+  <div id="warnings" class="warnings hidden" role="status"></div>
+
   <main>
     <!-- Each side pane has a bar of its own: its name, and the controls that act on it. The
          fold toggle is on the pane it folds, at the edge it folds towards; folded, the pane
@@ -65,6 +67,7 @@
     <aside class="list-pane" aria-label="Sessions">
       <div class="pane-bar">
         <span class="pane-title">Sessions</span>
+        <button id="show-failures" class="ghost tiny" aria-pressed="false" title="Failed tool calls across sessions in the last 7 days">Failures</button>
         <button id="show-archived" class="ghost tiny hidden" aria-pressed="false" title="Show the sessions their CLI has archived">Archived</button>
         <button id="fold-groups" class="ghost tiny" title="Collapse every project">Collapse all</button>
         <button id="toggle-list" class="ghost icon-btn pane-toggle" title="Hide the session list" aria-label="Toggle the session list"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg></button>

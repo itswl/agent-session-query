@@ -237,6 +237,12 @@ func (s *OpenClawSource) Messages(r Record, q MessageQuery) []map[string]any {
 				IsError    bool   `json:"isError"`
 				Content    any    `json:"content"`
 				Model      string `json:"model"`
+				Usage      struct {
+					Input      any `json:"input"`
+					Output     any `json:"output"`
+					CacheRead  any `json:"cacheRead"`
+					CacheWrite any `json:"cacheWrite"`
+				} `json:"usage"`
 			} `json:"message"`
 			Timestamp string `json:"timestamp"`
 		}
@@ -284,11 +290,20 @@ func (s *OpenClawSource) Messages(r Record, q MessageQuery) []map[string]any {
 		if ts == "" {
 			ts = openClawEventMillis(m.Timestamp)
 		}
-		sink.add(map[string]any{
+		msg := map[string]any{
 			"role":      StrOr(m.Role, "unknown"),
 			"timestamp": ts,
 			"content":   blocks,
-		})
+		}
+		if usage := UsageOf(map[string]any{
+			"input":      m.Usage.Input,
+			"output":     m.Usage.Output,
+			"cacheRead":  m.Usage.CacheRead,
+			"cacheWrite": m.Usage.CacheWrite,
+		}); usage != nil {
+			msg["usage"] = usage
+		}
+		sink.add(msg)
 	}
 	return sink.result()
 }

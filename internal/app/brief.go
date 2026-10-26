@@ -65,10 +65,16 @@ type round struct {
 	asked       string
 	outcome     string
 	interrupted bool
+	// usage is what the round's own messages cost, summed; nil when no message carried
+	// counters. failed keeps one entry per failed tool result, for /failures.
+	usage  map[string]float64
+	failed []roundFailure
 
 	// pending holds the write-kind calls still waiting for their result, by call id, so
 	// that a failed edit does not count as a change
 	pending map[string][]string
+	// calls remembers a call by id for the result that reports it failed
+	calls map[string]roundCall
 }
 
 // isRoundStart: a user message carrying human words that is not command plumbing, not one
@@ -237,6 +243,35 @@ const briefMaxSections = 12
 // moved server-side: a round starts at a user message with words of its own, and
 // everything up to the next such message belongs to it. Messages before the first real
 // ask belong to no round.
+// roundCall is what a failed result needs to name its call
+type roundCall struct {
+	name    string
+	command string
+}
+
+// roundFailure is one failed tool result, as /failures reports it
+type roundFailure struct {
+	at      string
+	tool    string
+	command string
+	output  string
+}
+
+// addUsage folds one message's normalized counters into the round's total
+func (r *round) addUsage(usage map[string]any) {
+	if len(usage) == 0 {
+		return
+	}
+	if r.usage == nil {
+		r.usage = map[string]float64{}
+	}
+	for name, value := range usage {
+		if n, ok := source.ToFloat(value); ok {
+			r.usage[name] += n
+		}
+	}
+}
+
 func splitRounds(messages []map[string]any) []round {
 	rounds := []round{}
 	var cur *round
@@ -255,6 +290,7 @@ func splitRounds(messages []map[string]any) []round {
 				asked:   strings.TrimSpace(source.StripHarnessBlocks(messageText(m["content"]))),
 				kinds:   map[string]int{},
 				pending: map[string][]string{},
+				calls:   map[string]roundCall{},
 			}
 		} else if cur == nil {
 			continue
@@ -268,6 +304,7 @@ func splitRounds(messages []map[string]any) []round {
 		work := starting || role == "assistant"
 		cur.messages++
 		humanLast = starting
+		cur.addUsage(source.UsageOf(m["usage"]))
 		for _, block := range contentBlocks(m["content"]) {
 			switch source.ToStr(block["type"]) {
 			case "toolCall":
@@ -275,6 +312,12 @@ func splitRounds(messages []map[string]any) []round {
 				cur.toolCalls++
 				for _, file := range toolCallFiles(block["arguments"]) {
 					cur.files = appendUnique(cur.files, file)
+				}
+				if id := source.ToStr(block["id"]); id != "" {
+					cur.calls[id] = roundCall{
+						name:    source.ToStr(block["name"]),
+						command: commandText(block["arguments"]),
+					}
 				}
 				kind := toolKindOf(source.ToStr(block["name"]))
 				cur.kinds[kind]++
@@ -291,6 +334,17 @@ func splitRounds(messages []map[string]any) []round {
 				failed := source.IsFailedResult(block)
 				if failed {
 					cur.failures++
+					call := cur.calls[source.ToStr(block["callId"])]
+					tool := call.name
+					if tool == "" {
+						tool = source.ToStr(block["toolName"])
+					}
+					cur.failed = append(cur.failed, roundFailure{
+						at:      at,
+						tool:    tool,
+						command: call.command,
+						output:  capText(source.ToStr(block["content"]), 200),
+					})
 				}
 				cur.settleWrite(source.ToStr(block["callId"]), failed)
 			case "event":
@@ -353,6 +407,60 @@ func appendUnique(list []string, s string) []string {
 		return list
 	}
 	return append(list, s)
+}
+
+// roundUsageJSON shapes a round's summed counters for JSON: whole numbers and, like the
+// usage report, the share of prompt tokens that came from cache
+func roundUsageJSON(usage map[string]float64) map[string]any {
+	if len(usage) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	for _, name := range []string{"inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens"} {
+		if value, ok := usage[name]; ok && value != 0 {
+			out[name] = int64(value)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	input, cache := usage["inputTokens"], usage["cacheReadTokens"]
+	if input+cache > 0 {
+		out["cacheHit"] = cache / (input + cache)
+	}
+	return out
+}
+
+// humanTokensShort renders a token count the way a handoff line reads: 940, 18.2k, 3.4M
+func humanTokensShort(n int64) string {
+	switch {
+	case n >= 1_000_000:
+		return strconv.FormatFloat(float64(n)/1_000_000, 'f', 1, 64) + "M"
+	case n >= 1_000:
+		return strconv.FormatFloat(float64(n)/1_000, 'f', 1, 64) + "k"
+	}
+	return strconv.FormatInt(n, 10)
+}
+
+// tokenLine is how a round's usage reads in a brief: "18.2k in · 900 out · cache 71%"
+func tokenLine(usage map[string]float64) string {
+	if usage == nil {
+		return ""
+	}
+	parts := []string{}
+	if input := int64(usage["inputTokens"]); input > 0 {
+		parts = append(parts, humanTokensShort(input)+" in")
+	}
+	if output := int64(usage["outputTokens"]); output > 0 {
+		parts = append(parts, humanTokensShort(output)+" out")
+	}
+	if cache := int64(usage["cacheReadTokens"]); cache > 0 {
+		parts = append(parts, "cache read "+humanTokensShort(cache))
+	}
+	if input, cache := usage["inputTokens"], usage["cacheReadTokens"]; input+cache > 0 {
+		parts = append(parts, "cache "+strconv.Itoa(int(100*cache/(input+cache)))+"%")
+	}
+	return strings.Join(parts, " · ")
 }
 
 // capText shortens s to about n characters — runes, not bytes: asks are often CJK and
@@ -521,6 +629,7 @@ func (a *SessionQueryAPI) sessionRounds(pattern, sourceWanted string) (map[strin
 			"asked":         capText(r.asked, 160),
 			"outcome":       capText(r.outcome, 240),
 			"interrupted":   r.interrupted,
+			"usage":         roundUsageJSON(r.usage),
 		})
 	}
 	return map[string]any{
@@ -688,6 +797,7 @@ func renderBrief(item source.Record, rounds []round, selected []int, scanned, to
 	if since != "" && len(selected) > 0 {
 		var files, changed []string
 		calls, failures := 0, 0
+		usage := map[string]float64{}
 		for _, r := range rounds {
 			if !chosen[r.index] {
 				continue
@@ -700,6 +810,9 @@ func renderBrief(item source.Record, rounds []round, selected []int, scanned, to
 			}
 			calls += r.toolCalls
 			failures += r.failures
+			for name, value := range r.usage {
+				usage[name] += value
+			}
 		}
 		first, last := rounds[selected[0]-1], rounds[selected[len(selected)-1]-1]
 		fmt.Fprintf(&b, "\n## Since %s\n\n", since)
@@ -764,6 +877,9 @@ func renderBrief(item source.Record, rounds []round, selected []int, scanned, to
 				parts = append(parts, fmt.Sprintf("failed %d", r.failures))
 			}
 			fmt.Fprintf(&b, "- Tools: %s\n", strings.Join(parts, " · "))
+		}
+		if line := tokenLine(r.usage); line != "" {
+			fmt.Fprintf(&b, "- Tokens: %s\n", line)
 		}
 		ended := r.outcome
 		if ended == "" {

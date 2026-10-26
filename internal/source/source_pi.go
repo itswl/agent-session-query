@@ -190,12 +190,16 @@ func (s *PiSource) Messages(r Record, q MessageQuery) []map[string]any {
 				parts = append(parts, map[string]any{"type": kind, "content": cut})
 			}
 		}
-		return sink.add(map[string]any{
+		out := map[string]any{
 			"id":        GetOr(obj, "id", ""),
 			"role":      role,
 			"timestamp": GetOr(msg, "timestamp", GetOr(obj, "timestamp", "")),
 			"content":   parts,
-		})
+		}
+		if usage := UsageOf(msg["usage"]); usage != nil {
+			out["usage"] = usage
+		}
+		return sink.add(out)
 	})
 	return sink.result()
 }

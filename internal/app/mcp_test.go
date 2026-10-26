@@ -345,6 +345,8 @@ func TestMCPEveryArgumentIsAdvertised(t *testing.T) {
 		// cursor is read on search_sessions only to be refused: it does not paginate
 		"search_sessions":  {"query", "limit", "per_session", "since", "until", "pattern", "role", "source", "project", "branch", "subagents", "include_archived"},
 		"list_sessions":    {"source", "project", "branch", "since", "until", "limit", "cursor", "subagents", "include_archived"},
+		"find_failures":    {"since", "until", "tool", "source", "project", "limit", "include_archived"},
+		"get_digest":       {"since", "until", "source", "project"},
 		"get_session_pack": {"source", "project", "branch", "since", "until", "limit", "mode", "messages", "include_archived"},
 		"get_session":      {"pattern", "source"},
 		"list_projects":    {"include_archived"},

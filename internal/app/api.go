@@ -33,6 +33,38 @@ type SessionQueryAPI struct {
 	// second
 	usageAt     time.Time
 	usageCached usageReport
+
+	// answers caches the on-demand activity reports (failures, digest), which scan a
+	// window's messages and are asked again by every open of the page
+	answers map[string]cachedAnswer
+}
+
+type cachedAnswer struct {
+	at   time.Time
+	data any
+}
+
+// cachedAnswer returns a report computed within ttl, or computes it once and banks it.
+// With no cache TTL configured (--cache-ttl 0) every call computes, as the lists do.
+func (a *SessionQueryAPI) cachedAnswer(key string, ttl time.Duration, compute func() any) any {
+	if a.cacheTTL <= 0 {
+		return compute()
+	}
+	a.mu.Lock()
+	if entry, ok := a.answers[key]; ok && time.Since(entry.at) < ttl {
+		data := entry.data
+		a.mu.Unlock()
+		return data
+	}
+	a.mu.Unlock()
+	data := compute()
+	a.mu.Lock()
+	if a.answers == nil {
+		a.answers = map[string]cachedAnswer{}
+	}
+	a.answers[key] = cachedAnswer{at: time.Now(), data: data}
+	a.mu.Unlock()
+	return data
 }
 
 // usageReport answers what the sessions consumed, grouped the ways the questions come.

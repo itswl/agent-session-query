@@ -14,7 +14,13 @@ filled in by a background scan, so the list request never waits for it. Claude C
 subagents nest under the session that spawned them ("▸ 12 agents"), each opening as a
 transcript of its own with a link back, and an `Agent` step in the session leads to the
 transcript it started. Sessions a CLI has archived stay out of the list, as they do in the
-CLI itself; an **Archived** switch above the list brings them in, marked.
+CLI itself; an **Archived** switch above the list brings them in, marked. A **Failures**
+switch turns the list into the failed tool calls of the last seven days — tool, the command
+or the start of the output, the session it belongs to and its round — and a click opens that
+session at the failure. Source problems are the one thing an empty list cannot say: when
+`/health` reports a source that could not be read, a warning strip under the header says so
+(with a dismiss), because a source that failed and a source with nothing in it look
+otherwise identical.
 
 Typing filters sessionId / path / cwd and, in the same query, **searches message bodies**
 on the server. Body hits append under an "N more in message bodies" divider, carrying the
@@ -25,7 +31,7 @@ words already in the find bar and the match in view.
 ### Middle — the conversation, read by rounds
 
 You asked, the agent worked, the agent answered. The work between an ask and its reply
-folds to one line (*72 steps · 61 commands · changed 2 files · 1 code · 1 test · 1 failed · 24m39s*),
+folds to one line (*72 steps · 61 commands · changed 2 files · 1 code · 1 test · 18.2k in · 900 out · cache 71% · 1 failed · 24m39s*),
 keeping failures in view with the start of their output; a run of reads and searches
 folds to "explored — read 4 files, searched twice". Every step opens to its arguments and
 output, edits as diffs whichever way the CLI spelled the edit, results with exit code and

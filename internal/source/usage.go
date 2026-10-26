@@ -40,6 +40,21 @@ var usageOrder = []string{
 	"reasoningTokens", "totalTokens", "estimatedCostUsd",
 }
 
+// UsageOf is normalizeUsage for callers outside this file: nil when the object is not a
+// non-empty map or carries no known counter. Messages attach it so a round can report what
+// its own turns cost.
+func UsageOf(raw any) map[string]any {
+	m, ok := raw.(map[string]any)
+	if !ok || len(m) == 0 {
+		return nil
+	}
+	out := normalizeUsage(m)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // normalizeUsage maps one provider's usage object onto the shared names, dropping
 // everything else. Nested objects are not recursed into except for a numeric cost.total,
 // which is where pi puts the figure.

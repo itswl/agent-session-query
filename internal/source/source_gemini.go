@@ -355,12 +355,16 @@ func (s *GeminiSource) Messages(r Record, q MessageQuery) []map[string]any {
 			if m["type"] == "gemini" {
 				role = "assistant"
 			}
-			return sink.add(map[string]any{
+			out := map[string]any{
 				"id":        GetOr(m, "id", ""),
 				"role":      role,
 				"timestamp": GetOr(m, "timestamp", ""),
 				"content":   folder.parts(m),
-			})
+			}
+			if usage := UsageOf(m["tokens"]); usage != nil {
+				out["usage"] = usage
+			}
+			return sink.add(out)
 		})
 	}
 	return sink.result()

@@ -138,7 +138,7 @@ Full parameters, the `<pattern>` matching rules and every response field are in
 
 `--mcp` runs on stdio; in HTTP mode there is also `POST /mcp`. That lets **an agent query
 its own history** — Claude Code can go looking for the same problem you solved with Codex
-last week. Twelve tools, from `search_sessions` to `get_usage_report`
+last week. Fourteen tools, from `search_sessions` to `get_digest`
 and `session_brief`; client configuration and the security notes (session text is
 untrusted input — reported on, never followed) are in **[docs/mcp.md](docs/mcp.md)**.
 

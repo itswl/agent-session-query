@@ -230,6 +230,30 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		projects, ungrouped := s.api.listProjects(argBool(args, "include_archived"))
 		return map[string]any{"projects": projects, "total": len(projects), "ungrouped": ungrouped}, nil
 
+	case "find_failures":
+		filter, err := s.sessionFilterArgs(args)
+		if err != nil {
+			return nil, err
+		}
+		since := filter.since
+		if since.IsZero() {
+			since = time.Now().Add(-7 * 24 * time.Hour)
+		}
+		limit := argInt(args, "limit", 100, s.maxLimit)
+		return s.api.failuresReport(since, filter.until, filter.source, filter.project,
+			strings.TrimSpace(argString(args, "tool")), limit), nil
+
+	case "get_digest":
+		filter, err := s.sessionFilterArgs(args)
+		if err != nil {
+			return nil, err
+		}
+		since := filter.since
+		if since.IsZero() {
+			since = time.Now().Add(-7 * 24 * time.Hour)
+		}
+		return s.api.digestReport(since, filter.until, filter.source, filter.project), nil
+
 	case "get_usage_report":
 		report := s.api.usageReport()
 		// the project rows run long; the leading slice answers and total says what was cut
@@ -688,6 +712,37 @@ func mcpTools() []map[string]any {
 					"include_archived": boolSchema("the sessions their CLI has archived too (default false, as each CLI leaves them out of its own list); they carry archived: true"),
 				},
 				"required": []string{"query"},
+			},
+		},
+		{
+			"name":        "find_failures",
+			"description": "Failed tool results across the sessions updated in a window, newest first: the tool, the command it ran, a preview of the output, and the session and round it belongs to. Answers \"what keeps failing, and where\" — the starting point for fixing a setup or an AGENTS.md. since defaults to 7d; tool narrows by tool name (a substring); source, project and the since/until pair are the selection list_sessions takes.",
+			"annotations": readOnlyAnnotations("Find failures"),
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"since":            strSchema("only failures after this, e.g. 7d / 48h / 2026-10-01 (default 7d)"),
+					"until":            strSchema("only failures before this, e.g. 30d"),
+					"tool":             strSchema("only failures whose tool name contains this"),
+					"source":           strSchema("only one source: " + strings.Join(source.KnownModes, " / ")),
+					"project":          strSchema("only sessions whose project path (cwd) contains this"),
+					"limit":            intSchema("how many failures at most, newest first, default 100"),
+					"include_archived": boolSchema("the sessions their CLI has archived too (default false)"),
+				},
+			},
+		},
+		{
+			"name":        "get_digest",
+			"description": "What a stretch of work added up to, per project: sessions, rounds, failures, tokens (input / output / cache, with the cache hit rate), the files changed counted as code / test / docs / config, and the models and CLIs that did the work — with totals. Deterministic extraction from the same rounds and finals /usage and /rounds read. since defaults to 7d.",
+			"annotations": readOnlyAnnotations("Get digest"),
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"since":   strSchema("the start of the window, e.g. 7d / 24h / 2026-10-01 (default 7d)"),
+					"until":   strSchema("the end of the window, e.g. 30d"),
+					"source":  strSchema("only one source: " + strings.Join(source.KnownModes, " / ")),
+					"project": strSchema("only sessions whose project path (cwd) contains this"),
+				},
 			},
 		},
 		{

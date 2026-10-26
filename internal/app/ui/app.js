@@ -84,6 +84,9 @@ const state = {
   edgeLock: '',        // after mobile paging, move away from the edge before paging again
   noMore: { older: false, newer: false }, // an edge that came back empty
   collapsedGroups: new Set(), // project names folded away in By project grouping
+  failuresActive: false,      // the list pane is showing /failures instead of sessions
+  failures: null,             // the last /failures answer
+  warningsDismissed: false,   // the source-warning strip, dismissed for this visit
   msgCounts: new Map(),       // sessionId → message count, learned as sessions are opened
   countWarmTimer: null,       // short polling while background file counts warm
   countWarmAttempts: 0,
@@ -851,6 +854,7 @@ function emptyListState() {
 }
 
 function renderList() {
+  if (state.failuresActive) return; // the failures view owns the pane (see renderFailures)
   const list = $('list');
   revealSelectedAgent();
   const rows = listRows();
@@ -966,6 +970,7 @@ async function runContentSearch(keyword) {
     state.contentAbort = null;
     renderList();
     setStatus(idleStatus());
+    loadWarnings();
   } catch (err) {
     if (err.name === 'AbortError') return; // superseded, not a failure
     state.content = null;
@@ -2142,6 +2147,25 @@ function fileKindSplit(files) {
   return out;
 }
 
+// humanTokens is a token count the way the fold line reads: 940, 18.2k, 3.4M
+function humanTokens(n) {
+  if (!n) return '0';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return String(n);
+}
+
+// tokenLineOf sums a round's per-message counters into one fold-line phrase
+function tokenLineOf(tokens) {
+  var parts = [];
+  if (tokens.input) parts.push(humanTokens(tokens.input) + ' in');
+  if (tokens.output) parts.push(humanTokens(tokens.output) + ' out');
+  if (tokens.input + tokens.cacheRead > 0) {
+    parts.push('cache ' + Math.round(100 * tokens.cacheRead / (tokens.input + tokens.cacheRead)) + '%');
+  }
+  return parts.join(' · ');
+}
+
 // summarizeRound is the folded line: steps, commands, files changed, failures, time
 // isWorkRow: the agent's own rows. The ask is one by definition; a row that only carries
 // text the CLI put in the user's mouth (a task notification, a reminder, a block of
@@ -2156,6 +2180,7 @@ function isWorkRow(message) {
 function summarizeRound(round) {
   const tools = flatToolSteps(round.steps);
   const changed = new Set();
+  const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
   let commands = 0, failures = 0;
   for (const step of tools) {
     const kind = toolKind(stepName(step));
@@ -2169,6 +2194,15 @@ function summarizeRound(round) {
     }
   }
   const items = round.items;
+  for (const item of items) {
+    const u = item.message && item.message.usage;
+    if (!u) continue;
+    tokens.input += Number(u.inputTokens) || 0;
+    tokens.output += Number(u.outputTokens) || 0;
+    tokens.cacheRead += Number(u.cacheReadTokens) || 0;
+    tokens.cacheWrite += Number(u.cacheWriteTokens) || 0;
+    tokens.reasoning += Number(u.reasoningTokens) || 0;
+  }
   const firstAt = round.ask ? round.ask.message.timestamp : (items.length ? items[0].message.timestamp : '');
   // The end of the work, not the end of the rows: a notification or a block of context
   // the CLI drops in hours later belongs to whichever round was last, and a round of two
@@ -2188,6 +2222,7 @@ function summarizeRound(round) {
     commands,
     filesChanged: changed.size,
     filesByKind: fileKindSplit(changed),
+    tokenLine: tokenLineOf(tokens),
     failures,
     durationMs,
     interrupted,
@@ -2373,6 +2408,7 @@ function timelineNode(round) {
     parts.push(['changed ' + s.filesChanged + (s.filesChanged === 1 ? ' file' : ' files'), '']);
     for (const split of s.filesByKind || []) parts.push([split, '']);
   }
+  if (s.tokenLine) parts.push([s.tokenLine, '']);
   if (s.failures) parts.push([s.failures + ' failed', 'fail']);
   if (s.durationMs > 0) parts.push([formatDuration(s.durationMs), '']);
   for (const [label, cls] of parts) {
@@ -4577,12 +4613,109 @@ document.addEventListener('keydown', (event) => {
       refresh({ force: true });
       break;
     case 'Escape':
+      if (state.failuresActive) {
+        toggleFailures();
+        break;
+      }
       clearSearch();
       break;
     default:
       break;
   }
 });
+
+// ---------------------------------------------------------------------------
+// Failures, warnings
+// ---------------------------------------------------------------------------
+
+// toggleFailures switches the list pane between sessions and the failures of the last
+// seven days: the failed tool results the rounds already know, newest first.
+async function toggleFailures() {
+  state.failuresActive = !state.failuresActive;
+  const btn = $('show-failures');
+  btn.setAttribute('aria-pressed', state.failuresActive ? 'true' : 'false');
+  if (!state.failuresActive) {
+    state.failures = null;
+    renderList();
+    return;
+  }
+  await loadFailures();
+}
+
+async function loadFailures() {
+  const list = $('list');
+  list.replaceChildren(el('div', 'dim small', 'Looking for failures…'));
+  try {
+    state.failures = await api('/failures?since=7d&limit=100');
+    renderFailures();
+  } catch (err) {
+    state.failures = null;
+    list.replaceChildren(el('div', 'dim small', 'Could not read failures: ' + err.message));
+  }
+}
+
+function renderFailures() {
+  const list = $('list');
+  const data = state.failures || {};
+  const items = data.failures || [];
+  if (!items.length) {
+    list.replaceChildren(el('div', 'dim small', 'No failed tool calls in the last 7 days'));
+    return;
+  }
+  const head = el('div', 'dim small failures-head');
+  head.textContent = items.length + (items.length === 1 ? ' failure' : ' failures') +
+    (data.truncated ? ' · the newest ' + items.length + ' of ' + data.total : '') +
+    ' · ' + (data.sessionsScanned || 0) + ' sessions scanned';
+  const frag = document.createDocumentFragment();
+  frag.appendChild(head);
+  for (const f of items) {
+    const row = button('failure-row', '', () => selectSession(f.sessionId, f.at, false));
+    const what = el('div', 'failure-what');
+    what.appendChild(el('span', 'failure-tool', f.tool || 'tool'));
+    what.appendChild(el('span', 'failure-output', firstLine(f.command || f.output || '')));
+    row.appendChild(what);
+    const meta = el('div', 'dim small failure-meta');
+    meta.textContent = [f.shortKey || f.sessionId, relTime(f.at), '#' + f.round].filter(Boolean).join(' · ');
+    row.appendChild(meta);
+    frag.appendChild(row);
+  }
+  list.replaceChildren(frag);
+}
+
+// firstLine keeps a failure row to one readable line
+function firstLine(text) {
+  const line = String(text || '').split('\n')[0].trim();
+  return line.length > 120 ? line.slice(0, 119) + '…' : line;
+}
+
+// loadWarnings shows what /health last reported for the sources: a source that could not
+// be read looks exactly like one with nothing in it, and only this says otherwise. The
+// warning text can name paths, so the request carries the token.
+async function loadWarnings() {
+  const box = $('warnings');
+  if (!state.token) return;
+  try {
+    const res = await fetch('/health', { headers: { Authorization: 'Bearer ' + state.token } });
+    if (!res.ok) return;
+    const health = await res.json();
+    const warnings = health.warnings || [];
+    if (!warnings.length || state.warningsDismissed) {
+      box.classList.add('hidden');
+      return;
+    }
+    box.replaceChildren();
+    const text = el('div', 'warnings-text');
+    text.appendChild(el('b', '', warnings.length === 1 ? 'A source needs attention: ' : 'Sources need attention: '));
+    text.appendChild(document.createTextNode(warnings.join(' · ')));
+    box.appendChild(text);
+    const close = button('ghost tiny', 'dismiss', () => {
+      state.warningsDismissed = true;
+      box.classList.add('hidden');
+    });
+    box.appendChild(close);
+    box.classList.remove('hidden');
+  } catch (e) { /* /health is a courtesy; the list is the point */ }
+}
 
 // ---------------------------------------------------------------------------
 // Events and startup
@@ -4725,6 +4858,8 @@ $('toggle-side').addEventListener('click', () => {
 });
 
 $('refresh').addEventListener('click', () => refresh({ force: true }));
+
+$('show-failures').addEventListener('click', () => toggleFailures());
 $('theme').addEventListener('click', toggleTheme);
 // Following the system, a change of system theme changes the page; only the button's
 // words and the chrome colour need telling

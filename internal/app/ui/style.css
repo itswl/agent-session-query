@@ -382,6 +382,38 @@ body.hide-list #list, body.hide-side #side { display: none; }
 .empty-list p { margin: 0 0 12px; line-height: 1.5; }
 .empty-list button { margin: 0 auto; }
 
+/* Failures: the list pane showing failed tool calls instead of sessions */
+.failures-head { padding: 6px 14px 8px; font: 11.5px/1.5 var(--mono); }
+.failure-row {
+  display: block; width: calc(100% - 12px); text-align: left; margin: 0 6px 2px;
+  padding: 8px 10px 9px; border: 0; border-radius: var(--r-md); background: transparent;
+  color: inherit; font: inherit; cursor: pointer;
+  transition: background var(--dur) var(--ease);
+}
+.failure-row:hover { background: var(--hover); }
+.failure-row:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.failure-what { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.failure-tool {
+  flex: none; padding: 0 6px; border-radius: var(--r-sm);
+  background: var(--err-soft); color: var(--err); font: 11px/1.7 var(--mono);
+}
+.failure-output {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 12.5px/1.5 var(--mono); color: var(--fg-mid);
+}
+.failure-meta { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The source-warning strip: a source that cannot be read looks like one with nothing in
+   it, and this is the only place the difference shows. */
+.warnings {
+  display: flex; align-items: center; gap: 12px;
+  padding: 7px 16px; background: var(--warn-soft);
+  border-bottom: 1px solid var(--warn); color: var(--fg);
+  font-size: 12.5px; line-height: 1.5;
+}
+.warnings.hidden { display: none; }
+.warnings-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+
 /* Project group headers. A folded group has to look folded: its chevron points at the rows
    it hides, its count sits in a chip, and its name goes quiet; an open group's name is in
    full colour with the chevron turned down and a rule under it. */

@@ -569,12 +569,19 @@ func (s *OpenCodeSource) messagesV2(db *sql.DB, sessionID string, q MessageQuery
 			continue // one unparsable row must not hide the rest of the session
 		}
 		blocks := openCodeV2Blocks(kind, decoded, q.Full)
-		if !sink.add(map[string]any{
+		out := map[string]any{
 			"id":        id,
 			"role":      kind,
 			"timestamp": millisToISO(created),
 			"content":   blocks,
-		}) {
+		}
+		// A 2.x assistant row carries its own counters under data.tokens
+		if kind == "assistant" {
+			if usage := openCodeMessageUsage(decoded); usage != nil {
+				out["usage"] = usage
+			}
+		}
+		if !sink.add(out) {
 			break
 		}
 	}

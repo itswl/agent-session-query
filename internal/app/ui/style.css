@@ -269,7 +269,10 @@ body.hide-list #toggle-list svg, body.hide-side #toggle-side svg { transform: sc
 body.hide-list .list-pane .pane-bar, body.hide-side .side-pane .pane-bar {
   justify-content: center; padding: 0; border-bottom: 0;
 }
+/* Folded, the bar holds the toggle and nothing else: every control that acts on the list
+   has to go with it, or its text overflows the rail onto the conversation beside it. */
 body.hide-list .list-pane .pane-title, body.hide-list #fold-groups,
+body.hide-list #show-failures, body.hide-list #show-archived,
 body.hide-side .side-pane .pane-title { display: none; }
 body.hide-list #list, body.hide-side #side { display: none; }
 

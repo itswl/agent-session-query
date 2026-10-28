@@ -149,6 +149,10 @@ untrusted input — reported on, never followed) are in **[docs/mcp.md](docs/mcp
 | `--host` | `127.0.0.1` | Bind address; use `0.0.0.0` to expose it (refused without `--hook_token`) |
 | `--port` | `8080` | Listen port |
 | `--mode` | `auto` | `auto` (enable whatever exists) / `all` (enable all nine) / `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` / `opencode` / `grok` / `antigravity` |
+| `--otel-endpoint` | none | Send rounds to an OTLP/HTTP collector (Langfuse included); off unless set. See [docs/telemetry.md](docs/telemetry.md) |
+| `--otel-export` | off | Export the window once and exit |
+| `--otel-since` | `7d` | Backfill window; `all` for the whole history |
+| `--otel-content` | `none` | `io` also sends prompts, replies and tool output (masked, 256 KiB) |
 | `--path` | none | Relocate or duplicate a source: `--path claude=/mnt/disk/.claude/projects` points the source elsewhere; `--path claude:box2=/mnt/box2/.claude/projects` adds a second instance named `claude:box2`. Directory-shaped sources (`pi`, `claude`, `codex`, `gemini`, `grok`, `antigravity`) and opencode's database (its data dir or the `opencode.db` file). Repeatable — the way a pi hosted behind a wrapper's `--session-dir` is pointed at |
 | `--hook_token` | none | Bearer token; without it the API is unauthenticated |
 | `--max-connections` | `50` | Maximum concurrent connections; anything past it queues |
@@ -222,6 +226,7 @@ long-running.
 | [docs/sources.md](docs/sources.md) | Data sources, relocations and `--path` for sessions outside the default home |
 | [docs/development.md](docs/development.md) | Layout, tests, releasing, adding a source |
 | [docs/internals.md](docs/internals.md) | Implementation: per-source parsing, performance, search, cross-platform |
+| [docs/telemetry.md](docs/telemetry.md) | OTLP export: what is sent, timing fidelity, Langfuse setup, continuous mode |
 | [docs/roadmap.md](docs/roadmap.md) | What has shipped, what is still open and how worth doing it looks, and what is not planned |
 
 ## License

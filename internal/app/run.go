@@ -68,6 +68,16 @@ func Run(args []string) int {
 	daemon := fs.Bool("d", false, "run in the background, detached from the terminal, logging to a file")
 	logPath := fs.String("log-file", "", "log path used with -d (default <tmp>/agent-session-query-<port>.log)")
 	check := fs.Bool("check", false, "diagnose every source and exit: found or not, session count, a deep read of the newest session (exit 0 healthy, 1 a source failed)")
+	otelEndpoint := fs.String("otel-endpoint", "", "OTLP/HTTP endpoint to export sessions to, e.g. https://cloud.langfuse.com/api/public/otel; empty disables export")
+	otelHeaders := fs.String("otel-headers", "", "headers for the OTLP endpoint, comma-separated name=value (percent-encode spaces); Langfuse: Authorization=Basic%20<base64(pk:sk)>,x-langfuse-ingestion-version=4")
+	otelContent := fs.String("otel-content", "none", "what to export besides metadata: none, or io for prompts, replies and tool output (secrets masked, 256 KiB per body)")
+	otelExport := fs.Bool("otel-export", false, "export once and exit instead of serving (needs --otel-endpoint)")
+	otelSince := fs.String("otel-since", "7d", "backfill window for the first pass: 7d / 48h / a date, or all for the whole history")
+	otelEvery := fs.Duration("otel-every", 10*time.Minute, "in server mode, how often to export settled changes (0 disables continuous export)")
+	otelSettle := fs.Duration("otel-settle", 2*time.Minute, "leave a session that was written more recently than this to a later pass")
+	otelState := fs.String("otel-state", "", "cursor file (default under ~/.local/state; 'off' re-sends the window every run)")
+	otelResend := fs.Bool("otel-resend", false, "ignore the cursor and export the window again")
+	otelDryRun := fs.Bool("otel-dry-run", false, "with --otel-export, print the OTLP JSON instead of sending it")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 
 	if err := fs.Parse(args); err != nil {
@@ -88,6 +98,20 @@ func Run(args []string) int {
 		fmt.Fprintln(os.Stderr, "[FATAL] --mcp speaks a protocol over stdio; detaching from the terminal makes no sense, so it cannot be combined with -d")
 		return 2
 	}
+	otelCfg, err := otelConfigFromFlags(*otelEndpoint, *otelHeaders, *otelContent, *otelSince, *otelEvery, *otelSettle, *otelState, *otelResend, *otelDryRun)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[FATAL] %v\n", err)
+		return 2
+	}
+	if *otelDryRun && !*otelExport {
+		fmt.Fprintln(os.Stderr, "[FATAL] --otel-dry-run only makes sense with --otel-export")
+		return 2
+	}
+	if *otelExport && !otelCfg.enabled() {
+		fmt.Fprintf(os.Stderr, "[FATAL] %v\n", errNoEndpoint)
+		return 2
+	}
+
 	// Diagnostics: no server starts, the sources are probed once and the findings printed
 	if *check {
 		return runCheck(*mode, paths, os.Stdout)
@@ -116,10 +140,23 @@ func Run(args []string) int {
 
 	api := newSessionQueryAPIWithResolver(resolver, *cacheTTL)
 
+	// A one-shot export: no listener, no stdio protocol — read, send, exit
+	if *otelExport {
+		return runOTelOnce(api, otelCfg)
+	}
+
 	// MCP mode: stdout belongs to JSON-RPC alone, so startup output must go to stderr
 	if *mcp {
 		mcpStartupBanner(*mode, sources)
 		return runMCP(&mcpServer{api: api, sources: sources, maxLimit: effectiveMaxLimit(*maxLimit)}, os.Stdin, os.Stdout)
+	}
+
+	if otelCfg.enabled() && otelCfg.every > 0 {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go newOTelExporter(api, otelCfg).run(ctx)
+		fmt.Printf("OTLP export: %s (every %s, %s bodies, since %s)\n",
+			otelCfg.endpoint, otelCfg.every, contentLabel(otelCfg.content), sinceLabel(otelCfg.since))
 	}
 
 	// A non-loopback bind without a token hands every agent record on the machine to

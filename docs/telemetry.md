@@ -76,6 +76,7 @@ must filter on `timing.source=recorded`; the token counts are exact.
 | `--otel-export` | export once and exit, instead of serving |
 | `--otel-since` | backfill window: `7d` (default), `48h`, a date, or `all` for the whole history |
 | `--otel-every` | in server mode, export settled changes on this interval (default `10m`, `0` disables) |
+| `--otel-metrics` | also POST delta sums to `/v1/metrics` (rounds, token sums, tool failures); off by default — Langfuse does not take metrics |
 | `--otel-settle` | leave a session written more recently than this to a later pass (default `2m`) |
 | `--otel-state` | cursor file (default `~/.local/state/agent-session-query/otel.json`); `off` re-sends the window every run |
 | `--otel-resend` | ignore the cursor and export the window again |
@@ -96,6 +97,22 @@ UI groups the rounds under the session id, renders generations and tools from th
 `langfuse.observation.type` names, and prices tokens with its own model table — the
 service sends no cost.
 
+## Metrics (optional)
+
+`--otel-metrics` adds OTLP sums to `/v1/metrics`, delta temporality (each pass reports what
+it sent; a collector adds them up):
+
+| Metric | Attributes | Meaning |
+|---|---|---|
+| `agent_session.rounds` | `session.source` | rounds exported in this pass |
+| `agent_session.round.duration` | `session.source` | their wall-clock time, ms |
+| `agent_session.tokens` | `session.source`, `gen_ai.request.model`, `gen_ai.token.type` | input / output / cache_read / cache_creation / reasoning tokens |
+| `agent_session.tool.failures` | `session.source`, `gen_ai.tool.name` | failed tool calls |
+
+Langfuse takes traces only, so this is off by default; point it at a collector that stores
+metrics (Grafana, Prometheus via the collector) when that reader exists. The numbers come
+from the same spans the trace export just built, so both signals agree.
+
 ## Continuous export
 
 With an endpoint set and the server running, the first pass covers `--otel-since` (7 days
@@ -105,10 +122,42 @@ written). The cursor file remembers the last exported version per session; it is
 file this service writes, and only when export is on. `--otel-state=off` disables it —
 useful for a one-off backfill into a backend that does not update by id.
 
-A session that is exported and then grows is exported again under the same trace and span
-ids with its new rounds and a corrected last span. Backends that update by id are fine;
-append-only stores (Tempo, plain collectors writing object storage) see it twice. That is
-the cost of "correct rather than missing" for a live session.
+A session that is exported and then grows is sent again **only for the rounds that
+changed**: the cursor keeps a fingerprint per round, so a finished round is never re-sent.
+The changed round keeps its deterministic ids, so an id-keyed backend updates it and an
+append-only store sees one round twice, not the whole conversation. A round is pressed
+once the session has been quiet for `--otel-settle`; a round that changes afterwards (a
+late message) is re-sent for that reason alone.
+
+The cursor is version 2: `sessions → {updatedAt, at, rounds → {index: fingerprint}}`.
+Version 1 (a session-level mark) is discarded on sight: it cannot say which rounds were
+sent, so the next pass re-exports one window rather than guessing.
+
+## State
+
+The cursor lives at `--otel-state` (default `$XDG_STATE_HOME/agent-session-query/otel.json`,
+falling back to `~/.local/state/...`), is written atomically and holds no session content —
+only versions and round fingerprints:
+
+```json
+{
+  "version": 2,
+  "lastRun": "2026-10-28T07:05:02Z",
+  "sessions": {
+    "opencode|ses_ebc6c0083ffeoPUbq6IcTfGBNV": {
+      "updatedAt": "2026-10-28T07:04:25",
+      "at": "2026-10-28T07:05:01Z",
+      "rounds": {
+        "1": "5c0f8a4e9b7d2f13a6c4e8b0d1f3a5c7",
+        "2": "9a1d3f5b7c9e0a2d4f6b8c0e1a3d5f7b"
+      }
+    }
+  }
+}
+```
+
+`--otel-state=off` disables it; `--otel-resend` ignores it for one run. Deleting it makes
+the next pass treat the window as new.
 
 ## Limits
 

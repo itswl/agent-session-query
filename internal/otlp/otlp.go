@@ -189,3 +189,121 @@ func Encode(spans []Span) ([]byte, error) {
 	}
 	return json.Marshal(body)
 }
+
+// Metric is one sum metric: a name, a unit and data points for this export pass. The
+// exporter sends deltas (aggregationTemporality=1), so a collector adds them without the
+// service having to keep process-lifetime totals.
+type Metric struct {
+	Name      string
+	Unit      string
+	Monotonic bool
+	Points    []MetricPoint
+}
+
+// MetricPoint is one labelled value of a metric
+type MetricPoint struct {
+	Attributes []Attribute
+	Value      int64
+}
+
+// SendMetrics posts metrics to endpoint, appending /v1/metrics to a base URL. Same retry
+// and error contract as Send: a collector that is down never fails the service.
+func SendMetrics(ctx context.Context, client *http.Client, endpoint string, headers map[string]string, metrics []Metric, start time.Time) error {
+	if len(metrics) == 0 {
+		return nil
+	}
+	target := strings.TrimRight(endpoint, "/")
+	target = strings.TrimSuffix(target, "/v1/traces")
+	if !strings.HasSuffix(target, "/v1/metrics") {
+		target += "/v1/metrics"
+	}
+	body, err := EncodeMetrics(metrics, start, time.Now())
+	if err != nil {
+		return err
+	}
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		for name, value := range headers {
+			req.Header.Set(name, value)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return nil
+		}
+		lastErr = fmt.Errorf("collector answered %s", resp.Status)
+		if resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
+			return lastErr
+		}
+	}
+	return lastErr
+}
+
+// EncodeMetrics renders the metrics as an OTLP/HTTP JSON request body, delta temporality.
+func EncodeMetrics(metrics []Metric, start, now time.Time) ([]byte, error) {
+	if len(metrics) == 0 {
+		return nil, errors.New("no metrics")
+	}
+	encoded := make([]any, 0, len(metrics))
+	for _, m := range metrics {
+		points := make([]any, 0, len(m.Points))
+		for _, p := range m.Points {
+			point := map[string]any{
+				"startTimeUnixNano": strconv.FormatInt(start.UnixNano(), 10),
+				"timeUnixNano":      strconv.FormatInt(now.UnixNano(), 10),
+				"asInt":             strconv.FormatInt(p.Value, 10),
+			}
+			attrs := make([]any, 0, len(p.Attributes))
+			for _, a := range p.Attributes {
+				if text, ok := a.Value.(string); ok && text != "" {
+					attrs = append(attrs, map[string]any{"key": a.Key, "value": map[string]any{"stringValue": text}})
+				}
+			}
+			point["attributes"] = attrs
+			points = append(points, point)
+		}
+		metric := map[string]any{
+			"name": m.Name,
+			"sum": map[string]any{
+				"dataPoints":             points,
+				"aggregationTemporality": 1, // delta
+				"isMonotonic":            m.Monotonic,
+			},
+		}
+		if m.Unit != "" {
+			metric["unit"] = m.Unit
+		}
+		encoded = append(encoded, metric)
+	}
+	resourceAttrs := make([]any, 0, len(Resource()))
+	for _, a := range Resource() {
+		resourceAttrs = append(resourceAttrs, map[string]any{"key": a.Key, "value": map[string]any{"stringValue": a.Value}})
+	}
+	body := map[string]any{
+		"resourceMetrics": []any{map[string]any{
+			"resource": map[string]any{"attributes": resourceAttrs},
+			"scopeMetrics": []any{map[string]any{
+				"scope":   map[string]any{"name": "github.com/itswl/agent-session-query"},
+				"metrics": encoded,
+			}},
+		}},
+	}
+	return json.Marshal(body)
+}

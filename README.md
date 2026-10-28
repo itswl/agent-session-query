@@ -153,6 +153,7 @@ untrusted input — reported on, never followed) are in **[docs/mcp.md](docs/mcp
 | `--otel-export` | off | Export the window once and exit |
 | `--otel-since` | `7d` | Backfill window; `all` for the whole history |
 | `--otel-content` | `none` | `io` also sends prompts, replies and tool output (masked, 256 KiB) |
+| `--otel-metrics` | off | Also send OTLP sums (rounds, tokens, tool failures) to `/v1/metrics` |
 | `--path` | none | Relocate or duplicate a source: `--path claude=/mnt/disk/.claude/projects` points the source elsewhere; `--path claude:box2=/mnt/box2/.claude/projects` adds a second instance named `claude:box2`. Directory-shaped sources (`pi`, `claude`, `codex`, `gemini`, `grok`, `antigravity`) and opencode's database (its data dir or the `opencode.db` file). Repeatable — the way a pi hosted behind a wrapper's `--session-dir` is pointed at |
 | `--hook_token` | none | Bearer token; without it the API is unauthenticated |
 | `--max-connections` | `50` | Maximum concurrent connections; anything past it queues |

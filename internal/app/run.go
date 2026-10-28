@@ -78,6 +78,7 @@ func Run(args []string) int {
 	otelState := fs.String("otel-state", "", "cursor file (default under ~/.local/state; 'off' re-sends the window every run)")
 	otelResend := fs.Bool("otel-resend", false, "ignore the cursor and export the window again")
 	otelDryRun := fs.Bool("otel-dry-run", false, "with --otel-export, print the OTLP JSON instead of sending it")
+	otelMetrics := fs.Bool("otel-metrics", false, "also send OTLP metrics (rounds, token sums, tool failures) to /v1/metrics; Langfuse does not take metrics")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 
 	if err := fs.Parse(args); err != nil {
@@ -98,7 +99,7 @@ func Run(args []string) int {
 		fmt.Fprintln(os.Stderr, "[FATAL] --mcp speaks a protocol over stdio; detaching from the terminal makes no sense, so it cannot be combined with -d")
 		return 2
 	}
-	otelCfg, err := otelConfigFromFlags(*otelEndpoint, *otelHeaders, *otelContent, *otelSince, *otelEvery, *otelSettle, *otelState, *otelResend, *otelDryRun)
+	otelCfg, err := otelConfigFromFlags(*otelEndpoint, *otelHeaders, *otelContent, *otelSince, *otelEvery, *otelSettle, *otelState, *otelResend, *otelDryRun, *otelMetrics)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[FATAL] %v\n", err)
 		return 2
@@ -155,8 +156,8 @@ func Run(args []string) int {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		go newOTelExporter(api, otelCfg).run(ctx)
-		fmt.Printf("OTLP export: %s (every %s, %s bodies, since %s)\n",
-			otelCfg.endpoint, otelCfg.every, contentLabel(otelCfg.content), sinceLabel(otelCfg.since))
+		fmt.Printf("OTLP export: %s (every %s, %s bodies, since %s, metrics %s)\n",
+			otelCfg.endpoint, otelCfg.every, contentLabel(otelCfg.content), sinceLabel(otelCfg.since), onOff(otelCfg.metrics))
 	}
 
 	// A non-loopback bind without a token hands every agent record on the machine to

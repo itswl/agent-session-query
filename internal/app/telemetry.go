@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +36,7 @@ type otelConfig struct {
 	endpoint  string
 	headers   map[string]string
 	content   bool // request/response bodies on (off by default)
+	metrics   bool // also send OTLP sums to /v1/metrics
 	since     time.Time
 	every     time.Duration
 	settle    time.Duration
@@ -57,14 +61,17 @@ type otelExporter struct {
 // enough: a session's content only moves when its newest row does, and a session that grew
 // is exported again under the same deterministic span ids.
 type otelState struct {
-	Version  int                 `json:"version"`
-	LastRun  string              `json:"lastRun,omitempty"`
-	Exported map[string]otelMark `json:"exported,omitempty"`
+	Version  int                    `json:"version"`
+	LastRun  string                 `json:"lastRun,omitempty"`
+	Sessions map[string]otelSession `json:"sessions,omitempty"`
 }
 
-type otelMark struct {
-	UpdatedAt string `json:"updatedAt"`
-	At        string `json:"at,omitempty"`
+// otelSession is how far one session has been exported: its version for the fast skip,
+// and a fingerprint per round so a session that grew sends only the rounds that changed.
+type otelSession struct {
+	UpdatedAt string            `json:"updatedAt,omitempty"`
+	At        string            `json:"at,omitempty"`
+	Rounds    map[string]string `json:"rounds,omitempty"`
 }
 
 func newOTelExporter(api *SessionQueryAPI, cfg otelConfig) *otelExporter {
@@ -72,7 +79,7 @@ func newOTelExporter(api *SessionQueryAPI, cfg otelConfig) *otelExporter {
 		api:    api,
 		cfg:    cfg,
 		client: &http.Client{Timeout: 20 * time.Second},
-		state:  &otelState{Version: 1, Exported: map[string]otelMark{}},
+		state:  &otelState{Version: 2, Sessions: map[string]otelSession{}},
 	}
 	if cfg.statePath != "" {
 		e.loadState()
@@ -104,6 +111,8 @@ func (e *otelExporter) run(ctx context.Context) {
 func (e *otelExporter) exportOnce(ctx context.Context, since, settledBefore time.Time) (sessions, spans int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	started := time.Now()
+	acc := newOTelMetricAcc()
 	for _, src := range e.api.activeSources() {
 		for _, rec := range e.api.recordsOf(src) {
 			if ctx.Err() != nil {
@@ -130,27 +139,202 @@ func (e *otelExporter) exportOnce(ctx context.Context, since, settledBefore time
 			if len(built) == 0 {
 				continue
 			}
+			kept, changed := e.roundsToSend(key, built)
+			if len(kept) == 0 {
+				e.state.mark(key, rec.UpdatedAt, nil) // nothing new: remember the version
+				continue
+			}
 			if e.cfg.dryRun {
-				body, err := otlp.Encode(built)
+				body, err := otlp.Encode(kept)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "[WARN] otel: %s: %v\n", key, err)
 					continue
 				}
-				fmt.Printf("=== %s %s: %d spans ===\n%s\n", rec.Source, rec.SessionID, len(built), body)
-			} else if err := e.send(ctx, built); err != nil {
+				fmt.Printf("=== %s %s: %d spans ===\n%s\n", rec.Source, rec.SessionID, len(kept), body)
+			} else if err := e.send(ctx, kept); err != nil {
 				fmt.Fprintf(os.Stderr, "[WARN] otel: %s: %v\n", key, err)
 				continue // a failed session is not marked: the next run retries it
 			}
-			e.state.mark(key, rec.UpdatedAt)
+			e.state.mark(key, rec.UpdatedAt, changed)
 			sessions++
-			spans += len(built)
+			spans += len(kept)
+			if e.cfg.metrics {
+				acc.add(kept)
+			}
 		}
 	}
 	if e.cfg.statePath != "" && !e.cfg.dryRun {
 		e.state.LastRun = time.Now().UTC().Format("2006-01-02T15:04:05Z")
 		e.saveState()
 	}
+	if e.cfg.metrics && !e.cfg.dryRun {
+		if metrics := acc.metrics(); len(metrics) > 0 {
+			if err := otlp.SendMetrics(ctx, e.client, e.cfg.endpoint, e.cfg.headers, metrics, started); err != nil {
+				fmt.Fprintf(os.Stderr, "[WARN] otel metrics: %v\n", err)
+			}
+		}
+	}
 	return sessions, spans
+}
+
+// roundsToSend drops the rounds the state already has at this fingerprint, so a session
+// that grew sends only what changed instead of the whole conversation again.
+func (e *otelExporter) roundsToSend(key string, spans []otlp.Span) ([]otlp.Span, map[string]string) {
+	groups := groupRounds(spans)
+	rounds := make([]int64, 0, len(groups))
+	for round := range groups {
+		rounds = append(rounds, round)
+	}
+	sort.Slice(rounds, func(i, j int) bool { return rounds[i] < rounds[j] })
+	kept := []otlp.Span{}
+	changed := map[string]string{}
+	for _, round := range rounds {
+		fp := roundFingerprint(groups[round])
+		index := strconv.FormatInt(round, 10)
+		if !e.cfg.resend && e.state.roundFP(key, index) == fp {
+			continue
+		}
+		kept = append(kept, groups[round]...)
+		changed[index] = fp
+	}
+	return kept, changed
+}
+
+// groupRounds buckets a session's spans by the round they belong to
+func groupRounds(spans []otlp.Span) map[int64][]otlp.Span {
+	out := map[int64][]otlp.Span{}
+	for _, span := range spans {
+		round, _ := source.ToFloat(spanAttribute(span, "round.index"))
+		out[int64(round)] = append(out[int64(round)], span)
+	}
+	return out
+}
+
+// roundFingerprint is what a round looked like when it was exported: its spans' ids,
+// names, times, status and attributes in build order
+func roundFingerprint(spans []otlp.Span) string {
+	h := sha256.New()
+	for _, span := range spans {
+		fmt.Fprintf(h, "%s\x00%s\x00%d\x00%d\x00%t\x00", span.SpanID, span.Name,
+			span.Start.UnixNano(), span.End.UnixNano(), span.Error)
+		for _, a := range span.Attributes {
+			fmt.Fprintf(h, "%s=%v\x00", a.Key, a.Value)
+		}
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil)[:16])
+}
+
+// spanAttribute reads one attribute off a span
+func spanAttribute(span otlp.Span, key string) any {
+	for _, a := range span.Attributes {
+		if a.Key == key {
+			return a.Value
+		}
+	}
+	return nil
+}
+
+// otelMetricAcc folds a pass's spans into OTLP sums. Deltas: every pass reports what it
+// sent, and a collector adds them up.
+type otelMetricAcc struct {
+	rounds   map[string]*otlp.MetricPoint
+	duration map[string]*otlp.MetricPoint
+	tokens   map[string]*otlp.MetricPoint
+	failures map[string]*otlp.MetricPoint
+}
+
+func newOTelMetricAcc() *otelMetricAcc {
+	return &otelMetricAcc{
+		rounds:   map[string]*otlp.MetricPoint{},
+		duration: map[string]*otlp.MetricPoint{},
+		tokens:   map[string]*otlp.MetricPoint{},
+		failures: map[string]*otlp.MetricPoint{},
+	}
+}
+
+func (a *otelMetricAcc) add(spans []otlp.Span) {
+	for _, span := range spans {
+		kind := source.ToStr(spanAttribute(span, "langfuse.observation.type"))
+		src := source.ToStr(spanAttribute(span, "session.source"))
+		model := source.ToStr(spanAttribute(span, "gen_ai.request.model"))
+		switch kind {
+		case "span":
+			if !strings.HasPrefix(span.Name, "round ") {
+				continue
+			}
+			point(a.rounds, src, []otlp.Attribute{{Key: "session.source", Value: src}}).Value++
+			ms := span.End.Sub(span.Start).Milliseconds()
+			if ms > 0 {
+				point(a.duration, src, []otlp.Attribute{{Key: "session.source", Value: src}}).Value += ms
+			}
+		case "generation":
+			for _, pair := range []struct{ attr, kind string }{
+				{"gen_ai.usage.input_tokens", "input"},
+				{"gen_ai.usage.output_tokens", "output"},
+				{"gen_ai.usage.cache_read.input_tokens", "cache_read"},
+				{"gen_ai.usage.cache_creation.input_tokens", "cache_creation"},
+				{"gen_ai.usage.reasoning.output_tokens", "reasoning"},
+			} {
+				if n, ok := source.ToFloat(spanAttribute(span, pair.attr)); ok && n > 0 {
+					key := src + "|" + model + "|" + pair.kind
+					attrs := []otlp.Attribute{
+						{Key: "session.source", Value: src},
+						{Key: "gen_ai.request.model", Value: model},
+						{Key: "gen_ai.token.type", Value: pair.kind},
+					}
+					point(a.tokens, key, attrs).Value += int64(n)
+				}
+			}
+		case "tool":
+			if !span.Error {
+				continue
+			}
+			tool := source.ToStr(spanAttribute(span, "gen_ai.tool.name"))
+			key := src + "|" + tool
+			attrs := []otlp.Attribute{
+				{Key: "session.source", Value: src},
+				{Key: "gen_ai.tool.name", Value: tool},
+			}
+			point(a.failures, key, attrs).Value++
+		}
+	}
+}
+
+// point returns the accumulator's point for key, creating it with attrs
+func point(points map[string]*otlp.MetricPoint, key string, attrs []otlp.Attribute) *otlp.MetricPoint {
+	p, ok := points[key]
+	if !ok {
+		p = &otlp.MetricPoint{Attributes: attrs}
+		points[key] = p
+	}
+	return p
+}
+
+func (a *otelMetricAcc) metrics() []otlp.Metric {
+	out := []otlp.Metric{}
+	out = append(out, metricFrom("agent_session.rounds", "1", true, a.rounds)...)
+	out = append(out, metricFrom("agent_session.round.duration", "ms", false, a.duration)...)
+	out = append(out, metricFrom("agent_session.tokens", "1", true, a.tokens)...)
+	out = append(out, metricFrom("agent_session.tool.failures", "1", true, a.failures)...)
+	return out
+}
+
+// metricFrom turns one accumulator into a metric with its points in a stable order
+func metricFrom(name, unit string, monotonic bool, points map[string]*otlp.MetricPoint) []otlp.Metric {
+	if len(points) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(points))
+	for key := range points {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	metric := otlp.Metric{Name: name, Unit: unit, Monotonic: monotonic}
+	for _, key := range keys {
+		metric.Points = append(metric.Points, *points[key])
+	}
+	return []otlp.Metric{metric}
 }
 
 // allMessages reads a session whole. The rounds API deliberately reads only the tail;
@@ -483,21 +667,41 @@ func messageKey(m map[string]any, role string) string {
 
 // known reports whether this exact version of a session was exported already
 func (s *otelState) known(key, updatedAt string) bool {
-	if s == nil || s.Exported == nil {
+	if s == nil || s.Sessions == nil || updatedAt == "" {
 		return false
 	}
-	mark, ok := s.Exported[key]
-	return ok && mark.UpdatedAt == updatedAt && updatedAt != ""
+	session, ok := s.Sessions[key]
+	return ok && session.UpdatedAt == updatedAt
 }
 
-func (s *otelState) mark(key, updatedAt string) {
-	if s.Exported == nil {
-		s.Exported = map[string]otelMark{}
+// roundFP is the fingerprint last exported for one round, or empty
+func (s *otelState) roundFP(key, round string) string {
+	if s == nil || s.Sessions == nil {
+		return ""
 	}
-	s.Exported[key] = otelMark{UpdatedAt: updatedAt, At: time.Now().UTC().Format(time.RFC3339)}
-	// Bound the memory: the oldest marks go first when the map is large
-	if len(s.Exported) > 20000 {
-		s.Exported = map[string]otelMark{}
+	return s.Sessions[key].Rounds[round]
+}
+
+// mark records the version and the round fingerprints that were sent; a nil map updates
+// only the version (the session changed without changing its rounds)
+func (s *otelState) mark(key, updatedAt string, rounds map[string]string) {
+	if s.Sessions == nil {
+		s.Sessions = map[string]otelSession{}
+	}
+	session := s.Sessions[key]
+	session.UpdatedAt = updatedAt
+	session.At = time.Now().UTC().Format(time.RFC3339)
+	if rounds != nil {
+		if session.Rounds == nil || len(rounds) > 5000 {
+			session.Rounds = map[string]string{}
+		}
+		for round, fp := range rounds {
+			session.Rounds[round] = fp
+		}
+	}
+	s.Sessions[key] = session
+	if len(s.Sessions) > 20000 {
+		s.Sessions = map[string]otelSession{}
 	}
 }
 
@@ -508,7 +712,9 @@ func (e *otelExporter) loadState() {
 		return
 	}
 	var state otelState
-	if json.Unmarshal(data, &state) == nil && state.Exported != nil {
+	// Version 1 remembered only a session's version. Dropping it re-reads one window once
+	// rather than guessing which rounds it had seen.
+	if json.Unmarshal(data, &state) == nil && state.Version == 2 && state.Sessions != nil {
 		e.state = &state
 	}
 }
@@ -580,7 +786,7 @@ var errNoEndpoint = errors.New("--otel-export needs --otel-endpoint")
 
 // otelConfigFromFlags validates the flags into one config. An empty endpoint is "off" and
 // legitimate; the caller decides whether a one-shot export or a server start needs one.
-func otelConfigFromFlags(endpoint, headers, content, since string, every, settle time.Duration, statePath string, resend, dryRun bool) (otelConfig, error) {
+func otelConfigFromFlags(endpoint, headers, content, since string, every, settle time.Duration, statePath string, resend, dryRun, metrics bool) (otelConfig, error) {
 	cfg := otelConfig{
 		endpoint: strings.TrimSpace(endpoint),
 		since:    time.Now().Add(-7 * 24 * time.Hour),
@@ -588,6 +794,7 @@ func otelConfigFromFlags(endpoint, headers, content, since string, every, settle
 		settle:   settle,
 		resend:   resend,
 		dryRun:   dryRun,
+		metrics:  metrics,
 	}
 	if cfg.endpoint != "" {
 		u, err := url.Parse(cfg.endpoint)
@@ -642,6 +849,13 @@ func runOTelOnce(api *SessionQueryAPI, cfg otelConfig) int {
 	}
 	fmt.Printf("Exported %d spans from %d sessions\n", spans, sessions)
 	return 0
+}
+
+func onOff(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
 }
 
 func contentLabel(on bool) string {

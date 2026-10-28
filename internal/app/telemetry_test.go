@@ -186,7 +186,7 @@ func TestOTelExportOnce(t *testing.T) {
 // spelled two ways, "all" opening the window, an endpoint that is not a URL refused.
 func TestOTelConfigFlags(t *testing.T) {
 	cfg, err := otelConfigFromFlags("https://cloud.langfuse.com/api/public/otel",
-		"Authorization=Basic%20abc,x-langfuse-ingestion-version=4", "io", "all", 10*time.Minute, 2*time.Minute, "off", false, false)
+		"Authorization=Basic%20abc,x-langfuse-ingestion-version=4", "io", "all", 10*time.Minute, 2*time.Minute, "off", false, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,10 +196,186 @@ func TestOTelConfigFlags(t *testing.T) {
 	if !cfg.content || !cfg.since.IsZero() || cfg.statePath != "" {
 		t.Fatalf("config = %+v", cfg)
 	}
-	if _, err := otelConfigFromFlags("ftp://example.com", "", "none", "7d", 0, 0, "", false, false); err == nil {
+	if _, err := otelConfigFromFlags("ftp://example.com", "", "none", "7d", 0, 0, "", false, false, false); err == nil {
 		t.Fatal("a non-http endpoint was accepted")
 	}
-	if _, err := otelConfigFromFlags("https://example.com", "", "everything", "7d", 0, 0, "", false, false); err == nil {
+	if _, err := otelConfigFromFlags("https://example.com", "", "everything", "7d", 0, 0, "", false, false, false); err == nil {
 		t.Fatal("an unknown --otel-content was accepted")
+	}
+}
+
+// appendRound adds one more ask and answer to a fixture session, the way a CLI appends a
+// turn: the file grows and the session's UpdatedAt moves.
+func appendRound(t *testing.T, path string, at time.Time) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	stamp := func(d time.Duration) string { return at.Add(d).UTC().Format("2006-01-02T15:04:05Z") }
+	lines := []string{
+		`{"type":"user","timestamp":"` + stamp(0) + `","message":{"role":"user","content":"and the docs"}}`,
+		`{"type":"assistant","timestamp":"` + stamp(time.Second) + `","message":{"role":"assistant","usage":{"input_tokens":20,"output_tokens":2},"content":[{"type":"text","text":"docs updated"}]}}`,
+	}
+	for _, line := range lines {
+		if _, err := file.WriteString(line + "\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestOTelRoundIncremental: a session that grew sends only the round that changed, not
+// the whole conversation again — the point of the per-round fingerprints.
+func TestOTelRoundIncremental(t *testing.T) {
+	root := t.TempDir()
+	writeActivitySession(t, root, "otel-3", "proj")
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
+
+	var mu sync.Mutex
+	var rounds []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload struct {
+			ResourceSpans []struct {
+				ScopeSpans []struct {
+					Spans []struct {
+						Name       string `json:"name"`
+						Attributes []struct {
+							Key   string `json:"key"`
+							Value struct {
+								StringValue string `json:"stringValue"`
+								IntValue    string `json:"intValue"`
+							} `json:"value"`
+						} `json:"attributes"`
+					} `json:"spans"`
+				} `json:"scopeSpans"`
+			} `json:"resourceSpans"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Errorf("body: %v", err)
+		}
+		mu.Lock()
+		for _, rs := range payload.ResourceSpans {
+			for _, ss := range rs.ScopeSpans {
+				for _, span := range ss.Spans {
+					round := ""
+					for _, a := range span.Attributes {
+						if a.Key == "round.index" {
+							round = a.Value.IntValue
+						}
+					}
+					rounds = append(rounds, span.Name+"@"+round)
+				}
+			}
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	cfg := otelConfig{
+		endpoint: server.URL, since: time.Now().Add(-time.Hour),
+		statePath: filepath.Join(t.TempDir(), "otel.json"),
+	}
+	exporter := newOTelExporter(api, cfg)
+	exporter.exportOnce(context.Background(), cfg.since, time.Time{})
+
+	// The session grows by one round
+	path := filepath.Join(root, "proj", "otel-3.jsonl")
+	appendRound(t, path, time.Now().Add(-30*time.Minute))
+	secondClient := source.NewClaudeSource(root) // a fresh source sees the new file
+	api.sources = []source.SessionSource{secondClient}
+	exporter.api = api
+	exporter.exportOnce(context.Background(), cfg.since, time.Time{})
+
+	mu.Lock()
+	defer mu.Unlock()
+	seenSecond := map[string]bool{}
+	for _, name := range rounds {
+		seenSecond[name] = true
+	}
+	if !seenSecond["round 2@2"] {
+		t.Fatalf("the new round was not exported: %v", rounds)
+	}
+	if len(rounds) != 6 { // 4 + the new round's root and generation
+		t.Fatalf("spans sent = %d (%v), want 6 (the first round not repeated)", len(rounds), rounds)
+	}
+}
+
+// TestOTelMetrics: with metrics on, the pass posts delta sums for rounds, tokens and tool
+// failures to /v1/metrics.
+func TestOTelMetrics(t *testing.T) {
+	root := t.TempDir()
+	writeActivitySession(t, root, "otel-4", "proj")
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
+
+	var mu sync.Mutex
+	metricNames := map[string]bool{}
+	tokenTypes := map[string]bool{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/metrics" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var payload struct {
+			ResourceMetrics []struct {
+				ScopeMetrics []struct {
+					Metrics []struct {
+						Name string `json:"name"`
+						Sum  struct {
+							DataPoints []struct {
+								Attributes []struct {
+									Key   string `json:"key"`
+									Value struct {
+										StringValue string `json:"stringValue"`
+									} `json:"value"`
+								} `json:"attributes"`
+							} `json:"dataPoints"`
+						} `json:"sum"`
+					} `json:"metrics"`
+				} `json:"scopeMetrics"`
+			} `json:"resourceMetrics"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Errorf("metrics body: %v", err)
+		}
+		mu.Lock()
+		for _, rm := range payload.ResourceMetrics {
+			for _, sm := range rm.ScopeMetrics {
+				for _, metric := range sm.Metrics {
+					metricNames[metric.Name] = true
+					for _, point := range metric.Sum.DataPoints {
+						for _, a := range point.Attributes {
+							if a.Key == "gen_ai.token.type" {
+								tokenTypes[a.Value.StringValue] = true
+							}
+						}
+					}
+				}
+			}
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	cfg := otelConfig{
+		endpoint: server.URL, since: time.Now().Add(-time.Hour),
+		statePath: filepath.Join(t.TempDir(), "otel.json"), metrics: true,
+	}
+	exporter := newOTelExporter(api, cfg)
+	exporter.exportOnce(context.Background(), cfg.since, time.Time{})
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, want := range []string{"agent_session.rounds", "agent_session.tokens", "agent_session.tool.failures"} {
+		if !metricNames[want] {
+			t.Fatalf("metric %q missing from %v", want, metricNames)
+		}
+	}
+	if !tokenTypes["input"] || !tokenTypes["output"] {
+		t.Fatalf("token types = %v", tokenTypes)
 	}
 }

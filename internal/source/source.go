@@ -166,7 +166,7 @@ func (s *messageSink) result() []map[string]any {
 }
 
 // Supported sources (the values --mode accepts); auto enables whichever exist
-var KnownModes = []string{"hermes", "openclaw", "pi", "claude", "codex", "gemini", "opencode", "grok", "antigravity"}
+var KnownModes = []string{"hermes", "openclaw", "pi", "claude", "codex", "gemini", "opencode", "grok", "antigravity", "dsh"}
 
 // fileExists reports whether a path exists
 func fileExists(path string) bool {
@@ -233,8 +233,8 @@ func (p *PathFlag) Set(value string) error {
 	// its database can move the same way (a directory is accepted and joined with
 	// opencode.db — the shape a redirected XDG_DATA_HOME leaves behind). The json-map
 	// and SQLite sources that keep their layout across several files cannot.
-	if _, ok := map[string]bool{"pi": true, "claude": true, "codex": true, "gemini": true, "grok": true, "opencode": true, "antigravity": true}[mode]; !ok {
-		return fmt.Errorf("--path: %s cannot be relocated this way (supported: pi, claude, codex, gemini, grok, opencode, antigravity)", mode)
+	if _, ok := map[string]bool{"pi": true, "claude": true, "codex": true, "gemini": true, "grok": true, "opencode": true, "antigravity": true, "dsh": true}[mode]; !ok {
+		return fmt.Errorf("--path: %s cannot be relocated this way (supported: pi, claude, codex, gemini, grok, opencode, antigravity, dsh)", mode)
 	}
 	*p = append(*p, SourcePath{Mode: mode, Label: label, Dir: dir})
 	return nil
@@ -425,6 +425,7 @@ var movableSources = map[string]func(dir string) SessionSource{
 	"grok":        func(dir string) SessionSource { return NewGrokSource(dir) },
 	"opencode":    func(dir string) SessionSource { return NewOpenCodeSource(openCodeDBPath(dir)) },
 	"antigravity": func(dir string) SessionSource { return NewAntigravitySource(dir) },
+	"dsh":         func(dir string) SessionSource { return NewDshSource(dir) },
 }
 
 // defaultSource builds one source at the location its CLI puts it, the CLI's own
@@ -455,6 +456,8 @@ func defaultSource(name, home string) SessionSource {
 	case "antigravity":
 		// the CLI and the IDE share ~/.gemini, each with its own brain under it
 		return NewAntigravitySource(filepath.Join(home, ".gemini"))
+	case "dsh":
+		return NewDshSource(filepath.Join(dshHome(home), "sessions"))
 	}
 	return nil
 }

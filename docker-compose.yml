@@ -42,6 +42,9 @@ services:
       # summaries database they list from
       - ~/.gemini/antigravity-cli:/root/.gemini/antigravity-cli:ro
       - ~/.gemini/antigravity:/root/.gemini/antigravity:ro
+      # DeepSeek Harness sessions (DSH_HOME defaults to ~/.dsh); sessions only, not the
+      # harness's config and credentials
+      - ~/.dsh/sessions:/root/.dsh/sessions:ro
       - ~/.grok/sessions:/root/.grok/sessions:ro
       # opencode keeps one database in its XDG data directory (~/.local/share/opencode on
       # every Unix-like, macOS included)

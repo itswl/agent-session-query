@@ -58,6 +58,7 @@
   --pi: light-dark(#c2497a, #f4a5bb);
   --grok: light-dark(#1f8a7a, #73daca);
   --antigravity: light-dark(#4a7a3a, #a9dc76); /* green, apart from gemini's cyan and grok's teal */
+  --dsh: light-dark(#2f6f9f, #89b4fa); /* DeepSeek blue */
   --shadow: 0 18px 44px -14px light-dark(rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.85)),
     0 0 0 1px light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.06));
   --rail: 40px;           /* a folded side pane keeps this much: its bar, with the way back */
@@ -570,13 +571,14 @@ button.linkish:hover { background: none; text-decoration-color: currentColor; }
 .tag.gemini   { --tag: var(--agent); }
 .tag.grok     { --tag: var(--grok); }
 .tag.antigravity { --tag: var(--antigravity); }
+.tag.dsh     { --tag: var(--dsh); }
 .tag.hermes   { --tag: var(--net); }
 .tag.openclaw { --tag: var(--warn); }
 .tag.pi       { --tag: var(--pi); }
 .tag.opencode { --tag: var(--agent); }
 .tag.claude::before, .tag.codex::before, .tag.gemini::before, .tag.grok::before,
 .tag.hermes::before, .tag.openclaw::before, .tag.pi::before, .tag.opencode::before,
-.tag.antigravity::before,
+.tag.antigravity::before, .tag.dsh::before,
 .tag.running::before, .tag.tagged::before {
   content: ""; width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--tag, var(--dim));
 }

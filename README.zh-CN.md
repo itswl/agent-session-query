@@ -8,7 +8,7 @@ MCP server**。它不会修改任何会话数据。
 单个二进制（不依赖 cgo，没有常驻运行时）—— `scp` 到任意同架构的机器上直接跑。唯一的外部依赖是
 一个纯 Go 的 SQLite 驱动（用于读取 Hermes 的 `state.db`），所以交叉编译照常可用。
 
-支持九个数据源；存在哪个就查哪个，也可以在一次查询里合并：
+支持十个数据源；存在哪个就查哪个，也可以在一次查询里合并：
 
 | 数据源 | 会话存放位置 | 会话 ID |
 |--------|--------------|---------|
@@ -21,12 +21,13 @@ MCP server**。它不会修改任何会话数据。
 | OpenCode | `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db`（SQLite；Windows 为 `%LOCALAPPDATA%\opencode`；1.x 的 `session` 表与 2.x 的 `session_v2` / `session_message` 表都读） | `session` 或 `session_v2` 表的 `id` |
 | Grok CLI | `~/.grok/sessions/<url 编码的 cwd>/<session-id>/`（`summary.json` + `updates.jsonl`），以及 `~/.grok/archived_sessions/` | `summary.json` 里的 `info.id` |
 | Antigravity | `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl`（IDE 写的是 `~/.gemini/antigravity/brain/`）；每个 brain 旁的 `conversation_summaries.db` 存标题与工作区 | 目录名 |
+| DeepSeek Harness | `~/.dsh/sessions/<project>/<session>/session.v<N>.jsonl[.zstd]`（首尾相接的 zstd 帧；最高版本是当前 transcript） | 头行里的 `id` |
 
 表中的 `~` 指向运行用户的家目录：Linux 和 macOS 上是 `$HOME`，Windows 上是 `%USERPROFILE%`
 （也就是 `C:\Users\<you>\.claude\projects` 之类）。每个目录也按各家 CLI 自己的方式解析——
 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`GROK_HOME`、`HERMES_HOME`、`OPENCLAW_STATE_DIR`、pi 的
-`PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR`、opencode 的 `XDG_DATA_HOME` 都会生效
-（读的是本服务自身环境里的值）。Antigravity 没有这类变量，它的 `--gemini_dir` 私有目录用 `--path` 指过来。各数据源的解析细节见
+`PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR`、opencode 的 `XDG_DATA_HOME`、DeepSeek Harness 的
+`DSH_HOME` 都会生效（读的是本服务自身环境里的值）。Antigravity 没有这类变量，它的 `--gemini_dir` 私有目录用 `--path` 指过来。各数据源的解析细节见
 [docs/internals.md](docs/internals.md)；目录迁移与额外实例见
 [docs/sources.md](docs/sources.md)。
 
@@ -139,8 +140,8 @@ go build -o agent-session-query ./cmd/agent-session-query
 |------|--------|------|
 | `--host` | `127.0.0.1` | 绑定地址；对外暴露用 `0.0.0.0`（非回环且未设 `--hook_token` 时拒绝启动） |
 | `--port` | `8080` | 监听端口 |
-| `--mode` | `auto` | `auto`（存在哪个启用哪个）/ `all`（九个全启用）/ `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` / `opencode` / `grok` / `antigravity` |
-| `--path` | 无 | 迁移或复制数据源：`--path claude=/mnt/disk/.claude/projects` 迁移；`--path claude:box2=/mnt/box2/.claude/projects` 增加名为 `claude:box2` 的实例。支持目录型（`pi` / `claude` / `codex` / `gemini` / `grok` / `antigravity`）与 opencode 的数据库（其数据目录或 `opencode.db` 文件本身）。可重复——被包装器 `--session-dir` 托管的 pi 就是这么接进来的 |
+| `--mode` | `auto` | `auto`（存在哪个启用哪个）/ `all`（十个全启用）/ `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` / `opencode` / `grok` / `antigravity` / `dsh` |
+| `--path` | 无 | 迁移或复制数据源：`--path claude=/mnt/disk/.claude/projects` 迁移；`--path claude:box2=/mnt/box2/.claude/projects` 增加名为 `claude:box2` 的实例。支持目录型（`pi` / `claude` / `codex` / `gemini` / `grok` / `antigravity` / `dsh`）与 opencode 的数据库（其数据目录或 `opencode.db` 文件本身）。可重复——被包装器 `--session-dir` 托管的 pi 就是这么接进来的 |
 | `--hook_token` | 无 | Bearer token；不设则 API 不鉴权 |
 | `--max-connections` | `50` | 最大并发连接数，超出的排队 |
 | `--accept-queue` | `0`（自动） | 满载时的排队位；`0` 表示 `2 × max-connections`，且不低于 32。队列满则立即返回 503 |

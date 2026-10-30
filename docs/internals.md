@@ -278,6 +278,17 @@ and deployment see the [README](../README.md).
   `last_modified_time`, which the list uses instead of opening transcripts; a conversation
   the index does not know is titled from its first `USER_INPUT` and timed by its steps.
   The resume command is `agy --conversation <id>`.
+- **DeepSeek Harness (dsh)**: `$DSH_HOME/sessions/<project>/<session>/session.v<N>.jsonl[.zstd]`,
+  one JSONL transcript per rotating generation (the highest `N` is current). A `.zstd` file
+  is a chain of independently decodable frames appended per event batch, and the last frame
+  is often half-written: frames are decoded in order through a stream decoder, the complete
+  ones kept, and the truncated tail dropped with the incomplete JSON line it would have
+  held. Rows are `user/message`, `assistant/message` and `tool/result`; `time` is epoch
+  milliseconds; a `surfaceOp.op == "replace"` row is a model-visible compaction rewrite and
+  is skipped, and a repeated message `id` is the same row written twice. `assistant/message`
+  carries `usage` (`inputTokens` excludes cache; `totalTokens = input + output + cacheRead +
+  cacheWrite`), which is summed for the session total the way the other sources do. The
+  harness has no by-id resume, so `resumeCommand` is absent.
 
 ### Archived sessions
 

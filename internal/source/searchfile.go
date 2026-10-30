@@ -54,13 +54,24 @@ type lineRules struct {
 
 // searchFileWith is the scan under one source's rules.
 func searchFileWith(ctx context.Context, path string, q SearchQuery, rules lineRules) []map[string]any {
-	if path == "" || len(q.Lowered) == 0 {
+	if path == "" {
+		return nil
+	}
+	return searchLines(ctx, q, rules, func(yield func([]byte) bool) {
+		EachJSONLLine(path, yield)
+	})
+}
+
+// searchLines is that scan over lines the caller produces, so a source whose transcript is
+// not a plain file on disk (a decompressed DeepSeek Harness session) can reuse it.
+func searchLines(ctx context.Context, q SearchQuery, rules lineRules, scan func(yield func([]byte) bool)) []map[string]any {
+	if len(q.Lowered) == 0 {
 		return nil
 	}
 	var hits []map[string]any
 	var lower []byte // reused so each line costs no allocation
 	lines := 0
-	EachJSONLLine(path, func(line []byte) bool {
+	scan(func(line []byte) bool {
 		// Sampled rather than checked every line: a channel receive per line would cost
 		// more than the Contains that is the actual work here
 		lines++
@@ -202,6 +213,9 @@ func hitRole(obj map[string]any) string {
 		return role
 	}
 	if role := CodexHitRole(obj); role != "" {
+		return role
+	}
+	if role := DshHitRole(obj); role != "" {
 		return role
 	}
 	return StrOr(obj["type"], "")

@@ -2,7 +2,10 @@ module github.com/itswl/agent-session-query
 
 go 1.26.0
 
-require modernc.org/sqlite v1.60.1
+require (
+	github.com/klauspost/compress v1.20.3
+	modernc.org/sqlite v1.60.1
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

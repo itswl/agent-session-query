@@ -13,12 +13,14 @@ The sources read the session directories the agent CLIs write by default:
 | openclaw | `~/.openclaw/agents/*` |
 | opencode | The XDG data dir — `${XDG_DATA_HOME:-~/.local/share}/opencode`, macOS included (`%LOCALAPPDATA%\opencode` on Windows) |
 | antigravity | `~/.gemini/antigravity-cli/brain` (CLI) and `~/.gemini/antigravity/brain` (IDE), each with a `conversation_summaries.db` beside it |
+| dsh | `~/.dsh/sessions` — DeepSeek Harness; `DSH_HOME` moves it |
 
 Each directory is resolved the way the CLI itself resolves it, so a CLI whose data moved
 by environment variable is read where the variable says — pi's `PI_CODING_AGENT_DIR` and
 `PI_CODING_AGENT_SESSION_DIR` (the flat `--session-dir` layout), Claude Code's
 `CLAUDE_CONFIG_DIR`, Codex's `CODEX_HOME`, Grok CLI's `GROK_HOME`, Hermes's `HERMES_HOME`,
-OpenClaw's `OPENCLAW_STATE_DIR`, opencode's `XDG_DATA_HOME` / `LOCALAPPDATA`. The
+OpenClaw's `OPENCLAW_STATE_DIR`, opencode's `XDG_DATA_HOME` / `LOCALAPPDATA`, DeepSeek
+Harness's `DSH_HOME`. The
 variables are read from this service's own environment, so a daemon has to be given
 the ones its CLIs run with (an `EnvironmentFile`, a unit's `Environment=`). Gemini CLI
 defines no such variable — `~/.gemini` is where it always writes — so its default is
@@ -68,8 +70,8 @@ disk, a backup, agent containers whose sessions land on a host bind mount:
 - Finding a session by the bare mode name still reaches into labeled instances, so an MCP
   client holding `claude` keeps working
 
-Supported: the directory-shaped sources `pi`, `claude`, `codex`, `gemini`, `grok` and
-`antigravity`, and
+Supported: the directory-shaped sources `pi`, `claude`, `codex`, `gemini`, `grok`,
+`antigravity` and `dsh`, and
 `opencode` — it is one SQLite file, so both the data directory (the shape a redirected
 `XDG_DATA_HOME` leaves behind) and the database file itself relocate it. The JSON-map and
 SQLite sources that keep their layout across several files (`hermes`, `openclaw`) reject

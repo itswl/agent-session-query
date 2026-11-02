@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/klauspost/compress v1.20.3
-	modernc.org/sqlite v1.61.0
+	modernc.org/sqlite v1.61.1
 )
 
 require (

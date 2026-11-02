@@ -3,6 +3,7 @@ package source
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 )
 
 // Counting a session file's messages, for the list.
@@ -87,7 +88,7 @@ func codexCountMessages(path string, from int64) (int, bool) {
 		}
 		return true
 	})
-	return n, true
+	return n, !strings.HasSuffix(path, ".jsonl.zst")
 }
 
 // geminiCountMessages counts the conversation rows; eachGeminiEntry already reduces the

@@ -1,6 +1,7 @@
 package source
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,7 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Claude Code: ~/.claude/projects/<project>/<session-uuid>.jsonl, and beside each session a
@@ -19,6 +23,22 @@ type ClaudeCodeSource struct {
 	root   string
 	cache  *fileRecordCache
 	finals finalCache
+
+	identityMu sync.Mutex
+	identities map[string]claudeUUIDIdentity
+	copyGroups map[string]claudeCopyGroup
+}
+
+type claudeUUIDIdentity struct {
+	mod       time.Time
+	size      int64
+	firstUUID string
+	lastUUID  string
+}
+
+type claudeCopyGroup struct {
+	signature string
+	copies    map[string]string // copied file → file whose transcript contains it
 }
 
 func NewClaudeSource(root string) *ClaudeCodeSource {
@@ -79,7 +99,7 @@ const claudeHeadLines = 50
 // List reads only the head of each session file for metadata; unchanged files come
 // straight from the cache (see fileRecordCache)
 func (s *ClaudeCodeSource) List() []Record {
-	return claudeLinkSubagents(s.cache.records(s.files(), func(path, modISO string) Record {
+	records := s.cache.records(s.files(), func(path, modISO string) Record {
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		// Use the time on the last record in the file, not the file's mtime (see updatedAtOf)
 		updated := updatedAtOf(path, modISO)
@@ -100,7 +120,315 @@ func (s *ClaudeCodeSource) List() []Record {
 			Branch:    head.branch,
 			UpdatedAt: updated,
 		}, updated)
-	}))
+	})
+	copies := s.claudeSessionCopies(records)
+	if len(copies) == 0 {
+		return claudeLinkSubagents(records)
+	}
+
+	byPath := make(map[string]Record, len(records))
+	for _, r := range records {
+		byPath[r.File] = r
+	}
+	canonicalByPath := make(map[string]string, len(copies))
+	aliases := make(map[string]string, len(copies))
+	for copied := range copies {
+		canonical := resolveClaudeCopy(copied, copies)
+		canonicalByPath[copied] = canonical
+		if copied != canonical {
+			if from, to := byPath[copied].SessionID, byPath[canonical].SessionID; from != "" && to != "" && from != to {
+				aliases[from] = to
+			}
+		}
+	}
+
+	out := make([]Record, 0, len(records))
+	for _, r := range records {
+		if canonical, copied := canonicalByPath[r.File]; copied && canonical != r.File && !r.IsSubagent() {
+			continue
+		}
+		if r.IsSubagent() {
+			r.ParentSessionID = resolveClaudeSessionID(r.ParentSessionID, aliases)
+		}
+		out = append(out, r)
+	}
+	return claudeLinkSubagents(out)
+}
+
+// claudeSessionCopies finds main-thread transcripts that are complete copies of another
+// transcript in the same encoded project directory. A forked file keeps each message's
+// uuid but gets a new sessionId; its final message uuid is therefore a useful fingerprint
+// for finding the transcript that already owns those turns.
+func (s *ClaudeCodeSource) claudeSessionCopies(records []Record) map[string]string {
+	projects := map[string][]Record{}
+	for _, r := range records {
+		if r.IsSubagent() {
+			continue
+		}
+		identity := s.claudeIdentity(r.File)
+		if identity.firstUUID == "" {
+			continue
+		}
+		project := claudeProjectDirectory(s.root, r.File) + "\x00" + identity.firstUUID
+		projects[project] = append(projects[project], r)
+	}
+
+	copies := map[string]string{}
+	for project, group := range projects {
+		if len(group) < 2 {
+			continue
+		}
+		signature := claudeCopySignature(group)
+		s.identityMu.Lock()
+		cached, ok := s.copyGroups[project]
+		s.identityMu.Unlock()
+		if ok && cached.signature == signature {
+			for path, target := range cached.copies {
+				copies[path] = target
+			}
+			continue
+		}
+
+		found := s.findClaudeSessionCopies(group)
+		s.identityMu.Lock()
+		if s.copyGroups == nil {
+			s.copyGroups = map[string]claudeCopyGroup{}
+		}
+		s.copyGroups[project] = claudeCopyGroup{signature: signature, copies: found}
+		s.identityMu.Unlock()
+		for path, target := range found {
+			copies[path] = target
+		}
+	}
+	return copies
+}
+
+func (s *ClaudeCodeSource) claudeIdentity(path string) claudeUUIDIdentity {
+	info, err := os.Stat(path)
+	if err != nil {
+		return claudeUUIDIdentity{}
+	}
+	s.identityMu.Lock()
+	if cached, ok := s.identities[path]; ok && cached.size == info.Size() && cached.mod.Equal(info.ModTime()) {
+		s.identityMu.Unlock()
+		return cached
+	}
+	s.identityMu.Unlock()
+
+	identity := claudeUUIDIdentity{size: info.Size(), mod: info.ModTime()}
+	seen := 0
+	EachJSONLLine(path, func(line []byte) bool {
+		seen++
+		if uuid := claudeMessageUUID(line, false); uuid != "" {
+			identity.firstUUID = uuid
+			return false
+		}
+		return seen < claudeHeadLines
+	})
+	identity.lastUUID = claudeLastMessageUUID(path)
+
+	s.identityMu.Lock()
+	if s.identities == nil {
+		s.identities = map[string]claudeUUIDIdentity{}
+	}
+	s.identities[path] = identity
+	s.identityMu.Unlock()
+	return identity
+}
+
+func claudeMessageUUID(line []byte, sidechain bool) string {
+	var row struct {
+		Type        string `json:"type"`
+		UUID        string `json:"uuid"`
+		IsSidechain bool   `json:"isSidechain"`
+	}
+	if json.Unmarshal(line, &row) != nil || (row.Type != "user" && row.Type != "assistant") || (!sidechain && row.IsSidechain) {
+		return ""
+	}
+	if !claudeRandomUUID.MatchString(row.UUID) {
+		return ""
+	}
+	return row.UUID
+}
+
+var claudeRandomUUID = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+func claudeLastMessageUUID(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.Size() == 0 {
+		return ""
+	}
+
+	window := tailWindows[0]
+	for {
+		if window > info.Size() {
+			window = info.Size()
+		}
+		start := info.Size() - window
+		buf := make([]byte, window)
+		if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
+			return ""
+		}
+		if start > 0 {
+			if i := bytes.IndexByte(buf, '\n'); i >= 0 {
+				buf = buf[i+1:]
+			} else {
+				buf = nil
+			}
+		}
+		lines := bytes.Split(buf, []byte{'\n'})
+		for i := len(lines) - 1; i >= 0; i-- {
+			if uuid := claudeMessageUUID(bytes.TrimSpace(lines[i]), false); uuid != "" {
+				return uuid
+			}
+		}
+		if window == info.Size() {
+			return ""
+		}
+		window *= 8
+	}
+}
+
+func (s *ClaudeCodeSource) findClaudeSessionCopies(group []Record) map[string]string {
+	identities := make(map[string]claudeUUIDIdentity, len(group))
+	owners := map[string][]string{} // final message uuid → transcript paths ending on it
+	for _, r := range group {
+		identity := s.claudeIdentity(r.File)
+		identities[r.File] = identity
+		if identity.lastUUID != "" {
+			owners[identity.lastUUID] = append(owners[identity.lastUUID], r.File)
+		}
+	}
+	if len(owners) == 0 {
+		return nil
+	}
+
+	containedBy := map[string][]string{} // final message uuid → transcripts containing it
+	for _, r := range group {
+		seen := map[string]bool{}
+		EachJSONLLine(r.File, func(line []byte) bool {
+			uuid := claudeMessageUUID(line, false)
+			if uuid == "" || len(owners[uuid]) == 0 || seen[uuid] {
+				return true
+			}
+			seen[uuid] = true
+			containedBy[uuid] = append(containedBy[uuid], r.File)
+			return true
+		})
+	}
+
+	copies := map[string]string{}
+	for _, r := range group {
+		last := identities[r.File].lastUUID
+		if last == "" {
+			continue
+		}
+		containing := []string{}
+		for _, path := range containedBy[last] {
+			if path != r.File {
+				containing = append(containing, path)
+			}
+		}
+		if len(containing) == 0 {
+			continue
+		}
+
+		// A file that continues beyond this uuid is the transcript that should own
+		// the copied turns. When the files end on the same uuid, keep the older copy
+		// as the stable owner.
+		advanced := []string{}
+		for _, path := range containing {
+			if identities[path].lastUUID != last {
+				advanced = append(advanced, path)
+			}
+		}
+		targets := advanced
+		if len(targets) == 0 {
+			targets = owners[last]
+		}
+		target := claudeCopyTarget(targets, identities)
+		if target != "" && target != r.File {
+			copies[r.File] = target
+		}
+	}
+	return copies
+}
+
+func claudeCopyTarget(paths []string, identities map[string]claudeUUIDIdentity) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	best := paths[0]
+	for _, path := range paths[1:] {
+		a, b := identities[path], identities[best]
+		if a.size > b.size || (a.size == b.size && a.mod.Before(b.mod)) ||
+			(a.size == b.size && a.mod.Equal(b.mod) && path < best) {
+			best = path
+		}
+	}
+	return best
+}
+
+func claudeCopySignature(group []Record) string {
+	paths := make([]string, 0, len(group))
+	for _, r := range group {
+		paths = append(paths, r.File)
+	}
+	sort.Strings(paths)
+	var signature strings.Builder
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		fmt.Fprintf(&signature, "%s\x00%d\x00%d\x00", path, info.ModTime().UnixNano(), info.Size())
+	}
+	return signature.String()
+}
+
+func claudeProjectDirectory(root, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return filepath.Dir(path)
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) > 1 {
+		return parts[0]
+	}
+	return filepath.Dir(path)
+}
+
+func resolveClaudeCopy(path string, copies map[string]string) string {
+	seen := map[string]int{}
+	chain := []string{}
+	for {
+		if at, ok := seen[path]; ok {
+			cycle := chain[at:]
+			sort.Strings(cycle)
+			return cycle[0]
+		}
+		seen[path] = len(chain)
+		chain = append(chain, path)
+		next := copies[path]
+		if next == "" {
+			return path
+		}
+		path = next
+	}
+}
+
+func resolveClaudeSessionID(id string, aliases map[string]string) string {
+	seen := map[string]bool{}
+	for aliases[id] != "" && !seen[id] {
+		seen[id] = true
+		id = aliases[id]
+	}
+	return id
 }
 
 // claudeHead is what a transcript's first rows say about it

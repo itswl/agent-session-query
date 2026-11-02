@@ -2,15 +2,18 @@ package source
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 )
 
-// Codex: ~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl
+// Codex: ~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl[.zst]
 //
 // A rollout is one JSON object per line, each {timestamp, type, payload}. The conversation
 // is spread over several row types, and for a long time only one of them was read here —
@@ -45,9 +48,16 @@ type CodexSource struct {
 	// file). The turn ids survive the copy; the parent's set is what tells a copied turn
 	// from the fork's own. byID is refreshed by List, turnIDs by the first fork that
 	// needs a parent's set.
-	mu      sync.Mutex
-	byID    map[string]string
-	turnIDs map[string]codexTurnIDs
+	mu         sync.Mutex
+	byID       map[string]string
+	turnIDs    map[string]codexTurnIDs
+	fileStatus map[string]codexFileStatus
+}
+
+type codexFileStatus struct {
+	mod  time.Time
+	size int64
+	err  error
 }
 
 // codexTurnIDs is one rollout's turn ids, banked under the file version it was read at
@@ -74,22 +84,110 @@ func (s *CodexSource) Location() string { return s.root }
 
 func (s *CodexSource) Exists() bool { return fileExists(s.root) }
 
-func (s *CodexSource) files() []string {
-	files, err := filepath.Glob(filepath.Join(s.root, "*", "*", "*", "rollout-*.jsonl"))
-	if err != nil {
-		return nil
-	}
-	if archived := s.archivedRoot(); archived != "" {
-		// Flat, the way Codex's archive moves a rollout, and in the dated tree too
-		for _, pattern := range []string{
-			filepath.Join(archived, "rollout-*.jsonl"),
-			filepath.Join(archived, "*", "*", "*", "rollout-*.jsonl"),
-		} {
-			more, _ := filepath.Glob(pattern)
-			files = append(files, more...)
+// ListError reports unusable compressed rollouts to /health while allowing other
+// Codex files to remain available.
+func (s *CodexSource) ListError() error {
+	s.mu.Lock()
+	paths := make([]string, 0, len(s.fileStatus))
+	for path, status := range s.fileStatus {
+		if status.err != nil {
+			paths = append(paths, path)
 		}
 	}
-	return files
+	sort.Strings(paths)
+	parts := make([]string, 0, len(paths))
+	for _, path := range paths {
+		parts = append(parts, fmt.Sprintf("%s: %v", path, s.fileStatus[path].err))
+	}
+	s.mu.Unlock()
+	if len(parts) == 0 {
+		return nil
+	}
+	return fmt.Errorf("compressed Codex rollout errors: %s", strings.Join(parts, "; "))
+}
+
+func (s *CodexSource) files() []string {
+	files := codexRolloutFiles(filepath.Join(s.root, "*", "*", "*", "rollout-*"))
+	if archived := s.archivedRoot(); archived != "" {
+		// Flat, the way Codex's archive moves a rollout, and in the dated tree too
+		for _, prefix := range []string{
+			filepath.Join(archived, "rollout-*"),
+			filepath.Join(archived, "*", "*", "*", "rollout-*"),
+		} {
+			files = append(files, codexRolloutFiles(prefix)...)
+		}
+	}
+	active := make(map[string]bool, len(files))
+	usable := files[:0]
+	for _, path := range files {
+		active[path] = true
+		if strings.HasSuffix(path, ".jsonl.zst") {
+			if err := s.validateCompressed(path); err != nil {
+				continue
+			}
+		}
+		usable = append(usable, path)
+	}
+	s.mu.Lock()
+	for path := range s.fileStatus {
+		if !active[path] {
+			delete(s.fileStatus, path)
+		}
+	}
+	s.mu.Unlock()
+	return usable
+}
+
+func (s *CodexSource) validateCompressed(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if cached, ok := s.fileStatus[path]; ok && cached.size == info.Size() && cached.mod.Equal(info.ModTime()) {
+		s.mu.Unlock()
+		return cached.err
+	}
+	s.mu.Unlock()
+
+	err = eachZstdJSONLLine(path, func([]byte) bool { return true })
+	if after, statErr := os.Stat(path); statErr != nil {
+		err = statErr
+	} else if after.Size() != info.Size() || !after.ModTime().Equal(info.ModTime()) {
+		err = fmt.Errorf("file changed while being read")
+	}
+	s.mu.Lock()
+	if s.fileStatus == nil {
+		s.fileStatus = map[string]codexFileStatus{}
+	}
+	s.fileStatus[path] = codexFileStatus{mod: info.ModTime(), size: info.Size(), err: err}
+	s.mu.Unlock()
+	return err
+}
+
+// codexRolloutFiles finds plain and compressed rollouts for one glob prefix. During a
+// compression migration both forms can coexist; Codex treats the plain file as current
+// until compression finishes, so it wins and the pair is listed once.
+func codexRolloutFiles(prefix string) []string {
+	plain, _ := filepath.Glob(prefix + ".jsonl")
+	compressed, _ := filepath.Glob(prefix + ".jsonl.zst")
+	plainStems := make(map[string]bool, len(plain))
+	for _, path := range plain {
+		plainStems[codexRolloutStem(path)] = true
+	}
+	out := append([]string(nil), plain...)
+	for _, path := range compressed {
+		if !plainStems[codexRolloutStem(path)] {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+func codexRolloutStem(path string) string {
+	base := filepath.Base(path)
+	base = strings.TrimSuffix(base, ".zst")
+	return strings.TrimSuffix(base, ".jsonl")
 }
 
 // archivedRoot is ~/.codex/archived_sessions when the root is the default sessions
@@ -168,7 +266,7 @@ func (s *CodexSource) List() []Record {
 			seen++
 			return !(hasMeta && model != "") && seen < codexHeadLines
 		})
-		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		stem := codexRolloutStem(path)
 		// Use the time on the last record in the file, not the file's mtime (see updatedAtOf)
 		updated := updatedAtOf(path, modISO)
 		return NewRecord(Record{
@@ -210,9 +308,8 @@ func (s *CodexSource) pathOf(id string) string {
 	if path != "" {
 		return path
 	}
-	suffix := "-" + id + ".jsonl"
 	for _, file := range s.files() {
-		if strings.HasSuffix(filepath.Base(file), suffix) {
+		if strings.HasSuffix(codexRolloutStem(file), "-"+id) {
 			s.mu.Lock()
 			if s.byID == nil {
 				s.byID = map[string]string{}

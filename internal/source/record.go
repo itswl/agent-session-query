@@ -1,6 +1,7 @@
 package source
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // Record is the one session shape every source converges on.
@@ -474,6 +477,15 @@ func EachJSONLLine(path string, fn func(line []byte) bool) {
 // newline — and it exists so a counter resuming after an append reads only the appended
 // tail instead of the whole file again.
 func eachJSONLLineFrom(path string, from int64, fn func(line []byte) bool) {
+	if strings.HasSuffix(path, ".jsonl.zst") {
+		// Compressed rollouts cannot seek to an uncompressed byte offset. Scan the
+		// decoded stream from its beginning; count caches must not add an old prefix
+		// when the counter reports that it could not resume.
+		if err := eachZstdJSONLLine(path, fn); err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] reading %s stopped; the rest of the file was not parsed: %v\n", path, err)
+		}
+		return
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return
@@ -527,6 +539,52 @@ func eachJSONLLineFrom(path string, from int64, fn func(line []byte) bool) {
 		}
 		if !fn(line) {
 			return
+		}
+	}
+}
+
+// eachZstdJSONLLine walks a single zstd-compressed JSONL stream. It keeps one line in
+// memory at a time and stops cleanly on malformed/truncated frames, after reporting the
+// path and decoder error just like the plain-file reader.
+func eachZstdJSONLLine(path string, fn func(line []byte) bool) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	decoder, err := zstd.NewReader(f, zstd.WithDecoderConcurrency(1))
+	if err != nil {
+		return err
+	}
+	defer decoder.Close()
+
+	reader := bufio.NewReaderSize(decoder, scanBufSteady)
+	line := make([]byte, 0, scanBufSteady)
+	for {
+		part, readErr := reader.ReadSlice('\n')
+		if len(line)+len(part) > maxLineBytes {
+			return errLineTooLong
+		}
+		line = append(line, part...)
+		switch readErr {
+		case nil:
+			line = bytes.TrimSpace(line)
+			if len(line) > 0 && !fn(line) {
+				return nil
+			}
+			line = line[:0]
+		case bufio.ErrBufferFull:
+			continue
+		case io.EOF:
+			// Match the plain JSONL reader: a final record does not need a trailing
+			// newline, provided the compressed stream itself ended cleanly.
+			line = bytes.TrimSpace(line)
+			if len(line) > 0 {
+				fn(line)
+			}
+			return nil
+		default:
+			return readErr
 		}
 	}
 }
@@ -611,6 +669,16 @@ var tailWindows = []int64{64 << 10, 512 << 10, 4 << 20}
 // largest session here is 103 MB). If the window holds no complete record the next size
 // up is tried; if none do, it returns "" and the caller falls back to mtime.
 func lastRecordTime(path string) string {
+	if strings.HasSuffix(path, ".jsonl.zst") {
+		last := ""
+		EachJSONLLine(path, func(line []byte) bool {
+			if ts := lastTimestampIn(line); ts != "" {
+				last = ts
+			}
+			return true
+		})
+		return last
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return ""

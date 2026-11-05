@@ -8,14 +8,6 @@ MCP server**。它不会修改任何会话数据。
 单个二进制（不依赖 cgo，没有常驻运行时）—— `scp` 到任意同架构的机器上直接跑。外部依赖都是纯 Go
 （读取 Hermes `state.db` 的 SQLite 驱动、解 DeepSeek Harness zstd 帧的解码器），所以交叉编译照常可用。
 
-<p align="center">
-  <img src="docs/screenshots/desktop.png" alt="桌面端网页：会话列表、带工具调用的对话，以及右侧用量详情" width="1000">
-</p>
-<p align="center">
-  <img src="docs/screenshots/mobile-list.png" alt="手机端的会话列表" width="300">
-  <img src="docs/screenshots/mobile-conversation.png" alt="手机端的对话" width="300">
-</p>
-
 支持十个数据源；存在哪个就查哪个，也可以在一次查询里合并：
 
 | 数据源 | 会话存放位置 | 会话 ID |
@@ -111,7 +103,40 @@ go build -o agent-session-query ./cmd/agent-session-query
 三栏：**会话列表 / 按轮阅读的对话 / 最终结果**。列表里每个会话都有可读的名字，
 过滤和正文搜索同一次完成；对话把每轮的工作折叠成一行，有五种视图（全部 / 只看文字 /
  改动 / 命令 / 失败）；结果栏常驻答案，配对话目录、恢复命令、导出和项目 pack。
+
+<p align="center">
+  <img src="docs/screenshots/desktop.png" alt="桌面端网页：列表里是五个 CLI 的会话，一轮对话展开到各个步骤（其中一次测试失败），右侧详情栏是最终结果、对话目录与用量" width="1000">
+</p>
+
+<table>
+  <tr>
+    <td valign="top" width="50%">
+      <img src="docs/screenshots/search.png" alt="搜索 retry：四个会话在正文里命中，各带一段摘录；打开的会话里命中处已高亮，查找栏也已填好" width="370"><br>
+      <b>正文搜索</b>——正文里的命中带着摘录，点开直接落在命中处。
+    </td>
+    <td valign="top" width="50%">
+      <img src="docs/screenshots/changes.png" alt="改动视图：会话里的每次编辑都显示成 diff，附文件与执行结果" width="370"><br>
+      <b>改动视图</b>——按轮只看 diff，不论 CLI 用哪种写法表达编辑。
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <img src="docs/screenshots/failures.png" alt="失败列表：来自 Claude Code 与 Codex 会话的六次失败工具调用，其中一个已在失败的测试处打开" width="370"><br>
+      <b>失败列表</b>——最近七天跨数据源的失败工具调用，点一下就在失败处打开会话。
+    </td>
+    <td valign="top">
+      <img src="docs/screenshots/subagents.png" alt="两个 Explore 子 agent 嵌在它们的会话下，其中一个作为独立 transcript 打开，带有回到父会话的链接" width="370"><br>
+      <b>子 agent</b>——嵌在派生它们的会话下，各自作为独立的 transcript 打开。
+    </td>
+  </tr>
+</table>
+
 可装成 Web 应用，手机上是三个屏幕，刷新不打断阅读。
+
+<p align="center">
+  <img src="docs/screenshots/mobile-list.png" alt="手机端的会话列表" width="260">
+  <img src="docs/screenshots/mobile-conversation.png" alt="手机端的对话，这一轮已展开到各个步骤" width="260">
+</p>
 
 完整功能——子 agent、归档开关、会话内查找、翻页、复制、快捷键——见
 **[docs/ui.md](docs/ui.md)**。

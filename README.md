@@ -10,14 +10,6 @@ architecture and run it. The external dependencies are pure Go (the SQLite drive
 Hermes's `state.db` and a zstd decoder for DeepSeek Harness frames), so cross-compilation
 still works as usual.
 
-<p align="center">
-  <img src="docs/screenshots/desktop.png" alt="The web page on a desktop: the session list, a conversation with its tool calls, and the details pane with usage" width="1000">
-</p>
-<p align="center">
-  <img src="docs/screenshots/mobile-list.png" alt="The session list on a phone" width="300">
-  <img src="docs/screenshots/mobile-conversation.png" alt="A conversation on a phone" width="300">
-</p>
-
 Ten sources; whichever exist are queried, and they can be merged in one query:
 
 | Source | Where sessions live | Session ID |
@@ -119,8 +111,41 @@ carries every session under a readable name, with body search in the same query 
 filtering; the conversation folds each round's work to one line, in five views (all /
 words / changes / commands / failures); the result pane keeps the answer visible beside a
 round-by-round table of contents, the resume command, exports and the project's pack.
+
+<p align="center">
+  <img src="docs/screenshots/desktop.png" alt="The page on a desktop: sessions from five CLIs in the list, a round opened to its steps with one failed test run, and the details pane with the final result, the table of contents and usage" width="1000">
+</p>
+
+<table>
+  <tr>
+    <td valign="top" width="50%">
+      <img src="docs/screenshots/search.png" alt="Searching for retry: four sessions match in their message bodies, each with its snippet; the one opened shows the match highlighted and the find bar filled in" width="370"><br>
+      <b>Body search</b> — hits in message bodies come with their snippet; opening one lands on the match.
+    </td>
+    <td valign="top" width="50%">
+      <img src="docs/screenshots/changes.png" alt="The changes view: each edit in the session as a diff, with its file and its result" width="370"><br>
+      <b>changes</b> — the session's edits as diffs, round by round, whichever way the CLI spelled them.
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <img src="docs/screenshots/failures.png" alt="The Failures list: six failed tool calls from Claude Code and Codex sessions, one opened at its failed test run" width="370"><br>
+      <b>Failures</b> — the failed tool calls of the last seven days, across sources; a click opens the session at the failure.
+    </td>
+    <td valign="top">
+      <img src="docs/screenshots/subagents.png" alt="Two Explore subagents nested under their session, one opened as a transcript of its own with a link back to the session" width="370"><br>
+      <b>Subagents</b> — nested under the session that spawned them, each opening as a transcript of its own.
+    </td>
+  </tr>
+</table>
+
 Installs as a web app, works as three screens on a phone, refreshes without disturbing
 what you are reading.
+
+<p align="center">
+  <img src="docs/screenshots/mobile-list.png" alt="The session list on a phone" width="260">
+  <img src="docs/screenshots/mobile-conversation.png" alt="A conversation on a phone, its round opened to the steps" width="260">
+</p>
 
 The full walkthrough — subagents, archived sessions, find, paging, copy affordances,
 shortcuts — is in **[docs/ui.md](docs/ui.md)**.

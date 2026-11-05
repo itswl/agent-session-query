@@ -73,6 +73,20 @@ func TestFailuresReport(t *testing.T) {
 	if one["sessionId"] != "fail-1" || one["round"] != 1 {
 		t.Fatalf("failure identity = %v", one)
 	}
+	// The failure carries its round's span, the same one /rounds reports, and the span
+	// reaches past the failure to the reply: a window anchored at its end holds the round
+	// whole, where one anchored at the failure stopped short of the answer
+	rounds, err := api.sessionRounds("fail-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rounds["rounds"].([]map[string]any)[0]
+	if one["roundStartAt"] != r["startAt"] || one["roundEndAt"] != r["endAt"] {
+		t.Fatalf("round span = %v .. %v, want %v .. %v", one["roundStartAt"], one["roundEndAt"], r["startAt"], r["endAt"])
+	}
+	if !(source.ToStr(one["roundEndAt"]) > source.ToStr(one["at"])) {
+		t.Fatalf("roundEndAt %v does not reach past the failure at %v", one["roundEndAt"], one["at"])
+	}
 
 	// A tool filter that does not match finds nothing
 	if got := api.failuresReport(time.Now().Add(-24*time.Hour), time.Time{}, "", "", "Read", 100)["failures"].([]map[string]any); len(got) != 0 {

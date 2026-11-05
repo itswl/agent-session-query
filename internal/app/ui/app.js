@@ -3409,11 +3409,15 @@ function tocCard() {
   card.appendChild(head);
 
   // The list covers the loaded window, which is the latest page by default; say so when
-  // the session is longer, or the missing early turns look like a bug
+  // the session is longer, or the missing early turns look like a bug. A window opened at
+  // a match or a failure is neither end of the session, and it says so the way the
+  // stream's head does.
   const total = Number(detail && detail.final && detail.final.messageCount) || 0;
   if (total > all.length) {
-    card.appendChild(el('p', 'dim toc-note',
-      'From the latest ' + all.length + ' of ' + total + ' messages'));
+    card.appendChild(el('p', 'dim toc-note', state.focusAt
+      ? 'From ' + all.length + ' of ' + total + ' messages, around the match'
+      : 'From the ' + (state.order === 'desc' ? 'latest ' : 'earliest ') + all.length +
+        ' of ' + total + ' messages'));
   }
 
   if (!rounds.length) {
@@ -4669,7 +4673,7 @@ function renderFailures() {
   const frag = document.createDocumentFragment();
   frag.appendChild(head);
   for (const f of items) {
-    const row = button('failure-row', '', () => selectSession(f.sessionId, f.at, false));
+    const row = button('failure-row', '', () => openFailure(f));
     const what = el('div', 'failure-what');
     what.appendChild(el('span', 'failure-tool', f.tool || 'tool'));
     what.appendChild(el('span', 'failure-output', firstLine(f.command || f.output || '')));
@@ -4680,6 +4684,20 @@ function renderFailures() {
     frag.appendChild(row);
   }
   list.replaceChildren(frag);
+}
+
+// openFailure opens a failure's session with its round whole, then lands on the failure.
+// The window is anchored at the round's edge the way failureBeyond anchors it: at the
+// failure itself, the latest-first window ended there, and the steps after it and the
+// reply fell outside it — the round read "no reply", or passed off an aside as its answer.
+// A server too old to send the span leaves the anchor at the failure, as before.
+function openFailure(f) {
+  const anchor = state.order === 'desc' ? (f.roundEndAt || f.at) : (f.roundStartAt || f.at);
+  const at = parseTime(f.at);
+  state.reveal = { kind: 'failure', sessionId: f.sessionId, direction: 1, from: at, to: at };
+  selectSession(f.sessionId, anchor, false);
+  // Already open at that very anchor, nothing is fetched and nothing would land it
+  if (state.reveal && !state.busy) settleReveal();
 }
 
 // firstLine keeps a failure row to one readable line

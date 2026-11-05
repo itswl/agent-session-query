@@ -94,10 +94,15 @@ func (a *SessionQueryAPI) failuresReport(since, until time.Time, sourceName, pro
 					"shortKey":  c.rec.ShortKey,
 					"file":      nullString(c.rec.File),
 					"round":     r.index,
-					"at":        failure.at,
-					"tool":      failure.tool,
-					"command":   failure.command,
-					"output":    failure.output,
+					// The round's span, so a reader landing on the failure can take the round
+					// whole: a window anchored at the failure itself ends there in the
+					// latest-first order, and the steps after it and the reply fall outside
+					"roundStartAt": r.startAt,
+					"roundEndAt":   r.workEnd(),
+					"at":           failure.at,
+					"tool":         failure.tool,
+					"command":      failure.command,
+					"output":       failure.output,
 				})
 			}
 		}

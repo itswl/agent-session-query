@@ -17,7 +17,8 @@ transcript it started. Sessions a CLI has archived stay out of the list, as they
 CLI itself; an **Archived** switch above the list brings them in, marked. A **Failures**
 switch turns the list into the failed tool calls of the last seven days — tool, the command
 or the start of the output, the session it belongs to and its round — and a click opens that
-session at the failure. Source problems are the one thing an empty list cannot say: when
+session at the failure, with the round it happened in whole: the steps after it and the reply
+too. Source problems are the one thing an empty list cannot say: when
 `/health` reports a source that could not be read, a warning strip under the header says so
 (with a dismiss), because a source that failed and a source with nothing in it look
 otherwise identical.

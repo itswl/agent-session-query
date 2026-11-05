@@ -6,8 +6,17 @@ Query the session records left behind by the agent CLIs on your machine: **a rea
 page, an HTTP API, and an MCP server for agents to call**. It never modifies session data.
 
 A single binary (no cgo, no resident runtime) — `scp` it to any machine of the same
-architecture and run it. The only external dependency is a pure-Go SQLite driver (for
-reading Hermes's `state.db`), so cross-compilation still works as usual.
+architecture and run it. The external dependencies are pure Go (the SQLite driver for
+Hermes's `state.db` and a zstd decoder for DeepSeek Harness frames), so cross-compilation
+still works as usual.
+
+<p align="center">
+  <img src="docs/screenshots/desktop.png" alt="The web page on a desktop: the session list, a conversation with its tool calls, and the details pane with usage" width="1000">
+</p>
+<p align="center">
+  <img src="docs/screenshots/mobile-list.png" alt="The session list on a phone" width="300">
+  <img src="docs/screenshots/mobile-conversation.png" alt="A conversation on a phone" width="300">
+</p>
 
 Ten sources; whichever exist are queried, and they can be merged in one query:
 

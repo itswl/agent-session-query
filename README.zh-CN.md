@@ -5,8 +5,16 @@
 查询本机各个 agent CLI 留下的会话记录：**一个只读网页、一套 HTTP API、以及一个供 agent 调用的
 MCP server**。它不会修改任何会话数据。
 
-单个二进制（不依赖 cgo，没有常驻运行时）—— `scp` 到任意同架构的机器上直接跑。唯一的外部依赖是
-一个纯 Go 的 SQLite 驱动（用于读取 Hermes 的 `state.db`），所以交叉编译照常可用。
+单个二进制（不依赖 cgo，没有常驻运行时）—— `scp` 到任意同架构的机器上直接跑。外部依赖都是纯 Go
+（读取 Hermes `state.db` 的 SQLite 驱动、解 DeepSeek Harness zstd 帧的解码器），所以交叉编译照常可用。
+
+<p align="center">
+  <img src="docs/screenshots/desktop.png" alt="桌面端网页：会话列表、带工具调用的对话，以及右侧用量详情" width="1000">
+</p>
+<p align="center">
+  <img src="docs/screenshots/mobile-list.png" alt="手机端的会话列表" width="300">
+  <img src="docs/screenshots/mobile-conversation.png" alt="手机端的对话" width="300">
+</p>
 
 支持十个数据源；存在哪个就查哪个，也可以在一次查询里合并：
 

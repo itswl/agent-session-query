@@ -347,6 +347,11 @@ func writeHTMLBlocks(b *strings.Builder, content any) {
 				class, html.EscapeString(source.StrOr(block["toolName"], "result")),
 				html.EscapeString(resultOutcomeText(block)), html.EscapeString(text))
 		case "event":
+			if long := eventLongText(block); long != "" {
+				fmt.Fprintf(b, "<details class=\"event\"><summary>%s</summary><pre>%s</pre></details>\n",
+					html.EscapeString(eventHead(block)), html.EscapeString(long))
+				continue
+			}
 			fmt.Fprintf(b, "<p class=\"event\">%s</p>\n", html.EscapeString(eventText(block)))
 		default:
 			if text != "" {
@@ -380,19 +385,48 @@ func resultOutcomeText(block map[string]any) string {
 
 // eventText names an event the way the page does
 func eventText(block map[string]any) string {
+	head := eventHead(block)
+	if text := source.StrOr(block["content"], ""); text != "" && text != head {
+		return head + ": " + text
+	}
+	return head
+}
+
+// eventHead is the event's name and what qualifies it when the source says — why a
+// compaction ran, and how it ended when that was not the ordinary way — as the page writes it
+func eventHead(block map[string]any) string {
+	kind := source.ToStr(block["kind"])
+	status := source.ToStr(block["status"])
+	settled := status == "" || status == "completed"
 	label := map[string]string{
 		source.EventCompaction:  "context compacted",
 		source.EventInterrupted: "interrupted",
 		source.EventHookError:   "hook failed",
 		source.EventModelChange: "model changed",
-	}[source.ToStr(block["kind"])]
+	}[kind]
+	if kind == source.EventCompaction && !settled {
+		label = "context compaction"
+	}
 	if label == "" {
-		label = source.ToStr(block["kind"])
+		label = kind
 	}
-	if text := source.StrOr(block["content"], ""); text != "" && text != label {
-		return label + ": " + text
+	parts := []string{label}
+	if reason := source.ToStr(block["reason"]); reason != "" {
+		parts = append(parts, reason)
 	}
-	return label
+	if !settled {
+		parts = append(parts, status)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// eventLongText is an event's text when it runs to more than a line — a compaction's
+// summary, pages of Markdown — which goes under the event's line rather than into it
+func eventLongText(block map[string]any) string {
+	if text := strings.TrimSpace(source.StrOr(block["content"], "")); strings.Contains(text, "\n") {
+		return text
+	}
+	return ""
 }
 
 // formatDurationMs: 300ms / 2.4s / 1m12s / 1h3m
@@ -445,7 +479,7 @@ pre { margin: 0; padding: 8px 10px; overflow-x: auto; font-size: 12.5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 details { margin: 6px 0; border: 1px solid #8883; border-radius: 8px; overflow: hidden; }
 summary { cursor: pointer; padding: 5px 10px; font-size: 13px; }
-details.thinking summary { color: #6b7280; font-style: italic; }
+details.thinking summary, details.event summary { color: #6b7280; font-style: italic; }
 details.tool summary { color: #7c3aed; font-weight: 650; }
 details.result summary { color: #6b7280; }
 details.result.failed summary { color: #dc2626; }
@@ -490,6 +524,12 @@ func writeBlocks(b *strings.Builder, content any) {
 			label := source.StrOr(block["toolName"], "result")
 			fmt.Fprintf(b, "↳ %s%s\n\n```\n%s\n```\n\n", label, resultOutcomeText(block), source.StrOr(block["content"], ""))
 		case "event":
+			if long := eventLongText(block); long != "" {
+				// Folded under the event's line, the way thinking is: a quoted line cannot hold
+				// a summary's headings and lists
+				fmt.Fprintf(b, "<details><summary>%s</summary>\n\n%s\n\n</details>\n\n", html.EscapeString(eventHead(block)), long)
+				continue
+			}
 			fmt.Fprintf(b, "> %s\n\n", eventText(block))
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -311,6 +312,97 @@ func TestOpenCodeV2(t *testing.T) {
 	none := s.Search(context.Background(), rec, SearchQuery{Needle: "c9", Lowered: []byte("c9"), Limit: 10, PerSession: 3})
 	if len(none) != 0 {
 		t.Errorf("a hit in a call id is not a body hit: %v", none)
+	}
+}
+
+// TestOpenCodeV2Compaction: a 2.x compaction row — the boundary where the context was
+// rewritten, with the summary the model went on from — was filtered out whole, so the
+// boundary never showed and the summary never matched a search. It reads as a system row
+// carrying a compaction event in every shape OpenCode has written one (keepID, none, the
+// legacy metadata.recent, a failure with only an error), and it changes no count.
+func TestOpenCodeV2Compaction(t *testing.T) {
+	s := newOpenCodeV2Fixture(t, false)
+	db, err := sql.Open("sqlite", sqliteURI(s.dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := "## Objective\nShip the CSV export.\n\n## Progress\n- header row written"
+	for _, stmt := range []string{
+		`INSERT INTO session_message VALUES ('v2c1', 'ses_v2', 'compaction', 3, 1790000060000,
+			'{"status":"completed","reason":"auto","summary":` + strconv.Quote(summary) + `,"metadata":{"keepID":"v2m2"},"time":{"created":1790000060000}}')`,
+		`INSERT INTO session_message VALUES ('v2c2', 'ses_v2', 'compaction', 4, 1790000061000,
+			'{"status":"failed","reason":"manual","error":{"name":"APIError","data":{"message":"provider overloaded"}},"time":{"created":1790000061000}}')`,
+		`INSERT INTO session_message VALUES ('v2c3', 'ses_v2', 'compaction', 5, 1790000062000,
+			'{"status":"running","reason":"auto","summary":"","time":{"created":1790000062000}}')`,
+		`INSERT INTO session_message VALUES ('v2c4', 'ses_v2', 'compaction', 6, 1790000063000,
+			'{"status":"completed","reason":"manual","summary":"Legacy summary","metadata":{"recent":"v2m1"},"time":{"created":1790000063000}}')`,
+		`INSERT INTO session_message VALUES ('v2m3', 'ses_v2', 'user', 7, 1790000070000, '{"text":"and the footer?"}')`,
+		`INSERT INTO session_message VALUES ('v2m4', 'ses_v2', 'assistant', 8, 1790000080000,
+			'{"role":"assistant","finish":"stop","content":[{"type":"text","text":"footer added"}]}')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("executing %q failed: %v", stmt, err)
+		}
+	}
+	db.Close()
+
+	rec := s.List()[0]
+	if rec.MessageCount != 4 {
+		t.Errorf("messageCount = %d, want the 4 user and assistant rows", rec.MessageCount)
+	}
+	msgs := s.Messages(rec, MessageQuery{Limit: 50})
+	if len(msgs) != 8 {
+		t.Fatalf("messages = %d, want 8 (4 words, 4 compactions)", len(msgs))
+	}
+	event := func(i int) map[string]any {
+		t.Helper()
+		m := msgs[i]
+		blocks := m["content"].([]map[string]any)
+		if m["role"] != "system" || len(blocks) != 1 || blocks[0]["type"] != "event" || blocks[0]["kind"] != EventCompaction {
+			t.Fatalf("message %d = %v, want a system row with one compaction event", i, m)
+		}
+		return blocks[0]
+	}
+	if e := event(2); e["content"] != summary || e["status"] != "completed" || e["reason"] != "auto" || e["keepId"] != "v2m2" {
+		t.Errorf("completed compaction = %v", e)
+	}
+	if e := event(3); e["content"] != "provider overloaded" || e["status"] != "failed" || e["reason"] != "manual" || e["keepId"] != nil {
+		t.Errorf("failed compaction = %v", e)
+	}
+	if e := event(4); e["content"] != "" || e["status"] != "running" {
+		t.Errorf("running compaction = %v", e)
+	}
+	if e := event(5); e["content"] != "Legacy summary" || e["keepId"] != nil {
+		t.Errorf("legacy compaction = %v", e)
+	}
+	if msgs[6]["role"] != "user" || msgs[7]["role"] != "assistant" {
+		t.Errorf("the turn after the compactions = %v / %v", msgs[6]["role"], msgs[7]["role"])
+	}
+
+	final := s.Final(rec)
+	if final["text"] != "footer added" || final["messageCount"] != 4 {
+		t.Errorf("final = %v", final)
+	}
+
+	search := func(needle, role string) []map[string]any {
+		return s.Search(context.Background(), rec, SearchQuery{Needle: needle, Lowered: []byte(strings.ToLower(needle)), Role: role, Limit: 10, PerSession: 10})
+	}
+	hits := search("Objective", "")
+	if len(hits) != 1 || hits[0]["role"] != "system" || !strings.Contains(ToStr(hits[0]["snippet"]), "Objective") {
+		t.Fatalf("a summary's words are found: %v", hits)
+	}
+	if hits := search("overloaded", ""); len(hits) != 1 || hits[0]["role"] != "system" {
+		t.Errorf("a failed compaction's error is found: %v", hits)
+	}
+	// "completed" sits in the rows' status, "v2m2" in metadata: neither is words
+	if hits := search("completed", ""); len(hits) != 0 {
+		t.Errorf("a status value is not a body hit: %v", hits)
+	}
+	if hits := search("v2m2", ""); len(hits) != 0 {
+		t.Errorf("an id in metadata is not a body hit: %v", hits)
+	}
+	if hits := search("Objective", "user"); len(hits) != 0 {
+		t.Errorf("a role filter keeps compactions out: %v", hits)
 	}
 }
 

@@ -173,7 +173,9 @@ pattern containing a colon needs URL encoding (`%3A`).
   recorded them — `status` (`ok` / `error` / `interrupted`), `exitCode` and `durationMs`. A
   result without `status` is one whose writer did not record the outcome (Hermes), which is
   not the same as success. An `event` is something that happened between the turns, with
-  `kind` (`compaction` / `interrupted` / `hook_error` / `model_change`) and `content`. Tool
+  `kind` (`compaction` / `interrupted` / `hook_error` / `model_change`) and `content`; an
+  OpenCode compaction's `content` is the summary the model went on from, with `status`,
+  `reason` and `keepId` beside it. Tool
   output is cut to 500 characters and thinking to 1 000 unless `full=1` is given; a cut
   block carries `truncated: true`. A user message the CLI assembled rather than the person
   typed (Codex's AGENTS.md and environment rows) carries `injected: true` and does not start

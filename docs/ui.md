@@ -37,7 +37,8 @@ keeping failures in view with the start of their output; a run of reads and sear
 folds to "explored — read 4 files, searched twice". Every step opens to its arguments and
 output, edits as diffs whichever way the CLI spelled the edit, results with exit code and
 duration; what happened between turns (a compaction, an interruption, a hook that failed)
-gets a line of its own. Steps are coloured by category (run / read / write / search /
+gets a line of its own, and a compaction that carries its summary keeps it folded under the
+line. Steps are coloured by category (run / read / write / search /
 network / delegate).
 
 Five views: **all**, **conversation** (the words alone), and one kind of step alone, round

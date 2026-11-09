@@ -547,12 +547,13 @@ func (s *OpenCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 
 // messagesV2 reads a 2.x session: one session_message row per message, ordered by seq,
 // the parts inline under data.content (a user row may carry its words as data.text
-// instead). The row's type is the role.
+// instead). The row's type is the role, except for a compaction, which is read as a
+// system row carrying the event (see openCodeCompactionBlock).
 func (s *OpenCodeSource) messagesV2(db *sql.DB, sessionID string, q MessageQuery) []map[string]any {
 	sink := newMessageSink(q)
 	rows, err := db.Query(`
 		SELECT id, type, time_created, data FROM session_message
-		WHERE session_id = ? AND type IN ('user', 'assistant', 'system')
+		WHERE session_id = ? AND type IN ('user', 'assistant', 'system', 'compaction')
 		ORDER BY seq, rowid`, sessionID)
 	if err != nil {
 		return sink.result()
@@ -568,10 +569,15 @@ func (s *OpenCodeSource) messagesV2(db *sql.DB, sessionID string, q MessageQuery
 		if json.Unmarshal([]byte(data), &decoded) != nil {
 			continue // one unparsable row must not hide the rest of the session
 		}
-		blocks := openCodeV2Blocks(kind, decoded, q.Full)
+		role, blocks := kind, []map[string]any(nil)
+		if kind == "compaction" {
+			role, blocks = "system", []map[string]any{openCodeCompactionBlock(decoded)}
+		} else {
+			blocks = openCodeV2Blocks(kind, decoded, q.Full)
+		}
 		out := map[string]any{
 			"id":        id,
-			"role":      kind,
+			"role":      role,
 			"timestamp": millisToISO(created),
 			"content":   blocks,
 		}
@@ -610,6 +616,44 @@ func openCodeV2Blocks(kind string, data map[string]any, full bool) []map[string]
 		}
 	}
 	return blocks
+}
+
+// openCodeCompactionBlock reads a 2.x compaction row — where the context the model
+// continues from was rewritten — as the compaction event Claude Code's boundary also
+// becomes, its text the summary the model went on from: Markdown, often pages of it. The
+// messages before it stay in session_message, so what is lost without this row is not
+// history but the boundary and the summary. status (running / completed / failed) and
+// reason (auto / manual) ride on the block, and so does metadata.keepID, the first message
+// OpenCode kept verbatim, as OpenCode wrote it. A failed one may have no summary; its
+// error says what happened instead. Usage is unaffected: only assistant rows carry tokens.
+func openCodeCompactionBlock(data map[string]any) map[string]any {
+	text := strings.TrimSpace(strField(data, "summary"))
+	if text == "" {
+		text = openCodeErrorText(data["error"])
+	}
+	block := EventBlock(EventCompaction, text)
+	if status := strField(data, "status"); status != "" {
+		block["status"] = status
+	}
+	if reason := strField(data, "reason"); reason != "" {
+		block["reason"] = reason
+	}
+	if keep := strField(getMap(data, "metadata"), "keepID"); keep != "" {
+		block["keepId"] = keep
+	}
+	return block
+}
+
+// openCodeErrorText is the readable part of an error value: a string as it is, an object's
+// message (or its data's message, where a provider error nests it), else nothing
+func openCodeErrorText(v any) string {
+	switch e := v.(type) {
+	case string:
+		return strings.TrimSpace(e)
+	case map[string]any:
+		return strings.TrimSpace(FirstNonEmpty(strField(e, "message"), strField(getMap(e, "data"), "message"), strField(e, "name")))
+	}
+	return ""
 }
 
 // openCodeBlocks maps one part onto the shared block shapes. step-start / step-finish
@@ -998,7 +1042,7 @@ func (s *OpenCodeSource) searchV2(ctx context.Context, db *sql.DB, sessionID str
 	args = append(args, "%"+EscapeLike(string(q.Lowered))+"%", q.ProbeLimit())
 	rows, err := db.QueryContext(ctx, `
 		SELECT type, time_created, data FROM session_message
-		WHERE session_id = ? AND type IN ('user', 'assistant')`+roleClause+`
+		WHERE session_id = ? AND type IN ('user', 'assistant', 'compaction')`+roleClause+`
 		  AND data LIKE ? ESCAPE '\'
 		ORDER BY seq, rowid
 		LIMIT ?`, args...)
@@ -1018,12 +1062,17 @@ func (s *OpenCodeSource) searchV2(ctx context.Context, db *sql.DB, sessionID str
 		if json.Unmarshal([]byte(data), &decoded) != nil {
 			continue
 		}
-		text, ok := findMatchingText(decoded, string(q.Lowered), 0)
+		role, words := kind, any(decoded)
+		if kind == "compaction" {
+			// Only the summary is words; a match in its status or reason is not a body hit
+			role, words = "system", ToStr(openCodeCompactionBlock(decoded)["content"])
+		}
+		text, ok := findMatchingText(words, string(q.Lowered), 0)
 		if !ok {
 			continue // the match sat in an id or a tool's arguments, not in words
 		}
 		out = append(out, map[string]any{
-			"role":      kind,
+			"role":      role,
 			"snippet":   SnippetAround(text, string(q.Lowered), SearchSnippetRadius),
 			"timestamp": millisToISO(created),
 		})

@@ -234,7 +234,12 @@ and deployment see the [README](../README.md).
   the truth then). A `session_message` row is one message, ordered by `seq`, its `type` the
   role and its parts inline under `data.content` (the same shapes as the part rows, except
   that a tool item names its tool as `name` and its call as `id`); a user row may carry its
-  words as `data.text`. The final result is the newest assistant row that said something,
+  words as `data.text`. A `compaction` row — where OpenCode rewrote the context the model
+  goes on from — reads as a system row carrying the compaction event: its text the
+  summary (`data.summary`, Markdown, or a failed one's error when it has none), with
+  `status`, `reason` and `metadata.keepID` on the block. The messages before it stay in
+  `session_message`, so it adds the boundary rather than a second copy, and it is not
+  counted among the messages; search reads its summary, not its status or ids. The final result is the newest assistant row that said something,
   with usage summed over the assistant rows' own `tokens` and `cost`; search is a `LIKE`
   over the rows. A database that saw 2.x and then 1.x again holds both layouts: the V1
   sessions never migrated are listed beside the V2 ones (a migrated session keeps its id,

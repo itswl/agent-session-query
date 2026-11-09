@@ -430,6 +430,34 @@ func TestQueuedPromptStaysInItsRound(t *testing.T) {
 	}
 }
 
+// TestExportCompactionSummary: a compaction that carries its summary — pages of Markdown,
+// from OpenCode — goes under the event's line, folded the way thinking is, with what
+// qualifies it in the line; a one-line event stays the line it always was
+func TestExportCompactionSummary(t *testing.T) {
+	summary := "## Objective\nShip the CSV export."
+	long := source.EventBlock(source.EventCompaction, summary)
+	long["reason"], long["status"] = "manual", "failed"
+	short := source.EventBlock(source.EventCompaction, "Conversation compacted")
+	messages := []map[string]any{
+		{"role": "system", "timestamp": "2026-10-01T10:00:00Z", "content": []map[string]any{long}},
+		{"role": "system", "timestamp": "2026-10-01T10:00:01Z", "content": []map[string]any{short}},
+	}
+	md := renderExportMarkdown(source.Record{SessionID: "s"}, messages, nil, source.MessageQuery{})
+	if !strings.Contains(md, "<details><summary>context compaction · manual · failed</summary>\n\n"+summary+"\n\n</details>") {
+		t.Errorf("the markdown export does not fold the summary under its line:\n%s", md)
+	}
+	if !strings.Contains(md, "> context compacted: Conversation compacted\n") {
+		t.Errorf("the markdown export changed a one-line event:\n%s", md)
+	}
+	doc := renderExportHTML(source.Record{SessionID: "s"}, messages, nil, source.MessageQuery{})
+	if !strings.Contains(doc, `<details class="event"><summary>context compaction · manual · failed</summary><pre>`+summary+`</pre></details>`) {
+		t.Errorf("the html export does not fold the summary under its line")
+	}
+	if !strings.Contains(doc, `<p class="event">context compacted: Conversation compacted</p>`) {
+		t.Errorf("the html export changed a one-line event")
+	}
+}
+
 // TestRoundEndIgnoresLateRows: a notification the CLI delivers hours after the agent
 // stopped lands in whichever round was last. It must not become that round's end — a
 // round of two commands reporting ninety-four hours is the bug this covers — but a search

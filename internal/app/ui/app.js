@@ -1429,9 +1429,34 @@ const EVENT_LABELS = {
 };
 
 function eventLabel(block) {
-  const label = EVENT_LABELS[block.kind] || String(block.kind || 'event');
+  const head = eventHead(block);
   const text = String(block.content || '').trim();
-  return text && text !== label ? label + ': ' + text : label;
+  return text && text !== head ? head + ': ' + text : head;
+}
+
+// eventHead is an event's name and what qualifies it, when the source says: why a
+// compaction ran, and how it ended when that was not the ordinary way
+// ("context compaction · manual · failed")
+function eventHead(block) {
+  const settled = !block.status || block.status === 'completed';
+  const name = block.kind === 'compaction' && !settled
+    ? 'context compaction'
+    : EVENT_LABELS[block.kind] || String(block.kind || 'event');
+  return [name, block.reason, settled ? '' : block.status].filter(Boolean).join(' · ');
+}
+
+// eventNode draws an event as its line. One that carries text of its own — an OpenCode
+// compaction carries the summary the model went on from, pages of Markdown — keeps the
+// line and puts the text under it as the Markdown it is, folded when key says where the
+// fold's state lives: run into the italic line, it read as one paragraph a screen long.
+function eventNode(block, className, key) {
+  const text = String(block.content || '').trim();
+  if (!text.includes('\n')) return el('div', className, eventLabel(block));
+  const node = el('div', 'event-with-text');
+  node.appendChild(el('div', className, eventHead(block)));
+  const body = markdownNode(text, el('div', 'md'));
+  node.appendChild(key ? foldable(body, key, 'summary', plainText(text)) : body);
+  return node;
 }
 
 // isFailed: a result that reported an error or an interruption. A result without a
@@ -1825,7 +1850,8 @@ function blockNode(block) {
     case 'thinking':
       return el('div', 'block thinking', block.content);
     case 'event':
-      return el('div', 'block event', eventLabel(block));
+      // A long one is folded by messageNode, as any long block is
+      return eventNode(block, 'block event', '');
     case 'toolCall': {
       // Tool name as the heading, arguments indented below, so one glance says what ran
       const kind = toolKind(block.name);
@@ -2257,7 +2283,9 @@ function summaryNode(children) {
   return summary;
 }
 
-function foldable(rendered, key, kind) {
+// preview, when given, is what the folded line shows instead of the rendered text, which
+// runs a heading into the paragraph under it ("ObjectiveShip the…")
+function foldable(rendered, key, kind, preview) {
   const plain = rendered.textContent || '';
   const details = el('details');
   details.open = state.openBlocks.has(key);
@@ -2267,7 +2295,7 @@ function foldable(rendered, key, kind) {
   });
   details.appendChild(summaryNode([
     el('span', 'fold-kind', kind),
-    el('span', 'fold-preview', plain.replace(/\s+/g, ' ').trim().slice(0, 80)),
+    el('span', 'fold-preview', (preview == null ? plain : preview).replace(/\s+/g, ' ').trim().slice(0, 80)),
     el('span', 'fold-size', plain.length + ' chars'),
   ]));
   details.appendChild(rendered);
@@ -2441,7 +2469,7 @@ function stepNode(step, round) {
     case 'merged': return mergedStepNode(step, round);
     case 'thinking': return markStep(thinkingStepNode(step), step);
     case 'note': return markStep(noteNode(step), step);
-    case 'event': return markStep(el('div', 'event', eventLabel(step.block)), step);
+    case 'event': return markStep(eventNode(step.block, 'event', step.key), step);
     case 'injected': return markStep(injectedNode(step), step);
     default: return el('div', 'event', step.kind);
   }

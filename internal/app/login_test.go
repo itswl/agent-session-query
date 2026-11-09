@@ -229,15 +229,23 @@ func TestSessionValueSigning(t *testing.T) {
 		t.Error("an expired value was accepted")
 	}
 
-	// Tampering: a moved expiry without a new signature, a dented signature, and junk
+	// Tampering: a moved expiry without a new signature, a dented signature, and junk.
+	// The dent swaps the FIRST character of the signature on purpose: the last character
+	// of an unpadded base64 string carries only two significant bits, so swapping it can
+	// decode back to the identical signature — a "tampered" value that is genuinely valid,
+	// which the Windows runner accepted one run in eight before this comment existed.
 	exp, sig, _ := strings.Cut(valid, ".")
+	dented := "A" + sig[1:]
+	if sig[0] == 'A' {
+		dented = "B" + sig[1:]
+	}
 	for _, tampered := range []string{
-		exp + "0." + sig,                   // expiry pushed forward, signature untouched
-		exp + "." + sig[:len(sig)-1] + "A", // one byte of signature swapped
-		"",                                 // empty
-		"noseparator",                      // not exp.sig at all
-		"abc.def",                          // not a number for an expiry
-		"9999999999." + sig,                // a far future expiry with someone's signature
+		exp + "0." + sig,    // expiry pushed forward, signature untouched
+		exp + "." + dented,  // a character of the signature swapped (one whose bits count)
+		"",                  // empty
+		"noseparator",       // not exp.sig at all
+		"abc.def",           // not a number for an expiry
+		"9999999999." + sig, // a far future expiry with someone's signature
 	} {
 		if validSessionValue(key, tampered, now) {
 			t.Errorf("tampered cookie value %q was accepted", tampered)

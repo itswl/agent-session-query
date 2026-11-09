@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -724,5 +725,25 @@ func TestHermesReadRetriesAHotJournal(t *testing.T) {
 	}
 	if pauses != len(hermesRetryPauses) {
 		t.Fatalf("pauses = %d, want %d", pauses, len(hermesRetryPauses))
+	}
+}
+
+// TestHermesSQLiteSearchFoldsBeyondASCII: the LIKE prefilter tries the spellings text is
+// written in, in the words and in the reasoning, and the fold picks which one matched
+func TestHermesSQLiteSearchFoldsBeyondASCII(t *testing.T) {
+	dbPath := newHermesFixture(t)
+	makeHermesDB(t, dbPath, hermesSchema, []string{
+		`INSERT INTO sessions (id) VALUES ('h-ru')`,
+		`INSERT INTO messages (id, session_id, role, content, finish_reason, reasoning, timestamp, active)
+		 VALUES ('m1', 'h-ru', 'assistant', 'В логах Ошибка подключения', 'stop', 'L''École est fermée', '2026-09-13T10:00:00Z', 1)`,
+	})
+	search := func(query string) []map[string]any {
+		return hermesSQLiteSearch(context.Background(), dbPath, "h-ru", SearchQuery{Needle: query, Lowered: FoldNeedle(query), Limit: 10, PerSession: 5})
+	}
+	if hits := search("ошибка"); len(hits) != 1 || !strings.Contains(ToStr(hits[0]["snippet"]), "Ошибка") {
+		t.Errorf("a hit in the words: %v", hits)
+	}
+	if hits := search("ÉCOLE"); len(hits) != 1 || !strings.Contains(ToStr(hits[0]["snippet"]), "École") {
+		t.Errorf("a hit in the reasoning: %v", hits)
 	}
 }

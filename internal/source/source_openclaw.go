@@ -501,6 +501,7 @@ func (s *OpenClawSource) Search(ctx context.Context, r Record, q SearchQuery) []
 	if sessionID == "" || len(q.Lowered) == 0 {
 		return nil
 	}
+	likes := q.LikePatterns()
 	// The role filter goes into the query rather than onto the result: filtering the rows
 	// the LIMIT already returned would keep whichever hits came first.
 	roleClause := ""
@@ -509,9 +510,9 @@ func (s *OpenClawSource) Search(ctx context.Context, r Record, q SearchQuery) []
 	}
 	rows, close, err := s.querySession(ctx, r, `
 		SELECT event_json FROM transcript_events
-		WHERE session_id = ? AND event_json LIKE ? ESCAPE '\'`+roleClause+`
+		WHERE session_id = ? AND `+LikeAny("event_json", len(likes))+roleClause+`
 		ORDER BY seq
-		LIMIT ?`, sessionID, "%"+EscapeLike(string(q.Lowered))+"%", q.ProbeLimit())
+		LIMIT ?`, likeArgs(sessionID, likes, q.ProbeLimit())...)
 	if err != nil {
 		return nil
 	}

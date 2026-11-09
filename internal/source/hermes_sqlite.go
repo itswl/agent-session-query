@@ -781,7 +781,7 @@ func hermesSearchFrom(ctx context.Context, db *sql.DB, sessionID string, q Searc
 	if err != nil {
 		return nil, err
 	}
-	like := "%" + EscapeLike(string(q.Lowered)) + "%"
+	likes := q.LikePatterns()
 	// The role filter goes into the query rather than onto the result: filtering the rows
 	// the LIMIT already returned would keep whichever hits came first in the table.
 	roleClause := ""
@@ -790,12 +790,19 @@ func hermesSearchFrom(ctx context.Context, db *sql.DB, sessionID string, q Searc
 		roleClause = "\n\t\t  AND role = ?"
 		args = append(args, q.Role)
 	}
-	args = append(args, like, like, q.ProbeLimit())
+	// every spelling against content, then every spelling against reasoning: the order the
+	// clause below lists them in
+	for i := 0; i < 2; i++ {
+		for _, like := range likes {
+			args = append(args, like)
+		}
+	}
+	args = append(args, q.ProbeLimit())
 	rows, err := db.QueryContext(ctx, `
 		SELECT role, content, reasoning, timestamp
 		FROM messages
 		WHERE session_id = ?`+shown+roleClause+`
-		  AND (content LIKE ? ESCAPE '\' OR reasoning LIKE ? ESCAPE '\')
+		  AND (`+LikeAny("content", len(likes))+` OR `+LikeAny("reasoning", len(likes))+`)
 		ORDER BY timestamp ASC, id ASC
 		LIMIT ?`, args...)
 	if err != nil {

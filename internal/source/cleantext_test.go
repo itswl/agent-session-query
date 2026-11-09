@@ -1,6 +1,7 @@
 package source
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
 	"strings"
@@ -204,5 +205,43 @@ func TestRedactAfterStripping(t *testing.T) {
 	split := "token \x1b[32msk-Ab3xQ9zK7mN2pR5tV8wY1cE4gH6jL0sD\x1b[0m ok"
 	if got := RedactSecrets(StripTerminalControls(split)); got != "token [redacted] ok" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// TestIndexFoldBeyondASCII: a needle beyond ASCII is folded a character at a time, and the
+// text it is matched against with it — folding A-Z alone, "École" could not find "école"
+// nor "Ошибка" find "ошибка". The line prefilter folds the same way, so a line the match
+// would accept is never dropped before it gets there.
+func TestIndexFoldBeyondASCII(t *testing.T) {
+	cases := []struct {
+		text, query string
+		want        int
+	}{
+		{"École fermée à Lyon", "école", 0},
+		{"une école fermée", "ÉCOLE", len("une ")},
+		{"В логах ошибка", "Ошибка", len("В логах ")},
+		{"ОШИБКА в логах", "ошибка", 0},
+		{"η ΟΔΟΣ", "οδος", len("η ")}, // a final sigma meets sigma
+		{"Ünïcödé text", "ÜNÏCÖDÉ", 0},
+		{"配置 Nginx", "配置", 0},     // no case: folds to itself
+		{"Straße", "STRASSE", -1}, // one character to one: ß does not become ss
+		{"plain words", "плейн", -1},
+	}
+	for _, c := range cases {
+		needle := FoldNeedle(c.query)
+		if got := IndexFold(c.text, string(needle)); got != c.want {
+			t.Errorf("IndexFold(%q, FoldNeedle(%q)) = %d, want %d", c.text, c.query, got, c.want)
+		}
+		if prefilter := bytes.Contains(AppendFold(nil, []byte(c.text)), needle); prefilter != (c.want >= 0) {
+			t.Errorf("the prefilter says %v for %q in %q, the match %v", prefilter, c.query, c.text, c.want >= 0)
+		}
+	}
+	// An ASCII query keeps the byte-wise fold it always had
+	if got := string(FoldNeedle("Nginx Proxy")); got != "nginx proxy" {
+		t.Errorf("FoldNeedle(ASCII) = %q", got)
+	}
+	// The snippet shows the text as written, not as folded
+	if sn := SnippetAround("Le dossier de l'École fermée est prêt", string(FoldNeedle("ÉCOLE")), 8); !strings.Contains(sn, "École") {
+		t.Errorf("snippet = %q", sn)
 	}
 }

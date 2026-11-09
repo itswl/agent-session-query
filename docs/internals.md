@@ -694,9 +694,13 @@ The speed comes from ordering, not from the algorithm:
 1. **Filter on raw bytes first** — `bytes.Contains` runs on the bare bytes from
    `EachJSONLLine`, and only a match gets `json.Unmarshal`. That skips decoding for 99% of
    lines, and decoding is the expensive part of the scan
-2. **Case folding allocates nothing** — `appendLowerASCII` overwrites one reused buffer per
+2. **Case folding allocates nothing** — `AppendLowerASCII` overwrites one reused buffer per
    line, folding `A-Z` byte by byte, while UTF-8 multi-byte sequences (lead byte ≥ 0x80) pass
-   through untouched
+   through untouched. That is the path for an ASCII needle, the common query; a needle with
+   anything beyond ASCII folds the line a character at a time instead (`AppendFold`: the
+   lowercase of the uppercase, so a final sigma meets sigma), into the same buffer, and
+   `IndexFold` matches it the same way — one character to one, so `ß` does not become `ss`,
+   and no locale's rules (Turkish `İ` / `ı`)
 3. **Parallel per session** — `GOMAXPROCS` workers each scan one session and results are written
    back by index, so the order never shifts
 4. **The selection comes before the scan** — `since` / `until` / `source` / `project` /
@@ -730,8 +734,11 @@ that ends in `id` after folding camelCase and snake_case together (`turnId`,
 nowhere else produces no hit at all: the row matched, but it had nothing to say.
 
 Newer Hermes sessions live entirely in SQLite with no jsonl, so `JsonMapSource` implements
-the optional `searchableSource` interface and uses `LIKE` (SQLite's LIKE is already
-case-insensitive for ASCII). Sources whose sessions are not one file each — Gemini's split
+the optional `searchableSource` interface and uses `LIKE` (SQLite's LIKE is
+case-insensitive for ASCII alone, so a needle beyond ASCII is tried in the spellings text
+is written in — as typed, lowercase, uppercase, a capital first, a capital per word — and
+the fold confirms the rows they let through; opencode's and openclaw's prefilters do the
+same). Sources whose sessions are not one file each — Gemini's split
 conversations, opencode's and openclaw's databases, the Hermes json-map entries — implement
 `Search` themselves; the rest take the generic per-file scan described above. Pi takes that
 scan too, but stamps each hit with its message's time (`message.timestamp`, epoch

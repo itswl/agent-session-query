@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/itswl/agent-session-query/internal/source"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -700,5 +701,32 @@ func TestArchivedSessionsAcrossTheAPI(t *testing.T) {
 	}
 	if out := mcpCallTool(t, mcp, map[string]any{"include_archived": true}); out["total"] != float64(2) {
 		t.Fatalf("list_sessions include_archived = %v, want 2", out["total"])
+	}
+}
+
+// TestHTTPSearchFoldsBeyondASCII: /search folds case beyond ASCII end to end — the needle,
+// the line prefilter, the match — and the snippet keeps the text as written
+func TestHTTPSearchFoldsBeyondASCII(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "p", "2026-01-01T00-00-00_a.jsonl"),
+		`{"type":"session","id":"s-intl","cwd":"/w/a"}`,
+		`{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"L'École fermée à Lyon rouvre lundi"}]}}`,
+		`{"type":"message","id":"m2","message":{"role":"assistant","content":[{"type":"text","text":"В логах ошибка подключения"}]}}`,
+	)
+	sources := []source.SessionSource{source.NewPiSource(root)}
+	srv := httptest.NewServer(newAPIServer(serverOptions{
+		mode: "auto", sources: sources, api: newSessionQueryAPI(sources, 2), maxConnections: 50,
+	}))
+	t.Cleanup(srv.Close)
+	for query, want := range map[string]string{"école": "École", "ÉCOLE FERMÉE": "École fermée", "Ошибка": "ошибка", "ОШИБКА": "ошибка"} {
+		_, body := get(t, srv.URL+"/search?q="+url.QueryEscape(query), "")
+		if body["total"] != float64(1) {
+			t.Errorf("%q matched %v sessions, want 1", query, body["total"])
+			continue
+		}
+		match := body["results"].([]any)[0].(map[string]any)["matches"].([]any)[0].(map[string]any)
+		if !strings.Contains(match["snippet"].(string), want) {
+			t.Errorf("%q: snippet %q lacks %q", query, match["snippet"], want)
+		}
 	}
 }

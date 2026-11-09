@@ -76,7 +76,9 @@ version gets a full answer on its next poll and reloads itself.
 [configuration table in the README](../README.md#configuration).
 
 **Full-text search**: `/search?q=nginx` searches **message bodies** across every enabled
-source (the search on `/sessions` only matches metadata). It is case-insensitive and builds
+source (the search on `/sessions` only matches metadata). It is case-insensitive — beyond
+ASCII too: `École` finds `école`, `Ошибка` finds `ошибка` (one fold for every script with
+case, no locale rules; `ß` does not become `ss`) — and builds
 no index — measured locally, a cold scan of 562 MB across 143 sessions takes 1.9 s and a
 warm one 43-112 ms. Snippets are stripped of ANSI escape sequences and other control
 characters before being returned: tool output in a transcript is full of them, and a

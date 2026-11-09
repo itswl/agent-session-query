@@ -18,13 +18,17 @@ import (
 // and display names their CLIs write, and the app layer cleans every snippet a search
 // returns.
 
-// IndexFold finds needleLower case-insensitively (needleLower must already be lowercase)
-// and returns -1 when absent. It does not copy all of s first, saving an allocation on
-// long lines.
+// IndexFold finds needleLower case-insensitively (needleLower must already be folded, by
+// FoldNeedle) and returns the byte index in s where the match starts, or -1 when absent.
+// It does not copy all of s first, saving an allocation on long lines. An ASCII needle is
+// matched byte by byte; one beyond ASCII a character at a time (indexFoldRunes).
 func IndexFold(s, needleLower string) int {
 	n := len(needleLower)
 	if n == 0 {
 		return 0
+	}
+	if !isASCII(needleLower) {
+		return indexFoldRunes(s, needleLower)
 	}
 	for i := 0; i+n <= len(s); i++ {
 		hit := true
@@ -43,6 +47,36 @@ func IndexFold(s, needleLower string) int {
 		}
 	}
 	return -1
+}
+
+// indexFoldRunes is IndexFold for a needle beyond ASCII: s is read a character at a time,
+// each folded as the needle's were (foldRune), so "École" is found by "école" and "ΟΔΟΣ"
+// by "οδος". A case can be longer or shorter in bytes than its fold (ẞ and ß), so the
+// index returned is where the match starts in s itself.
+func indexFoldRunes(s, needleFolded string) int {
+	for i := 0; i < len(s); {
+		if hasFoldPrefix(s[i:], needleFolded) {
+			return i
+		}
+		_, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+	}
+	return -1
+}
+
+// hasFoldPrefix reports whether s, folded, starts with needleFolded
+func hasFoldPrefix(s, needleFolded string) bool {
+	for _, want := range needleFolded {
+		if s == "" {
+			return false
+		}
+		r, size := utf8.DecodeRuneInString(s)
+		if foldRune(r) != want {
+			return false
+		}
+		s = s[size:]
+	}
+	return true
 }
 
 // stripTerminalControls removes ANSI escape sequences and other control characters.

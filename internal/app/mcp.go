@@ -157,7 +157,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 		}
 		q := source.SearchQuery{
 			Needle:     query,
-			Lowered:    source.AppendLowerASCII(nil, []byte(query)),
+			Lowered:    source.FoldNeedle(query),
 			Limit:      argInt(args, "limit", mcpDefaultLimit, s.maxLimit),
 			PerSession: argInt(args, "per_session", defaultSearchPerSession, s.maxLimit),
 			Since:      filter.since,
@@ -358,7 +358,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args map[string]an
 			}
 			// An answer given to the person, not one a subagent handed back to the agent that
 			// spawned it
-			q := source.SearchQuery{Needle: term, Lowered: source.AppendLowerASCII(nil, []byte(term)), Limit: limit, PerSession: 5, Role: "assistant", NoSubagents: true}
+			q := source.SearchQuery{Needle: term, Lowered: source.FoldNeedle(term), Limit: limit, PerSession: 5, Role: "assistant", NoSubagents: true}
 			found := s.api.search(ctx, q)
 			for _, item := range found.results {
 				key := source.ToStr(item["source"]) + "\x00" + source.ToStr(item["sessionId"])

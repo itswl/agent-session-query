@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // The per-file content scan: how a source without its own search implementation answers a
@@ -70,6 +72,12 @@ func searchLines(ctx context.Context, q SearchQuery, rules lineRules, scan func(
 	}
 	var hits []map[string]any
 	var lower []byte // reused so each line costs no allocation
+	// A line is folded the way the needle was: byte by byte for an ASCII needle, a
+	// character at a time for one beyond ASCII
+	fold := AppendLowerASCII
+	if !isASCII(string(q.Lowered)) {
+		fold = AppendFold
+	}
 	lines := 0
 	scan(func(line []byte) bool {
 		// Sampled rather than checked every line: a channel receive per line would cost
@@ -78,7 +86,7 @@ func searchLines(ctx context.Context, q SearchQuery, rules lineRules, scan func(
 		if lines%CancelCheckLines == 0 && Cancelled(ctx) {
 			return false
 		}
-		lower = AppendLowerASCII(lower[:0], line)
+		lower = fold(lower[:0], line)
 		if !bytes.Contains(lower, q.Lowered) {
 			return true
 		}
@@ -252,4 +260,60 @@ func AppendLowerASCII(dst, src []byte) []byte {
 		dst = append(dst, c)
 	}
 	return dst
+}
+
+// Case folding for search. A needle of ASCII alone keeps the byte-wise fold above: it is
+// the common query and the fast one. A needle with anything beyond ASCII is folded a
+// character at a time (foldRune), and so is the text it is matched against — folding A-Z
+// alone, "École" could not find "école" nor "Ошибка" find "ошибка". One fold for every
+// script that has case, the standard library's, with no locale's special rules (Turkish
+// İ / ı) and no case table of our own. Scripts without case (CJK) fold to themselves.
+
+// FoldNeedle is a query folded for matching — what SearchQuery.Lowered holds, and what
+// IndexFold and SnippetAround expect
+func FoldNeedle(needle string) []byte {
+	if isASCII(needle) {
+		return AppendLowerASCII(nil, []byte(needle))
+	}
+	return AppendFold(nil, []byte(needle))
+}
+
+// AppendFold appends src to dst with every character folded by foldRune. Bytes that are
+// not UTF-8 pass through as they are.
+func AppendFold(dst, src []byte) []byte {
+	for i := 0; i < len(src); {
+		c := src[i]
+		if c < utf8.RuneSelf {
+			if 'A' <= c && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			dst = append(dst, c)
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRune(src[i:])
+		if r == utf8.RuneError && size == 1 {
+			dst = append(dst, c)
+		} else {
+			dst = utf8.AppendRune(dst, foldRune(r))
+		}
+		i += size
+	}
+	return dst
+}
+
+// foldRune maps a character and its other cases onto one: the lowercase of its uppercase,
+// so a final sigma meets sigma and the Kelvin sign meets k. One character to one, so a
+// match spans as many characters as the needle.
+func foldRune(r rune) rune {
+	return unicode.ToLower(unicode.ToUpper(r))
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }

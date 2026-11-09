@@ -216,3 +216,23 @@ func TestOpenClawToolResultStatus(t *testing.T) {
 		t.Fatalf("a failed tool = %v", res)
 	}
 }
+
+// TestOpenClawSearchFoldsBeyondASCII: a needle beyond ASCII reaches the event bodies
+// through the spellings the LIKE prefilter tries
+func TestOpenClawSearchFoldsBeyondASCII(t *testing.T) {
+	s := newOpenClawFixture(t)
+	db, err := sql.Open("sqlite", sqliteURI(s.dbPaths[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO transcript_events VALUES ('ses_cli', 90,
+		'{"type":"message","timestamp":"2026-09-18T04:05:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"В логах Ошибка подключения"}],"stopReason":"stop"}}', 1789704300000)`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	q := SearchQuery{Needle: "ОШИБКА", Lowered: FoldNeedle("ОШИБКА"), Limit: 10, PerSession: 5}
+	hits := s.Search(context.Background(), recordOf(t, s, "ses_cli"), q)
+	if len(hits) != 1 || !strings.Contains(ToStr(hits[0]["snippet"]), "Ошибка") {
+		t.Errorf("search = %v", hits)
+	}
+}

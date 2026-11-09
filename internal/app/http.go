@@ -902,7 +902,7 @@ func (s *apiServer) parseSearchQuery(r *http.Request) (source.SearchQuery, error
 
 	q := source.SearchQuery{
 		Needle:     needle,
-		Lowered:    source.AppendLowerASCII(nil, []byte(needle)),
+		Lowered:    source.FoldNeedle(needle),
 		Pattern:    strings.TrimSpace(values.Get("pattern")),
 		Limit:      defaultSearchLimit,
 		PerSession: defaultSearchPerSession,

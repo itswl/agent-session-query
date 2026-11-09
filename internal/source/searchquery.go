@@ -1,11 +1,16 @@
 package source
 
-import "time"
+import (
+	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
+)
 
 // SearchQuery is one content search.
 type SearchQuery struct {
 	Needle     string    // kept verbatim, echoed back to the caller
-	Lowered    []byte    // the needle lowercased (ASCII folding)
+	Lowered    []byte    // the needle folded for matching (FoldNeedle)
 	Limit      int       // how many sessions to return at most
 	PerSession int       // how many hits per session at most
 	Since      time.Time // only search sessions updated after this; zero means no limit
@@ -50,4 +55,65 @@ func (q SearchQuery) ProbeLimit() int {
 		return 0
 	}
 	return q.PerSession + 1
+}
+
+// LikePatterns are the LIKE patterns a SQLite prefilter tries for this query, before the
+// fold confirms what they let through (IndexFold). SQLite's LIKE ignores case for ASCII
+// alone, so an ASCII needle needs one pattern, as it always did; one beyond ASCII is looked
+// for in the spellings text is written in — as typed, lowercase, uppercase, a capital first
+// and a capital per word. A text spelled some other way ("ÉcOLE") slips the prefilter, the
+// line t3code's fix for the same SQLite limit draws too.
+func (q SearchQuery) LikePatterns() []string {
+	folded := string(q.Lowered)
+	if isASCII(folded) {
+		return []string{"%" + EscapeLike(folded) + "%"}
+	}
+	out := []string{}
+	seen := map[string]bool{}
+	for _, spelling := range []string{q.Needle, folded, strings.ToUpper(folded), capitalFirst(folded), capitalWords(folded)} {
+		if spelling != "" && !seen[spelling] {
+			seen[spelling] = true
+			out = append(out, "%"+EscapeLike(spelling)+"%")
+		}
+	}
+	return out
+}
+
+// LikeAny is the WHERE clause matching column against n LIKE patterns, any of them —
+// placeholders for LikePatterns' patterns, in their order
+func LikeAny(column string, n int) string {
+	parts := make([]string, n)
+	for i := range parts {
+		parts[i] = column + " LIKE ? ESCAPE '\\'"
+	}
+	return "(" + strings.Join(parts, " OR ") + ")"
+}
+
+// likeArgs are the arguments of a session query whose placeholders run: the session, the
+// LIKE patterns, the limit
+func likeArgs(sessionID string, likes []string, limit int) []any {
+	args := make([]any, 0, len(likes)+2)
+	args = append(args, sessionID)
+	for _, like := range likes {
+		args = append(args, like)
+	}
+	return append(args, limit)
+}
+
+// capitalFirst uppercases the first character
+func capitalFirst(s string) string {
+	r, size := utf8.DecodeRuneInString(s)
+	if size == 0 {
+		return s
+	}
+	return string(unicode.ToUpper(r)) + s[size:]
+}
+
+// capitalWords uppercases the first character of every word
+func capitalWords(s string) string {
+	words := strings.Split(s, " ")
+	for i, w := range words {
+		words[i] = capitalFirst(w)
+	}
+	return strings.Join(words, " ")
 }

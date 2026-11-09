@@ -553,3 +553,40 @@ func TestOpenCodeRelocatedByPath(t *testing.T) {
 		}
 	}
 }
+
+// TestOpenCodeSearchFoldsBeyondASCII: SQLite's LIKE ignores case for ASCII alone, so the
+// prefilter tries the spellings text is written in and the fold confirms the rest —
+// "ошибка" finds "Ошибка" in a 2.x row and in a 1.x part alike
+func TestOpenCodeSearchFoldsBeyondASCII(t *testing.T) {
+	s := newOpenCodeV2Fixture(t, true)
+	db, err := sql.Open("sqlite", sqliteURI(s.dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO session_message VALUES ('v2m9', 'ses_v2', 'assistant', 9, 1790000090000,
+			'{"role":"assistant","finish":"stop","content":[{"type":"text","text":"В логах Ошибка подключения"}]}')`,
+		`INSERT INTO part VALUES ('po9', 'msg_o1', 'ses_old', 9, 9, '{"type":"text","text":"L''École fermée à Lyon"}')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("executing %q failed: %v", stmt, err)
+		}
+	}
+	db.Close()
+
+	byID := map[string]Record{}
+	for _, rec := range s.List() {
+		byID[rec.SessionID] = rec
+	}
+	for _, c := range []struct{ session, query, want string }{
+		{"ses_v2", "ошибка", "Ошибка"},
+		{"ses_v2", "ОШИБКА ПОДКЛЮЧЕНИЯ", "Ошибка подключения"},
+		{"ses_old", "école", "École"},
+		{"ses_old", "ÉCOLE FERMÉE", "École fermée"},
+	} {
+		hits := s.Search(context.Background(), byID[c.session], SearchQuery{Needle: c.query, Lowered: FoldNeedle(c.query), Limit: 10, PerSession: 5})
+		if len(hits) != 1 || !strings.Contains(ToStr(hits[0]["snippet"]), c.want) {
+			t.Errorf("%s: search %q = %v, want one hit showing %q", c.session, c.query, hits, c.want)
+		}
+	}
+}

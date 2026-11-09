@@ -985,7 +985,7 @@ func (s *OpenCodeSource) Search(ctx context.Context, r Record, q SearchQuery) []
 		return s.searchV2(ctx, db, sessionID, q)
 	}
 
-	like := "%" + EscapeLike(string(q.Lowered)) + "%"
+	likes := q.LikePatterns()
 	// The role filter goes into the query rather than onto the result: filtering the rows
 	// the LIMIT already returned would keep whichever hits came first.
 	roleClause := ""
@@ -997,9 +997,9 @@ func (s *OpenCodeSource) Search(ctx context.Context, r Record, q SearchQuery) []
 		SELECT p.data, m.data
 		FROM part p JOIN message m ON m.id = p.message_id
 		WHERE p.session_id = ?
-		  AND p.data LIKE ? ESCAPE '\'`+roleClause+`
+		  AND `+LikeAny("p.data", len(likes))+roleClause+`
 		ORDER BY p.time_created, p.id
-		LIMIT ?`, sessionID, like, q.ProbeLimit())
+		LIMIT ?`, likeArgs(sessionID, likes, q.ProbeLimit())...)
 	if err != nil {
 		return nil
 	}
@@ -1039,11 +1039,15 @@ func (s *OpenCodeSource) searchV2(ctx context.Context, db *sql.DB, sessionID str
 		roleClause = " AND type = ?"
 		args = append(args, q.Role)
 	}
-	args = append(args, "%"+EscapeLike(string(q.Lowered))+"%", q.ProbeLimit())
+	likes := q.LikePatterns()
+	for _, like := range likes {
+		args = append(args, like)
+	}
+	args = append(args, q.ProbeLimit())
 	rows, err := db.QueryContext(ctx, `
 		SELECT type, time_created, data FROM session_message
 		WHERE session_id = ? AND type IN ('user', 'assistant', 'compaction')`+roleClause+`
-		  AND data LIKE ? ESCAPE '\'
+		  AND `+LikeAny("data", len(likes))+`
 		ORDER BY seq, rowid
 		LIMIT ?`, args...)
 	if err != nil {

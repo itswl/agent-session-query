@@ -56,7 +56,8 @@ services:
     # The token travels in the environment, not on the command line — arguments show up in
     # ps. (docker inspect can read a container's environment too, but anyone who can run
     # docker can already read the mounted sessions; the rule is about argv and process
-    # listings, not about the daemon.)
+    # listings, not about the daemon.) The same token also logs a browser in: POST /login
+    # answers with an app_session cookie the page uses instead of the header.
     environment:
       HOOK_TOKEN: "${HOOK_TOKEN:-}"
     # The remaining arguments pass straight through; inside a container it has to bind

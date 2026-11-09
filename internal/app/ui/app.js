@@ -42,6 +42,7 @@ const SCROLL_LOAD_PX = 320;
 const state = {
   token: '',
   authRequired: true,
+  loginAvailable: false, // the server offers POST /login: a secret in, a cookie out
   serverVersion: '',   // what /health said; a poll answered by another version reloads the page
   insets: null,        // what the system covers of the page, measured or assumed
   sessions: [],        // the sessions themselves; their subagents are in agentsOf
@@ -433,6 +434,13 @@ function showGate(message) {
   $('app').classList.add('hidden');
   setText($('gate-error'), message || '');
   $('gate-token').focus();
+}
+
+// setGateCopy rewords the gate when the server offers the login flow: the field then
+// takes the token, which is exchanged for a cookie instead of being stored.
+function setGateCopy() {
+  setText($('gate-note'), 'Paste your token to sign in. It is exchanged for a session cookie (180 days) and never stored in this browser.');
+  $('gate-token').placeholder = 'token';
 }
 
 // ---------------------------------------------------------------------------
@@ -4467,7 +4475,9 @@ async function syncDetail(options) {
 function handleError(err) {
   if (err && err.status === 401) {
     state.authRequired = true;
-    showGate('That token was rejected — paste it again');
+    showGate(state.loginAvailable
+      ? 'The session ended — sign in again'
+      : 'That token was rejected — paste it again');
     if (state.timer) clearInterval(state.timer);
     state.timer = null;
   }
@@ -4767,10 +4777,35 @@ async function loadWarnings() {
 // Events and startup
 // ---------------------------------------------------------------------------
 
-$('gate-form').addEventListener('submit', (event) => {
+$('gate-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const token = $('gate-token').value.trim();
   if (!token) return;
+  if (state.loginAvailable) {
+    // The server has a login flow: hand the token to /login once and let the HttpOnly
+    // cookie it sets carry the requests. The token never reaches localStorage, so a
+    // future XSS cannot read it back out. (fetch is same-origin by default, so the
+    // cookie is both set and spent here.)
+    try {
+      const res = await fetch('/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      });
+      if (res.ok) {
+        state.token = '';
+        showApp();
+        start();
+        return;
+      }
+      showGate(res.status === 429
+        ? 'Too many attempts — wait a minute and try again'
+        : 'That token was rejected — paste it again');
+    } catch (e) {
+      showGate('Could not reach the server — try again');
+    }
+    return;
+  }
   state.token = token;
   localStorage.setItem(TOKEN_KEY, token);
   showApp();
@@ -4780,6 +4815,9 @@ $('gate-form').addEventListener('submit', (event) => {
 $('logout').addEventListener('click', () => {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(VIEW_KEY);
+  // A login session lives in an HttpOnly cookie that script cannot clear, so the server
+  // is asked to expire it; without the login flow there is nothing to end but the page
+  if (state.loginAvailable) fetch('/logout', { method: 'POST' }).catch(() => {});
   state.token = '';
   state.sessions = [];
   state.byId = new Map();
@@ -4788,7 +4826,9 @@ $('logout').addEventListener('click', () => {
   state.detail = null;
   if (state.timer) clearInterval(state.timer);
   state.timer = null;
-  showGate('The stored token has been cleared');
+  showGate(state.loginAvailable
+    ? 'Signed out — paste the token to sign in again'
+    : 'The stored token has been cleared');
 });
 
 // Debounce the search: re-laying out the whole list on every keystroke is unnecessary
@@ -5121,8 +5161,26 @@ async function start() {
     const health = await res.json();
     state.authRequired = health.authRequired !== false;
     state.serverVersion = health.version || '';
+    // "auth.login" in the capabilities means a token is set: the gate then takes the
+    // token and trades it for a cookie, rather than storing it as a Bearer
+    const caps = Array.isArray(health.capabilities) ? health.capabilities : [];
+    state.loginAvailable = caps.includes('auth.login');
   } catch (e) {
     state.authRequired = true; // if we cannot ask, assume authentication is required
+  }
+  if (state.loginAvailable) {
+    setGateCopy();
+    // A valid cookie may already be here from an earlier visit, and an HttpOnly cookie
+    // cannot be read to find out — asking a cheap authenticated route is the only way.
+    // The cookie rides the request on its own; no Authorization header is sent.
+    try {
+      const res = await fetch('/sessions');
+      if (res.ok) {
+        showApp();
+        await start();
+        return;
+      }
+    } catch (e) { /* the gate below is the answer */ }
   }
 
   const saved = localStorage.getItem(TOKEN_KEY) || '';

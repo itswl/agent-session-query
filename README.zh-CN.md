@@ -143,8 +143,9 @@ go build -o agent-session-query ./cmd/agent-session-query
 
 ## 接口一览
 
-所有查询都是 `GET`（MCP 的 `/mcp` 是 `POST`）。一旦设置了 `--hook_token`，标注"是"的接口就需要
-`Authorization: Bearer <token>`。
+所有查询都是 `GET`（MCP 的 `/mcp` 和登录接口是 `POST`）。一旦设置了 `--hook_token`，标注"是"的
+接口就需要 `Authorization: Bearer <token>`——或用同一把 token 在 `POST /login` 换来的
+`app_session` cookie。
 
 | 接口 | 鉴权 | 作用 |
 |------|------|------|
@@ -157,6 +158,7 @@ go build -o agent-session-query ./cmd/agent-session-query
 | `/usage` | 是 | 会话消耗了多少：token 与缓存命中率，按窗口、模型、天、项目 |
 | `/export?project=&since=` | 是 | 多个会话打包成一份文档 |
 | `/mcp` | 是 | MCP 的 Streamable HTTP 传输 |
+| `/login` `/logout` | 否 | 把 token `POST` 到 `/login` 一次，换 `app_session` cookie（HttpOnly，180 天）认证其余一切；`/logout` 清除它 |
 
 完整参数、`<pattern>` 的匹配规则和每个响应字段见 **[docs/api.md](docs/api.md)**。
 
@@ -175,7 +177,7 @@ go build -o agent-session-query ./cmd/agent-session-query
 | `--port` | `8080` | 监听端口 |
 | `--mode` | `auto` | `auto`（存在哪个启用哪个）/ `all`（十个全启用）/ `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` / `opencode` / `grok` / `antigravity` / `dsh` |
 | `--path` | 无 | 迁移或复制数据源：`--path claude=/mnt/disk/.claude/projects` 迁移；`--path claude:box2=/mnt/box2/.claude/projects` 增加名为 `claude:box2` 的实例。支持目录型（`pi` / `claude` / `codex` / `gemini` / `grok` / `antigravity` / `dsh`）与 opencode 的数据库（其数据目录或 `opencode.db` 文件本身）。可重复——被包装器 `--session-dir` 托管的 pi 就是这么接进来的 |
-| `--hook_token` | 无 | Bearer token；不设则 API 不鉴权 |
+| `--hook_token` | 无 | Bearer token；不设则 API 不鉴权。同一把 token 也能登录浏览器：`POST /login` 返回 `app_session` cookie（HttpOnly，180 天，10 次/分钟/IP） |
 | `--max-connections` | `50` | 最大并发连接数，超出的排队 |
 | `--accept-queue` | `0`（自动） | 满载时的排队位；`0` 表示 `2 × max-connections`，且不低于 32。队列满则立即返回 503 |
 | `--timeout` | `30` | 连接超时（秒） |
@@ -197,6 +199,12 @@ Docker：每次发版都会把多架构镜像发布到 GitHub Container Registry
 
 - 它能读到完整的会话内容，包括工具输出，所以**对外暴露前一定要设 `--hook_token`**；非回环地址
   且未设 token 时进程会**拒绝启动**，而不是只警告
+- **Cookie 登录**：同一把 token 两种用法。脚本和 MCP 客户端照旧放在 `Authorization: Bearer`
+  头里；浏览器则只需 `POST /login`（`{"token": "..."}`）一次，换取 `app_session` cookie——
+  HttpOnly、`SameSite=Lax`、有效期 180 天——凭它访问全部接口，token 不必再存进页面的
+  `localStorage` 被 XSS 读取。`/login` 对 token 做常数时间比较，请求体上限 4 KiB，每客户端 IP
+  每分钟至多 10 次。cookie 是带签名的到期时间，不是 token 本身；轮换 token 即让所有 cookie
+  一次性失效（没有单会话撤销）
 - 默认绑定 `127.0.0.1` 且不发任何 CORS 头；在此之上，除 `OPTIONS` 预检外，所有路由都校验 `Origin`，且在没有 token
   且绑定回环时，`Host` 不是回环名字（`localhost`、`127.0.0.0/8`、`::1`）的请求一律 403——这正是
   DNS rebinding 页面发出的形状。设了 token、或显式绑非回环地址时 Host 检查关闭：反代转发过来的

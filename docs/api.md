@@ -1,8 +1,8 @@
 # HTTP API
 
-Query endpoints are all `GET` (only MCP's `/mcp` is `POST`, see [mcp.md](mcp.md)). The
-`/sessions` family also accepts an `/api/sessions` prefix; `/`, `/health` and `/stats` have
-no alias.
+Query endpoints are all `GET` (only MCP's `/mcp` and the login endpoints are `POST`, see
+[mcp.md](mcp.md)). The `/sessions` family also accepts an `/api/sessions` prefix; `/`,
+`/health` and `/stats` have no alias.
 
 | Endpoint | Auth | What it does |
 |----------|------|--------------|
@@ -29,9 +29,13 @@ no alias.
 | `/digest?since=&until=&source=&project=` | yes | **A window's work per project**: `sessions`, `rounds`, `failures`, `tokens` (summed from the finals, as `/usage` does) with `cacheHit`, `kinds` (changed files as code / test / docs / config), `models` and `sources`, plus `firstAt` / `lastAt` — and the same shape under `totals`. `since` defaults to 7d |
 | `/usage` | yes | **What the sessions consumed**: `windows` (24h / 3d / 7d / 30d / all, rolling — sessions, model calls, tokens), `byModel`, `byDay` (the last 30 days), `bySource` and `byProject`, each row carrying `cacheHit` — the share of prompt tokens served from cache (`cacheRead / (input + cacheRead)`; 0 where a source records no cache numbers). A session's usage lands where it was last updated. A Codex fork copies its parent's turns into its own rollout, and those copied turns are counted once — in the parent — not again in the fork. No cost: that would mean maintaining a price table. Cached like the session lists |
 | `/mcp` | yes | MCP's Streamable HTTP transport, `POST`; see [mcp.md](mcp.md) |
+| `/login` | no | `POST {"token": "..."}`, the token being the same one the header takes — answered with an `app_session` cookie (HttpOnly, `SameSite=Lax`, `Path=/`, 180 days) that authenticates every "yes" endpoint above, plus the moment it expires. Constant-time compare; 10 attempts a minute per client IP (`429` with `Retry-After` when over); request body capped at 4 KiB (`413`). `403` when no token is configured |
+| `/logout` | no | `POST`, clears the `app_session` cookie (`Max-Age=0`). `403` when no token is configured |
 
 **Authentication**: once `--hook_token` is set, endpoints marked "yes" require
-`Authorization: Bearer <token>`. Without it everything is open to whoever can reach the
+`Authorization: Bearer <token>` — or the `app_session` cookie that `POST /login` issued for
+the same token, which is the form a browser uses so the token never sits in the page's
+`localStorage`. Without a token everything is open to whoever can reach the
 port — and a non-loopback `--host` without a token is refused at startup, not served with
 a warning. Tokens are compared in constant time. CORS is off by default, see
 `--cors-origin`.
@@ -39,7 +43,9 @@ a warning. Tokens are compared in constant time. CORS is off by default, see
 **DNS-rebinding guards**: every route except `OPTIONS` preflights (answered `200` before
 the guards, deliberately — a preflight asks nothing of its own) refuses a request carrying
 an `Origin` that does not match `--cors-origin` (`403 Origin not allowed`; native clients
-send no `Origin`). On top of that, when the server is bound to a loopback address (the
+send no `Origin`, and one naming this server itself passes — browsers attach `Origin` to
+every `POST`, including the page's own `/login`). On top of that, when the server is bound
+to a loopback address (the
 default) **and** no token is configured, any request whose `Host` is not a loopback name
 (`localhost`, `127.0.0.0/8`, `::1`) is refused — that combination is the one where a web
 page could otherwise reach the data by resolving its own name to `127.0.0.1`. A configured

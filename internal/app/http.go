@@ -46,6 +46,12 @@ type apiServer struct {
 	maxLimit   int
 	mcp        *mcpServer
 
+	// sessionKey is the app_session cookie-signing key, derived from the token (see
+	// login.go); logins rate-limits POST /login. With no token configured neither is
+	// consulted — no login flow exists and nothing authenticates.
+	sessionKey []byte
+	logins     loginLimiter
+
 	// loopbackOnly: the listener is bound to a loopback address (the default). With no
 	// token configured this arms the Host check — see hostAllowed for why only then.
 	loopbackOnly bool
@@ -71,7 +77,7 @@ type serverOptions struct {
 
 func newAPIServer(opts serverOptions) *apiServer {
 	opts.maxLimit = effectiveMaxLimit(opts.maxLimit)
-	return &apiServer{
+	s := &apiServer{
 		mode:           opts.mode,
 		sources:        opts.sources,
 		api:            opts.api,
@@ -82,6 +88,10 @@ func newAPIServer(opts serverOptions) *apiServer {
 		loopbackOnly:   opts.loopbackOnly,
 		mcp:            &mcpServer{api: opts.api, sources: opts.sources, maxLimit: opts.maxLimit},
 	}
+	if opts.token != "" {
+		s.sessionKey = sessionSignKey(opts.token)
+	}
+	return s
 }
 
 func (s *apiServer) stats() map[string]any {
@@ -114,17 +124,26 @@ func (s *apiServer) connState(_ net.Conn, state http.ConnState) {
 	}
 }
 
+// checkAuth accepts the token in either of its two forms: the Authorization header,
+// for everything that is not a browser (curl, MCP clients, scripts), and the
+// app_session cookie that POST /login issued for the same token, for browsers — the
+// cookie is HttpOnly, so the token itself never sits in the page's localStorage.
 func (s *apiServer) checkAuth(r *http.Request) bool {
 	if s.token == "" {
 		return true // no token configured, so no authentication
 	}
 	header := r.Header.Get("Authorization")
-	if !strings.HasPrefix(header, "Bearer ") {
-		return false
+	// Constant-time comparison, so a character-by-character compare cannot leak the
+	// token through timing
+	if strings.HasPrefix(header, "Bearer ") &&
+		subtle.ConstantTimeCompare([]byte(header[len("Bearer "):]), []byte(s.token)) == 1 {
+		return true
 	}
-	// Constant-time comparison, so a character-by-character compare cannot leak the token
-	// through timing
-	return subtle.ConstantTimeCompare([]byte(header[len("Bearer "):]), []byte(s.token)) == 1
+	if c, err := r.Cookie(sessionCookieName); err == nil &&
+		validSessionValue(s.sessionKey, c.Value, time.Now()) {
+		return true
+	}
+	return false
 }
 
 // applyCORS only emits CORS headers when --cors-origin was set explicitly.
@@ -201,12 +220,40 @@ func (w *statusRecorder) Write(p []byte) (int, error) {
 // present must match --cors-origin or the request is refused. The MCP spec spells this
 // requirement out for /mcp; the data routes had exactly the same problem, and for a long
 // time only /mcp was guarded.
+//
+// Same-origin requests pass too — browsers attach Origin to every non-GET/HEAD request,
+// including the bundled /ui's own POST /login, which before this exception would have
+// been refused as if it came from someone else's page.
 func (s *apiServer) originAllowed(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return true
 	}
+	if sameOrigin(r, origin) {
+		return true
+	}
 	return s.corsOrigin == "*" || (s.corsOrigin != "" && s.corsOrigin == origin)
+}
+
+// sameOrigin reports whether an Origin header names this server itself: the host, port
+// included, is the one the request arrived on — which for a browser request means the
+// page was served from here. The scheme is not compared: behind a TLS-terminating proxy
+// the request arrives as plain HTTP carrying an https Origin, and the host is the part
+// that says whose page sent this.
+//
+// A DNS-rebinding page also produces an Origin equal to the Host (both carry the
+// attacker's name, which is what resolves here); that is indistinguishable from the
+// same-origin case at this layer, so the defences that matter there are the others: the
+// Host loopback check below when no credential is configured, and authentication when
+// one is. A cookie never follows a rebound name — cookies are scoped to the host that
+// set them, not to wherever its address resolves — so a rebound page meets the same
+// 401 as any other stranger.
+func sameOrigin(r *http.Request, origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
 }
 
 // hostAllowed is the Host half, and it is the one that actually stops DNS rebinding:
@@ -215,8 +262,10 @@ func (s *apiServer) originAllowed(r *http.Request) bool {
 // so the check has to be on Host.
 //
 // It arms only in the configuration the README's threat model is about: bound to loopback
-// (the default) and no token configured. With a token the attacker gains nothing, and
-// leaving the check off there keeps reverse proxies working — a proxy forwards the
+// (the default) and no token configured. With a token the attacker gains nothing — the
+// header form is not something a rebound page has, and a cookie is scoped to the host
+// that set it, so a page reached through a rebound name presents neither — and
+// leaving the check off there keeps reverse proxies working: a proxy forwards the
 // client's Host (the public name), which is not a loopback name. Bound elsewhere, the
 // operator chose exposure explicitly and the token is the defence.
 func (s *apiServer) hostAllowed(r *http.Request) bool {
@@ -281,7 +330,7 @@ func (s *apiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// below are about the request that follows them
 	if r.Method == http.MethodOptions {
 		if s.corsOrigin != "" {
-			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 			w.Header().Set("Access-Control-Max-Age", "600")
 		}
@@ -309,9 +358,17 @@ func (s *apiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet, http.MethodHead:
 		// carry on
 	case http.MethodPost:
-		// MCP's Streamable HTTP uses POST; everything else here is a read-only GET
-		if r.URL.EscapedPath() == mcpPath {
+		// MCP's Streamable HTTP uses POST, and so do the login endpoints; everything
+		// else here is a read-only GET
+		switch r.URL.EscapedPath() {
+		case mcpPath:
 			logRequest(r, s.handleMCPPost(w, r))
+			return
+		case loginPath:
+			logRequest(r, s.handleLogin(w, r))
+			return
+		case logoutPath:
+			logRequest(r, s.handleLogout(w, r))
 			return
 		}
 		writePlain(w, http.StatusNotImplemented, fmt.Sprintf("Unsupported method ('%s')", r.Method))
@@ -363,6 +420,8 @@ var rootEndpoints = []rootEndpoint{
 	{"GET", "/export?project=", false, "a pack: what was asked and concluded across sessions, oldest first"},
 	{"GET", "/api/<path>", false, "the same authenticated routes, under an /api prefix"},
 	{"POST", "/mcp", false, "MCP over Streamable HTTP"},
+	{"POST", "/login", true, "exchange the token for an app_session cookie: HttpOnly, 180 days; 10 tries a minute per client IP (needs a token, else 403)"},
+	{"POST", "/logout", true, "clear the app_session cookie"},
 }
 
 // rootEndpointLines renders the table for GET /. The public routes are the ones marked: with
@@ -391,7 +450,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 			"version":      buildVersion,
 			"mode":         s.mode,
 			"sources":      sourceModes(s.api.activeSources()),
-			"capabilities": serverCapabilities,
+			"capabilities": s.capabilities(),
 			// The page uses this to decide whether to show the token prompt: with no token
 			// configured there is no reason to make anyone invent one
 			"authRequired": s.token != "",
@@ -402,7 +461,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) int {
 		// failure worth knowing about looks like perfect health: an empty session list.
 		// The status itself stays open for probes, but the warnings can name filesystem
 		// paths, so once a token is configured they are shown only to a request that
-		// presents it.
+		// presents one.
 		if s.token == "" || s.checkAuth(r) {
 			if warnings := s.api.listWarnings(); len(warnings) > 0 {
 				body["warnings"] = warnings
@@ -1188,7 +1247,9 @@ func (w countingWriter) Write(p []byte) (int, error) {
 // MCP client pinned to an older binary, a script someone wrote last month. Branching on a
 // version string means knowing which version introduced what; a flag can be asked for
 // directly. Add a name when a route grows an ability; never rename or remove one, because
-// the whole point is that older callers keep reading it.
+// the whole point is that older callers keep reading it. The names that depend on how the
+// server is configured are appended by (*apiServer).capabilities, so /health reports what
+// this deployment offers, not just what the binary could.
 var serverCapabilities = []string{
 	"brief.at",           // /sessions/<id>/brief?at=
 	"brief.since",        // /sessions/<id>/brief?since= — the delta handoff
@@ -1213,4 +1274,17 @@ var serverCapabilities = []string{
 	"sessions.etag",      // /sessions answers 304, and carries the server version
 	"sessions.subagents", // /sessions?subagents=1, /sessions/<id>/subagents, and the fields that tie them
 	"usage",              // token usage on a final result
+}
+
+// capabilities is what /health reports: the build's list plus the names that depend on
+// this deployment's configuration — "auth.login" only when a token actually arms the
+// login flow, so a client reading /health learns what is offered here, not only what
+// the binary could offer. Sorted, like the list it extends.
+func (s *apiServer) capabilities() []string {
+	if s.token == "" {
+		return serverCapabilities
+	}
+	caps := append(slices.Clone(serverCapabilities), "auth.login") // POST /login issues an app_session cookie
+	slices.Sort(caps)
+	return caps
 }

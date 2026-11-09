@@ -152,8 +152,9 @@ shortcuts — is in **[docs/ui.md](docs/ui.md)**.
 
 ## Endpoints at a glance
 
-Every query is a `GET` (MCP's `/mcp` is a `POST`). Once `--hook_token` is set, endpoints
-marked "yes" require `Authorization: Bearer <token>`.
+Every query is a `GET` (MCP's `/mcp` and the login endpoints are `POST`). Once
+`--hook_token` is set, endpoints marked "yes" require `Authorization: Bearer <token>` — or
+the `app_session` cookie that `POST /login` issued for the same token.
 
 | Endpoint | Auth | What it does |
 |----------|------|--------------|
@@ -166,6 +167,7 @@ marked "yes" require `Authorization: Bearer <token>`.
 | `/usage` | yes | What the sessions consumed: tokens and cache hit rate, by window, model, day and project |
 | `/export?project=&since=` | yes | Several sessions as one pack document |
 | `/mcp` | yes | MCP's Streamable HTTP transport |
+| `/login` `/logout` | no | `POST` the token to `/login` once, get an `app_session` cookie (HttpOnly, 180 days) that authenticates everything else; `/logout` clears it |
 
 Full parameters, the `<pattern>` matching rules and every response field are in
 **[docs/api.md](docs/api.md)**.
@@ -191,7 +193,7 @@ untrusted input — reported on, never followed) are in **[docs/mcp.md](docs/mcp
 | `--otel-content` | `none` | `io` also sends prompts, replies and tool output (masked, 256 KiB) |
 | `--otel-metrics` | off | Also send OTLP sums (rounds, tokens, tool failures) to `/v1/metrics` |
 | `--path` | none | Relocate or duplicate a source: `--path claude=/mnt/disk/.claude/projects` points the source elsewhere; `--path claude:box2=/mnt/box2/.claude/projects` adds a second instance named `claude:box2`. Directory-shaped sources (`pi`, `claude`, `codex`, `gemini`, `grok`, `antigravity`, `dsh`) and opencode's database (its data dir or the `opencode.db` file). Repeatable — the way a pi hosted behind a wrapper's `--session-dir` is pointed at |
-| `--hook_token` | none | Bearer token; without it the API is unauthenticated |
+| `--hook_token` | none | Bearer token; without it the API is unauthenticated. The same token also logs a browser in: `POST /login` answers with an `app_session` cookie (HttpOnly, 180 days, 10 tries/min/IP) |
 | `--max-connections` | `50` | Maximum concurrent connections; anything past it queues |
 | `--accept-queue` | `0` (auto) | Queue slots when at capacity; `0` means `2 × max-connections`, never below 32. A full queue returns 503 immediately |
 | `--timeout` | `30` | Connection timeout in seconds |
@@ -218,6 +220,14 @@ long-running.
 - It can read complete session content, tool output included, so **always set
   `--hook_token`** before exposing it. A non-loopback `--host` without a token is refused
   at startup, not warned about
+- **Cookie login**: the token works two ways. Scripts and MCP clients send it as the
+  `Authorization: Bearer` header, as always. Browsers `POST /login` with it once
+  (`{"token": "..."}`) and get back an `app_session` cookie — HttpOnly,
+  `SameSite=Lax`, valid for 180 days — that authenticates every route, so the token never
+  has to sit in the page's `localStorage` where an XSS could read it. `/login` compares it
+  constant-time, caps the request body at 4 KiB, and allows 10 attempts per minute per
+  client IP. The cookie is a signed expiry, not the token; rotating the token retires
+  every cookie at once (there is no per-session revocation)
 - It binds `127.0.0.1` and sends no CORS headers by default; on top of that, `Origin` is
   validated on every route except `OPTIONS` preflights, and with no token on a loopback
   bind any request whose `Host`

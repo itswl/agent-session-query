@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"github.com/itswl/agent-session-query/internal/source"
 	"io"
 	"net/http"
@@ -631,5 +632,36 @@ func TestToolCallFiles(t *testing.T) {
 		if got := strings.Join(toolCallFiles(c.args), ","); got != c.want {
 			t.Errorf("%s: files = %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// TestSplitRoundsTeamAndFork: an agent team's member is given its work, and each later
+// instruction, by the lead in a <teammate-message teammate_id="team-lead"> row — each one an
+// ask, read without the wrapper; the lead's protocol messages and a member's own reports are
+// not. A fork's rows copied from its parent are not its rounds, and its directive is read
+// without the boilerplate before it.
+func TestSplitRoundsTeamAndFork(t *testing.T) {
+	text := func(s string) []map[string]any { return []map[string]any{source.TextBlock(s)} }
+	at := func(s int) string { return "2026-10-01T10:00:" + fmt.Sprintf("%02d", s) + "Z" }
+	rounds := splitRounds([]map[string]any{
+		{"role": "user", "timestamp": at(0), "content": text("<teammate-message teammate_id=\"team-lead\" summary=\"Survey the repos\">\nList the repos and what each one does.\n</teammate-message>")},
+		{"role": "assistant", "timestamp": at(1), "content": text("listing")},
+		{"role": "user", "timestamp": at(2), "content": text("<teammate-message teammate_id=\"gh-explorer\" color=\"blue\">found 3</teammate-message>")},
+		{"role": "user", "timestamp": at(3), "content": text("<teammate-message teammate_id=\"team-lead\">\n{\"type\":\"shutdown_request\",\"reason\":\"done\"}\n</teammate-message>")},
+		{"role": "user", "timestamp": at(4), "content": text("<teammate-message teammate_id=\"team-lead\" summary=\"More\">Now the archived ones too.</teammate-message>")},
+		{"role": "assistant", "timestamp": at(5), "content": text("done")},
+	})
+	if len(rounds) != 2 || rounds[0].asked != "List the repos and what each one does." || rounds[1].asked != "Now the archived ones too." {
+		t.Fatalf("team member rounds = %+v, want the lead's two instructions, unwrapped", rounds)
+	}
+
+	rounds = splitRounds([]map[string]any{
+		{"role": "user", "inherited": true, "timestamp": at(0), "content": text("research it")},
+		{"role": "assistant", "inherited": true, "timestamp": at(1), "content": []map[string]any{source.ToolCallBlock("toolu_F", "Agent", map[string]any{})}},
+		{"role": "user", "timestamp": at(2), "content": text("<fork-boilerplate>\nExecute ONE directive.\n</fork-boilerplate>\n\nYour directive: read the client log docs")},
+		{"role": "assistant", "timestamp": at(3), "content": text("read them")},
+	})
+	if len(rounds) != 1 || rounds[0].asked != "Your directive: read the client log docs" || rounds[0].startAt != at(2) {
+		t.Fatalf("fork rounds = %+v, want one, from its directive", rounds)
 	}
 }

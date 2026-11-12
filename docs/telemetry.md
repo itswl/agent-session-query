@@ -76,6 +76,22 @@ the Workflow call whose result names its run. Measured here, 223 of 228 subagent
 transcripts were placed that way; the rest, a team's members, name no call and keep a
 trace of their own, tagged `subagent`.
 
+A team's member is handed its work, and every later instruction, by the lead in a
+`<teammate-message teammate_id="team-lead">` row: each of those starts a round, read without
+the wrapper (the lead's protocol messages, a shutdown request, do not). A fork's transcript
+opens with a copy of its parent's conversation up to the call that started it; those rows
+are the parent's, exported with the parent, and the fork's rounds start at its directive
+(read without the `<fork-boilerplate>` before it).
+
+**Token counts are in the GenAI shape**: `gen_ai.usage.input_tokens` includes the cached
+input, read and written, and `output_tokens` includes the reasoning — OpenAI's shape, and
+Codex's. A backend reads them that way: Langfuse takes the cache back out of the input and
+the reasoning out of the output. The sources that record a part apart have it added back
+before they are sent — the cache for Claude Code, Pi, OpenClaw, Grok, dsh and OpenCode, the
+reasoning for OpenCode and Gemini — or Langfuse would take it out a second time and floor
+what is left at zero (it did: every Claude Code input, more than half of OpenCode's input
+and output). The parts themselves go as recorded.
+
 What a source does not record cannot be exported: Hermes keeps usage per session, not
 per message, so its generations carry the model (from `state.db` when `sessions.json`
 does not name it) but no token counts; Codex and Grok report usage per turn
@@ -161,7 +177,7 @@ it sent; a collector adds them up):
 |---|---|---|
 | `agent_session.rounds` | `session.source` | rounds exported in this pass |
 | `agent_session.round.duration` | `session.source` | their wall-clock time, ms |
-| `agent_session.tokens` | `session.source`, `gen_ai.request.model`, `gen_ai.token.type` | input / output / cache_read / cache_creation / reasoning tokens |
+| `agent_session.tokens` | `session.source`, `gen_ai.request.model`, `gen_ai.token.type` | input / output / cache_read / cache_creation / reasoning tokens — input with the cached input in it and output with the reasoning, as on the spans |
 | `agent_session.tool.failures` | `session.source`, `gen_ai.tool.name` | failed tool calls |
 
 A pass that is stopped part-way (Ctrl-C, a server shutting down) still posts the sums of
@@ -200,7 +216,7 @@ only versions and round fingerprints:
 ```json
 {
   "version": 2,
-  "format": 3,
+  "format": 4,
   "lastRun": "2026-10-28T07:05:02Z",
   "sessions": {
     "opencode|ses_ebc6c0083ffeoPUbq6IcTfGBNV": {
@@ -243,6 +259,13 @@ on stderr. To start clean:
 started it, in the parent round's trace. Under format 2 each subagent had traces of its
 own; the spans move, keeping their ids, but the traces they left stay behind in a backend,
 named and tagged and empty. The same clean start applies.
+
+**Format 4** (the release after v0.39.8) leaves out the rows a fork copied from its parent:
+format 3 sent them as the fork's first rounds, beneath its call, so the parent's responses
+were generations twice, and the fork's own rounds are now numbered from 1 under other ids.
+The same release sends token counts in the GenAI shape (input with the cache in it, output
+with the reasoning) and exports a team's members, which had no round before; those change
+spans under the ids they had, or add new ones. The same clean start applies.
 
 Without that, sessions that never change again keep their earlier spans, and those that do
 change carry both.

@@ -89,6 +89,11 @@ func isRoundStart(m map[string]any) bool {
 	if text == "" {
 		return false
 	}
+	if body, ok := teammateLeadAsk(text); ok {
+		// The lead's words to a team's member, its ask; a protocol message (a shutdown
+		// request) is JSON and asks nothing
+		return body != "" && !strings.HasPrefix(body, "{")
+	}
 	for _, prefix := range roundPlumbingPrefixes {
 		if strings.HasPrefix(text, prefix) {
 			return false
@@ -97,6 +102,48 @@ func isRoundStart(m map[string]any) bool {
 	// A message that is wholly one XML-style element is context a CLI injected, whatever
 	// the tag: a person does not type a question that way (the Codex rule, see WrappedInTag)
 	return !source.WrappedInTag(text)
+}
+
+// teammateLeadPrefix opens what an agent team's lead says to one of its members. Claude Code
+// hands a member its work, and every later instruction, as a user row wrapped in
+// <teammate-message teammate_id="team-lead" summary="…">. Wholly one element, it read as
+// injected context, so a member's transcript had no round and was not exported at all (5
+// here, 0.29M output tokens). In the lead's own transcript the members' replies arrive the
+// same way under their own ids, and those stay what they are: news mid-round.
+const teammateLeadPrefix = `<teammate-message teammate_id="team-lead"`
+
+// teammateLeadAsk is the body of a message from the team's lead, and whether text is one
+func teammateLeadAsk(text string) (string, bool) {
+	if !strings.HasPrefix(text, teammateLeadPrefix) {
+		return "", false
+	}
+	_, body, ok := strings.Cut(text, ">") // the attributes are escaped: the first > ends the tag
+	if !ok {
+		return "", true
+	}
+	if end := strings.LastIndex(body, "</teammate-message>"); end >= 0 {
+		body = body[:end]
+	}
+	return strings.TrimSpace(body), true
+}
+
+// forkBoilerplateEnd closes the instructions Claude Code puts before a fork's directive, in
+// the row that hands the fork its work
+const forkBoilerplateEnd = "</fork-boilerplate>"
+
+// roundAsk is the words that open a round as they were meant: the lead's instruction to a
+// team's member without the element it arrives in, a fork's directive without the
+// boilerplate before it, anything else as it is
+func roundAsk(text string) string {
+	if body, ok := teammateLeadAsk(text); ok {
+		return body
+	}
+	if strings.HasPrefix(text, "<fork-boilerplate>") {
+		if _, directive, ok := strings.Cut(text, forkBoilerplateEnd); ok {
+			return strings.TrimSpace(directive)
+		}
+	}
+	return text
 }
 
 // contentBlocks folds a message's content field into blocks, whatever the transport did
@@ -277,6 +324,9 @@ func splitRounds(messages []map[string]any) []round {
 	var cur *round
 	humanLast := false
 	for _, m := range messages {
+		if source.Truthy(m["inherited"]) {
+			continue // a fork's copy of its parent's rows: the parent's rounds, not this one's
+		}
 		role := source.ToStr(m["role"])
 		starting := isRoundStart(m)
 		if starting {
@@ -287,7 +337,7 @@ func splitRounds(messages []map[string]any) []round {
 			cur = &round{
 				index:   len(rounds) + 1,
 				startAt: source.ToStr(m["timestamp"]),
-				asked:   strings.TrimSpace(source.StripHarnessBlocks(messageText(m["content"]))),
+				asked:   roundAsk(strings.TrimSpace(source.StripHarnessBlocks(messageText(m["content"])))),
 				kinds:   map[string]int{},
 				pending: map[string][]string{},
 				calls:   map[string]roundCall{},

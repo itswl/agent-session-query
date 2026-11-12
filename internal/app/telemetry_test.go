@@ -502,8 +502,9 @@ func TestOTelGenerationFidelity(t *testing.T) {
 		o, _ := source.ToFloat(attrValue(gen, "gen_ai.usage.output_tokens"))
 		input, output = input+int64(n), output+int64(o)
 	}
-	if input != 107 || output != 43 {
-		t.Fatalf("round 1 tokens = %d in / %d out, want 107 / 43", input, output)
+	// Input in the GenAI shape: msg_a's 5,000 cached tokens are part of what it read
+	if input != 5107 || output != 43 {
+		t.Fatalf("round 1 tokens = %d in / %d out, want 5107 / 43", input, output)
 	}
 	// Keyed by the response's first row, as that row's generation was before rows folded
 	if want := otlp.NewSpanID(rec.Source, rec.SessionID, "1", "msg", "a1"); gens[0].SpanID != want {
@@ -928,5 +929,106 @@ func TestOTelSubagentNesting(t *testing.T) {
 	loner := find(func(s sent) bool { return s.name == "round 1" && s.attrs["langfuse.session.id"] == "ddd" }, "ddd's own round")
 	if loner.trace == mainRoot.trace || loner.parent != "" || loner.attrs["subagent.session.id"] != "" {
 		t.Errorf("ddd names no call and should keep its own trace: %+v", loner)
+	}
+}
+
+// TestOTelUsageShape: counters go out in the GenAI shape — cached input inside input_tokens,
+// reasoning inside output_tokens — whatever shape the source recorded them in, so a backend
+// that takes the parts back out (Langfuse does) keeps the uncached input and the visible
+// output instead of flooring them at zero.
+func TestOTelUsageShape(t *testing.T) {
+	usage := map[string]any{"inputTokens": 3, "outputTokens": 40, "cacheReadTokens": 900, "cacheWriteTokens": 100, "reasoningTokens": 25}
+	for _, c := range []struct {
+		src           string
+		input, output int64
+	}{
+		{"claude", 1003, 40},      // Anthropic: input without the cache
+		{"claude:box2", 1003, 40}, // a labeled instance has its mode's shape
+		{"pi", 1003, 40},          // pi-ai: input + output + cacheRead + cacheWrite = total
+		{"opencode", 1003, 65},    // the cache and the reasoning both apart
+		{"gemini", 3, 65},         // promptTokenCount holds the cache; thoughts are apart
+		{"codex", 3, 40},          // already the GenAI shape
+	} {
+		got := map[string]any{}
+		for _, attr := range usageAttributes(c.src, usage) {
+			got[attr.Key] = attr.Value
+		}
+		if got["gen_ai.usage.input_tokens"] != c.input || got["gen_ai.usage.output_tokens"] != c.output ||
+			got["gen_ai.usage.cache_read.input_tokens"] != int64(900) || got["gen_ai.usage.cache_creation.input_tokens"] != int64(100) ||
+			got["gen_ai.usage.reasoning.output_tokens"] != int64(25) {
+			t.Errorf("%s: %v, want input %d and output %d beside the unchanged parts", c.src, got, c.input, c.output)
+		}
+	}
+}
+
+// TestOTelTeamMemberAndFork: a team member's transcript, opened by the lead's wrapped
+// instruction, is exported — it had no round before — with its round named by the
+// instruction; a fork is exported from its directive on, without the parent's rows it opens
+// with, so the parent's response is not a generation twice.
+func TestOTelTeamMemberAndFork(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "proj")
+	base := time.Now().Add(-2 * time.Hour).UTC()
+	row := func(agent, uuid, kind string, minute int, msg string) string {
+		at := base.Add(time.Duration(minute) * time.Minute).Format("2006-01-02T15:04:05Z")
+		side := ""
+		if agent != "" {
+			side = `,"isSidechain":true,"agentId":"` + agent + `"`
+		}
+		return `{"type":"` + kind + `","uuid":"` + uuid + `","timestamp":"` + at + `","sessionId":"s1","cwd":"/w/proj"` + side + `,"message":` + msg + `}`
+	}
+	usage := `"usage":{"input_tokens":3,"output_tokens":40,"cache_read_input_tokens":900}`
+	write(t, filepath.Join(dir, "s1.jsonl"),
+		row("", "m1", "user", 0, `{"role":"user","content":"research it"}`),
+		row("", "m2", "assistant", 1, `{"id":"msg_p","role":"assistant","model":"m",`+usage+`,"content":[{"type":"tool_use","id":"toolu_F","name":"Agent","input":{}}]}`),
+		row("", "m3", "user", 2, `{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_F","content":"Fork started"}]}`),
+	)
+	agents := filepath.Join(dir, "s1", "subagents")
+	write(t, filepath.Join(agents, "agent-fff.jsonl"),
+		row("fff", "p1", "user", 0, `{"role":"user","content":"research it"}`),
+		row("fff", "p2", "assistant", 1, `{"id":"msg_p","role":"assistant","model":"m",`+usage+`,"content":[{"type":"tool_use","id":"toolu_F","name":"Agent","input":{}}]}`),
+		row("fff", "f1", "user", 2, `{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_F","content":"Fork started"},{"type":"text","text":"<fork-boilerplate>\nExecute ONE directive.\n</fork-boilerplate>\n\nYour directive: read the client log docs"}]}`),
+		row("fff", "f2", "assistant", 5, `{"id":"msg_f","role":"assistant","model":"m","usage":{"input_tokens":2,"output_tokens":7},"content":[{"type":"text","text":"read them"}]}`),
+	)
+	write(t, filepath.Join(agents, "agent-fff.meta.json"), `{"agentType":"fork","isFork":true,"description":"Read docs","toolUseId":"toolu_F"}`)
+	write(t, filepath.Join(agents, "agent-ttt.jsonl"),
+		row("ttt", "t1", "user", 10, `{"role":"user","content":"<teammate-message teammate_id=\"team-lead\" summary=\"Survey\">\nList the repos.\n</teammate-message>"}`),
+		row("ttt", "t2", "assistant", 12, `{"id":"msg_t","role":"assistant","model":"m","usage":{"input_tokens":5,"output_tokens":9},"content":[{"type":"text","text":"three repos"}]}`),
+	)
+	write(t, filepath.Join(agents, "agent-ttt.meta.json"), `{"agentType":"repo-explorer","teamName":"t"}`)
+
+	src := source.NewClaudeSource(root)
+	api := newSessionQueryAPI([]source.SessionSource{src}, 0)
+	e := newOTelExporter(api, otelConfig{content: true})
+	built := map[string][]otlp.Span{}
+	for _, rec := range api.recordsOf(src) {
+		built[rec.SessionID] = buildSessionSpans(rec, e.allMessages(src, rec), true)
+	}
+
+	var roots, gens []otlp.Span
+	for _, span := range built["fff"] {
+		switch attrValue(span, "langfuse.observation.type") {
+		case "span":
+			roots = append(roots, span)
+		case "generation":
+			gens = append(gens, span)
+		}
+	}
+	if len(roots) != 1 || len(gens) != 1 || attrValue(roots[0], "langfuse.observation.input") != "Your directive: read the client log docs" {
+		t.Fatalf("fork = %d rounds, %d generations, input %v; want one round from the directive and only its own response",
+			len(roots), len(gens), attrValue(roots[0], "langfuse.observation.input"))
+	}
+	if n, _ := source.ToFloat(attrValue(gens[0], "gen_ai.usage.output_tokens")); n != 7 {
+		t.Fatalf("fork generation output = %v, want its own 7", n)
+	}
+
+	var member *otlp.Span
+	for i, span := range built["ttt"] {
+		if span.ParentID == "" {
+			member = &built["ttt"][i]
+		}
+	}
+	if member == nil || attrValue(*member, "langfuse.trace.name") != "List the repos." || attrValue(*member, "langfuse.observation.input") != "List the repos." {
+		t.Fatalf("team member's round = %+v, want one named by the lead's instruction", member)
 	}
 }

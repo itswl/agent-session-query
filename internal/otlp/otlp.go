@@ -61,11 +61,17 @@ func NewSpanID(parts ...string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
+// ServiceVersion is the release the spans and metrics come from; the app sets it from the
+// version it was built as. A backend shows it on what it stores — Langfuse as each
+// observation's version — which is how a reader tells which export, and so which span
+// format, wrote a trace.
+var ServiceVersion = "dev"
+
 // Resource attributes for every span this service sends
 func Resource() []Attribute {
 	return []Attribute{
 		{Key: "service.name", Value: "agent-session-query"},
-		{Key: "service.version", Value: "dev"},
+		{Key: "service.version", Value: ServiceVersion},
 	}
 }
 

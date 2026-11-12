@@ -67,10 +67,12 @@ type otelExporter struct {
 // the rows of one response into one generation, where format 1 (a cursor with no format)
 // drew a generation per row, each repeating Claude Code's usage; format 3 hangs a subagent
 // beneath the call that started it, in its parent's trace, where format 2 gave it a trace
-// of its own. A backend that updates by id keeps what it got before beside the new spans,
-// so a cursor of an earlier format is reported once, with the way to clean up
-// (docs/telemetry.md, "Upgrading").
-const otelSpanFormat = 3
+// of its own; format 4 leaves out the rows a fork copied from its parent, so the fork's
+// own rounds are numbered from 1, where format 3 sent the copy as its first rounds. A
+// backend that updates by id keeps what it got before beside the new spans, so a cursor of
+// an earlier format is reported once, with the way to clean up (docs/telemetry.md,
+// "Upgrading").
+const otelSpanFormat = 4
 
 // otelState remembers, per session, the version that was exported. A single UpdatedAt is
 // enough: a session's content only moves when its newest row does, and a session that grew
@@ -91,6 +93,7 @@ type otelSession struct {
 }
 
 func newOTelExporter(api *SessionQueryAPI, cfg otelConfig) *otelExporter {
+	otlp.ServiceVersion = buildVersion // the release, not "dev", on everything sent
 	e := &otelExporter{
 		api:    api,
 		cfg:    cfg,
@@ -551,6 +554,9 @@ func buildSessionSpans(rec source.Record, messages []map[string]any, content boo
 	}
 
 	for _, m := range messages {
+		if source.Truthy(m["inherited"]) {
+			continue // a fork's copy of its parent's rows, exported with the parent
+		}
 		role := source.ToStr(m["role"])
 		at, ok := source.ParseTimestamp(source.ToStr(m["timestamp"]))
 		if !ok {
@@ -564,7 +570,7 @@ func buildSessionSpans(rec source.Record, messages []map[string]any, content boo
 		if starting {
 			flush()
 			roundNo++
-			ask, lastAssistant = strings.TrimSpace(messageText(m["content"])), ""
+			ask, lastAssistant = roundAsk(strings.TrimSpace(messageText(m["content"]))), ""
 			traceName = rec.ShortKey
 			if content {
 				traceName = roundTitle(ask, rec.ShortKey) // the ask names the round; off, it stays home
@@ -651,7 +657,7 @@ func buildSessionSpans(rec source.Record, messages []map[string]any, content boo
 				lastModel = model
 			}
 			if !cur.hasUsage {
-				if usage := usageAttributes(m["usage"]); len(usage) > 0 {
+				if usage := usageAttributes(rec.Source, m["usage"]); len(usage) > 0 {
 					cur.span.Attributes = append(cur.span.Attributes, usage...)
 					cur.hasUsage = true
 				}
@@ -988,23 +994,70 @@ func commonAttributes(rec source.Record, round int, kind, timing, traceName stri
 	return attrs
 }
 
-// usageAttributes maps a message's normalized counters onto the GenAI names
-func usageAttributes(raw any) []otlp.Attribute {
+// usageShape is how a source's counters relate. The GenAI conventions count the cached input,
+// read or written, inside gen_ai.usage.input_tokens and the reasoning inside
+// gen_ai.usage.output_tokens — OpenAI's shape, and Codex's — and a backend reads them that
+// way: Langfuse takes the cache back out of the input and the reasoning out of the output.
+// A source that records them apart, sent as it records them, had them taken out a second
+// time and floored at zero: on this machine's history Langfuse kept 2.67M of OpenCode's 5.70M
+// input tokens and 0.47M of its 1.14M output, 0.21M of Pi's 0.86M input, and an input of 0 on
+// every Claude Code generation. Such a source's parts are added back before they are sent.
+type usageShape struct {
+	cacheApart     bool // input counts only what was not cached
+	reasoningApart bool // output counts only what was not reasoning
+}
+
+// usageShapes lists the sources that keep a part apart; the rest — Codex, Antigravity, and
+// Hermes, which records no usage per message — are sent as recorded. Apart means: Anthropic's
+// usage (Claude Code); the pi-ai shape Pi and OpenClaw record, input + output + cacheRead +
+// cacheWrite = totalTokens; Grok's turn counters and dsh's message usage, the same sum;
+// OpenCode, whose reasoning is reported beside an output it is not part of (and outweighs
+// it, 1.70M to 1.14M here); Gemini, whose candidatesTokenCount leaves the thoughts out.
+var usageShapes = map[string]usageShape{
+	"claude":   {cacheApart: true},
+	"pi":       {cacheApart: true},
+	"openclaw": {cacheApart: true},
+	"grok":     {cacheApart: true},
+	"dsh":      {cacheApart: true},
+	"opencode": {cacheApart: true, reasoningApart: true},
+	"gemini":   {reasoningApart: true},
+}
+
+// usageAttributes maps a message's normalized counters onto the GenAI names, in the GenAI
+// shape (see usageShape). src is the record's source; a labeled instance (claude:box2) has
+// the shape of its mode.
+func usageAttributes(src string, raw any) []otlp.Attribute {
 	usage, ok := raw.(map[string]any)
 	if !ok || len(usage) == 0 {
 		return nil
 	}
-	pairs := []struct{ key, attr string }{
-		{"inputTokens", "gen_ai.usage.input_tokens"},
-		{"outputTokens", "gen_ai.usage.output_tokens"},
-		{"cacheReadTokens", "gen_ai.usage.cache_read.input_tokens"},
-		{"cacheWriteTokens", "gen_ai.usage.cache_creation.input_tokens"},
-		{"reasoningTokens", "gen_ai.usage.reasoning.output_tokens"},
+	count := func(key string) int64 {
+		n, _ := source.ToFloat(usage[key])
+		return int64(max(n, 0))
+	}
+	input, output := count("inputTokens"), count("outputTokens")
+	cacheRead, cacheWrite, reasoning := count("cacheReadTokens"), count("cacheWriteTokens"), count("reasoningTokens")
+	mode, _, _ := strings.Cut(src, ":")
+	shape := usageShapes[mode]
+	if shape.cacheApart {
+		input += cacheRead + cacheWrite
+	}
+	if shape.reasoningApart {
+		output += reasoning
 	}
 	out := []otlp.Attribute{}
-	for _, pair := range pairs {
-		if n, ok := source.ToFloat(usage[pair.key]); ok && n > 0 {
-			out = append(out, otlp.Attribute{Key: pair.attr, Value: int64(n)})
+	for _, pair := range []struct {
+		attr string
+		n    int64
+	}{
+		{"gen_ai.usage.input_tokens", input},
+		{"gen_ai.usage.output_tokens", output},
+		{"gen_ai.usage.cache_read.input_tokens", cacheRead},
+		{"gen_ai.usage.cache_creation.input_tokens", cacheWrite},
+		{"gen_ai.usage.reasoning.output_tokens", reasoning},
+	} {
+		if pair.n > 0 {
+			out = append(out, otlp.Attribute{Key: pair.attr, Value: pair.n})
 		}
 	}
 	// A cost the CLI worked out (Pi's usage.cost.total, OpenCode's cost) goes as is; a zero

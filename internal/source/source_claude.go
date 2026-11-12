@@ -967,10 +967,28 @@ func (s *ClaudeCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 	// response's final figures. (An earliest-first read that stops inside a response keeps
 	// the count as far as it read.)
 	counted := map[string]map[string]any{} // response id -> the usage on its first row
+	// A fork opens with a copy of its parent's conversation — the parent's rows as they were,
+	// up to the call that started the fork — and then the row that hands it its directive.
+	// The copy is the parent's work, read in the parent's transcript: here its rows are
+	// marked inherited and carry no usage, so a fork's rounds and counters are its own (the
+	// 11 forks here repeated 32 of their parents' responses, 1.4M tokens with the cache).
+	forkStart := ""
+	if subagent && r.AgentType == "fork" {
+		forkStart = claudeForkStart(path, r.ParentToolUseID)
+	}
+	add := func(m map[string]any) bool {
+		if forkStart != "" {
+			m["inherited"] = true
+		}
+		return sink.add(m)
+	}
 	eachJSONL(path, func(obj map[string]any) bool {
 		// A subagent's rows are not part of the main thread — except in its own transcript
 		if Truthy(obj["isSidechain"]) && !subagent {
 			return true
+		}
+		if forkStart != "" && ToStr(obj["uuid"]) == forkStart {
+			forkStart = "" // the fork's own rows from here
 		}
 		switch obj["type"] {
 		case "system":
@@ -978,7 +996,7 @@ func (s *ClaudeCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 			if event == nil {
 				return true
 			}
-			return sink.add(map[string]any{
+			return add(map[string]any{
 				"id":        GetOr(obj, "uuid", ""),
 				"role":      "system",
 				"timestamp": GetOr(obj, "timestamp", ""),
@@ -994,7 +1012,7 @@ func (s *ClaudeCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 			if !claudeQueuedPrompt(obj) || text == "" {
 				return true
 			}
-			return sink.add(map[string]any{
+			return add(map[string]any{
 				"id":        GetOr(obj, "uuid", ""),
 				"role":      "user",
 				"timestamp": GetOr(obj, "timestamp", ""),
@@ -1024,7 +1042,7 @@ func (s *ClaudeCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 				out["response"] = response
 			}
 		}
-		if usage := UsageOf(msg["usage"]); usage != nil {
+		if usage := UsageOf(msg["usage"]); usage != nil && forkStart == "" {
 			if first, ok := counted[response]; ok && response != "" {
 				raiseUsage(first, usage) // the sink holds the first row's map: it sees this
 			} else {
@@ -1034,9 +1052,29 @@ func (s *ClaudeCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 				}
 			}
 		}
-		return sink.add(out)
+		return add(out)
 	})
 	return sink.result()
+}
+
+// claudeForkStart is the uuid of the row that hands a fork its directive: the result of the
+// call that started it (callID, from the meta file) beside Claude Code's <fork-boilerplate>.
+// Everything before it is the parent's. Empty when the transcript has no such row, and then
+// nothing is taken for inherited.
+func claudeForkStart(path, callID string) string {
+	start := ""
+	eachJSONLLineFrom(path, 0, func(line []byte) bool {
+		if !bytes.Contains(line, []byte("<fork-boilerplate>")) || (callID != "" && !bytes.Contains(line, []byte(callID))) {
+			return true
+		}
+		var obj map[string]any
+		if json.Unmarshal(line, &obj) != nil || obj["type"] != "user" {
+			return true
+		}
+		start = ToStr(obj["uuid"])
+		return start == ""
+	})
+	return start
 }
 
 // raiseUsage lifts each counter in first to later's where later's is larger: the rows of

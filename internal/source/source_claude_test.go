@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -555,5 +556,67 @@ func TestClaudeCostStateRow(t *testing.T) {
 	}
 	if usage["inputTokens"] != int64(100) {
 		t.Fatalf("tokens = %v", usage)
+	}
+}
+
+// TestClaudeForkInheritedRows: a fork's transcript opens with its parent's rows, copied up to
+// the call that started it; they come back marked inherited and without usage, and the row
+// that hands the fork its directive (the call's result beside <fork-boilerplate>) is the
+// fork's first. A fork with no such row inherits nothing.
+func TestClaudeForkInheritedRows(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "proj")
+	row := func(uuid, kind, at, msg string) string {
+		return `{"type":"` + kind + `","uuid":"` + uuid + `","timestamp":"2026-10-20T11:` + at + `Z","sessionId":"s1","cwd":"/w","isSidechain":true,"agentId":"fff","message":` + msg + `}`
+	}
+	usage := func(out int) string {
+		return `"usage":{"input_tokens":3,"output_tokens":` + strconv.Itoa(out) + `,"cache_read_input_tokens":900}`
+	}
+	write(t, filepath.Join(dir, "s1.jsonl"),
+		`{"type":"user","uuid":"m0","timestamp":"2026-10-20T11:00:00Z","sessionId":"s1","cwd":"/w","message":{"role":"user","content":"research it"}}`,
+	)
+	agents := filepath.Join(dir, "s1", "subagents")
+	write(t, filepath.Join(agents, "agent-fff.jsonl"),
+		row("p1", "user", "00:00", `{"role":"user","content":"research it"}`),
+		row("p2", "assistant", "00:05", `{"id":"msg_p","role":"assistant","model":"m",`+usage(40)+`,"content":[{"type":"tool_use","id":"toolu_F","name":"Agent","input":{}}]}`),
+		row("f1", "user", "00:06", `{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_F","content":"Fork started"},{"type":"text","text":"<fork-boilerplate>\nExecute ONE directive.\n</fork-boilerplate>\n\nYour directive: read the client log docs"}]}`),
+		row("f2", "assistant", "00:09", `{"id":"msg_f","role":"assistant","model":"m",`+usage(7)+`,"content":[{"type":"text","text":"read them"}]}`),
+	)
+	write(t, filepath.Join(agents, "agent-fff.meta.json"), `{"agentType":"fork","isFork":true,"description":"Read docs","toolUseId":"toolu_F"}`)
+
+	src := NewClaudeSource(root)
+	var fork Record
+	for _, rec := range src.List() {
+		if rec.SessionID == "fff" {
+			fork = rec
+		}
+	}
+	if fork.AgentType != "fork" {
+		t.Fatalf("fork record = %+v", fork)
+	}
+	msgs := src.Messages(fork, MessageQuery{Limit: 50})
+	inherited := map[string]bool{}
+	for _, m := range msgs {
+		inherited[ToStr(m["id"])] = Truthy(m["inherited"])
+		if Truthy(m["inherited"]) && m["usage"] != nil {
+			t.Errorf("inherited row %v carries usage %v", m["id"], m["usage"])
+		}
+	}
+	if !inherited["p1"] || !inherited["p2"] || inherited["f1"] || inherited["f2"] {
+		t.Fatalf("inherited = %v, want the parent's p1/p2 only", inherited)
+	}
+	if u, _ := msgs[len(msgs)-1]["usage"].(map[string]any); u == nil || ToStr(u["outputTokens"]) != "7" {
+		t.Fatalf("the fork's own response usage = %v", msgs[len(msgs)-1]["usage"])
+	}
+
+	// No directive row (an older CLI, a transcript cut short): nothing is taken for inherited
+	write(t, filepath.Join(agents, "agent-fff.jsonl"),
+		row("p1", "user", "00:00", `{"role":"user","content":"research it"}`),
+		row("p2", "assistant", "00:05", `{"id":"msg_p","role":"assistant","model":"m",`+usage(40)+`,"content":[{"type":"text","text":"ok"}]}`),
+	)
+	for _, m := range src.Messages(fork, MessageQuery{Limit: 50}) {
+		if Truthy(m["inherited"]) {
+			t.Fatalf("row %v marked inherited in a fork without its directive row", m["id"])
+		}
 	}
 }

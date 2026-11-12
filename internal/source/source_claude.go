@@ -852,11 +852,13 @@ func claudeSystemEvent(obj map[string]any) map[string]any {
 // list is the number of rows the reader will get.
 type claudeProbe struct {
 	Type         string            `json:"type"`
+	UUID         string            `json:"uuid"`
 	Subtype      string            `json:"subtype"`
 	IsSidechain  bool              `json:"isSidechain"`
 	TotalCostUSD float64           `json:"totalCostUSD"`
 	HookErrors   []json.RawMessage `json:"hookErrors"`
 	Message      struct {
+		ID      string          `json:"id"`
 		Usage   json.RawMessage `json:"usage"`
 		CostUSD float64         `json:"costUSD"`
 	} `json:"message"`
@@ -1115,14 +1117,31 @@ func (s *ClaudeCodeSource) readFinal(r Record) map[string]any {
 	// card is read as. The scan already walks every line, so this costs one small decode
 	// per assistant message.
 	var totals usageTotals
+	// It is summed per response, not per row, the way Messages counts it: a response
+	// written as several rows carries its usage on each, so each response is taken once,
+	// every counter at its largest across the rows (raiseUsage — a running output count
+	// ends at the response's figure). Summed per row, this machine's 354 Claude transcripts
+	// came to 2.9x their output and 2.5x their input and cache, one to 21x its output. A
+	// row with no response id counts on its own. A fork's inherited rows are its parent's
+	// and add nothing.
+	responses := map[string]map[string]any{}
+	var responseOrder []string
 	// the cost-state row Claude Code writes at the end carries the session's own cost
 	// total, which no assistant row knows (the per-message costUSD of some providers
 	// aside); it is the authoritative number when it is there
 	sessionCost := 0.0
 	subagent := r.IsSubagent()
+	forkStart := ""
+	if subagent && r.AgentType == "fork" {
+		forkStart = claudeForkStart(path, r.ParentToolUseID)
+	}
 	EachJSONLLine(path, func(line []byte) bool {
 		var probe claudeProbe
-		if json.Unmarshal(line, &probe) != nil || !probe.counts(subagent) {
+		err := json.Unmarshal(line, &probe)
+		if err == nil && forkStart != "" && probe.UUID == forkStart {
+			forkStart = "" // the fork's own rows from here
+		}
+		if err != nil || !probe.counts(subagent) {
 			if probe.Type == "cost-state" && probe.TotalCostUSD > 0 {
 				sessionCost = probe.TotalCostUSD
 			}
@@ -1131,7 +1150,7 @@ func (s *ClaudeCodeSource) readFinal(r Record) map[string]any {
 		count++
 		if probe.Type == "assistant" {
 			rawLast = append(rawLast[:0], line...)
-			if len(probe.Message.Usage) > 0 {
+			if len(probe.Message.Usage) > 0 && forkStart == "" {
 				var u map[string]any
 				if json.Unmarshal(probe.Message.Usage, &u) == nil {
 					// costUSD rides on the message, not in usage; it is part of the
@@ -1139,12 +1158,23 @@ func (s *ClaudeCodeSource) readFinal(r Record) map[string]any {
 					if probe.Message.CostUSD != 0 {
 						u["costUSD"] = probe.Message.CostUSD
 					}
-					totals.add(u)
+					switch first, seen := responses[probe.Message.ID]; {
+					case probe.Message.ID == "":
+						totals.add(u)
+					case seen:
+						raiseUsage(first, u)
+					default:
+						responses[probe.Message.ID] = u
+						responseOrder = append(responseOrder, probe.Message.ID)
+					}
 				}
 			}
 		}
 		return true
 	})
+	for _, id := range responseOrder {
+		totals.add(responses[id])
+	}
 	var lastAssistant map[string]any
 	if len(rawLast) > 0 {
 		_ = json.Unmarshal(rawLast, &lastAssistant)

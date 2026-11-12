@@ -580,7 +580,8 @@ func TestClaudeForkInheritedRows(t *testing.T) {
 		row("p1", "user", "00:00", `{"role":"user","content":"research it"}`),
 		row("p2", "assistant", "00:05", `{"id":"msg_p","role":"assistant","model":"m",`+usage(40)+`,"content":[{"type":"tool_use","id":"toolu_F","name":"Agent","input":{}}]}`),
 		row("f1", "user", "00:06", `{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_F","content":"Fork started"},{"type":"text","text":"<fork-boilerplate>\nExecute ONE directive.\n</fork-boilerplate>\n\nYour directive: read the client log docs"}]}`),
-		row("f2", "assistant", "00:09", `{"id":"msg_f","role":"assistant","model":"m",`+usage(7)+`,"content":[{"type":"text","text":"read them"}]}`),
+		row("f2", "assistant", "00:09", `{"id":"msg_f","role":"assistant","model":"m",`+usage(2)+`,"content":[{"type":"thinking","thinking":"which docs"}]}`),
+		row("f3", "assistant", "00:10", `{"id":"msg_f","role":"assistant","model":"m",`+usage(7)+`,"content":[{"type":"text","text":"read them"}]}`),
 	)
 	write(t, filepath.Join(agents, "agent-fff.meta.json"), `{"agentType":"fork","isFork":true,"description":"Read docs","toolUseId":"toolu_F"}`)
 
@@ -602,11 +603,15 @@ func TestClaudeForkInheritedRows(t *testing.T) {
 			t.Errorf("inherited row %v carries usage %v", m["id"], m["usage"])
 		}
 	}
-	if !inherited["p1"] || !inherited["p2"] || inherited["f1"] || inherited["f2"] {
+	if !inherited["p1"] || !inherited["p2"] || inherited["f1"] || inherited["f2"] || inherited["f3"] {
 		t.Fatalf("inherited = %v, want the parent's p1/p2 only", inherited)
 	}
-	if u, _ := msgs[len(msgs)-1]["usage"].(map[string]any); u == nil || ToStr(u["outputTokens"]) != "7" {
-		t.Fatalf("the fork's own response usage = %v", msgs[len(msgs)-1]["usage"])
+	if got := sumMessageUsage(msgs); got["outputTokens"] != 7 || got["cacheReadTokens"] != 900 {
+		t.Fatalf("the fork's own usage over its messages = %v, want its one response: 7 out, 900 cached", got)
+	}
+	// The final's totals agree: the inherited response adds nothing, the split one counts once
+	if u, _ := src.Final(fork)["usage"].(map[string]any); u == nil || ToStr(u["outputTokens"]) != "7" || ToStr(u["cacheReadTokens"]) != "900" {
+		t.Fatalf("the fork's final usage = %v, want 7 out and 900 cached, as its messages sum to", src.Final(fork)["usage"])
 	}
 
 	// No directive row (an older CLI, a transcript cut short): nothing is taken for inherited
@@ -617,6 +622,56 @@ func TestClaudeForkInheritedRows(t *testing.T) {
 	for _, m := range src.Messages(fork, MessageQuery{Limit: 50}) {
 		if Truthy(m["inherited"]) {
 			t.Fatalf("row %v marked inherited in a fork without its directive row", m["id"])
+		}
+	}
+}
+
+// sumMessageUsage adds up the usage the messages carry, by shared counter name
+func sumMessageUsage(msgs []map[string]any) map[string]float64 {
+	sums := map[string]float64{}
+	for _, m := range msgs {
+		u, _ := m["usage"].(map[string]any)
+		for name, value := range u {
+			if n, ok := ToFloat(value); ok {
+				sums[name] += n
+			}
+		}
+	}
+	return sums
+}
+
+// TestClaudeFinalUsagePerResponse: the final's session totals count a response once, with
+// its final figures, the way its messages do — not once per row it was written as. A
+// response's rows each carry its usage, and CLI 2.1.284–2.1.304 wrote a running output
+// count across them; a row with no response id counts on its own.
+func TestClaudeFinalUsagePerResponse(t *testing.T) {
+	root := t.TempDir()
+	row := func(uuid, kind, at, msg string) string {
+		return `{"type":"` + kind + `","uuid":"` + uuid + `","timestamp":"2026-10-20T11:` + at + `Z","sessionId":"s9","cwd":"/w","message":` + msg + `}`
+	}
+	usage := func(out, cache int) string {
+		return `"usage":{"input_tokens":4,"output_tokens":` + strconv.Itoa(out) + `,"cache_read_input_tokens":` + strconv.Itoa(cache) + `}`
+	}
+	write(t, filepath.Join(root, "proj", "s9.jsonl"),
+		row("u1", "user", "00:00", `{"role":"user","content":"build it"}`),
+		row("a1", "assistant", "00:01", `{"id":"msg_a","role":"assistant","model":"m",`+usage(5, 1000)+`,"content":[{"type":"thinking","thinking":"plan"}]}`),
+		row("a2", "assistant", "00:02", `{"id":"msg_a","role":"assistant","model":"m",`+usage(30, 1000)+`,"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}`),
+		row("r1", "user", "00:03", `{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}`),
+		row("a3", "assistant", "00:04", `{"id":"msg_a","role":"assistant","model":"m",`+usage(50, 1000)+`,"content":[{"type":"text","text":"built"}]}`),
+		row("a4", "assistant", "00:05", `{"id":"msg_b","role":"assistant","model":"m",`+usage(8, 1200)+`,"content":[{"type":"text","text":"and tested"}]}`),
+		row("a5", "assistant", "00:06", `{"role":"assistant","model":"m",`+usage(2, 0)+`,"content":[{"type":"text","text":"no id"}]}`),
+		row("a6", "assistant", "00:07", `{"role":"assistant","model":"m",`+usage(3, 0)+`,"content":[{"type":"text","text":"no id either"}]}`),
+	)
+	src := NewClaudeSource(root)
+	rec := src.List()[0]
+	want := sumMessageUsage(src.Messages(rec, MessageQuery{Limit: 50}))
+	if want["outputTokens"] != 63 || want["cacheReadTokens"] != 2200 || want["inputTokens"] != 16 {
+		t.Fatalf("messages sum to %v, want 50+8+2+3 out, 1000+1200 cached, 4x4 in", want)
+	}
+	u, _ := src.Final(rec)["usage"].(map[string]any)
+	for name, n := range want {
+		if got, _ := ToFloat(u[name]); got != n {
+			t.Errorf("final %s = %v, want %v as the messages sum to (final usage %v)", name, u[name], n, u)
 		}
 	}
 }

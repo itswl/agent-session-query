@@ -201,8 +201,10 @@ pattern containing a colon needs URL encoding (`%3A`).
   arrive. The `order` field echoes which end the batch came from; either direction is
   returned chronologically
 - final: `isFinal` / `stopReason` / `text` / `thinking` / `toolCalls` / `usage` /
-  `messageCount`. When the file does not exist you get `isFinal=false` plus an `error` field
-  (the HTTP status is still 200)
+  `messageCount`. `usage` is the session's total, and agrees with its messages: Claude Code's
+  counts each response once with its final figures, however many rows it was written as,
+  and leaves out a fork's `inherited` rows. When the file does not exist you get
+  `isFinal=false` plus an `error` field (the HTTP status is still 200)
 - Errors: 401 / 404 / 500 return `{"error": "..."}`; a 503 from the connection cap is plain
   text
 - `warnings`: `[{source, error}]`, present on `/sessions`, `/health` and MCP

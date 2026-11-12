@@ -930,11 +930,16 @@ func (s *ClaudeCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 	row := claudeRow{names: map[string]string{}, full: q.Full, root: s.root}
 	subagent := r.IsSubagent()
 	// Claude Code writes one row per content block of a response — text, thinking, each
-	// tool call — and every row repeats the whole response's usage (measured over 198
-	// local transcripts: 13,368 of 16,217 responses split into up to 18 rows, the usage
-	// identical on all of them). The counters go on the response's first row only, so a
-	// sum over messages counts each response once.
-	counted := map[string]bool{}
+	// tool call — and every row carries the response's usage (measured over 447 local
+	// transcripts: 19,288 of 23,430 responses split, up to 18 rows). The counters go on the
+	// response's first row only, so a sum over messages counts each response once. They are
+	// not always the same on every row: CLI 2.1.284–2.1.304 wrote a running output count,
+	// the first row (mostly the thinking block) holding part of it and the last the whole —
+	// 1,917 of those split responses, about a tenth of their output tokens. So a later row
+	// raises the first row's counters to its own, and the first row ends up with the
+	// response's final figures. (An earliest-first read that stops inside a response keeps
+	// the count as far as it read.)
+	counted := map[string]map[string]any{} // response id -> the usage on its first row
 	eachJSONL(path, func(obj map[string]any) bool {
 		// A subagent's rows are not part of the main thread — except in its own transcript
 		if Truthy(obj["isSidechain"]) && !subagent {
@@ -992,15 +997,33 @@ func (s *ClaudeCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 				out["response"] = response
 			}
 		}
-		if usage := UsageOf(msg["usage"]); usage != nil && (response == "" || !counted[response]) {
-			out["usage"] = usage
-			if response != "" {
-				counted[response] = true
+		if usage := UsageOf(msg["usage"]); usage != nil {
+			if first, ok := counted[response]; ok && response != "" {
+				raiseUsage(first, usage) // the sink holds the first row's map: it sees this
+			} else {
+				out["usage"] = usage
+				if response != "" {
+					counted[response] = usage
+				}
 			}
 		}
 		return sink.add(out)
 	})
 	return sink.result()
+}
+
+// raiseUsage lifts each counter in first to later's where later's is larger: the rows of
+// one response report running totals, never less than a row before them
+func raiseUsage(first, later map[string]any) {
+	for key, value := range later {
+		n, ok := ToFloat(value)
+		if !ok {
+			continue
+		}
+		if have, ok := ToFloat(first[key]); !ok || n > have {
+			first[key] = value
+		}
+	}
 }
 
 // Final is the session's final result, read once per version of its transcript (see

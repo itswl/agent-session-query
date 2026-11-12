@@ -192,10 +192,12 @@ pattern containing a colon needs URL encoding (`%3A`).
   Antigravity, dsh, Grok's history log; Claude Code writes `<synthetic>` on a row it made
   itself). Claude Code splits one response into a row per content block: each row carries
   the API `response` id, and the response's `usage` rides on its first row only, so a sum
-  over messages counts it once. Pi's and OpenCode's assistant messages carry `durationMs`, the call's own
-  time from the message's creation, and OpenCode 2.x's `firstTokenMs`, when the response
-  began to arrive. The `order` field echoes which end the batch came
-  from; either direction is returned chronologically
+  over messages counts it once — with the response's final counters (CLI 2.1.284–2.1.304
+  wrote a running output count; the first row is raised to the last row's figure). Pi's
+  and OpenCode's assistant messages carry `durationMs`, the call's own time from the
+  message's creation, and OpenCode 2.x's `firstTokenMs`, when the response began to
+  arrive. The `order` field echoes which end the batch came from; either direction is
+  returned chronologically
 - final: `isFinal` / `stopReason` / `text` / `thinking` / `toolCalls` / `usage` /
   `messageCount`. When the file does not exist you get `isFinal=false` plus an `error` field
   (the HTTP status is still 200)

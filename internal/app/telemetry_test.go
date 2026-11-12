@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -392,15 +393,19 @@ func TestOTelMetrics(t *testing.T) {
 func writeSplitResponseSession(t *testing.T, root, id string, base time.Time) string {
 	t.Helper()
 	at := func(d time.Duration) string { return base.Add(d).UTC().Format("2006-01-02T15:04:05Z") }
-	usageA := `"usage":{"input_tokens":100,"output_tokens":40,"cache_read_input_tokens":5000}`
+	// msg_a's rows report a running output count, as CLI 2.1.284–2.1.304 wrote it: the
+	// response's figure is the last row's 40, not the first row's 1
+	usageA := func(out int) string {
+		return `"usage":{"input_tokens":100,"output_tokens":` + strconv.Itoa(out) + `,"cache_read_input_tokens":5000}`
+	}
 	usageB := `"usage":{"input_tokens":7,"output_tokens":3}`
 	path := filepath.Join(root, "proj", id+".jsonl")
 	write(t, path,
 		`{"type":"user","uuid":"u1","sessionId":"`+id+`","cwd":"/w/proj","timestamp":"`+at(0)+`","message":{"role":"user","content":"fix the build\nsecond line of the ask"}}`,
-		`{"type":"assistant","uuid":"a1","timestamp":"`+at(10*time.Second)+`","message":{"id":"msg_a","role":"assistant","model":"claude-test-1",`+usageA+`,"content":[{"type":"text","text":"Looking at it."}]}}`,
-		`{"type":"assistant","uuid":"a2","timestamp":"`+at(11*time.Second)+`","message":{"id":"msg_a","role":"assistant","model":"claude-test-1",`+usageA+`,"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"make"}}]}}`,
+		`{"type":"assistant","uuid":"a1","timestamp":"`+at(10*time.Second)+`","message":{"id":"msg_a","role":"assistant","model":"claude-test-1",`+usageA(1)+`,"content":[{"type":"text","text":"Looking at it."}]}}`,
+		`{"type":"assistant","uuid":"a2","timestamp":"`+at(11*time.Second)+`","message":{"id":"msg_a","role":"assistant","model":"claude-test-1",`+usageA(25)+`,"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"make"}}]}}`,
 		`{"type":"user","uuid":"r1","timestamp":"`+at(12*time.Second)+`","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"make: error"}]}}`,
-		`{"type":"assistant","uuid":"a3","timestamp":"`+at(13*time.Second)+`","message":{"id":"msg_a","role":"assistant","model":"claude-test-1",`+usageA+`,"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"make clean"}}]}}`,
+		`{"type":"assistant","uuid":"a3","timestamp":"`+at(13*time.Second)+`","message":{"id":"msg_a","role":"assistant","model":"claude-test-1",`+usageA(40)+`,"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"make clean"}}]}}`,
 		`{"type":"user","uuid":"r2","timestamp":"`+at(14*time.Second)+`","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"ok"}]}}`,
 		`{"type":"assistant","uuid":"a4","timestamp":"`+at(20*time.Second)+`","message":{"id":"msg_b","role":"assistant","model":"claude-test-1",`+usageB+`,"content":[{"type":"text","text":"Fixed."}]}}`,
 		`{"type":"user","uuid":"u2","timestamp":"`+at(time.Minute)+`","message":{"role":"user","content":"deploy it"}}`,
@@ -499,6 +504,13 @@ func TestOTelGenerationFidelity(t *testing.T) {
 	if input != 107 || output != 43 {
 		t.Fatalf("round 1 tokens = %d in / %d out, want 107 / 43", input, output)
 	}
+	// Keyed by the response's first row, as that row's generation was before rows folded
+	if want := otlp.NewSpanID(rec.Source, rec.SessionID, "1", "msg", "a1"); gens[0].SpanID != want {
+		t.Fatalf("msg_a generation id = %s, want the first row's %s", gens[0].SpanID, want)
+	}
+	if want := otlp.NewSpanID(rec.Source, rec.SessionID, "1", "msg", "a4"); gens[1].SpanID != want {
+		t.Fatalf("msg_b generation id = %s, want its row's %s", gens[1].SpanID, want)
+	}
 	if !strings.Contains(source.ToStr(attrValue(gens[0], "langfuse.observation.output")), "Looking at it.") {
 		t.Fatalf("msg_a output = %v", attrValue(gens[0], "langfuse.observation.output"))
 	}
@@ -553,9 +565,15 @@ func TestOTelStoppedPassKeepsCursor(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var mu sync.Mutex
-	requests := 0
+	requests, metricsPosts := 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
+		if r.URL.Path == "/v1/metrics" {
+			metricsPosts++ // after the walk, with the run already stopped
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		requests++
 		n := requests
 		mu.Unlock()
@@ -572,10 +590,16 @@ func TestOTelStoppedPassKeepsCursor(t *testing.T) {
 	defer server.Close()
 
 	statePath := filepath.Join(t.TempDir(), "otel.json")
-	cfg := otelConfig{endpoint: server.URL, since: time.Now().Add(-time.Hour), statePath: statePath}
+	cfg := otelConfig{endpoint: server.URL, since: time.Now().Add(-time.Hour), statePath: statePath, metrics: true}
 	sessions, _ := newOTelExporter(api, cfg).exportOnce(ctx, cfg.since, time.Time{})
 	if sessions != 1 {
 		t.Fatalf("stopped pass sent %d sessions, want 1", sessions)
+	}
+	mu.Lock()
+	posted := metricsPosts
+	mu.Unlock()
+	if posted != 1 {
+		t.Fatalf("a stopped pass posted metrics %d times, want once for the session it sent", posted)
 	}
 	raw, err := os.ReadFile(statePath)
 	if err != nil {
@@ -718,5 +742,41 @@ func TestOTelRecordedCost(t *testing.T) {
 	}
 	if len(costs) != 2 || costs[0] != `{"total":0.0123}` || costs[1] != nil {
 		t.Fatalf("cost_details = %v, want the recorded cost on the first and none on the zero", costs)
+	}
+}
+
+// TestOTelSpanFormatUpgrade: a cursor written before spans were one generation per response
+// (no format) is reported once and saved as the current format; a current or new cursor
+// is not reported.
+func TestOTelSpanFormatUpgrade(t *testing.T) {
+	root := t.TempDir()
+	writeActivitySession(t, root, "fmt-1", "proj")
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	statePath := filepath.Join(t.TempDir(), "otel.json")
+	cfg := otelConfig{endpoint: server.URL, since: time.Now().Add(-time.Hour), statePath: statePath}
+	if e := newOTelExporter(api, cfg); e.priorFormat != 0 {
+		t.Fatalf("a new cursor reported format %d", e.priorFormat)
+	}
+	old := `{"version":2,"sessions":{"claude|elsewhere":{"updatedAt":"2026-10-01T10:00:00Z","rounds":{"1":"ab"}}}}`
+	if err := os.WriteFile(statePath, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e := newOTelExporter(api, cfg)
+	if e.priorFormat != 1 {
+		t.Fatalf("a cursor with no format reported %d, want 1", e.priorFormat)
+	}
+	e.exportOnce(context.Background(), cfg.since, time.Time{})
+	var saved otelState
+	raw, _ := os.ReadFile(statePath)
+	if err := json.Unmarshal(raw, &saved); err != nil || saved.Format != otelSpanFormat || len(saved.Sessions) != 2 {
+		t.Fatalf("saved cursor = %s (%v), want format %d and both sessions", raw, err, otelSpanFormat)
+	}
+	if e := newOTelExporter(api, cfg); e.priorFormat != 0 {
+		t.Fatalf("a current cursor reported format %d", e.priorFormat)
 	}
 }

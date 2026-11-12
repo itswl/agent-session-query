@@ -37,9 +37,12 @@ but went on is a `WARNING` (`langfuse.observation.level`) with the count in its 
 message — a command that exits 1 and is retried is not a failed round.
 
 **One generation per model response.** Claude Code writes a response as several rows (one
-per content block, the tool results in between), every row repeating the response's
-usage; the rows share a `response` id and fold into one generation, whose usage is the
-response's, once (measured: 13,368 of 16,217 local responses were split, up to 18 rows).
+per content block, the tool results in between), every row carrying the response's usage;
+the rows share a `response` id and fold into one generation, keyed by the first row, whose
+usage is the response's, once (measured: 19,288 of 23,430 local responses were split, up to
+18 rows). The response's figures are its final ones: CLI 2.1.284–2.1.304 wrote a running
+output count, the first row holding part of it and the last the whole (1,917 of those
+responses, about a tenth of their output tokens).
 A generation's body is chat messages, the way a backend draws a conversation: its input is
 what reached the model since its previous call — the ask for the round's first call, then
 the tool results (`role: tool`, by `tool_call_id`) and any prompt typed mid-round — and its
@@ -65,7 +68,8 @@ does not name it) but no token counts; Codex and Grok report usage per turn
 
 Span and trace ids are derived from source, session, round and step with SHA-256, so a
 re-export of the same session sends the same ids: a backend that updates by id (Langfuse
-does) treats it as a correction, not a duplicate.
+does) treats it as a correction, not a duplicate. That holds within one span format; see
+[Upgrading](#upgrading) for what changes between them.
 
 ## Bodies are opt-in
 
@@ -131,7 +135,7 @@ agent-session-query --otel-export \
 take up to ten minutes). Langfuse takes traces only; this exporter sends nothing else. Its
 UI groups the rounds under the session id, renders generations and tools from the
 `langfuse.observation.type` names, and prices tokens with its own model table — the
-service sends no cost.
+service sends a cost only where the CLI worked one out (see above).
 
 ## Metrics (optional)
 
@@ -144,6 +148,9 @@ it sent; a collector adds them up):
 | `agent_session.round.duration` | `session.source` | their wall-clock time, ms |
 | `agent_session.tokens` | `session.source`, `gen_ai.request.model`, `gen_ai.token.type` | input / output / cache_read / cache_creation / reasoning tokens |
 | `agent_session.tool.failures` | `session.source`, `gen_ai.tool.name` | failed tool calls |
+
+A pass that is stopped part-way (Ctrl-C, a server shutting down) still posts the sums of
+what it sent, with a ten-second deadline of its own.
 
 Langfuse takes traces only, so this is off by default; point it at a collector that stores
 metrics (Grafana, Prometheus via the collector) when that reader exists. The numbers come
@@ -178,6 +185,7 @@ only versions and round fingerprints:
 ```json
 {
   "version": 2,
+  "format": 2,
   "lastRun": "2026-10-28T07:05:02Z",
   "sessions": {
     "opencode|ses_ebc6c0083ffeoPUbq6IcTfGBNV": {
@@ -193,7 +201,31 @@ only versions and round fingerprints:
 ```
 
 `--otel-state=off` disables it; `--otel-resend` ignores it for one run. Deleting it makes
-the next pass treat the window as new.
+the next pass treat the window as new. `format` is the span format the cursor's sessions
+were sent in (below); a cursor without it was written before format 2.
+
+## Upgrading
+
+The span format is the shape a transcript takes as spans. It changes when the same
+transcript would now be sent under other ids or with other contents, and a backend that
+updates by id cannot drop what it got under the old ids: those spans stay beside the new
+ones.
+
+**Format 2** (after v0.39.6) makes one generation per model response. Under format 1
+every row of a Claude Code response was a generation of its own, each with the response's
+whole usage, so Langfuse counted those tokens up to 18 times; the round attributes (trace
+name, tags, levels) changed as well, so every round exported before is re-sent the next
+time its session changes. Run on a format-1 cursor, the exporter says so once on stderr.
+To start clean:
+
+1. Delete the traces exported before from the backend, or point the exporter at a new
+   Langfuse project.
+2. Run one backfill over the window you exported before:
+   `agent-session-query --otel-export --otel-resend --otel-since all …` (the endpoint and
+   headers as usual).
+
+Without that, sessions that never change again keep their format-1 spans, and those that do
+change carry both.
 
 ## Limits
 

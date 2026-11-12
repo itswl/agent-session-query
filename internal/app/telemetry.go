@@ -57,13 +57,25 @@ type otelExporter struct {
 	client *http.Client
 	mu     sync.Mutex
 	state  *otelState
+	// priorFormat is the span format of a cursor written by an earlier export, when it is
+	// older than otelSpanFormat; 0 when the cursor is current or new
+	priorFormat int
 }
+
+// otelSpanFormat is the shape of the spans a transcript becomes. It moves when the same
+// transcript would now be sent as spans with other ids or other contents — format 2 folds
+// the rows of one response into one generation, where format 1 (a cursor with no format)
+// drew a generation per row, each repeating Claude Code's usage. A backend that updates by
+// id keeps what it got under the old ids beside the new spans, so a cursor of an earlier
+// format is reported once, with the way to clean up (docs/telemetry.md, "Upgrading").
+const otelSpanFormat = 2
 
 // otelState remembers, per session, the version that was exported. A single UpdatedAt is
 // enough: a session's content only moves when its newest row does, and a session that grew
 // is exported again under the same deterministic span ids.
 type otelState struct {
 	Version  int                    `json:"version"`
+	Format   int                    `json:"format,omitempty"` // otelSpanFormat when written; absent is 1
 	LastRun  string                 `json:"lastRun,omitempty"`
 	Sessions map[string]otelSession `json:"sessions,omitempty"`
 }
@@ -81,10 +93,18 @@ func newOTelExporter(api *SessionQueryAPI, cfg otelConfig) *otelExporter {
 		api:    api,
 		cfg:    cfg,
 		client: &http.Client{Timeout: 60 * time.Second}, // a batch is up to 8 MiB
-		state:  &otelState{Version: 2, Sessions: map[string]otelSession{}},
+		state:  &otelState{Version: 2, Format: otelSpanFormat, Sessions: map[string]otelSession{}},
 	}
 	if cfg.statePath != "" {
 		e.loadState()
+	}
+	if e.priorFormat > 0 {
+		fmt.Fprintf(os.Stderr, "[WARN] otel: the cursor %s was written by an earlier export (span format %d, now %d). "+
+			"A session it covers is sent again in full when it next changes, and a backend that updates by id keeps "+
+			"the spans it got before beside the new ones — Claude Code's split responses were a generation per row, "+
+			"each with the response's usage. Delete the traces exported before (or use a new project), then run "+
+			"--otel-export --otel-resend once; see \"Upgrading\" in docs/telemetry.md\n",
+			e.cfg.statePath, e.priorFormat, otelSpanFormat)
 	}
 	return e
 }
@@ -174,7 +194,15 @@ walk:
 	}
 	if e.cfg.metrics && !e.cfg.dryRun {
 		if metrics := acc.metrics(); len(metrics) > 0 {
-			if err := otlp.SendMetrics(ctx, e.client, e.cfg.endpoint, e.cfg.headers, metrics, started); err != nil {
+			// A stopped pass still reports what it sent — the stop was for the walk. It gets a
+			// short deadline of its own, so a shutdown waits seconds for it, not the client's minute.
+			mctx := ctx
+			if ctx.Err() != nil {
+				var cancel context.CancelFunc
+				mctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+				defer cancel()
+			}
+			if err := otlp.SendMetrics(mctx, e.client, e.cfg.endpoint, e.cfg.headers, metrics, started); err != nil {
 				fmt.Fprintf(os.Stderr, "[WARN] otel metrics: %v\n", err)
 			}
 		}
@@ -583,7 +611,9 @@ func buildSessionSpans(rec source.Record, messages []map[string]any, content boo
 				if ms, _ := source.ToFloat(m["firstTokenMs"]); ms > 0 && measured > 0 {
 					firstToken = at.Add(time.Duration(ms) * time.Millisecond)
 				}
-				key := source.FirstNonEmpty(response, messageKey(m, role))
+				// Keyed by the response's first row, as each row was before rows folded: a
+				// response written as one row keeps the id it was first exported under
+				key := messageKey(m, role)
 				cur = &genBuild{span: otlp.Span{
 					TraceID:  traceID,
 					SpanID:   otlp.NewSpanID(append(base, strconv.Itoa(roundNo), "msg", key)...),
@@ -904,6 +934,10 @@ func (e *otelExporter) loadState() {
 	// Version 1 remembered only a session's version. Dropping it re-reads one window once
 	// rather than guessing which rounds it had seen.
 	if json.Unmarshal(data, &state) == nil && state.Version == 2 && state.Sessions != nil {
+		if state.Format < otelSpanFormat && len(state.Sessions) > 0 {
+			e.priorFormat = max(state.Format, 1)
+		}
+		state.Format = otelSpanFormat // what this run sends, and what the saved cursor says
 		e.state = &state
 	}
 }

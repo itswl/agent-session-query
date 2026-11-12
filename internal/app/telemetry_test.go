@@ -1032,3 +1032,218 @@ func TestOTelTeamMemberAndFork(t *testing.T) {
 		t.Fatalf("team member's round = %+v, want one named by the lead's instruction", member)
 	}
 }
+
+// writeSessionAt writes a two-row Claude Code session whose last row is at the given time,
+// which is the session's UpdatedAt
+func writeSessionAt(t *testing.T, root, id string, at time.Time) {
+	t.Helper()
+	ts := func(d time.Duration) string { return at.Add(d).UTC().Format("2006-01-02T15:04:05Z") }
+	write(t, filepath.Join(root, "proj", id+".jsonl"),
+		`{"type":"user","sessionId":"`+id+`","cwd":"/w/proj","timestamp":"`+ts(-time.Minute)+`","message":{"role":"user","content":"check the cache"}}`,
+		`{"type":"assistant","timestamp":"`+ts(0)+`","message":{"id":"msg_`+id+`","role":"assistant","usage":{"input_tokens":10,"output_tokens":2},"content":[{"type":"text","text":"done"}]}}`,
+	)
+}
+
+// writeCursor writes a current-format cursor with the given mark for every claude instance
+// (zero: none) and no session of its own the window would read
+func writeCursor(t *testing.T, path string, checkedUntil time.Time) {
+	t.Helper()
+	state := otelState{Version: 2, Format: otelSpanFormat, Sessions: map[string]otelSession{}}
+	if !checkedUntil.IsZero() {
+		mark := checkedUntil.UTC().Format(time.RFC3339)
+		state.CheckedUntil = map[string]string{"claude": mark, "claude:box2": mark}
+	}
+	raw, _ := json.Marshal(state)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readCursor(t *testing.T, path string) otelState {
+	t.Helper()
+	var state otelState
+	raw, err := os.ReadFile(path)
+	if err != nil || json.Unmarshal(raw, &state) != nil {
+		t.Fatalf("cursor %s: %v", path, err)
+	}
+	return state
+}
+
+func okCollector(t *testing.T) *httptest.Server {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// TestOTelCursorCoversTheGap: exports run more than --otel-since apart. A session updated
+// nine days ago, after the cursor's last full pass ten days ago, and quiet since, is outside
+// a 7d window — the cursor's CheckedUntil takes the window back to it. Without the mark it
+// stays behind; once the pass is through, the mark moves up to where the pass began.
+func TestOTelCursorCoversTheGap(t *testing.T) {
+	root := t.TempDir()
+	writeSessionAt(t, root, "gap-1", time.Now().Add(-9*24*time.Hour))
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
+	server := okCollector(t)
+	since := time.Now().Add(-7 * 24 * time.Hour)
+
+	without := filepath.Join(t.TempDir(), "otel.json")
+	writeCursor(t, without, time.Time{})
+	cfg := otelConfig{endpoint: server.URL, since: since, statePath: without, settle: 2 * time.Minute}
+	if n, _ := newOTelExporter(api, cfg).exportOnce(context.Background(), since, time.Time{}); n != 0 {
+		t.Fatalf("with no mark the 7d window exported %d sessions, want 0 (the gap this fixes)", n)
+	}
+
+	with := filepath.Join(t.TempDir(), "otel.json")
+	writeCursor(t, with, time.Now().Add(-10*24*time.Hour))
+	cfg.statePath = with
+	started := time.Now()
+	if n, _ := newOTelExporter(api, cfg).exportOnce(context.Background(), since, time.Time{}); n != 1 {
+		t.Fatalf("the cursor's mark ten days back exported %d sessions, want the one updated nine days ago", n)
+	}
+	mark, ok := source.ParseTimestamp(readCursor(t, with).CheckedUntil["claude"])
+	want := started.Add(-2 * time.Minute)
+	if !ok || mark.Sub(want) > 2*time.Second || want.Sub(mark) > 2*time.Second {
+		t.Fatalf("checkedUntil = %v, want where the pass began less settle (%v)", mark, want)
+	}
+}
+
+// TestOTelStoppedPassKeepsTheMark: a pass stopped before its end has not seen the sessions it
+// did not reach, so the mark stays where it was
+func TestOTelStoppedPassKeepsTheMark(t *testing.T) {
+	root := t.TempDir()
+	writeSessionAt(t, root, "stop-a", time.Now().Add(-9*24*time.Hour))
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
+	path := filepath.Join(t.TempDir(), "otel.json")
+	before := time.Now().Add(-10 * 24 * time.Hour).UTC().Truncate(time.Second)
+	writeCursor(t, path, before)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cfg := otelConfig{endpoint: okCollector(t).URL, since: time.Now().Add(-7 * 24 * time.Hour), statePath: path, settle: 2 * time.Minute}
+	newOTelExporter(api, cfg).exportOnce(ctx, cfg.since, time.Time{})
+	if got := readCursor(t, path).CheckedUntil["claude"]; got != before.Format(time.RFC3339) {
+		t.Fatalf("a stopped pass moved checkedUntil to %s, want it kept at %s", got, before.Format(time.RFC3339))
+	}
+}
+
+// TestOTelFailedSendHoldsTheMark: a session the pass could not send is not marked, and the
+// mark stays at or before its update so the next pass still reaches it
+func TestOTelFailedSendHoldsTheMark(t *testing.T) {
+	root := t.TempDir()
+	updated := time.Now().Add(-9 * 24 * time.Hour).UTC().Truncate(time.Second)
+	writeSessionAt(t, root, "fail-a", updated)
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) }))
+	defer down.Close()
+	path := filepath.Join(t.TempDir(), "otel.json")
+	writeCursor(t, path, time.Now().Add(-10*24*time.Hour))
+	cfg := otelConfig{endpoint: down.URL, since: time.Now().Add(-7 * 24 * time.Hour), statePath: path, settle: 2 * time.Minute}
+	if n, _ := newOTelExporter(api, cfg).exportOnce(context.Background(), cfg.since, time.Time{}); n != 0 {
+		t.Fatalf("a collector that is down took %d sessions", n)
+	}
+	mark, ok := source.ParseTimestamp(readCursor(t, path).CheckedUntil["claude"])
+	if !ok || mark.After(updated) {
+		t.Fatalf("checkedUntil = %v after a failed send of a session updated %v: the next pass would miss it", mark, updated)
+	}
+	// and the next pass, the collector back, sends it
+	cfg.endpoint = okCollector(t).URL
+	if n, _ := newOTelExporter(api, cfg).exportOnce(context.Background(), cfg.since, time.Time{}); n != 1 {
+		t.Fatalf("the retry exported %d sessions, want the one that failed", n)
+	}
+}
+
+// TestOTelResendKeepsItsWindow: --otel-resend asks for its window as given, and a window that
+// starts after the mark leaves the stretch between them unread — the mark stays
+func TestOTelResendKeepsItsWindow(t *testing.T) {
+	root := t.TempDir()
+	writeSessionAt(t, root, "resend-a", time.Now().Add(-9*24*time.Hour))
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
+	path := filepath.Join(t.TempDir(), "otel.json")
+	before := time.Now().Add(-10 * 24 * time.Hour).UTC().Truncate(time.Second)
+	writeCursor(t, path, before)
+	cfg := otelConfig{endpoint: okCollector(t).URL, since: time.Now().Add(-7 * 24 * time.Hour), statePath: path, settle: 2 * time.Minute, resend: true}
+	if n, _ := newOTelExporter(api, cfg).exportOnce(context.Background(), cfg.since, time.Time{}); n != 0 {
+		t.Fatalf("a resend over 7d exported %d sessions from nine days ago", n)
+	}
+	if got := readCursor(t, path).CheckedUntil["claude"]; got != before.Format(time.RFC3339) {
+		t.Fatalf("a resend over a window after the mark moved it to %s", got)
+	}
+}
+
+// TestOTelCursorWithoutMarkUsesLastRun: a cursor written before checkedUntil existed has only
+// lastRun; its first pass reaches a day before that instead of stopping at --otel-since
+func TestOTelCursorWithoutMarkUsesLastRun(t *testing.T) {
+	root := t.TempDir()
+	writeSessionAt(t, root, "old-a", time.Now().Add(-9*24*time.Hour))
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
+	path := filepath.Join(t.TempDir(), "otel.json")
+	state := otelState{Version: 2, Format: otelSpanFormat, LastRun: time.Now().Add(-9*24*time.Hour + time.Hour).UTC().Format(time.RFC3339),
+		Sessions: map[string]otelSession{"claude|elsewhere": {UpdatedAt: "2026-01-01T00:00:00Z"}}}
+	raw, _ := json.Marshal(state)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := otelConfig{endpoint: okCollector(t).URL, since: time.Now().Add(-7 * 24 * time.Hour), statePath: path, settle: 2 * time.Minute}
+	if n, _ := newOTelExporter(api, cfg).exportOnce(context.Background(), cfg.since, time.Time{}); n != 1 {
+		t.Fatalf("a cursor with only lastRun exported %d sessions, want the one updated an hour before it", n)
+	}
+	if readCursor(t, path).CheckedUntil["claude"] == "" {
+		t.Fatal("the pass did not write checkedUntil")
+	}
+}
+
+// TestOTelMarksArePerSource: sources exported one run each (--mode claude, then --mode pi)
+// share a cursor. The first run moving its mark must not stand for the second's: each
+// source reaches back to its own mark, and each gets one.
+func TestOTelMarksArePerSource(t *testing.T) {
+	rootA, rootB := t.TempDir(), t.TempDir()
+	writeSessionAt(t, rootA, "a-gap", time.Now().Add(-9*24*time.Hour))
+	writeSessionAt(t, rootB, "b-gap", time.Now().Add(-9*24*time.Hour))
+	server := okCollector(t)
+	since := time.Now().Add(-7 * 24 * time.Hour)
+	state := filepath.Join(t.TempDir(), "otel.json")
+	writeCursor(t, state, time.Now().Add(-10*24*time.Hour))
+	cfg := otelConfig{endpoint: server.URL, since: since, statePath: state, settle: 2 * time.Minute}
+	apiA := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(rootA)}, 0)
+	nA, _ := newOTelExporter(apiA, cfg).exportOnce(context.Background(), since, time.Time{})
+	apiB := newSessionQueryAPI([]source.SessionSource{source.Label(source.NewClaudeSource(rootB), "claude:box2")}, 0)
+	nB, _ := newOTelExporter(apiB, cfg).exportOnce(context.Background(), since, time.Time{})
+	if nA != 1 || nB != 1 {
+		t.Fatalf("per-source runs exported %d then %d, want each source's session from nine days ago", nA, nB)
+	}
+	marks := readCursor(t, state).CheckedUntil
+	if marks["claude"] == "" || marks["claude:box2"] == "" {
+		t.Fatalf("marks = %v, want one per source", marks)
+	}
+}
+
+// TestOTelLegacyCursorReachesPerSource: a cursor from before the marks holds when it last sent
+// each session. A source whose last send was nine days ago reaches a day before that, even
+// when another source ran later (lastRun says today); a source the cursor holds nothing of
+// has not been exported, and its first pass takes --otel-since.
+func TestOTelLegacyCursorReachesPerSource(t *testing.T) {
+	root := t.TempDir()
+	writeSessionAt(t, root, "legacy-a", time.Now().Add(-9*24*time.Hour+30*time.Minute))
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
+	since := time.Now().Add(-7 * 24 * time.Hour)
+	write := func(sessions map[string]otelSession) string {
+		path := filepath.Join(t.TempDir(), "otel.json")
+		raw, _ := json.Marshal(otelState{Version: 2, Format: otelSpanFormat, LastRun: time.Now().UTC().Format(time.RFC3339), Sessions: sessions})
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	lastSent := time.Now().Add(-9 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	held := write(map[string]otelSession{
+		"claude|elsewhere": {UpdatedAt: "2026-01-01T00:00:00Z", At: lastSent},
+		"pi|today":         {UpdatedAt: "2026-01-01T00:00:00Z", At: time.Now().UTC().Format(time.RFC3339)},
+	})
+	cfg := otelConfig{endpoint: okCollector(t).URL, since: since, statePath: held, settle: 2 * time.Minute}
+	if n, _ := newOTelExporter(api, cfg).exportOnce(context.Background(), since, time.Time{}); n != 1 {
+		t.Fatalf("a legacy cursor last sending claude nine days ago exported %d, want the session updated just after", n)
+	}
+	cfg.statePath = write(map[string]otelSession{"pi|today": {UpdatedAt: "2026-01-01T00:00:00Z", At: lastSent}})
+	if n, _ := newOTelExporter(api, cfg).exportOnce(context.Background(), since, time.Time{}); n != 0 {
+		t.Fatalf("a source the cursor holds nothing of reached past --otel-since: %d exported", n)
+	}
+}

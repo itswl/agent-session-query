@@ -145,7 +145,7 @@ must filter on `timing.source=recorded`; the token counts are exact.
 | `--otel-headers` | comma-separated `name=value`, percent-encoded; e.g. `Authorization=Basic%20<pk:sk>` |
 | `--otel-content` | `none` (default) or `io` — prompts, replies and tool output, masked and cut at 256 KiB |
 | `--otel-export` | export once and exit, instead of serving. No time limit: a whole-history backfill runs to the end, and Ctrl-C keeps the cursor of what was sent, so the next run goes on from there |
-| `--otel-since` | backfill window: `7d` (default), `48h`, a date, or `all` for the whole history |
+| `--otel-since` | the first pass's window: `7d` (default), `48h`, a date, or `all` for the whole history. With a cursor, each source also reaches back to where the cursor last walked it whole, when that is earlier (see [the cursor's reach](#the-cursors-reach)) |
 | `--otel-every` | in server mode, export settled changes on this interval (default `10m`, `0` disables) |
 | `--otel-metrics` | also POST delta sums to `/v1/metrics` (rounds, token sums, tool failures); off by default — Langfuse does not take metrics |
 | `--otel-settle` | leave a session written more recently than this to a later pass (default `2m`) |
@@ -207,6 +207,40 @@ The cursor is version 2: `sessions → {updatedAt, at, rounds → {index: finger
 Version 1 (a session-level mark) is discarded on sight: it cannot say which rounds were
 sent, so the next pass re-exports one window rather than guessing.
 
+### The cursor's reach
+
+`--otel-since` is a window, and a session is only looked at when its `UpdatedAt` falls in
+it. Run the export by hand every few weeks, or bring the server back after a fortnight
+off, and a fixed 7-day window misses the sessions that changed in between and went quiet
+since: outside the window, and not in the cursor either. So the cursor keeps
+`checkedUntil`, per source — where the last pass that walked that source to its end began,
+less `--otel-settle` — and a source's window starts there when that is earlier than
+`--otel-since`. Sessions it already holds at their current version cost a comparison, not
+a read, so the reach back is cheap. The mark is per source (`claude`, `claude:box2`, `pi`)
+because sources are often exported a run each (`--mode pi`): one run's mark must not stand
+for another source's.
+
+- A pass stopped part-way (Ctrl-C, a shutdown) has not looked at the sessions it did not
+  reach: the mark of the source it was in, and of those after, stays where it was.
+- A session the pass failed to send holds the mark at its own update, so the next pass
+  reaches it again.
+- The settle margin covers a session written while the pass was reading the list, and one
+  a tick left to settle: both were updated after the mark.
+- A shorter `--otel-since` (say `48h`) is still widened: it is the window of a first pass,
+  and a cursor that has been kept says how far back the work actually is.
+- A source the cursor holds no session of has not been exported: its first pass takes
+  `--otel-since` (use `all` to backfill it whole).
+- A cursor written before `checkedUntil` existed knows when it last sent each session: a
+  source it holds sessions of reaches back to a day before the latest of those (or before
+  `lastRun` when none says), then gets its mark.
+- The window reads a session's `UpdatedAt`, the time of its last row, not when the file
+  arrived. A transcript that turns up late with older content — a `--path` mount synced
+  days behind, a restore from backup — is outside a window that started after its last
+  row: run once with `--otel-since all` to take it in.
+- `--otel-resend` takes its window as given, and so does a run on a cursor of an earlier
+  format (it is being replaced, see [Upgrading](#upgrading)). If such a window starts after
+  the mark, the stretch between them was not read and the mark does not move.
+
 ## State
 
 The cursor lives at `--otel-state` (default `$XDG_STATE_HOME/agent-session-query/otel.json`,
@@ -218,6 +252,7 @@ only versions and round fingerprints:
   "version": 2,
   "format": 4,
   "lastRun": "2026-10-28T07:05:02Z",
+  "checkedUntil": {"opencode": "2026-10-28T07:02:58Z"},
   "sessions": {
     "opencode|ses_ebc6c0083ffeoPUbq6IcTfGBNV": {
       "updatedAt": "2026-10-28T07:04:25",

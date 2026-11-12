@@ -78,10 +78,19 @@ const otelSpanFormat = 4
 // enough: a session's content only moves when its newest row does, and a session that grew
 // is exported again under the same deterministic span ids.
 type otelState struct {
-	Version  int                    `json:"version"`
-	Format   int                    `json:"format,omitempty"` // otelSpanFormat when written; absent is 1
-	LastRun  string                 `json:"lastRun,omitempty"`
-	Sessions map[string]otelSession `json:"sessions,omitempty"`
+	Version int    `json:"version"`
+	Format  int    `json:"format,omitempty"` // otelSpanFormat when written; absent is 1
+	LastRun string `json:"lastRun,omitempty"`
+	// CheckedUntil is, per source (its mode: claude, claude:box2), where the last pass that
+	// walked that source to its end began — less --otel-settle, and never past a session it
+	// failed to send. Everything in that pass's window updated before this instant was seen;
+	// what changed after it may not have been. The next pass reaches back to it when
+	// --otel-since alone would not (see windowFrom), so exports run weeks apart still see the
+	// sessions that changed in between and then went quiet. Per source, because a source is
+	// often exported on its own (--mode pi): one mark for all would let one source's run
+	// stand for another's.
+	CheckedUntil map[string]string      `json:"checkedUntil,omitempty"`
+	Sessions     map[string]otelSession `json:"sessions,omitempty"`
 }
 
 // otelSession is how far one session has been exported: its version for the fast skip,
@@ -132,6 +141,60 @@ func (e *otelExporter) run(ctx context.Context) {
 	}
 }
 
+// windowFrom is where a pass's window over one source starts: --otel-since, or — when the
+// cursor's checks of that source stop earlier — where they stop (reach). --otel-since is the
+// window of a first pass; a cursor that has been kept knows where it last looked, and a
+// session updated after that and quiet since has to be read however long ago it was. A run
+// with --otel-resend asked for its window as given, and a cursor of an earlier format is
+// being replaced: both keep --otel-since.
+func (e *otelExporter) windowFrom(since time.Time, mode string) time.Time {
+	if since.IsZero() || e.cfg.resend || e.priorFormat > 0 {
+		return since
+	}
+	if until, ok := e.state.reach(mode); ok && until.Before(since) {
+		return until
+	}
+	return since
+}
+
+// reach is where the cursor's checks of a source stop: its mark, when a pass has set one.
+// A cursor written before the marks existed knows only when it last sent each session; a
+// source it holds sessions of reaches a day before the latest of those (a session written
+// during that pass may be older than its end), or before lastRun when no session says. A
+// source the cursor holds nothing of has not been exported: its first pass takes
+// --otel-since.
+func (s *otelState) reach(mode string) (time.Time, bool) {
+	if mark, ok := s.CheckedUntil[mode]; ok {
+		return source.ParseTimestamp(mark)
+	}
+	var latest time.Time
+	held := false
+	for key, session := range s.Sessions {
+		if !strings.HasPrefix(key, mode+"|") {
+			continue
+		}
+		held = true
+		if at, ok := source.ParseTimestamp(session.At); ok && at.After(latest) {
+			latest = at
+		}
+	}
+	if !held {
+		return time.Time{}, false
+	}
+	if latest.IsZero() {
+		last, ok := source.ParseTimestamp(s.LastRun)
+		if !ok {
+			return time.Time{}, false
+		}
+		latest = last
+	}
+	return latest.Add(-otelLegacyReachMargin), true
+}
+
+// otelLegacyReachMargin is how far before its last send a source of a cursor without marks
+// is read: generous, since a session the cursor already holds costs a comparison
+const otelLegacyReachMargin = 24 * time.Hour
+
 // exportOnce walks the sessions updated in the window and exports the ones the state does
 // not already know at their current version. settledBefore, when set, leaves a session
 // that is still being written for a later tick.
@@ -145,11 +208,14 @@ func (e *otelExporter) exportOnce(ctx context.Context, since, settledBefore time
 walk:
 	for _, src := range e.api.activeSources() {
 		links := newOTelLinks(e, src)
+		mode, walked := src.Mode(), time.Now()
+		from := e.windowFrom(since, mode)
+		var retry time.Time // the earliest update among this source's sessions that failed to send
 		for _, rec := range e.api.recordsOf(src) {
 			if ctx.Err() != nil {
 				break walk
 			}
-			if rec.Archived || !withinWindow(rec.UpdatedAt, since, time.Time{}) {
+			if rec.Archived || !withinWindow(rec.UpdatedAt, from, time.Time{}) {
 				continue
 			}
 			if !settledBefore.IsZero() {
@@ -182,11 +248,13 @@ walk:
 				body, err := otlp.Encode(kept)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "[WARN] otel: %s: %v\n", key, err)
+					retry = earlier(retry, rec.UpdatedAt)
 					continue
 				}
 				fmt.Printf("=== %s %s: %d spans ===\n%s\n", rec.Source, rec.SessionID, len(kept), body)
 			} else if err := e.send(ctx, kept); err != nil {
 				fmt.Fprintf(os.Stderr, "[WARN] otel: %s: %v\n", key, err)
+				retry = earlier(retry, rec.UpdatedAt)
 				continue // a failed session is not marked: the next run retries it
 			}
 			e.state.mark(key, rec.UpdatedAt, changed)
@@ -195,6 +263,9 @@ walk:
 			if e.cfg.metrics {
 				acc.add(kept)
 			}
+		}
+		if ctx.Err() == nil && !e.cfg.dryRun {
+			e.state.checked(mode, from, walked, settledBefore, e.cfg.settle, retry) // walked to its end
 		}
 	}
 	if e.cfg.statePath != "" && !e.cfg.dryRun {
@@ -1102,6 +1173,43 @@ func messageKey(m map[string]any, role string) string {
 	return role
 }
 
+// checked moves a source's mark after a pass walked it to its end (a stopped pass has not
+// seen the sessions it did not reach, and moves nothing). The new mark is where the walk
+// began, less settle: a session written while a list was being read, or one a tick left to
+// settle, was updated after it. A session the pass failed to send holds the mark at its own
+// update, so the next pass still reaches it. A window that began after where the cursor's
+// checks stopped (a resend over a shorter window) left the stretch between them unread: the
+// mark stays.
+func (s *otelState) checked(mode string, from, started, settledBefore time.Time, settle time.Duration, retry time.Time) {
+	if prev, ok := s.reach(mode); ok && !from.IsZero() && from.After(prev) {
+		return
+	}
+	until := started.Add(-settle)
+	if !settledBefore.IsZero() && settledBefore.Before(until) {
+		until = settledBefore
+	}
+	if !retry.IsZero() && retry.Before(until) {
+		until = retry
+	}
+	if s.CheckedUntil == nil {
+		s.CheckedUntil = map[string]string{}
+	}
+	s.CheckedUntil[mode] = until.UTC().Format(time.RFC3339)
+}
+
+// earlier is the earlier of at and a session's update time; a time that will not parse is
+// in every window already (withinWindow) and changes nothing
+func earlier(at time.Time, updatedAt string) time.Time {
+	t, ok := source.ParseTimestamp(updatedAt)
+	if !ok {
+		return at
+	}
+	if at.IsZero() || t.Before(at) {
+		return t.Add(-time.Second) // a window takes what is at its start; a second spare
+	}
+	return at
+}
+
 // known reports whether this exact version of a session was exported already
 func (s *otelState) known(key, updatedAt string) bool {
 	if s == nil || s.Sessions == nil || updatedAt == "" {
@@ -1151,7 +1259,12 @@ func (e *otelExporter) loadState() {
 	var state otelState
 	// Version 1 remembered only a session's version. Dropping it re-reads one window once
 	// rather than guessing which rounds it had seen.
-	if json.Unmarshal(data, &state) == nil && state.Version == 2 && state.Sessions != nil {
+	// A cursor with no session yet (every pass so far found nothing to send) is still one:
+	// its marks say how far back the sources were looked at
+	if json.Unmarshal(data, &state) == nil && state.Version == 2 {
+		if state.Sessions == nil {
+			state.Sessions = map[string]otelSession{}
+		}
 		if state.Format < otelSpanFormat && len(state.Sessions) > 0 {
 			e.priorFormat = max(state.Format, 1)
 		}

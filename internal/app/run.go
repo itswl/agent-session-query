@@ -73,7 +73,7 @@ func Run(args []string) int {
 	otelHeaders := fs.String("otel-headers", "", "headers for the OTLP endpoint, comma-separated name=value (percent-encode spaces); Langfuse: Authorization=Basic%20<base64(pk:sk)>,x-langfuse-ingestion-version=4")
 	otelContent := fs.String("otel-content", "none", "what to export besides metadata: none, or io for prompts, replies and tool output (secrets masked, 256 KiB per body)")
 	otelExport := fs.Bool("otel-export", false, "export once and exit instead of serving (needs --otel-endpoint)")
-	otelSince := fs.String("otel-since", "7d", "backfill window for the first pass: 7d / 48h / a date, or all for the whole history")
+	otelSince := fs.String("otel-since", "7d", "window of the first pass: 7d / 48h / a date, or all for the whole history; with a cursor, each source also reaches back to where the cursor last walked it whole")
 	otelEvery := fs.Duration("otel-every", 10*time.Minute, "in server mode, how often to export settled changes (0 disables continuous export)")
 	otelSettle := fs.Duration("otel-settle", 2*time.Minute, "leave a session that was written more recently than this to a later pass")
 	otelState := fs.String("otel-state", "", "cursor file (default under ~/.local/state; 'off' re-sends the window every run)")

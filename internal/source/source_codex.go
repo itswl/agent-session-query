@@ -752,13 +752,21 @@ func (s *CodexSource) Messages(r Record, q MessageQuery) []map[string]any {
 	}
 	w := newCodexWalker(q.Full)
 	var last map[string]any // the turn's last assistant message, which a token record annotates
+	model := ""             // the model of the turn being read: turn_context names it per turn
 	add := func(m map[string]any) bool {
 		if ToStr(m["role"]) == "assistant" {
 			last = m
+			if model != "" {
+				m["model"] = model
+			}
 		}
 		return sink.add(m)
 	}
 	eachJSONL(path, func(obj map[string]any) bool {
+		if obj["type"] == "turn_context" {
+			model = StrOr(getMap(obj, "payload")["model"], model)
+			return true
+		}
 		// A turn's token record follows its messages and belongs to the turn, not to a
 		// row of its own: it is folded into the assistant message it closes, so a round
 		// can report what its turns cost.

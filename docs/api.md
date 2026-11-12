@@ -187,8 +187,15 @@ pattern containing a colon needs URL encoding (`%3A`).
   output is cut to 500 characters and thinking to 1 000 unless `full=1` is given; a cut
   block carries `truncated: true`. A user message the CLI assembled rather than the person
   typed (Codex's AGENTS.md and environment rows) carries `injected: true` and does not start
-  a round. The `order` field echoes which end the batch came from; either direction is
-  returned chronologically
+  a round. An assistant message names the `model` that answered when the transcript says
+  (Claude Code, Codex per turn, Pi, OpenCode as `provider/model`, Gemini, OpenClaw,
+  Antigravity, dsh, Grok's history log; Claude Code writes `<synthetic>` on a row it made
+  itself). Claude Code splits one response into a row per content block: each row carries
+  the API `response` id, and the response's `usage` rides on its first row only, so a sum
+  over messages counts it once. Pi's and OpenCode's assistant messages carry `durationMs`, the call's own
+  time from the message's creation, and OpenCode 2.x's `firstTokenMs`, when the response
+  began to arrive. The `order` field echoes which end the batch came
+  from; either direction is returned chronologically
 - final: `isFinal` / `stopReason` / `text` / `thinking` / `toolCalls` / `usage` /
   `messageCount`. When the file does not exist you get `isFinal=false` plus an `error` field
   (the HTTP status is still 200)

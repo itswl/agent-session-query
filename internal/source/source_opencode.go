@@ -497,6 +497,12 @@ func (s *OpenCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 		if usage := openCodeMessageUsage(pending.data); usage != nil {
 			out["usage"] = usage
 		}
+		if role == "assistant" {
+			if model := openCodeMessageModel(pending.data); model != "" {
+				out["model"] = model
+			}
+			openCodeTiming(out, pending.data, nil)
+		}
 		return sink.add(out)
 	}
 	for rows.Next() {
@@ -586,6 +592,11 @@ func (s *OpenCodeSource) messagesV2(db *sql.DB, sessionID string, q MessageQuery
 			if usage := openCodeMessageUsage(decoded); usage != nil {
 				out["usage"] = usage
 			}
+			if model := openCodeMessageModel(decoded); model != "" {
+				out["model"] = model
+			}
+			parts, _ := decoded["content"].([]any)
+			openCodeTiming(out, decoded, parts)
 		}
 		if !sink.add(out) {
 			break
@@ -943,6 +954,49 @@ func (s *OpenCodeSource) finalV2(db *sql.DB, sessionID string) map[string]any {
 
 // openCodeMessageUsage reads a message row's own accounting — tokens{input, output,
 // reasoning, cache{read, write}} and cost — into the shared usage names
+// openCodeTiming: OpenCode measures a response — time.created is when the call was made
+// (the message's timestamp), time.completed when it ended, and a 2.x part's own
+// time.created is when it began to arrive. They become durationMs and firstTokenMs, the
+// call's length and its time to first token, counted from the message's timestamp.
+func openCodeTiming(out, data map[string]any, parts []any) {
+	tm, _ := data["time"].(map[string]any)
+	created, ok := ToFloat(tm["created"])
+	if !ok || created <= 0 {
+		return
+	}
+	if completed, ok := ToFloat(tm["completed"]); ok && completed > created {
+		out["durationMs"] = completed - created
+	}
+	first := 0.0
+	for _, p := range parts {
+		pm, _ := p.(map[string]any)
+		ptm, _ := pm["time"].(map[string]any)
+		if at, ok := ToFloat(ptm["created"]); ok && at >= created && (first == 0 || at < first) {
+			first = at
+		}
+	}
+	if first > 0 {
+		out["firstTokenMs"] = first - created
+	}
+}
+
+// openCodeMessageModel names the model an assistant message came from, provider/id the
+// way Final does: 1.x keeps modelID and providerID on the message, 2.x a model object
+// ({"id":"deepseek-flash","providerID":"deepseek","variant":"default"})
+func openCodeMessageModel(data map[string]any) string {
+	id, provider := strField(data, "modelID"), strField(data, "providerID")
+	if m, ok := data["model"].(map[string]any); ok {
+		id, provider = strField(m, "id"), strField(m, "providerID")
+	}
+	if id == "" {
+		return ""
+	}
+	if provider != "" {
+		return provider + "/" + id
+	}
+	return id
+}
+
 func openCodeMessageUsage(data map[string]any) map[string]any {
 	out := map[string]any{}
 	tokens, _ := data["tokens"].(map[string]any)

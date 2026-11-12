@@ -929,6 +929,12 @@ func (s *ClaudeCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 	}
 	row := claudeRow{names: map[string]string{}, full: q.Full, root: s.root}
 	subagent := r.IsSubagent()
+	// Claude Code writes one row per content block of a response — text, thinking, each
+	// tool call — and every row repeats the whole response's usage (measured over 198
+	// local transcripts: 13,368 of 16,217 responses split into up to 18 rows, the usage
+	// identical on all of them). The counters go on the response's first row only, so a
+	// sum over messages counts each response once.
+	counted := map[string]bool{}
 	eachJSONL(path, func(obj map[string]any) bool {
 		// A subagent's rows are not part of the main thread — except in its own transcript
 		if Truthy(obj["isSidechain"]) && !subagent {
@@ -974,8 +980,23 @@ func (s *ClaudeCodeSource) Messages(r Record, q MessageQuery) []map[string]any {
 			"timestamp": GetOr(obj, "timestamp", ""),
 			"content":   row.parts(obj),
 		}
-		if usage := UsageOf(msg["usage"]); usage != nil {
+		// model: what answered, as the API reported it ("<synthetic>" for a row the CLI
+		// wrote itself). response: the API message id the row is one block of.
+		if model := StrOr(msg["model"], ""); model != "" {
+			out["model"] = model
+		}
+		response := ""
+		if obj["type"] == "assistant" {
+			response = StrOr(msg["id"], "")
+			if response != "" {
+				out["response"] = response
+			}
+		}
+		if usage := UsageOf(msg["usage"]); usage != nil && (response == "" || !counted[response]) {
 			out["usage"] = usage
+			if response != "" {
+				counted[response] = true
+			}
 		}
 		return sink.add(out)
 	})

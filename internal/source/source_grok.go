@@ -340,6 +340,21 @@ type grokGrouper struct {
 	names   map[string]string // toolCallId -> tool name, so a result can be labelled by its call
 	count   int
 	stopped bool
+	usage   map[string]any // turn_completed counters waiting for the turn's assistant message
+}
+
+// addUsage keeps a turn's counters until the assistant message they belong to is emitted:
+// turn_completed arrives after the answer's chunks, before the next prompt flushes them
+func (g *grokGrouper) addUsage(usage map[string]any) {
+	if len(usage) == 0 {
+		return
+	}
+	if g.usage == nil {
+		g.usage = map[string]any{}
+	}
+	carrier := map[string]any{"usage": g.usage}
+	addUsage(carrier, usage)
+	g.usage = carrier["usage"].(map[string]any)
 }
 
 func newGrokGrouper(emit func(m map[string]any) bool, full bool) *grokGrouper {
@@ -433,6 +448,9 @@ func (g *grokGrouper) flush() bool {
 		"timestamp": GrokTimestamp(g.at),
 		"content":   g.parts,
 	}
+	if g.role == "assistant" && len(g.usage) > 0 {
+		message["usage"], g.usage = g.usage, nil
+	}
 	g.count++
 	ok := g.emit(message)
 	g.reset()
@@ -471,12 +489,16 @@ func eachGrokHistoryMessage(path string, full bool, emit func(map[string]any) bo
 		}
 		blocks = append(blocks, parts...)
 		count++
-		ok := emit(map[string]any{
+		message := map[string]any{
 			"id":        strconv.Itoa(count),
 			"role":      "assistant",
 			"timestamp": "",
 			"content":   blocks,
-		})
+		}
+		if model != "" {
+			message["model"] = model // the model_id the assistant lines named
+		}
+		ok := emit(message)
 		parts, thinking = nil, nil
 		if !ok {
 			stopped = true
@@ -565,7 +587,14 @@ func (s *GrokSource) Messages(r Record, q MessageQuery) []map[string]any {
 		return sink.result()
 	}
 	g := newGrokGrouper(sink.add, q.Full)
-	eachGrokUpdate(path, g.add)
+	eachGrokUpdate(path, func(u grokUpdate) bool {
+		// turn_completed is where a turn's token counts live (see Final): the turn's
+		// assistant message carries them, so a round can say what it cost
+		if u.kind == "turn_completed" {
+			g.addUsage(UsageOf(getMap(u.body, "usage")))
+		}
+		return g.add(u)
+	})
 	g.flush()
 	return sink.result()
 }

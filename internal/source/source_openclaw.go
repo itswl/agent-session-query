@@ -303,6 +303,9 @@ func (s *OpenClawSource) Messages(r Record, q MessageQuery) []map[string]any {
 		}); usage != nil {
 			msg["usage"] = usage
 		}
+		if m.Model != "" && m.Role == "assistant" {
+			msg["model"] = m.Model
+		}
 		sink.add(msg)
 	}
 	return sink.result()

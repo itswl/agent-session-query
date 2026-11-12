@@ -199,6 +199,14 @@ func (s *PiSource) Messages(r Record, q MessageQuery) []map[string]any {
 		if usage := UsageOf(msg["usage"]); usage != nil {
 			out["usage"] = usage
 		}
+		if model := strField(msg, "model"); model != "" && role == "assistant" {
+			out["model"] = model // an assistant message is one response: provider and model ride on it
+		}
+		// Pi measures a response: durationMs from the message's timestamp, which is when it
+		// was created (see Search), so the export can draw the model call as it happened
+		if ms, ok := ToFloat(msg["durationMs"]); ok && ms > 0 && role == "assistant" {
+			out["durationMs"] = ms
+		}
 		return sink.add(out)
 	})
 	return sink.result()

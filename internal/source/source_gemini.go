@@ -364,6 +364,9 @@ func (s *GeminiSource) Messages(r Record, q MessageQuery) []map[string]any {
 			if usage := UsageOf(m["tokens"]); usage != nil {
 				out["usage"] = usage
 			}
+			if model := StrOr(m["model"], ""); model != "" && role == "assistant" {
+				out["model"] = model // a gemini entry names the model that wrote it
+			}
 			return sink.add(out)
 		})
 	}

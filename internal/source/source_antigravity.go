@@ -410,6 +410,9 @@ func (s *AntigravitySource) Messages(r Record, q MessageQuery) []map[string]any 
 			}); usage != nil {
 				message["usage"] = usage
 			}
+			if model := ToStr(step["model"]); model != "" {
+				message["model"] = model // the step's own model, the one Final reports for the last
+			}
 		}
 		if !sink.add(message) {
 			break

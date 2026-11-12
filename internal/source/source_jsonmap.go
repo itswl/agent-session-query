@@ -219,6 +219,7 @@ func (s *JsonMapSource) List() []Record {
 			// must not ride out through the list or a brief
 			rec.DisplayName = RedactSecrets(StripTerminalControls(ToStr(GetOr(info, "display_name", ""))))
 			rec.Platform = StrOr(GetOr(info, "platform", ""), "")
+			rec.Model = StrOr(GetOr(info, "model", ""), "")
 			if v, ok := info["total_tokens"]; ok {
 				rec.TotalTokens, rec.HasTotalTokens = floatOrZero(v), true
 			}
@@ -247,6 +248,21 @@ func (s *JsonMapSource) List() []Record {
 		records, hermesErr := s.hermesListCache.load(s.def.stateDB, func() ([]Record, error) {
 			return hermesSQLiteList(s.def.stateDB, s.def.mode, nil)
 		})
+		// A session sessions.json lists often names no model there; its state.db row does,
+		// and the export names its generations by it (Hermes keeps no per-message model)
+		if hermesErr == nil {
+			models := map[string]string{}
+			for _, r := range records {
+				if r.Model != "" {
+					models[r.SessionID] = r.Model
+				}
+			}
+			for i := range out {
+				if out[i].Model == "" {
+					out[i].Model = models[out[i].SessionID]
+				}
+			}
+		}
 		if hermesErr == nil && len(seen) > 0 {
 			kept := make([]Record, 0, len(records))
 			for _, r := range records {

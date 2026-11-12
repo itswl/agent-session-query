@@ -611,8 +611,10 @@ The page lives in `internal/app/ui/` and is baked in with `go:embed` — no npm,
 still a single-file distribution. A few hard constraints:
 
 - **Render exclusively through `textContent`.** Messages are full of third-party text (tool
-  output, web page bodies), so building HTML would be stored XSS, and the token in localStorage
-  is what an attacker would get. `ui_test.go` pins a test forbidding `innerHTML` / `outerHTML` /
+  output, web page bodies), so building HTML would be stored XSS, and a script running in the
+  page could act with the session's cookie (the token itself no longer sits in localStorage:
+  the page trades it for an HttpOnly cookie, and one an older page stored is traded and
+  removed on load). `ui_test.go` pins a test forbidding `innerHTML` / `outerHTML` /
   `insertAdjacentHTML` / `document.write` / `eval(` anywhere in those three files. A
   `Content-Security-Policy` (same-origin scripts and styles only, nothing inline, no framing)
   backs that up

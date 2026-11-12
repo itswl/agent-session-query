@@ -5176,11 +5176,39 @@ async function start() {
     try {
       const res = await fetch('/sessions');
       if (res.ok) {
+        localStorage.removeItem(TOKEN_KEY); // a cookie session needs no stored copy
         showApp();
         await start();
         return;
       }
     } catch (e) { /* the gate below is the answer */ }
+    // A page from before the login flow kept the token in localStorage, and nothing ever
+    // took it out: every request went on sending it as a Bearer, and an XSS could still
+    // read it back — what the cookie exists to end. It is traded for the cookie once and
+    // dropped. One the server turns down (the token was rotated) is dropped too, and the
+    // gate asks for the current one; a busy or unreachable server keeps it for next time.
+    const legacy = localStorage.getItem(TOKEN_KEY) || '';
+    if (legacy) {
+      try {
+        const res = await fetch('/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: legacy }),
+        });
+        if (res.ok) {
+          localStorage.removeItem(TOKEN_KEY);
+          state.token = '';
+          showApp();
+          await start();
+          return;
+        }
+        if (res.status === 401) {
+          localStorage.removeItem(TOKEN_KEY);
+          showGate('The saved token was rejected — paste the current one');
+          return;
+        }
+      } catch (e) { /* keep it as a Bearer below, as before */ }
+    }
   }
 
   const saved = localStorage.getItem(TOKEN_KEY) || '';

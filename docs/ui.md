@@ -1,7 +1,10 @@
 # The web page (`/ui`)
 
 Three panes: **session list / message stream / final result**. A token is only requested
-when the server was started with `--hook_token`; it stays in the browser's localStorage.
+when the server was started with `--hook_token`; the page trades it at `/login` for an
+HttpOnly cookie and keeps no copy. A token a page from before the cookie stored in
+localStorage is traded the same way on the next load and removed — one the server turns
+down (the token was rotated) is removed too, and the page asks for the current one.
 
 ## The panes
 

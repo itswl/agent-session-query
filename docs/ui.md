@@ -47,6 +47,13 @@ gets a line of its own, and a compaction that carries its summary keeps it folde
 line. Steps are coloured by category (run / read / write / search /
 network / delegate).
 
+The rounds are the ones the server numbers (`/rounds`, the Failures list's `#N`, a brief's
+`round=N`). An agent team's member starts a round at each instruction from its lead, the
+words shown and the `<teammate-message>` element folded beneath them; a Claude Code fork
+opens with a copy of its parent's conversation, shown as one folded block — *copied from
+the parent session* — with no number of its own, and its rounds start at its directive,
+the boilerplate before it folded the same way.
+
 Five views: **all**, **conversation** (the words alone), and one kind of step alone, round
 by round — **changes** (the diffs), **commands** (every command run) and **failures**
 (every failed step, opened to its output). Under the toolbar the window's sums — rounds,

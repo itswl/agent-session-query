@@ -40,6 +40,8 @@ func TestAppJSBootPathFunctionsDefined(t *testing.T) {
 		"syncDetail", "setStatus", "idleStatus", "api",
 		// syncDetail completes an anchored window's round from the other side of its instant
 		"roundRest", "isAsk", "messageKey",
+		// isAsk and the text blocks read a team lead's instruction and a fork's directive
+		"teammateLeadAsk", "askWords",
 	}
 	missing := []string{}
 	for _, name := range bootPath {

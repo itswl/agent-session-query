@@ -1844,9 +1844,18 @@ function blockNode(block) {
       // The blocks a harness closed the words with fold away under them: the model read
       // them, so they stay, but they are not what was said
       const text = String(block.content || '');
-      const words = stripHarness(text);
+      const harnessed = stripHarness(text);
+      // A team lead's instruction arrives inside its element, a fork's directive after the
+      // boilerplate Claude Code puts before it: the words lead, the wrapping folds beneath
+      const words = askWords(harnessed.trim());
       const node = markdownNode(words, el('div', 'block text md'));
-      const tail = text.trimEnd().slice(words.length).trim();
+      if (words !== harnessed.trim()) {
+        const fold = el('details', 'harness-tail');
+        fold.appendChild(el('summary', '', 'as Claude Code delivered it'));
+        fold.appendChild(el('pre', '', harnessed.trim()));
+        node.appendChild(fold);
+      }
+      const tail = text.trimEnd().slice(harnessed.length).trim();
       if (tail) {
         const fold = el('details', 'harness-tail');
         fold.appendChild(el('summary', '', 'added by the harness'));
@@ -1933,15 +1942,52 @@ function stripHarness(text) {
 
 // isAsk: a user message carrying words of its own, not command plumbing, not one the CLI
 // assembled (those arrive flagged injected), and not one that is wholly an XML-style
-// element — a person does not type a question that way
+// element — a person does not type a question that way. Two exceptions follow the server's
+// isRoundStart, so the page's rounds are the ones /rounds, /failures and a brief number:
+// an agent team's lead hands a member its work, and every later instruction, wrapped in
+// <teammate-message teammate_id="team-lead"> — an ask, unless it is one of the lead's JSON
+// protocol messages — and a fork's copy of its parent's conversation (rows marked
+// inherited) asks nothing of the fork.
 function isAsk(message) {
   // A prompt queued while the agent worked is read inside the turn it arrived in
-  if (message.role !== 'user' || message.injected || message.queued) return false;
+  if (message.role !== 'user' || message.injected || message.queued || message.inherited) return false;
   const text = stripHarness(messageWords(message)).trim();
   if (!text) return false;
+  const lead = teammateLeadAsk(text);
+  if (lead !== null) return lead !== '' && !lead.startsWith('{');
   if (PLUMBING_PREFIXES.some((prefix) => text.startsWith(prefix))) return false;
   return !wrappedInTag(text);
 }
+
+// What an agent team's lead says to a member opens with this; the members' own reports, in
+// the lead's transcript, carry their own ids and stay news mid-round
+const TEAMMATE_LEAD_PREFIX = '<teammate-message teammate_id="team-lead"';
+
+// teammateLeadAsk is the body of a message from the team's lead, or null when text is not
+// one. The attributes are escaped, so the first > ends the opening tag.
+function teammateLeadAsk(text) {
+  if (!text.startsWith(TEAMMATE_LEAD_PREFIX)) return null;
+  const open = text.indexOf('>');
+  if (open < 0) return '';
+  let body = text.slice(open + 1);
+  const end = body.lastIndexOf('</teammate-message>');
+  if (end >= 0) body = body.slice(0, end);
+  return body.trim();
+}
+
+// askWords is an ask as it was meant: the lead's instruction without the element it arrives
+// in, a fork's directive without the boilerplate Claude Code puts before it, anything else
+// as it is — the server's roundAsk
+function askWords(text) {
+  const lead = teammateLeadAsk(text);
+  if (lead !== null) return lead;
+  if (text.startsWith('<fork-boilerplate>')) {
+    const end = text.indexOf(FORK_BOILERPLATE_END);
+    if (end >= 0) return text.slice(end + FORK_BOILERPLATE_END.length).trim();
+  }
+  return text;
+}
+const FORK_BOILERPLATE_END = '</fork-boilerplate>';
 
 // roundRest is what an anchored window needs from the other side of its instant to hold the
 // anchor's round whole. after: the window ends at the anchor, and the rest of the round is
@@ -1980,8 +2026,15 @@ function roundsOf(all) {
 function buildRounds(all) {
   const preface = [];
   const rounds = [];
+  const inherited = [];
   let current = null;
   all.forEach((message, index) => {
+    // A fork's copy of its parent's conversation comes first, before the directive that
+    // starts the fork's own rounds; it is the parent's, read as one block of its own
+    if (message.inherited && !current) {
+      inherited.push({ message, index });
+      return;
+    }
     if (isAsk(message)) {
       current = { no: rounds.length + 1, key: messageKey(message), ask: { message, index }, items: [], last: false };
       rounds.push(current);
@@ -1999,7 +2052,11 @@ function buildRounds(all) {
   if (preface.some(({ message }) => message.role !== 'user' || hasWords(message) || (message.content || []).length)) {
     lead = { no: 0, key: 'lead:' + messageKey(preface[0].message), ask: null, items: preface, last: rounds.length === 0 };
   }
-  const analysed = lead ? [lead].concat(rounds) : rounds;
+  // The parent's part: no ask, no number, no reply of the fork's — folded like a lead
+  const copied = inherited.length
+    ? { no: 0, key: 'inherited:' + messageKey(inherited[0].message), ask: null, items: inherited, last: false, inherited: true }
+    : null;
+  const analysed = (copied ? [copied] : []).concat(lead ? [lead] : [], rounds);
   analysed.forEach(analyseRound);
   return { preface: lead ? [] : preface, rounds: analysed };
 }
@@ -2402,6 +2459,10 @@ function roundNode(round) {
   node.dataset.round = round.no;
   if (round.ask) {
     node.appendChild(messageNode(round.ask.message, round.ask.index, { label: '#' + round.no, brief: true }));
+  } else if (round.inherited) {
+    node.appendChild(el('p', 'round-lead',
+      'copied from the parent session — its conversation up to the call that started this fork (' +
+      round.items.length + (round.items.length === 1 ? ' message' : ' messages') + ')'));
   } else {
     // The ask lies before this window (or there is none): say so, where the bubble would be
     const total = Number(state.detail && state.detail.final && state.detail.final.messageCount) || 0;
@@ -2432,6 +2493,8 @@ function roundNode(round) {
   }
   if (round.final) {
     node.appendChild(messageNode(round.final.message, round.final.index, { only: 'text', extraClass: 'final' }));
+  } else if (round.inherited) {
+    // The parent's part ends at the call that started the fork: a reply is not missing
   } else if (round.summary.interrupted) {
     node.appendChild(el('p', 'no-reply', 'interrupted — no reply'));
   } else if (round.last && record && record.isActive) {
@@ -3521,7 +3584,7 @@ function tocPreviewOf(message, max) {
   const limit = max || 70;
   for (const block of message.content || []) {
     if (block.type === 'text' && block.content) {
-      const one = plainText(stripHarness(block.content));
+      const one = plainText(askWords(stripHarness(block.content).trim()));
       if (!one) continue;
       return one.length > limit ? one.slice(0, limit) + '…' : one;
     }

@@ -21,15 +21,47 @@ round 12                              langfuse.observation.type=span
 └─ compaction                         type=event
 ```
 
-Every span carries `langfuse.session.id`, `langfuse.trace.name` (the session title),
-`session.source`, `session.project` (when known), `round.index`, and
-`timing.source`. Model spans also carry `gen_ai.operation.name=chat`,
-`gen_ai.request.model` / `gen_ai.response.model`, and
+Every span carries `langfuse.session.id`, `langfuse.trace.name`, `session.source`,
+`session.project` (when known), `round.index`, and `timing.source`; the root also carries
+`session.title`. The trace name is the round's ask (its first line, masked, cut to 100
+characters) when content is exported, and the session title when it is not — metadata
+only keeps the asks at home. Model spans also carry `gen_ai.operation.name=chat`,
+`gen_ai.request.model` / `gen_ai.response.model` — the model of that response when the
+source names it, the session's last model otherwise — and
 `gen_ai.usage.input_tokens` / `output_tokens` / `cache_read.input_tokens` /
 `cache_creation.input_tokens` / `reasoning.output_tokens`. Tool spans carry
 `gen_ai.tool.name`, `gen_ai.tool.call.id`, `tool.command`, `tool.status` and
 `tool.exit_code`. A failed tool is a span with status `ERROR` and the failure text as its
-message; a round with a failed tool is marked too.
+message. A round whose last tool call failed is an `ERROR`; a round that had failed calls
+but went on is a `WARNING` (`langfuse.observation.level`) with the count in its status
+message — a command that exits 1 and is retried is not a failed round.
+
+**One generation per model response.** Claude Code writes a response as several rows (one
+per content block, the tool results in between), every row repeating the response's
+usage; the rows share a `response` id and fold into one generation, whose usage is the
+response's, once (measured: 13,368 of 16,217 local responses were split, up to 18 rows).
+A generation's body is chat messages, the way a backend draws a conversation: its input is
+what reached the model since its previous call — the ask for the round's first call, then
+the tool results (`role: tool`, by `tool_call_id`) and any prompt typed mid-round — and its
+output the response as an assistant message with its `tool_calls`. The ask is not repeated
+on every call, and a tool result or a call's arguments is cut at 32 KiB inside them. A row the
+CLI made itself (`<synthetic>`, e.g. a resumed session's "No response requested.") is no
+generation and does not stretch its round.
+
+A round's root carries `langfuse.trace.tags`: the source, `project:<folder>`, `subagent`
+for a subagent's own transcript, `tool-failure` when a tool call failed and `failed` when
+the round ended on one. A generation carries `langfuse.observation.completion_start_time`
+(time to first token) where the source records when the response began to arrive —
+OpenCode 2.x, from a part's own `time.created` — and `langfuse.observation.cost_details`
+when the CLI worked out a cost above zero (Pi's `usage.cost.total`, OpenCode's `cost`). A
+zero is a CLI without a price for the model and is not sent: give the backend the price
+(Langfuse: Settings › Models) and it prices the tokens itself. Nothing in a transcript is a
+prompt from Langfuse's prompt management or a score: those stay empty.
+
+What a source does not record cannot be exported: Hermes keeps usage per session, not
+per message, so its generations carry the model (from `state.db` when `sessions.json`
+does not name it) but no token counts; Codex and Grok report usage per turn
+(`token_usage_record`, `turn_completed`), which lands on the turn's assistant message.
 
 Span and trace ids are derived from source, session, round and step with SHA-256, so a
 re-export of the same session sends the same ids: a backend that updates by id (Langfuse
@@ -51,15 +83,19 @@ The CLIs disagree about time. Every span says where its times came from, in
 - **derived** — both ends are real row timestamps; the span is the elapsed time between
   them (tool call row → result row, the round from ask to last work).
 - **inferred** — the start is the previous event, because the CLI records only completion
-  (model responses on Codex, Claude, Pi, Gemini, Grok, Antigravity; OpenCode records both
-  ends).
+  (model responses on Codex, Claude, Gemini, Grok, Antigravity; OpenCode records both
+  ends). A gap of more than 30 minutes is idle or a resumed session, not a call: the span
+  is drawn at its completion instead.
+
+Pi and OpenCode measure their calls: an assistant message's `durationMs` from its creation
+gives the generation outright, marked **recorded**.
 
 | Source | Model span timing | Tool span timing |
 |---|---|---|
-| OpenCode | inferred (endpoints are recorded; the message carries both, the exporter uses the row time) | derived, or recorded with `durationMs` |
+| OpenCode | recorded (`time.created` → `time.completed`; 2.x also the first token) | derived, or recorded with `durationMs` |
 | Codex | inferred (completion = `token_usage_record`) | recorded/derived from the call and its output, incl. the tool's wall time when present |
 | Claude Code | inferred | derived from the call/result rows |
-| Pi | inferred | derived |
+| Pi | recorded (`durationMs`) | derived |
 | Gemini, Grok, Hermes, OpenClaw, Antigravity | inferred | derived |
 
 **Model latency is not a measurement.** A generation span runs from the previous event to
@@ -73,7 +109,7 @@ must filter on `timing.source=recorded`; the token counts are exact.
 | `--otel-endpoint` | OTLP/HTTP base URL; `/v1/traces` is appended. `https://cloud.langfuse.com/api/public/otel` for Langfuse |
 | `--otel-headers` | comma-separated `name=value`, percent-encoded; e.g. `Authorization=Basic%20<pk:sk>` |
 | `--otel-content` | `none` (default) or `io` — prompts, replies and tool output, masked and cut at 256 KiB |
-| `--otel-export` | export once and exit, instead of serving |
+| `--otel-export` | export once and exit, instead of serving. No time limit: a whole-history backfill runs to the end, and Ctrl-C keeps the cursor of what was sent, so the next run goes on from there |
 | `--otel-since` | backfill window: `7d` (default), `48h`, a date, or `all` for the whole history |
 | `--otel-every` | in server mode, export settled changes on this interval (default `10m`, `0` disables) |
 | `--otel-metrics` | also POST delta sums to `/v1/metrics` (rounds, token sums, tool failures); off by default — Langfuse does not take metrics |

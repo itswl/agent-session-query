@@ -166,6 +166,15 @@ func Encode(spans []Span) ([]byte, error) {
 				value["doubleValue"] = v
 			case bool:
 				value["boolValue"] = v
+			case []string:
+				if len(v) == 0 {
+					continue
+				}
+				values := make([]any, 0, len(v))
+				for _, item := range v {
+					values = append(values, map[string]any{"stringValue": item})
+				}
+				value["arrayValue"] = map[string]any{"values": values}
 			default:
 				continue
 			}

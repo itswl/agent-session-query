@@ -115,3 +115,20 @@ func TestSendEndpointAndFailure(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+// TestEncodeStringArray: a list attribute (trace tags) goes out as an OTLP arrayValue
+func TestEncodeStringArray(t *testing.T) {
+	body, err := Encode([]Span{{TraceID: NewID("t"), SpanID: NewSpanID("s"), Name: "x",
+		Start: time.Unix(1, 0), End: time.Unix(2, 0),
+		Attributes: []Attribute{{Key: "langfuse.trace.tags", Value: []string{"claude", "tool-failure"}}, {Key: "empty", Value: []string{}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, `"arrayValue":{"values":[{"stringValue":"claude"},{"stringValue":"tool-failure"}]}`) {
+		t.Fatalf("tags not encoded as an array: %s", text)
+	}
+	if strings.Contains(text, `"key":"empty"`) {
+		t.Fatalf("an empty list was sent: %s", text)
+	}
+}

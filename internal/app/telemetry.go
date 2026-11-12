@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/itswl/agent-session-query/internal/otlp"
@@ -78,7 +80,7 @@ func newOTelExporter(api *SessionQueryAPI, cfg otelConfig) *otelExporter {
 	e := &otelExporter{
 		api:    api,
 		cfg:    cfg,
-		client: &http.Client{Timeout: 20 * time.Second},
+		client: &http.Client{Timeout: 60 * time.Second}, // a batch is up to 8 MiB
 		state:  &otelState{Version: 2, Sessions: map[string]otelSession{}},
 	}
 	if cfg.statePath != "" {
@@ -113,10 +115,13 @@ func (e *otelExporter) exportOnce(ctx context.Context, since, settledBefore time
 	defer e.mu.Unlock()
 	started := time.Now()
 	acc := newOTelMetricAcc()
+	// A stopped pass (Ctrl-C, a server shutting down) still saves the cursor below: the
+	// sessions it sent are not sent again by the next run
+walk:
 	for _, src := range e.api.activeSources() {
 		for _, rec := range e.api.recordsOf(src) {
 			if ctx.Err() != nil {
-				return sessions, spans
+				break walk
 			}
 			if rec.Archived || !withinWindow(rec.UpdatedAt, since, time.Time{}) {
 				continue
@@ -389,19 +394,74 @@ func spanSize(s otlp.Span) int {
 	return n
 }
 
+// otelInferredCap bounds an inferred generation start. A model span runs from the event
+// before it to its completion; when that gap is longer than this, the CLI sat idle or the
+// session was resumed days later, and the gap is not a model call — the span is drawn at
+// its completion instead.
+const otelInferredCap = 30 * time.Minute
+
+// otelSyntheticModel is the model Claude Code writes on a row it made itself — a resumed
+// session's "No response requested.", an error it reports in the assistant's place. No
+// model answered it: it is not a generation, and it must not stretch a round to the day
+// the session was resumed.
+const otelSyntheticModel = "<synthetic>"
+
+// genBuild is one generation while its round is read: a response that arrives as several
+// rows (Claude Code writes a row per content block) folds into it. Its input is what reached
+// the model since its previous call — the ask, then the tool results — and its output the
+// response, both as chat messages a backend renders as a conversation.
+type genBuild struct {
+	span     otlp.Span
+	input    []map[string]any
+	texts    []string
+	calls    []map[string]any // OpenAI-style tool_calls: id, type, function{name, arguments}
+	hasUsage bool
+}
+
+// otelPieceLimit caps one tool result or one set of tool arguments inside a generation's
+// chat messages; the ask and the reply keep contentText's 256 KiB
+const otelPieceLimit = 32 << 10
+
+// contentPiece masks and cuts one piece of a chat message
+func contentPiece(text string) string {
+	text = contentText(text)
+	if len(text) > otelPieceLimit {
+		text = text[:otelPieceLimit] + "\n[cut]"
+	}
+	return text
+}
+
+// chatJSON renders chat messages for langfuse.observation.input / output
+func chatJSON(v any) string {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
 // buildSessionSpans renders one session as traces: one trace per round, a root span for
 // the round, and generation / tool / event spans beneath it. Every source goes through
 // this one function — the differences live in the messages, not in the exporter.
+//
+// One generation per model response: rows that share a response id (the field the sources
+// set when a CLI splits a response) are one generation, with the usage counted once. A
+// round whose tool calls failed but which went on is a warning; only a round that ended on
+// a failed call is an error.
 func buildSessionSpans(rec source.Record, messages []map[string]any, content bool) []otlp.Span {
 	base := []string{rec.Source, rec.SessionID}
 	var spans []otlp.Span
 	roundNo := 0
 	var root *otlp.Span
-	var traceID, rootID string
+	var traceID, rootID, traceName string
 	var ask, lastAssistant string
 	var start, lastWork, lastEvent time.Time
-	var failed bool
+	var failures int
+	var endedInFailure bool
 	tools := map[string]*otlp.Span{}
+	var gens []*genBuild
+	byResponse := map[string]*genBuild{}
+	var pending []map[string]any // what reached the model since its last call: the next generation's input
 	lastModel := rec.Model
 
 	flush := func() {
@@ -413,22 +473,47 @@ func buildSessionSpans(rec source.Record, messages []map[string]any, content boo
 			end = start
 		}
 		root.Start, root.End = start, end
-		if failed {
-			root.Error, root.Status = true, "a tool call failed in this round"
+		switch {
+		case failures > 0 && endedInFailure:
+			root.Error, root.Status = true, fmt.Sprintf("%d tool call(s) failed; the round ended on a failure", failures)
+		case failures > 0:
+			root.Attributes = append(root.Attributes,
+				otlp.Attribute{Key: "langfuse.observation.level", Value: "WARNING"},
+				otlp.Attribute{Key: "langfuse.observation.status_message", Value: fmt.Sprintf("%d tool call(s) failed; the round went on", failures)})
 		}
 		if content {
 			root.Attributes = append(root.Attributes, otlp.Attribute{Key: "langfuse.observation.input", Value: contentText(ask)})
 			root.Attributes = append(root.Attributes, otlp.Attribute{Key: "langfuse.observation.output", Value: contentText(lastAssistant)})
 		}
+		root.Attributes = append(root.Attributes, otlp.Attribute{Key: "langfuse.trace.tags", Value: roundTags(rec, failures, endedInFailure)})
 		spans = append(spans, *root)
-		for id, tool := range tools {
+		for _, g := range gens {
+			if content {
+				reply := map[string]any{"role": "assistant", "content": contentText(strings.Join(g.texts, "\n\n"))}
+				if len(g.calls) > 0 {
+					reply["tool_calls"] = g.calls
+				}
+				if len(g.input) > 0 {
+					g.span.Attributes = append(g.span.Attributes, otlp.Attribute{Key: "langfuse.observation.input", Value: chatJSON(g.input)})
+				}
+				g.span.Attributes = append(g.span.Attributes, otlp.Attribute{Key: "langfuse.observation.output", Value: chatJSON(reply)})
+			}
+			spans = append(spans, g.span)
+		}
+		ids := make([]string, 0, len(tools))
+		for id := range tools {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids) // the same round renders in the same order: its fingerprint holds
+		for _, id := range ids {
+			tool := tools[id]
 			if tool.End.Before(tool.Start) {
 				tool.End = end
 			}
 			spans = append(spans, *tool)
 			delete(tools, id)
 		}
-		root = nil
+		root, gens, byResponse, pending = nil, nil, map[string]*genBuild{}, nil
 	}
 
 	for _, m := range messages {
@@ -437,63 +522,125 @@ func buildSessionSpans(rec source.Record, messages []map[string]any, content boo
 		if !ok {
 			at = lastEvent
 		}
+		model := source.ToStr(m["model"])
+		if role == "assistant" && model == otelSyntheticModel {
+			continue // no model answered it, and its time is not the round's
+		}
 		starting := isRoundStart(m)
 		if starting {
 			flush()
 			roundNo++
 			ask, lastAssistant = strings.TrimSpace(messageText(m["content"])), ""
+			traceName = rec.ShortKey
+			if content {
+				traceName = roundTitle(ask, rec.ShortKey) // the ask names the round; off, it stays home
+			}
 			round := strconv.Itoa(roundNo)
 			traceID = otlp.NewID(append(base, round, "trace")...)
 			rootID = otlp.NewSpanID(append(base, round, "root")...)
 			start, lastWork, lastEvent = at, at, at
-			failed = false
+			failures, endedInFailure = 0, false
+			pending = []map[string]any{{"role": "user", "content": contentText(ask)}}
 			tools = map[string]*otlp.Span{}
 			root = &otlp.Span{
 				TraceID: traceID, SpanID: rootID, Name: "round " + round, Kind: 1, Start: at, End: at,
-				Attributes: commonAttributes(rec, roundNo, "span", "derived"),
+				Attributes: commonAttributes(rec, roundNo, "span", "derived", traceName),
+			}
+			if rec.ShortKey != "" {
+				root.Attributes = append(root.Attributes, otlp.Attribute{Key: "session.title", Value: rec.ShortKey})
 			}
 		}
 		if root == nil {
 			lastEvent = at
 			continue
 		}
+		// Words the person typed mid-round (a queued prompt) reach the model with its next call
+		if role == "user" && !starting && !source.Truthy(m["injected"]) {
+			if text := strings.TrimSpace(messageText(m["content"])); text != "" {
+				pending = append(pending, map[string]any{"role": "user", "content": contentText(text)})
+			}
+		}
+		var cur *genBuild
 		if role == "assistant" {
 			text := strings.TrimSpace(messageText(m["content"]))
-			genStart := lastEvent
-			if genStart.IsZero() || genStart.After(at) {
-				genStart = at
+			response := source.ToStr(m["response"])
+			if response != "" {
+				cur = byResponse[response]
 			}
-			gen := otlp.Span{
-				TraceID:  traceID,
-				SpanID:   otlp.NewSpanID(append(base, strconv.Itoa(roundNo), "msg", messageKey(m, role))...),
-				ParentID: rootID, Name: "model", Kind: 1, Start: genStart, End: at,
-				Attributes: commonAttributes(rec, roundNo, "generation", "inferred"),
+			// A source that measured the call (Pi's durationMs, from the message's creation)
+			// gives the span outright; the rest only record completion, so the start is the
+			// event before it, within the cap
+			measured, _ := source.ToFloat(m["durationMs"])
+			if cur == nil {
+				genStart, genEnd, timing := lastEvent, at, "inferred"
+				if genStart.IsZero() || genStart.After(at) || at.Sub(genStart) > otelInferredCap {
+					genStart = at
+				}
+				if measured > 0 {
+					genStart, genEnd, timing = at, at.Add(time.Duration(measured)*time.Millisecond), "recorded"
+				}
+				var firstToken time.Time // when the response began to arrive, where the source says
+				if ms, _ := source.ToFloat(m["firstTokenMs"]); ms > 0 && measured > 0 {
+					firstToken = at.Add(time.Duration(ms) * time.Millisecond)
+				}
+				key := source.FirstNonEmpty(response, messageKey(m, role))
+				cur = &genBuild{span: otlp.Span{
+					TraceID:  traceID,
+					SpanID:   otlp.NewSpanID(append(base, strconv.Itoa(roundNo), "msg", key)...),
+					ParentID: rootID, Name: "model", Kind: 1, Start: genStart, End: genEnd,
+					Attributes: commonAttributes(rec, roundNo, "generation", timing, traceName),
+				}}
+				// The response's own model; the session's last model only when the row has none
+				if name := source.FirstNonEmpty(model, lastModel); name != "" {
+					cur.span.Name = "model " + name
+					cur.span.Attributes = append(cur.span.Attributes,
+						otlp.Attribute{Key: "gen_ai.request.model", Value: name},
+						otlp.Attribute{Key: "gen_ai.response.model", Value: name})
+				}
+				cur.span.Attributes = append(cur.span.Attributes,
+					otlp.Attribute{Key: "gen_ai.operation.name", Value: "chat"})
+				if !firstToken.IsZero() {
+					cur.span.Attributes = append(cur.span.Attributes, otlp.Attribute{
+						Key: "langfuse.observation.completion_start_time", Value: firstToken.UTC().Format(time.RFC3339Nano)})
+				}
+				cur.input, pending = pending, nil // a later row of the same response takes nothing
+				gens = append(gens, cur)
+				if response != "" {
+					byResponse[response] = cur
+				}
+			} else if at.After(cur.span.End) {
+				cur.span.End = at // a later block of the same response
 			}
-			if model := source.FirstNonEmpty(source.ToStr(m["model"]), lastModel); model != "" {
-				gen.Name = "model " + model
-				gen.Attributes = append(gen.Attributes, otlp.Attribute{Key: "gen_ai.request.model", Value: model})
+			if model != "" {
 				lastModel = model
 			}
-			gen.Attributes = append(gen.Attributes,
-				otlp.Attribute{Key: "gen_ai.operation.name", Value: "chat"})
-			gen.Attributes = append(gen.Attributes, usageAttributes(m["usage"])...)
-			if content {
-				gen.Attributes = append(gen.Attributes,
-					otlp.Attribute{Key: "langfuse.observation.input", Value: contentText(ask)},
-					otlp.Attribute{Key: "langfuse.observation.output", Value: contentText(text)})
+			if !cur.hasUsage {
+				if usage := usageAttributes(m["usage"]); len(usage) > 0 {
+					cur.span.Attributes = append(cur.span.Attributes, usage...)
+					cur.hasUsage = true
+				}
 			}
-			spans = append(spans, gen)
 			if text != "" {
+				cur.texts = append(cur.texts, text)
 				lastAssistant = text
+				endedInFailure = false // the agent spoke after the failure
 			}
 			if at.After(lastWork) {
 				lastWork = at
+			}
+			if cur.span.End.After(lastWork) {
+				lastWork = cur.span.End // a measured call ends after the row's own time
 			}
 		}
 		for _, block := range contentBlocks(m["content"]) {
 			switch source.ToStr(block["type"]) {
 			case "toolCall":
 				name, id := source.ToStr(block["name"]), source.ToStr(block["id"])
+				if cur != nil {
+					args, _ := json.Marshal(block["arguments"])
+					cur.calls = append(cur.calls, map[string]any{"id": id, "type": "function",
+						"function": map[string]any{"name": name, "arguments": contentPiece(string(args))}})
+				}
 				key := id
 				if key == "" {
 					key = "call:" + strconv.Itoa(len(spans))
@@ -501,7 +648,7 @@ func buildSessionSpans(rec source.Record, messages []map[string]any, content boo
 				tool := otlp.Span{
 					TraceID: traceID, SpanID: otlp.NewSpanID(append(base, strconv.Itoa(roundNo), "tool", key)...),
 					ParentID: rootID, Name: source.FirstNonEmpty(name, "tool"), Kind: 1, Start: at, End: at,
-					Attributes: commonAttributes(rec, roundNo, "tool", "derived"),
+					Attributes: commonAttributes(rec, roundNo, "tool", "derived", traceName),
 				}
 				tool.Attributes = append(tool.Attributes,
 					otlp.Attribute{Key: "gen_ai.operation.name", Value: "execute_tool"})
@@ -549,10 +696,15 @@ func buildSessionSpans(rec source.Record, messages []map[string]any, content boo
 					tool.Attributes = append(tool.Attributes, otlp.Attribute{Key: "tool.exit_code", Value: int64(code)})
 				}
 				output := source.ToStr(block["content"])
+				pending = append(pending, map[string]any{"role": "tool", "tool_call_id": id,
+					"name": source.ToStr(block["toolName"]), "content": contentPiece(output)})
 				if source.IsFailedResult(block) {
 					tool.Error = true
 					tool.Status = contentText(output)
-					failed = true
+					failures++
+					endedInFailure = true
+				} else {
+					endedInFailure = false
 				}
 				if content {
 					tool.Attributes = append(tool.Attributes, otlp.Attribute{Key: "langfuse.observation.output", Value: contentText(output)})
@@ -567,7 +719,7 @@ func buildSessionSpans(rec source.Record, messages []map[string]any, content boo
 					TraceID:  traceID,
 					SpanID:   otlp.NewSpanID(append(base, strconv.Itoa(roundNo), "event", strconv.Itoa(len(spans)))...),
 					ParentID: rootID, Name: source.FirstNonEmpty(kind, "event"), Kind: 1, Start: at, End: at,
-					Attributes: commonAttributes(rec, roundNo, "event", "recorded"),
+					Attributes: commonAttributes(rec, roundNo, "event", "recorded", traceName),
 				}
 				if kind != "" {
 					event.Attributes = append(event.Attributes, otlp.Attribute{Key: "event.name", Value: kind})
@@ -589,12 +741,47 @@ func buildSessionSpans(rec source.Record, messages []map[string]any, content boo
 	return spans
 }
 
-// commonAttributes is what every span carries: the session it belongs to, its round and
-// the provenance of its times
-func commonAttributes(rec source.Record, round int, kind, timing string) []otlp.Attribute {
+// roundTags are a round's trace tags, for filtering: where it came from (the source, the
+// project, a subagent's own transcript) and how it went (a failed tool call, a round that
+// ended on one)
+func roundTags(rec source.Record, failures int, endedInFailure bool) []string {
+	tags := []string{rec.Source}
+	if project := filepath.Base(strings.TrimRight(rec.ProjectName(), "/\\")); project != "" && project != "." && project != "/" {
+		tags = append(tags, "project:"+project) // the folder's name: a tag is a label, not a path
+	}
+	if rec.IsSubagent() {
+		tags = append(tags, "subagent")
+	}
+	if failures > 0 {
+		tags = append(tags, "tool-failure")
+	}
+	if endedInFailure {
+		tags = append(tags, "failed")
+	}
+	return tags
+}
+
+// roundTitle names a round's trace by its ask: the first line, harness blocks stripped,
+// secrets masked, cut to 100 characters. A round with no words (an image alone) takes the
+// session's title.
+func roundTitle(ask, session string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(source.StripHarnessBlocks(ask)), "\n")
+	line = strings.TrimSpace(source.RedactSecrets(line))
+	if line == "" {
+		return session
+	}
+	if runes := []rune(line); len(runes) > 100 {
+		line = string(runes[:100]) + "…"
+	}
+	return line
+}
+
+// commonAttributes is what every span carries: the session it belongs to, its round, the
+// round's trace name and the provenance of its times
+func commonAttributes(rec source.Record, round int, kind, timing, traceName string) []otlp.Attribute {
 	attrs := []otlp.Attribute{
 		{Key: "langfuse.session.id", Value: rec.SessionID},
-		{Key: "langfuse.trace.name", Value: rec.ShortKey},
+		{Key: "langfuse.trace.name", Value: traceName},
 		{Key: "langfuse.observation.type", Value: kind},
 		{Key: "session.source", Value: rec.Source},
 		{Key: "round.index", Value: int64(round)},
@@ -602,9 +789,6 @@ func commonAttributes(rec source.Record, round int, kind, timing string) []otlp.
 	}
 	if project := rec.ProjectName(); project != "" {
 		attrs = append(attrs, otlp.Attribute{Key: "session.project", Value: project})
-	}
-	if rec.Model != "" && kind == "generation" {
-		attrs = append(attrs, otlp.Attribute{Key: "gen_ai.response.model", Value: rec.Model})
 	}
 	return attrs
 }
@@ -627,6 +811,11 @@ func usageAttributes(raw any) []otlp.Attribute {
 		if n, ok := source.ToFloat(usage[pair.key]); ok && n > 0 {
 			out = append(out, otlp.Attribute{Key: pair.attr, Value: int64(n)})
 		}
+	}
+	// A cost the CLI worked out (Pi's usage.cost.total, OpenCode's cost) goes as is; a zero
+	// is a CLI that had no price for the model, and is left for the backend to price
+	if cost, ok := source.ToFloat(usage["estimatedCostUsd"]); ok && cost > 0 {
+		out = append(out, otlp.Attribute{Key: "langfuse.observation.cost_details", Value: chatJSON(map[string]any{"total": cost})})
 	}
 	return out
 }
@@ -840,9 +1029,14 @@ func otelConfigFromFlags(endpoint, headers, content, since string, every, settle
 // runOTelOnce is --otel-export: one pass over the window, then exit
 func runOTelOnce(api *SessionQueryAPI, cfg otelConfig) int {
 	exporter := newOTelExporter(api, cfg)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
+	// No deadline: a whole-history backfill takes as long as it takes (a fixed ten minutes
+	// cut one off and, with it, the cursor). Ctrl-C stops it, and what was sent is kept.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	sessions, spans := exporter.exportOnce(ctx, cfg.since, time.Time{})
+	if ctx.Err() != nil {
+		fmt.Fprintf(os.Stderr, "[WARN] otel: stopped early; the %d sessions sent are in the cursor and the next run goes on from there\n", sessions)
+	}
 	if cfg.dryRun {
 		fmt.Fprintf(os.Stderr, "Would export %d spans from %d sessions\n", spans, sessions)
 		return 0

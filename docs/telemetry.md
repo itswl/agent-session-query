@@ -239,7 +239,7 @@ on stderr. To start clean:
    `agent-session-query --otel-export --otel-resend --otel-since all …` (the endpoint and
    headers as usual).
 
-**Format 3** (the release after v0.39.7) hangs a subagent's rounds beneath the call that
+**Format 3** (v0.39.8) hangs a subagent's rounds beneath the call that
 started it, in the parent round's trace. Under format 2 each subagent had traces of its
 own; the spans move, keeping their ids, but the traces they left stay behind in a backend,
 named and tagged and empty. The same clean start applies.

@@ -260,7 +260,7 @@ started it, in the parent round's trace. Under format 2 each subagent had traces
 own; the spans move, keeping their ids, but the traces they left stay behind in a backend,
 named and tagged and empty. The same clean start applies.
 
-**Format 4** (the release after v0.39.8) leaves out the rows a fork copied from its parent:
+**Format 4** (v0.39.9) leaves out the rows a fork copied from its parent:
 format 3 sent them as the fork's first rounds, beneath its call, so the parent's responses
 were generations twice, and the fork's own rounds are now numbered from 1 under other ids.
 The same release sends token counts in the GenAI shape (input with the cache in it, output

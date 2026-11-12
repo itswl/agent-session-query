@@ -211,7 +211,7 @@ transcript would now be sent under other ids or with other contents, and a backe
 updates by id cannot drop what it got under the old ids: those spans stay beside the new
 ones.
 
-**Format 2** (after v0.39.6) makes one generation per model response. Under format 1
+**Format 2** (v0.39.7) makes one generation per model response. Under format 1
 every row of a Claude Code response was a generation of its own, each with the response's
 whole usage, so Langfuse counted those tokens up to 18 times; the round attributes (trace
 name, tags, levels) changed as well, so every round exported before is re-sent the next

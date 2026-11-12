@@ -30,7 +30,10 @@ Typing filters sessionId / path / cwd and, in the same query, **searches message
 on the server. Body hits append under an "N more in message bodies" divider, carrying the
 matching snippet; with a source picked in the filter, the body search runs within that
 source. <kbd>Enter</kbd> skips the wait. A body match picked in the list opens with its
-words already in the find bar and the match in view.
+words already in the find bar, the match in view, and its round whole: the window ends at
+the match (latest first) or starts at it (earliest first), and the other side is read
+alongside to complete the round — the steps after the match and the reply, up to the next
+ask, or the ask and the steps that led to it.
 
 ### Middle — the conversation, read by rounds
 

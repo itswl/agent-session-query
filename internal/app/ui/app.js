@@ -1943,6 +1943,25 @@ function isAsk(message) {
   return !wrappedInTag(text);
 }
 
+// roundRest is what an anchored window needs from the other side of its instant to hold the
+// anchor's round whole. after: the window ends at the anchor, and the rest of the round is
+// what follows, up to the next ask. Otherwise the window starts at the anchor, and what it
+// lacks is what led up to it, back to the ask that opened the round — nothing when the
+// window already opens on that ask. Rows the window holds are left out (a shared timestamp
+// puts the anchor's row on both sides); a round longer than the page brings the whole page.
+function roundRest(window, other, after) {
+  const seen = new Set(window.map(messageKey));
+  const fresh = other.filter((m) => !seen.has(messageKey(m)));
+  if (after) {
+    const next = fresh.findIndex(isAsk);
+    return next < 0 ? fresh : fresh.slice(0, next);
+  }
+  if (window.length && isAsk(window[0])) return [];
+  let start = -1;
+  fresh.forEach((m, i) => { if (isAsk(m)) start = i; });
+  return start < 0 ? fresh : fresh.slice(start);
+}
+
 // wrappedInTag: <name …>…</name>, the same name at both ends and nothing outside them
 function wrappedInTag(text) {
   if (text.length < 5 || text[0] !== '<' || text[text.length - 1] !== '>') return false;
@@ -4409,18 +4428,34 @@ async function syncDetail(options) {
     // session was opened and goes away the moment you page to an end yourself
     const anchor = state.focusAt;
     const at = anchor ? '&at=' + encodeURIComponent(anchor) : '';
-    let [messages, final] = await Promise.all([
+    // An anchored window also reads the other side of its instant, alongside: see below
+    const other = state.order === 'desc' ? 'asc' : 'desc';
+    let [messages, final, beyond] = await Promise.all([
       api('/sessions/' + id + '/messages?limit=' + MESSAGE_LIMIT + '&order=' + state.order + at),
       api('/sessions/' + id + '/final'),
+      anchor ? api('/sessions/' + id + '/messages?limit=' + MESSAGE_LIMIT + '&order=' + other + at) : null,
     ]);
-    // An anchored window can come back empty: the instant lies before the session's first
-    // message and the window asked for the ones up to it, or after its last and the window
-    // asked for the ones from it. A hit in a row that is not a message lands there — Claude
-    // Code writes an attachment row just before the prompt it belongs to. The other side of
-    // the instant is the window then; an empty stream said the session had no messages.
     if (anchor && !(messages.messages || []).length) {
-      const other = state.order === 'desc' ? 'asc' : 'desc';
-      messages = await api('/sessions/' + id + '/messages?limit=' + MESSAGE_LIMIT + '&order=' + other + at);
+      // An anchored window can come back empty: the instant lies before the session's
+      // first message and the window asked for the ones up to it, or after its last and
+      // the window asked for the ones from it. A hit in a row that is not a message lands
+      // there — Claude Code writes an attachment row just before the prompt it belongs to.
+      // The other side of the instant is the window then; an empty stream said the session
+      // had no messages.
+      messages = beyond;
+    } else if (beyond) {
+      // A window anchored at a search hit ends at it (latest first) or starts at it
+      // (earliest first), and that cut the hit's round in two: the steps after it and the
+      // reply, or the ask and the steps before it, fell outside — the round read as if it
+      // had no answer, the way a failure's did before it was anchored at its round's edge.
+      // The other side completes the round: on to the next ask, or back to its own.
+      const own = messages.messages || [];
+      const rest = roundRest(own, beyond.messages || [], state.order === 'desc');
+      if (rest.length) {
+        messages = Object.assign({}, messages, {
+          messages: state.order === 'desc' ? own.concat(rest) : rest.concat(own),
+        });
+      }
     }
     // Another session may have been picked while this was in flight; its own fetch (or
     // the pending re-run below) owns the stream now, and painting this one would show the

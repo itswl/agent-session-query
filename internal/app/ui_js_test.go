@@ -38,6 +38,8 @@ func TestAppJSBootPathFunctionsDefined(t *testing.T) {
 		"refresh", "handleError", "serverChanged", "scheduleCountWarmup",
 		"renderSources", "renderList", "indexAgents", "syncArchivedButton",
 		"syncDetail", "setStatus", "idleStatus", "api",
+		// syncDetail completes an anchored window's round from the other side of its instant
+		"roundRest", "isAsk", "messageKey",
 	}
 	missing := []string{}
 	for _, name := range bootPath {

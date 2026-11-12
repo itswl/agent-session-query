@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -778,5 +779,154 @@ func TestOTelSpanFormatUpgrade(t *testing.T) {
 	}
 	if e := newOTelExporter(api, cfg); e.priorFormat != 0 {
 		t.Fatalf("a current cursor reported format %d", e.priorFormat)
+	}
+}
+
+// TestOTelSubagentNesting: a subagent's rounds hang beneath the call that started it, in the
+// parent round's trace and the top-level session — aaa, spawned by the main thread's Agent
+// call (its meta names the call); bbb, spawned by aaa (beneath aaa's call, in the same
+// trace); ccc, a workflow's agent (found through the run the Workflow call's result names).
+// ddd, a team member that names no call, keeps a trace of its own.
+func TestOTelSubagentNesting(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "proj")
+	base := time.Now().Add(-3 * time.Hour).UTC()
+	row := func(kind string, minute int, extra, content string) string {
+		at := base.Add(time.Duration(minute) * time.Minute).Format("2006-01-02T15:04:05Z")
+		return `{"type":"` + kind + `","timestamp":"` + at + `","sessionId":"s1","cwd":"/w/proj"` + extra + `,"message":{"role":"` + kind + `","content":` + content + `}}`
+	}
+	agentRow := func(id, kind string, minute int, content string) string {
+		return row(kind, minute, `,"isSidechain":true,"agentId":"`+id+`"`, content)
+	}
+	write(t, filepath.Join(dir, "s1.jsonl"),
+		row("user", 0, "", `"fan out the review"`),
+		row("assistant", 1, "", `[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{}}]`),
+		row("user", 30, "", `[{"type":"tool_result","tool_use_id":"toolu_A","content":"reviewed"}]`),
+		row("assistant", 31, "", `[{"type":"tool_use","id":"toolu_W","name":"Workflow","input":{}}]`),
+		row("user", 32, `,"toolUseResult":{"runId":"wf_1","status":"async_launched"}`, `[{"type":"tool_result","tool_use_id":"toolu_W","content":"launched"}]`),
+		row("assistant", 40, "", `[{"type":"text","text":"done"}]`),
+	)
+	agents := filepath.Join(dir, "s1", "subagents")
+	write(t, filepath.Join(agents, "agent-aaa.jsonl"),
+		agentRow("aaa", "user", 2, `"Review the diff"`),
+		agentRow("aaa", "assistant", 3, `[{"type":"tool_use","id":"toolu_B","name":"Agent","input":{}}]`),
+		agentRow("aaa", "user", 6, `[{"type":"tool_result","tool_use_id":"toolu_B","content":"checked"}]`),
+		agentRow("aaa", "assistant", 10, `[{"type":"text","text":"found a race"}]`),
+	)
+	write(t, filepath.Join(agents, "agent-aaa.meta.json"), `{"agentType":"general-purpose","description":"Review the diff","toolUseId":"toolu_A"}`)
+	write(t, filepath.Join(agents, "agent-bbb.jsonl"),
+		agentRow("bbb", "user", 4, `"Check the cache"`),
+		agentRow("bbb", "assistant", 5, `[{"type":"text","text":"the lock is held across the write"}]`),
+	)
+	write(t, filepath.Join(agents, "agent-bbb.meta.json"), `{"agentType":"fork","description":"Check the cache","toolUseId":"toolu_B","parentAgentId":"aaa"}`)
+	write(t, filepath.Join(agents, "workflows", "wf_1", "agent-ccc.jsonl"),
+		agentRow("ccc", "user", 33, `"Scan the logs"`),
+		agentRow("ccc", "assistant", 34, `[{"type":"text","text":"nothing unusual"}]`),
+	)
+	write(t, filepath.Join(agents, "workflows", "wf_1", "agent-ccc.meta.json"), `{"agentType":"workflow-subagent","description":"Scan the logs"}`)
+	write(t, filepath.Join(agents, "agent-ddd.jsonl"),
+		agentRow("ddd", "user", 35, `"Watch the queue"`),
+		agentRow("ddd", "assistant", 36, `[{"type":"text","text":"quiet"}]`),
+	)
+	write(t, filepath.Join(agents, "agent-ddd.meta.json"), `{"agentType":"team-member","description":"Watch the queue","teamName":"t"}`)
+
+	type sent struct {
+		trace, id, parent, name string
+		attrs                   map[string]string
+	}
+	var mu sync.Mutex
+	var spans []sent
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			ResourceSpans []struct {
+				ScopeSpans []struct {
+					Spans []struct {
+						TraceID      string `json:"traceId"`
+						SpanID       string `json:"spanId"`
+						ParentSpanID string `json:"parentSpanId"`
+						Name         string `json:"name"`
+						Attributes   []struct {
+							Key   string         `json:"key"`
+							Value map[string]any `json:"value"`
+						} `json:"attributes"`
+					} `json:"spans"`
+				} `json:"scopeSpans"`
+			} `json:"resourceSpans"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("body: %v", err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for _, rs := range payload.ResourceSpans {
+			for _, ss := range rs.ScopeSpans {
+				for _, s := range ss.Spans {
+					attrs := map[string]string{}
+					for _, a := range s.Attributes {
+						attrs[a.Key] = fmt.Sprint(a.Value["stringValue"])
+						if _, list := a.Value["arrayValue"]; list {
+							attrs[a.Key] = "(list)"
+						}
+					}
+					spans = append(spans, sent{s.TraceID, s.SpanID, s.ParentSpanID, s.Name, attrs})
+				}
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	api := newSessionQueryAPI([]source.SessionSource{source.NewClaudeSource(root)}, 0)
+	cfg := otelConfig{endpoint: server.URL, since: time.Now().Add(-24 * time.Hour)}
+	if sessions, _ := newOTelExporter(api, cfg).exportOnce(context.Background(), cfg.since, time.Time{}); sessions != 5 {
+		t.Fatalf("exported %d sessions, want the session and its 4 agents", sessions)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	find := func(match func(sent) bool, what string) sent {
+		t.Helper()
+		for _, s := range spans {
+			if match(s) {
+				return s
+			}
+		}
+		t.Fatalf("no span for %s", what)
+		return sent{}
+	}
+	mainRoot := find(func(s sent) bool { return s.name == "round 1" && s.attrs["subagent.session.id"] == "" }, "the session's round")
+	call := func(id string) sent {
+		return find(func(s sent) bool { return s.attrs["gen_ai.tool.call.id"] == id }, "call "+id)
+	}
+	agentRoot := func(id string) sent {
+		return find(func(s sent) bool {
+			return s.attrs["subagent.session.id"] == id && s.attrs["langfuse.observation.type"] == "agent"
+		}, "agent "+id+"'s root")
+	}
+
+	for _, c := range []struct{ agent, call, name string }{
+		{"aaa", "toolu_A", "subagent general-purpose"},
+		{"bbb", "toolu_B", "subagent fork"},
+		{"ccc", "toolu_W", "subagent workflow-subagent"},
+	} {
+		r := agentRoot(c.agent)
+		if r.trace != mainRoot.trace || r.parent != call(c.call).id || r.name != c.name {
+			t.Errorf("%s: trace %s parent %s name %q, want the session's trace %s beneath %s's span %s, named %q",
+				c.agent, r.trace, r.parent, r.name, mainRoot.trace, c.call, call(c.call).id, c.name)
+		}
+		if r.attrs["langfuse.session.id"] != "s1" || r.attrs["langfuse.trace.name"] != "" || r.attrs["langfuse.trace.tags"] != "" {
+			t.Errorf("%s: session %q, trace name %q, tags %q — want the session's, and no trace-level attributes",
+				c.agent, r.attrs["langfuse.session.id"], r.attrs["langfuse.trace.name"], r.attrs["langfuse.trace.tags"])
+		}
+		for _, s := range spans {
+			if s.attrs["subagent.session.id"] == c.agent && s.trace != mainRoot.trace {
+				t.Errorf("%s: span %q stayed in trace %s", c.agent, s.name, s.trace)
+			}
+		}
+	}
+
+	loner := find(func(s sent) bool { return s.name == "round 1" && s.attrs["langfuse.session.id"] == "ddd" }, "ddd's own round")
+	if loner.trace == mainRoot.trace || loner.parent != "" || loner.attrs["subagent.session.id"] != "" {
+		t.Errorf("ddd names no call and should keep its own trace: %+v", loner)
 	}
 }

@@ -494,15 +494,23 @@ func claudeSubagentRecord(path, stem string, head claudeHead, updated string) Re
 	if data, err := os.ReadFile(strings.TrimSuffix(path, ".jsonl") + ".meta.json"); err == nil {
 		_ = json.Unmarshal(data, &meta)
 	}
-	// The session directory is the parent of subagents/, however deep the transcript sits
-	parent := head.sid
-	if parent == "" {
-		for dir := filepath.Dir(path); dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
-			if filepath.Base(dir) == "subagents" {
-				parent = filepath.Base(filepath.Dir(dir))
-				break
+	// The session directory is the parent of subagents/, however deep the transcript sits.
+	// A workflow's agents sit in subagents/workflows/<run>/: the run is what ties them to the
+	// call that started them, since their meta file names none.
+	parent, run := head.sid, ""
+	for dir := filepath.Dir(path); dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+		if filepath.Base(dir) != "subagents" {
+			continue
+		}
+		if parent == "" {
+			parent = filepath.Base(filepath.Dir(dir))
+		}
+		if rel, err := filepath.Rel(dir, filepath.Dir(path)); err == nil {
+			if first, rest, ok := strings.Cut(filepath.ToSlash(rel), "/"); ok && first == "workflows" && rest != "" && !strings.Contains(rest, "/") {
+				run = rest
 			}
 		}
+		break
 	}
 	// The prompt is read for a title only when the meta file has none: it is a second pass
 	// over the head of a file whose first row can be pages long
@@ -526,6 +534,7 @@ func claudeSubagentRecord(path, stem string, head claudeHead, updated string) Re
 		ParentAgentID:   ToStr(meta["parentAgentId"]),
 		AgentType:       ToStr(meta["agentType"]),
 		ParentToolUseID: ToStr(meta["toolUseId"]),
+		WorkflowRunID:   run,
 		AgentDepth:      1,
 	}, updated)
 }
@@ -639,11 +648,29 @@ func (c claudeRow) parts(obj map[string]any) []map[string]any {
 				}
 				parts = append(parts, ToolCallBlock(id, name, GetOr(m, "input", map[string]any{})))
 			case "tool_result":
-				parts = append(parts, c.toolResult(obj, m))
+				block := c.toolResult(obj, m)
+				// A Workflow call's result names the run it started; the run's agents are
+				// transcripts of their own (subagents/workflows/<run>/), and this is the call
+				// they hang from. The row-level toolUseResult speaks for the row's one result.
+				if run := strField(getMap(obj, "toolUseResult"), "runId"); run != "" && claudeResultCount(content) == 1 {
+					block["workflowRunId"] = run
+				}
+				parts = append(parts, block)
 			}
 		}
 	}
 	return parts
+}
+
+// claudeResultCount is how many tool results a row's content holds
+func claudeResultCount(content []any) int {
+	n := 0
+	for _, item := range content {
+		if m, ok := item.(map[string]any); ok && m["type"] == "tool_result" {
+			n++
+		}
+	}
+	return n
 }
 
 // textOrEvent: the interruption notice is not something the user said, it is something

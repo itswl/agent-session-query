@@ -63,12 +63,14 @@ type otelExporter struct {
 }
 
 // otelSpanFormat is the shape of the spans a transcript becomes. It moves when the same
-// transcript would now be sent as spans with other ids or other contents — format 2 folds
+// transcript would now be sent as spans with other ids or other contents: format 2 folds
 // the rows of one response into one generation, where format 1 (a cursor with no format)
-// drew a generation per row, each repeating Claude Code's usage. A backend that updates by
-// id keeps what it got under the old ids beside the new spans, so a cursor of an earlier
-// format is reported once, with the way to clean up (docs/telemetry.md, "Upgrading").
-const otelSpanFormat = 2
+// drew a generation per row, each repeating Claude Code's usage; format 3 hangs a subagent
+// beneath the call that started it, in its parent's trace, where format 2 gave it a trace
+// of its own. A backend that updates by id keeps what it got before beside the new spans,
+// so a cursor of an earlier format is reported once, with the way to clean up
+// (docs/telemetry.md, "Upgrading").
+const otelSpanFormat = 3
 
 // otelState remembers, per session, the version that was exported. A single UpdatedAt is
 // enough: a session's content only moves when its newest row does, and a session that grew
@@ -100,10 +102,10 @@ func newOTelExporter(api *SessionQueryAPI, cfg otelConfig) *otelExporter {
 	}
 	if e.priorFormat > 0 {
 		fmt.Fprintf(os.Stderr, "[WARN] otel: the cursor %s was written by an earlier export (span format %d, now %d). "+
-			"A session it covers is sent again in full when it next changes, and a backend that updates by id keeps "+
-			"the spans it got before beside the new ones — Claude Code's split responses were a generation per row, "+
-			"each with the response's usage. Delete the traces exported before (or use a new project), then run "+
-			"--otel-export --otel-resend once; see \"Upgrading\" in docs/telemetry.md\n",
+			"The spans have changed shape since: a session it covers is sent again in full when it next changes, and "+
+			"a backend that updates by id keeps what it got before beside the new spans. Delete the traces exported "+
+			"before (or use a new project), then run --otel-export --otel-resend once; see \"Upgrading\" in "+
+			"docs/telemetry.md\n",
 			e.cfg.statePath, e.priorFormat, otelSpanFormat)
 	}
 	return e
@@ -139,6 +141,7 @@ func (e *otelExporter) exportOnce(ctx context.Context, since, settledBefore time
 	// sessions it sent are not sent again by the next run
 walk:
 	for _, src := range e.api.activeSources() {
+		links := newOTelLinks(e, src)
 		for _, rec := range e.api.recordsOf(src) {
 			if ctx.Err() != nil {
 				break walk
@@ -163,6 +166,9 @@ walk:
 			built := buildSessionSpans(rec, messages, e.cfg.content)
 			if len(built) == 0 {
 				continue
+			}
+			if anchor, ok := links.anchorOf(rec, 0); ok {
+				nestSubagent(built, rec, anchor) // beneath the call that started it
 			}
 			kept, changed := e.roundsToSend(key, built)
 			if len(kept) == 0 {
@@ -292,8 +298,8 @@ func (a *otelMetricAcc) add(spans []otlp.Span) {
 		src := source.ToStr(spanAttribute(span, "session.source"))
 		model := source.ToStr(spanAttribute(span, "gen_ai.request.model"))
 		switch kind {
-		case "span":
-			if !strings.HasPrefix(span.Name, "round ") {
+		case "span", "agent": // a round's root; a subagent's, nested under its call, is an agent
+			if !strings.HasPrefix(span.Name, "round ") && !strings.HasPrefix(span.Name, "subagent ") {
 				continue
 			}
 			point(a.rounds, src, []otlp.Attribute{{Key: "session.source", Value: src}}).Value++
@@ -769,6 +775,165 @@ func buildSessionSpans(rec source.Record, messages []map[string]any, content boo
 	}
 	flush()
 	return spans
+}
+
+// Subagents in their parent's trace.
+//
+// A Claude Code subagent is a transcript of its own and is exported as a session of its own,
+// but it ran inside one of its parent's calls — an Agent call, or the Workflow call that
+// started a workflow's agents — and drawn as a trace of its own it was cut off from that
+// call: the parent round showed a call that took twenty minutes and nothing under it. Where
+// the call is known, a subagent's rounds hang beneath the call's span in the parent round's
+// trace. Measured here: 39 of 228 subagent transcripts name their call (toolUseId), and the
+// 184 workflow agents are found through the run their Workflow call's result names; a team's
+// members name neither and keep a trace of their own.
+
+// otelAnchor is where a subagent's rounds hang: the trace of the parent round that made the
+// call, the call's span, and the top-level session the trace belongs to
+type otelAnchor struct {
+	traceID, spanID, sessionID string
+}
+
+// otelParentCalls is what one parent transcript offers its subagents: each call's span,
+// keyed by call id, and the call that started each workflow run
+type otelParentCalls struct {
+	calls map[string]otelAnchor
+	runs  map[string]string
+}
+
+// otelLinks resolves the subagents of one source within one pass, reading each parent once
+type otelLinks struct {
+	e        *otelExporter
+	src      source.SessionSource
+	mains    map[string]source.Record // session id -> session
+	agents   map[string]source.Record // session id + "|" + agent id -> subagent
+	parents  map[string]*otelParentCalls
+	resolved map[string]otelAnchorResult
+}
+
+type otelAnchorResult struct {
+	anchor otelAnchor
+	ok     bool
+}
+
+func newOTelLinks(e *otelExporter, src source.SessionSource) *otelLinks {
+	return &otelLinks{e: e, src: src, parents: map[string]*otelParentCalls{}, resolved: map[string]otelAnchorResult{}}
+}
+
+// parentOf finds the transcript a subagent was started from: the agent that spawned it, or
+// the session's main thread
+func (l *otelLinks) parentOf(rec source.Record) (source.Record, bool) {
+	if l.mains == nil {
+		l.mains, l.agents = map[string]source.Record{}, map[string]source.Record{}
+		for _, r := range l.e.api.recordsOf(l.src) {
+			if r.IsSubagent() {
+				l.agents[r.ParentSessionID+"|"+r.SessionID] = r
+			} else {
+				l.mains[r.SessionID] = r
+			}
+		}
+	}
+	if rec.ParentAgentID != "" {
+		p, ok := l.agents[rec.ParentSessionID+"|"+rec.ParentAgentID]
+		return p, ok
+	}
+	p, ok := l.mains[rec.ParentSessionID]
+	return p, ok
+}
+
+// callsOf reads a parent once: its spans are built the way its own export builds them (the
+// ids do not depend on whether bodies are sent), so a call's span here is the one sent
+func (l *otelLinks) callsOf(parent source.Record) *otelParentCalls {
+	if pc, ok := l.parents[parent.Key]; ok {
+		return pc
+	}
+	pc := &otelParentCalls{calls: map[string]otelAnchor{}, runs: map[string]string{}}
+	l.parents[parent.Key] = pc
+	messages := l.e.allMessages(l.src, parent)
+	for _, span := range buildSessionSpans(parent, messages, false) {
+		if id := source.ToStr(spanAttribute(span, "gen_ai.tool.call.id")); id != "" {
+			pc.calls[id] = otelAnchor{traceID: span.TraceID, spanID: span.SpanID}
+		}
+	}
+	for _, m := range messages {
+		for _, block := range contentBlocks(m["content"]) {
+			run, call := source.ToStr(block["workflowRunId"]), source.ToStr(block["callId"])
+			if run != "" && call != "" && pc.runs[run] == "" {
+				pc.runs[run] = call // the first call to name a run is the one that started it
+			}
+		}
+	}
+	return pc
+}
+
+// anchorOf is where a subagent's rounds hang, when its call can be found. One spawned by
+// another subagent hangs beneath that agent's call, in whichever trace that agent landed.
+func (l *otelLinks) anchorOf(rec source.Record, depth int) (otelAnchor, bool) {
+	if !rec.IsSubagent() || depth > 8 {
+		return otelAnchor{}, false
+	}
+	if r, ok := l.resolved[rec.Key]; ok {
+		return r.anchor, r.ok
+	}
+	l.resolved[rec.Key] = otelAnchorResult{} // a loop in the links resolves to nothing
+	parent, ok := l.parentOf(rec)
+	if !ok || parent.Archived {
+		return otelAnchor{}, false
+	}
+	pc := l.callsOf(parent)
+	call := rec.ParentToolUseID
+	if call == "" && rec.WorkflowRunID != "" {
+		call = pc.runs[rec.WorkflowRunID]
+	}
+	a, ok := pc.calls[call]
+	if call == "" || !ok {
+		return otelAnchor{}, false
+	}
+	a.sessionID = parent.SessionID
+	if pa, ok := l.anchorOf(parent, depth+1); ok {
+		a.traceID, a.sessionID = pa.traceID, pa.sessionID
+	}
+	l.resolved[rec.Key] = otelAnchorResult{anchor: a, ok: true}
+	return a, true
+}
+
+// nestSubagent moves a subagent's spans beneath the call that started it. Every span takes
+// the parent round's trace and the top-level session; a round's root becomes an agent
+// observation under the call. The trace's name and tags belong to the parent's round, so
+// the subagent's spans leave them out.
+func nestSubagent(spans []otlp.Span, rec source.Record, a otelAnchor) {
+	kind := source.FirstNonEmpty(rec.AgentType, "agent")
+	for i := range spans {
+		s := &spans[i]
+		s.TraceID = a.traceID
+		root := s.ParentID == ""
+		if root {
+			s.ParentID = a.spanID
+			s.Name = "subagent " + kind
+			if n, _ := source.ToFloat(spanAttribute(*s, "round.index")); n > 1 {
+				s.Name += " · round " + strconv.Itoa(int(n))
+			}
+		}
+		attrs := make([]otlp.Attribute, 0, len(s.Attributes)+2)
+		for _, attr := range s.Attributes {
+			switch attr.Key {
+			case "langfuse.trace.name", "langfuse.trace.tags":
+				continue
+			case "langfuse.session.id":
+				attr.Value = a.sessionID
+			case "langfuse.observation.type":
+				if root {
+					attr.Value = "agent"
+				}
+			}
+			attrs = append(attrs, attr)
+		}
+		attrs = append(attrs, otlp.Attribute{Key: "subagent.session.id", Value: rec.SessionID})
+		if root && rec.AgentType != "" {
+			attrs = append(attrs, otlp.Attribute{Key: "subagent.type", Value: rec.AgentType})
+		}
+		s.Attributes = attrs
+	}
 }
 
 // roundTags are a round's trace tags, for filtering: where it came from (the source, the

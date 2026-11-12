@@ -71,13 +71,16 @@ type Record struct {
 	// a record of its own: ParentSessionID is the session it ran in, ParentAgentID the agent
 	// that spawned it when that was not the session's main thread, AgentType what kind of
 	// agent it is, AgentDepth how far down it sits (1 for one the main thread spawned), and
-	// ParentToolUseID the call that started it, when one did. Subagents is the other end: on
-	// a session, how many subagent transcripts ran inside it.
+	// ParentToolUseID the call that started it, when one did. A workflow's agents have no
+	// such call of their own: WorkflowRunID is the run they belong to, which the parent's
+	// Workflow call names in its result. Subagents is the other end: on a session, how many
+	// subagent transcripts ran inside it.
 	ParentSessionID string
 	ParentAgentID   string
 	AgentType       string
 	AgentDepth      int
 	ParentToolUseID string
+	WorkflowRunID   string
 	Subagents       int
 
 	sortAt   time.Time // parsed update time; zero means this record's time would not parse
@@ -206,6 +209,9 @@ func (r Record) Public() map[string]any {
 		out["agentDepth"] = r.AgentDepth
 		if r.ParentToolUseID != "" {
 			out["parentToolUseId"] = r.ParentToolUseID
+		}
+		if r.WorkflowRunID != "" {
+			out["workflowRunId"] = r.WorkflowRunID
 		}
 	}
 	if r.Subagents > 0 {

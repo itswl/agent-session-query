@@ -7,7 +7,7 @@ Query endpoints are all `GET` (only MCP's `/mcp` and the login endpoints are `PO
 | Endpoint | Auth | What it does |
 |----------|------|--------------|
 | `/` `/health` `/stats` | no | Service info and health check. `/` is the one to read first: it lists every endpoint below and says which of them need a token — a request that asks for `text/html` (a browser's address bar) is redirected to `/ui` instead, so curl's output is unchanged. `/health` adds the enabled sources, the version, `authRequired` and connection stats |
-| `/sessions` | yes | List every session (merged across sources, newest first). A Claude Code session whose work was handed to subagents says how many in `subagents`; `?subagents=1` lists the subagents as rows of their own too, each with `parentSessionId`, `agentType`, `agentDepth` (1 for one the session spawned, 2 for one an agent spawned), `parentAgentId` when an agent spawned it and `parentToolUseId` when a call did |
+| `/sessions` | yes | List every session (merged across sources, newest first). A Claude Code session whose work was handed to subagents says how many in `subagents`; `?subagents=1` lists the subagents as rows of their own too, each with `parentSessionId`, `agentType`, `agentDepth` (1 for one the session spawned, 2 for one an agent spawned), `parentAgentId` when an agent spawned it and `parentToolUseId` when a call did — or, for a workflow's agent, which no call of its own started, `workflowRunId`, the run whose Workflow call did |
 | `/export?project=&branch=&since=&until=&source=&mode=index` | yes | **Export several sessions as one document.** Oldest first, because a pack answers "how did this get here" where the list answers "what am I doing". `mode=index` (the default) gives one block per session — when, where, what was asked, what it concluded, and the id to check it against; `mode=full` inlines the transcripts. `format=md` (default) or `jsonl`. `limit` defaults to 20 sessions of the matching set, and the header always states how many of that set it holds |
 | `/sessions/<pattern>` | yes | One session's metadata |
 | `/sessions/<pattern>/messages?limit=50&order=asc&full=1` | yes | A session's messages; `order=asc` (the default) takes the earliest N, `order=desc` the latest N, `offset=N` walks stable pages from that end (use this for scrolling; it does not depend on timestamps), and `at=<time>` anchors the window at that instant instead of at an end. Tool output and thinking come cut to a preview and marked `truncated: true`; `full=1` returns them whole (ask for a narrow window, a build log is large) — for Claude Code that includes an output it saved to a file beside the transcript, which the transcript itself holds only a 2 KB preview of. A prompt typed into Claude Code while the agent was working comes as a `user` message marked `queued: true`, at the time it was typed. Capped by `--max-limit`; offsets are capped at 20,000. |
@@ -178,7 +178,9 @@ pattern containing a colon needs URL encoding (`%3A`).
 - Messages: `content` is an array of blocks typed `text` / `thinking` / `toolCall` /
   `toolResult` / `event`. A `toolCall` carries `id`, `name` and `arguments`; a `toolResult`
   carries `callId` (the call it answers), `toolName`, `content`, and — when the source
-  recorded them — `status` (`ok` / `error` / `interrupted`), `exitCode` and `durationMs`. A
+  recorded them — `status` (`ok` / `error` / `interrupted`), `exitCode` and `durationMs`.
+  Claude Code's Workflow call carries `workflowRunId` on its result: the run it started,
+  whose agents name the same run on their records. A
   result without `status` is one whose writer did not record the outcome (Hermes), which is
   not the same as success. An `event` is something that happened between the turns, with
   `kind` (`compaction` / `interrupted` / `hook_error` / `model_change`) and `content`; an

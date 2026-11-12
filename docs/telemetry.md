@@ -17,6 +17,8 @@ children:
 round 12                              langfuse.observation.type=span
 ├─ model gemini-3.8-flash             type=generation, gen_ai.usage.*
 ├─ shell                              type=tool, gen_ai.tool.name, status, exit code
+├─ Agent                              type=tool
+│  └─ subagent general-purpose        type=agent — the subagent's round, its spans beneath
 ├─ edit                               type=tool
 └─ compaction                         type=event
 ```
@@ -52,14 +54,27 @@ CLI made itself (`<synthetic>`, e.g. a resumed session's "No response requested.
 generation and does not stretch its round.
 
 A round's root carries `langfuse.trace.tags`: the source, `project:<folder>`, `subagent`
-for a subagent's own transcript, `tool-failure` when a tool call failed and `failed` when
-the round ended on one. A generation carries `langfuse.observation.completion_start_time`
+for a subagent that keeps a trace of its own (below), `tool-failure` when a tool call
+failed and `failed` when the round ended on one. A generation carries `langfuse.observation.completion_start_time`
 (time to first token) where the source records when the response began to arrive —
 OpenCode 2.x, from a part's own `time.created` — and `langfuse.observation.cost_details`
 when the CLI worked out a cost above zero (Pi's `usage.cost.total`, OpenCode's `cost`). A
 zero is a CLI without a price for the model and is not sent: give the backend the price
 (Langfuse: Settings › Models) and it prices the tokens itself. Nothing in a transcript is a
 prompt from Langfuse's prompt management or a score: those stay empty.
+
+**Subagents hang beneath the call that started them.** A Claude Code subagent is a
+transcript of its own, exported as a session of its own, but it ran inside one of its
+parent's calls — an Agent call, or the Workflow call that started a workflow's agents. Its
+rounds go into the parent round's trace, each round's root an `agent` observation
+(`subagent <type>`) beneath the call's span, with the top-level session's
+`langfuse.session.id`; one spawned by another subagent hangs beneath that agent's call, in
+the same trace. The trace's name and tags stay the parent round's: the subagent's spans
+carry none, and say whose they are in `subagent.session.id` (and `subagent.type` on the
+root). The call is the one the meta file names (`toolUseId`), or for a workflow's agent
+the Workflow call whose result names its run. Measured here, 223 of 228 subagent
+transcripts were placed that way; the rest, a team's members, name no call and keep a
+trace of their own, tagged `subagent`.
 
 What a source does not record cannot be exported: Hermes keeps usage per session, not
 per message, so its generations carry the model (from `state.db` when `sessions.json`
@@ -185,7 +200,7 @@ only versions and round fingerprints:
 ```json
 {
   "version": 2,
-  "format": 2,
+  "format": 3,
   "lastRun": "2026-10-28T07:05:02Z",
   "sessions": {
     "opencode|ses_ebc6c0083ffeoPUbq6IcTfGBNV": {
@@ -215,8 +230,8 @@ ones.
 every row of a Claude Code response was a generation of its own, each with the response's
 whole usage, so Langfuse counted those tokens up to 18 times; the round attributes (trace
 name, tags, levels) changed as well, so every round exported before is re-sent the next
-time its session changes. Run on a format-1 cursor, the exporter says so once on stderr.
-To start clean:
+time its session changes. Run on a cursor of an earlier format, the exporter says so once
+on stderr. To start clean:
 
 1. Delete the traces exported before from the backend, or point the exporter at a new
    Langfuse project.
@@ -224,7 +239,12 @@ To start clean:
    `agent-session-query --otel-export --otel-resend --otel-since all …` (the endpoint and
    headers as usual).
 
-Without that, sessions that never change again keep their format-1 spans, and those that do
+**Format 3** (the release after v0.39.7) hangs a subagent's rounds beneath the call that
+started it, in the parent round's trace. Under format 2 each subagent had traces of its
+own; the spans move, keeping their ids, but the traces they left stay behind in a backend,
+named and tagged and empty. The same clean start applies.
+
+Without that, sessions that never change again keep their earlier spans, and those that do
 change carry both.
 
 ## Limits
@@ -233,6 +253,7 @@ change carry both.
   session costs its whole length, once per export, and the round tail cap does not apply.
 - Spans are batched at 250 or 8 MiB per POST, retried once, then logged and skipped — a
   collector that is down never fails the service or the request path.
-- Subagent transcripts are exported as traces of their own; Langfuse can filter them by
-  `session.source`, but they are not nested under the parent trace.
+- A subagent hangs beneath its call only when the call can be found: a team's members, and
+  an agent whose parent transcript is gone or archived, keep a trace of their own. Placing
+  one reads its parent's transcript once per pass.
 - Only sessions the service can list are exported; archived sessions are not.

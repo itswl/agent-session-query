@@ -368,7 +368,8 @@ func TestReadPersistedOutputCap(t *testing.T) {
 
 // writeClaudeSubagents lays out a session that handed work to subagents, the way Claude Code
 // keeps them: an agent the main thread spawned with a tool call, one that agent spawned in
-// turn, and a workflow's agent with no call behind it
+// turn, and a workflow's agent with no call of its own — the main thread's Workflow call
+// names its run in the result
 func writeClaudeSubagents(t *testing.T, root string) {
 	t.Helper()
 	dir := filepath.Join(root, "proj")
@@ -386,6 +387,8 @@ func writeClaudeSubagents(t *testing.T, root string) {
 		row("user", "10:00:00", "", `"fan out the review"`),
 		row("assistant", "10:01:00", "", call("toolu_A")),
 		row("user", "10:01:30", "", result("toolu_A")),
+		row("assistant", "10:05:30", "", `[{"type":"tool_use","id":"toolu_W","name":"Workflow","input":{}}]`),
+		row("user", "10:05:40", `,"toolUseResult":{"runId":"wf_1","status":"async_launched"}`, result("toolu_W")),
 		row("assistant", "10:30:00", "", `[{"type":"text","text":"done"}]`),
 	)
 	agents := filepath.Join(dir, "s1", "subagents")
@@ -445,15 +448,31 @@ func TestClaudeSubagents(t *testing.T) {
 	if b.AgentDepth != 2 || b.ParentAgentID != "aaa" || b.ParentToolUseID != "toolu_B" {
 		t.Errorf("agent bbb = %+v, want depth 2 under aaa", b)
 	}
-	if c.AgentDepth != 1 || c.AgentType != "workflow-subagent" || c.ParentSessionID != "s1" || c.ParentToolUseID != "" {
+	if c.AgentDepth != 1 || c.AgentType != "workflow-subagent" || c.ParentSessionID != "s1" || c.ParentToolUseID != "" ||
+		c.WorkflowRunID != "wf_1" || c.Public()["workflowRunId"] != "wf_1" {
 		t.Errorf("the workflow's agent = %+v", c)
+	}
+	if a.WorkflowRunID != "" || b.WorkflowRunID != "" {
+		t.Errorf("an agent outside a workflow names a run: %q / %q", a.WorkflowRunID, b.WorkflowRunID)
+	}
+	// The Workflow call's result names the run it started, and only that result does
+	named := map[string]string{}
+	for _, m := range src.Messages(session, MessageQuery{Limit: 50}) {
+		for _, block := range m["content"].([]map[string]any) {
+			if run := ToStr(block["workflowRunId"]); run != "" {
+				named[ToStr(block["callId"])] = run
+			}
+		}
+	}
+	if len(named) != 1 || named["toolu_W"] != "wf_1" {
+		t.Errorf("results naming a run = %v, want toolu_W's wf_1", named)
 	}
 
 	if msgs := src.Messages(a, MessageQuery{Limit: 50}); len(msgs) != 4 {
 		t.Errorf("agent aaa reads %d messages, want its 4 sidechain rows", len(msgs))
 	}
-	if msgs := src.Messages(session, MessageQuery{Limit: 50}); len(msgs) != 4 {
-		t.Errorf("the session reads %d messages, want its own 4", len(msgs))
+	if msgs := src.Messages(session, MessageQuery{Limit: 50}); len(msgs) != 6 {
+		t.Errorf("the session reads %d messages, want its own 6", len(msgs))
 	}
 	final := src.Final(b)
 	if final["messageCount"] != 2 || final["text"] != "the cache lock is held across the write" {

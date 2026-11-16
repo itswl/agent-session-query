@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/itswl/agent-session-query/internal/fixture"
 )
@@ -283,5 +284,36 @@ func TestOverHTTP(t *testing.T) {
 	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/mcp", nil))
 	if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != http.MethodPost {
 		t.Errorf("GET = %d: no stream is offered", rec.Code)
+	}
+}
+
+// A client ends the server by closing its input, or with a signal. The second must work
+// although the input is still open: a server blocked reading a pipe nobody writes to
+// could otherwise only be killed.
+func TestServeStopsWhenAsked(t *testing.T) {
+	s := server(t)
+	in, client := io.Pipe()
+	defer client.Close()
+	out, replies := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Serve(ctx, in, replies) }()
+
+	// It is serving: a ping is answered
+	go client.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}` + "\n"))
+	line := make([]byte, 4096)
+	n, err := out.Read(line)
+	if err != nil || !strings.Contains(string(line[:n]), `"id":1`) {
+		t.Fatalf("ping = %q, %v", line[:n], err)
+	}
+
+	cancel() // the input stays open
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Errorf("stopped with %v, want context.Canceled", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("asked to stop, and still waiting for its input")
 	}
 }

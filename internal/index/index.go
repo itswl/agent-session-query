@@ -54,7 +54,10 @@ func Open(path string) (*Index, error) {
 		f.Close()
 	}
 	uri := kit.FileURI(path)
-	rw, err := sql.Open("sqlite", uri+"?_txlock=immediate&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=temp_store(MEMORY)&_pragma=cache_size(-65536)")
+	// The write-ahead log is reused after each checkpoint rather than shrunk; a burst of
+	// writes — a rebuild — would leave it at its largest for good. journal_size_limit
+	// cuts it back to a few megabytes whenever a checkpoint has emptied it.
+	rw, err := sql.Open("sqlite", uri+"?_txlock=immediate&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=journal_size_limit(4194304)&_pragma=synchronous(NORMAL)&_pragma=temp_store(MEMORY)&_pragma=cache_size(-65536)")
 	if err != nil {
 		return nil, fmt.Errorf("index: %w", err)
 	}

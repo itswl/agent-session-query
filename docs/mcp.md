@@ -20,6 +20,10 @@ Any client that takes a command:
 To read only some stores, or stores somewhere else, set `ASQ_ONLY` / `ASQ_PATH` in the server's
 environment (see [Sources](sources.md)).
 
+The server lives as long as its client wants it: it ends when its input closes, and on a TERM or
+Ctrl+C, finishing the answers in flight. Started by hand at a terminal it says what it is for,
+since a server waiting for JSON-RPC on stdin otherwise looks like a program that hung.
+
 Over HTTP, a running `asq serve` answers MCP at `POST /mcp` — one JSON-RPC message per request,
 a JSON reply, no session to keep — behind the same token as the rest of the API:
 

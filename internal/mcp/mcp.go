@@ -116,13 +116,47 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	// The index starts catching up now, so the first question does not pay for it
 	go s.App.Fresh(ctx, s.MaxAge, 0)
 
-	lines := bufio.NewScanner(in)
-	lines.Buffer(make([]byte, 0, 64<<10), maxMessageBytes)
-	for lines.Scan() {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	// Lines are read on a goroutine of their own, so that the server stops when ctx ends
+	// and not only when its input does: a read from a pipe nobody closes never returns,
+	// and a server that waits for it cannot be stopped short of killing it.
+	type read struct {
+		line []byte
+		err  error
+	}
+	reads := make(chan read)
+	go func() {
+		defer close(reads)
+		lines := bufio.NewScanner(in)
+		lines.Buffer(make([]byte, 0, 64<<10), maxMessageBytes)
+		for lines.Scan() {
+			select {
+			case reads <- read{line: bytes.Clone(lines.Bytes())}:
+			case <-ctx.Done():
+				return
+			}
 		}
-		line := bytes.TrimSpace(lines.Bytes())
+		if err := lines.Err(); err != nil {
+			select {
+			case reads <- read{err: err}:
+			case <-ctx.Done():
+			}
+		}
+	}()
+	for {
+		var got read
+		var open bool
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case got, open = <-reads:
+		}
+		if !open {
+			return nil // the input ended: the client is gone
+		}
+		if got.err != nil {
+			return fmt.Errorf("reading requests: %w", got.err)
+		}
+		line := bytes.TrimSpace(got.line)
 		if len(line) == 0 {
 			continue
 		}
@@ -179,10 +213,6 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			}
 		}()
 	}
-	if err := lines.Err(); err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("reading requests: %w", err)
-	}
-	return nil
 }
 
 // decode reads one message: a request, or a batch of them.

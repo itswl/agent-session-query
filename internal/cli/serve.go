@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	goio "io"
 	"net"
 	"net/http"
 	"os"
@@ -92,8 +93,27 @@ func cmdMCP(ctx context.Context, args []string, io *streams) error {
 		return err
 	}
 	defer a.Close()
-	// stdout is the protocol's and nothing else's: everything said goes to stderr
-	return mcp.New(a, io.err).Serve(ctx, io.in, io.out)
+	// stdout is the protocol's and nothing else's: everything said goes to stderr. A
+	// person who runs it at a terminal sees it wait for input that never makes sense to
+	// type, so it says what it is for
+	if fromTerminal(io.in) {
+		fmt.Fprintln(io.err, "asq mcp speaks JSON-RPC on stdin and stdout, for an MCP client to start: claude mcp add asq -- asq mcp (see 'asq mcp -h'). Ctrl+C or Ctrl+D ends it.")
+	}
+	err = mcp.New(a, io.err).Serve(ctx, io.in, io.out)
+	if ctx.Err() != nil {
+		return nil // stopped by a signal: that is how a client ends it
+	}
+	return err
+}
+
+// fromTerminal reports whether r is a terminal a person types into.
+func fromTerminal(r goio.Reader) bool {
+	f, ok := r.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 func envOr(name, def string) string {

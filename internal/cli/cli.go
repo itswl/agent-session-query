@@ -73,8 +73,15 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "asq: unknown command %q\n\n%s", name, usage)
 		return 2
 	}
+	// Ctrl+C or a TERM asks the command to finish what it is doing and stop. Once asked,
+	// the signals are let go of: a second one ends the process at once, as it would
+	// any other, for when finishing takes longer than anyone wants to wait.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	err := run(ctx, rest, &streams{in: stdin, out: stdout, err: stderr})
 	switch {
 	case err == nil:

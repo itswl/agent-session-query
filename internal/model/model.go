@@ -15,6 +15,7 @@ package model
 
 import (
 	"encoding/json"
+	"math"
 	"time"
 )
 
@@ -85,11 +86,45 @@ type Usage struct {
 
 // Add sums o into u.
 func (u *Usage) Add(o Usage) {
-	u.Input += o.Input
-	u.Output += o.Output
-	u.CacheRead += o.CacheRead
-	u.CacheWrite += o.CacheWrite
-	u.Reasoning += o.Reasoning
+	u.Input = sum(u.Input, o.Input)
+	u.Output = sum(u.Output, o.Output)
+	u.CacheRead = sum(u.CacheRead, o.CacheRead)
+	u.CacheWrite = sum(u.CacheWrite, o.CacheWrite)
+	u.Reasoning = sum(u.Reasoning, o.Reasoning)
+}
+
+// sum adds two counts without wrapping: a total past what an int64 holds stays at the
+// most it holds, rather than turning negative.
+func sum(a, b int64) int64 {
+	if b > 0 && a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
+}
+
+// MaxTokens is more than one response of any model counts, by far: a context of some
+// millions of tokens is a million times smaller. A figure past it, or below zero, is a
+// number gone wrong — a doctored or damaged transcript — and not a count.
+const MaxTokens = 1 << 40
+
+// Tokens is a count as an adapter read it, if it is one: the count, or 0 for a figure
+// below zero or past MaxTokens. Every adapter reads its token counts through it, so that
+// no transcript can make a total go below zero or wrap.
+func Tokens(n int64) int64 {
+	if n < 0 || n > MaxTokens {
+		return 0
+	}
+	return n
+}
+
+// TokensOf is Tokens for a count that arrived as a JSON number, checked before it is
+// converted: a float64 outside an int64's range converts to a value Go leaves to the
+// platform.
+func TokensOf(f float64) int64 {
+	if !(f >= 0 && f <= MaxTokens) { // NaN fails both
+		return 0
+	}
+	return int64(f)
 }
 
 // Raise lifts each counter to o's where o's is larger: the rows of one response report

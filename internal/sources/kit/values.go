@@ -2,6 +2,7 @@ package kit
 
 import (
 	"encoding/json"
+	"github.com/itswl/agent-session-query/internal/model"
 	"math"
 	"strconv"
 	"strings"
@@ -71,7 +72,19 @@ func Num(v any) (float64, bool) {
 // Int reads a count; anything that is not a number is zero.
 func Int(v any) int64 {
 	n, _ := Num(v)
+	// A float64 outside an int64's range converts to whatever the platform makes of it —
+	// the largest int64 on arm64, the smallest on amd64 — so it is not converted at all
+	if !(n >= math.MinInt64 && n < math.MaxInt64) { // NaN fails both
+		return 0
+	}
 	return int64(n)
+}
+
+// Count is a token count from a JSON value: see model.TokensOf. 0 for anything that is
+// not a number, is below zero, or is past what one response can count.
+func Count(v any) int64 {
+	n, _ := Num(v)
+	return model.TokensOf(n)
 }
 
 // Truthy: nil, false, 0, "" and empty containers are false.

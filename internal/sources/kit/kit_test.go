@@ -203,3 +203,17 @@ func TestGlobSaysWhatItCouldNotRead(t *testing.T) {
 		t.Logf("filepath.Glob: %d matches, %v", len(std), err)
 	}
 }
+
+// A number outside an int64's range is not an int64, on any platform.
+func TestIntAndCount(t *testing.T) {
+	for in, want := range map[any]int64{float64(42): 42, float64(-3): -3, 1e19: 0, -1e300: 0, "7": 0, nil: 0} {
+		if got := Int(in); got != want {
+			t.Errorf("Int(%v) = %d, want %d", in, got, want)
+		}
+	}
+	for in, want := range map[any]int64{float64(42): 42, float64(-3): 0, 1e19: 0, 1e12: 1e12, "7": 0} {
+		if got := Count(in); got != want {
+			t.Errorf("Count(%v) = %d, want %d", in, got, want)
+		}
+	}
+}

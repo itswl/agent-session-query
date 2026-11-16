@@ -30,7 +30,7 @@ const (
 	Alpha    = "aaaa1111-0000-4000-8000-000000000001"
 	Beta     = "bbbb2222-0000-4000-8000-000000000002"
 	Agent    = "x1"
-	Secret   = "sk-Zx9Qw7Lm3Pv5Tr8Kd2Nf6Hb4"
+	Secret   = "sk-" + "Zx9Qw7Lm3Pv5Tr8Kd2Nf6Hb4" // in two pieces: whole, it is a key to every scanner that reads this file
 	LongLine = "line of build output that goes on and on"
 )
 

@@ -34,7 +34,7 @@ func hostile() (*index.Session, []model.Turn) {
 			{Seq: 1, Kind: model.Thinking, At: at.Add(time.Second), Text: "thinking </details><b>bold</b>"},
 			{Seq: 2, Kind: model.ToolUse, At: at.Add(2 * time.Second), Tool: &model.Tool{CallID: "t1", Name: "Bash", Kind: model.ToolExec,
 				Input: json.RawMessage(`{"command":"cat README.md"}`), Command: "cat README.md", Done: true, Status: model.StatusError, Exit: &exit, DurMs: 2300,
-				Output: "```go\nfmt.Println(\"a fence inside an output\")\n```\n\x1b[31mred\x1b[0m </code><script>alert('out')</script>\nkey sk-Zx9Qw7Lm3Pv5Tr8Kd2Nf6Hb4"}},
+				Output: "```go\nfmt.Println(\"a fence inside an output\")\n```\n\x1b[31mred\x1b[0m </code><script>alert('out')</script>\nkey sk-" + "Zx9Qw7Lm3Pv5Tr8Kd2Nf6Hb4"}},
 			{Seq: 3, Kind: model.Event, At: at.Add(3 * time.Second), Event: model.EventCompaction, Text: "compacted <i>here</i>"},
 			{Seq: 4, Kind: model.Reply, At: at.Add(4 * time.Second), Text: "Done — see </pre><script>alert('answer')</script>"},
 		},

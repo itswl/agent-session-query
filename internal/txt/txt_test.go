@@ -1,6 +1,10 @@
 package txt
 
 import (
+	"bytes"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -29,16 +33,19 @@ func TestStripControls(t *testing.T) {
 }
 
 func TestRedact(t *testing.T) {
+	// Each sample is written as a prefix and a tail and joined by the compiler. Written
+	// whole, this file would hold nine strings that a secret scanner — this one, and the
+	// one that watches the repository — reads as keys somebody leaked.
 	secrets := []string{
-		"sk-Zx9Qw7Lm3Pv5Tr8Kd2Nf6Hb4",
-		"sk-ant-api03-AbCdEf0123456789AbCdEf0123456789",
-		"ghp_0123456789abcdefghijABCDEFGHIJ012345",
-		"github_pat_11ABCDEFG0abcdefghijkl_mnopqrstuv",
-		"xoxb-123456789012-abcdefghijkl",
-		"AIzaSyA0123456789abcdefghijklmnopqrstuv",
-		"AKIAIOSFODNN7EXAMPLE",
-		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N",
-		"-----BEGIN RSA PRIVATE KEY-----",
+		"sk-" + "Zx9Qw7Lm3Pv5Tr8Kd2Nf6Hb4",
+		"sk-" + "ant-api03-AbCdEf0123456789AbCdEf0123456789",
+		"ghp_" + "0123456789abcdefghijABCDEFGHIJ012345",
+		"github_pat_" + "11ABCDEFG0abcdefghijkl_mnopqrstuv",
+		"xoxb-" + "123456789012-abcdefghijkl",
+		"AIza" + "SyA0123456789abcdefghijklmnopqrstuv",
+		"AKIA" + "IOSFODNN7EXAMPLE",
+		"eyJhbGciOiJIUzI1NiJ9" + ".eyJzdWIiOiIxMjM0NTY3ODkwIn0" + ".dozjgNryP4J3jVmNHl0w5N",
+		"-----BEGIN RSA " + "PRIVATE KEY-----",
 	}
 	for _, secret := range secrets {
 		got := Redact("the value is " + secret + " and then more")
@@ -62,6 +69,37 @@ func TestRedact(t *testing.T) {
 	// A key with a colour code in the middle is one string once the escapes are gone
 	if got := Clean("sk-Zx9Qw7Lm3P\x1b[0mv5Tr8Kd2Nf6Hb4"); got != "[redacted]" {
 		t.Errorf("Clean = %q", got)
+	}
+}
+
+// What Redact masks, the repository does not hold. A key-shaped sample in a test or a
+// guide is a leaked secret to every scanner that reads the repository, and a real key
+// pasted into either is one; samples are written in pieces, as above. The line is named
+// and not shown.
+func TestNoFileHereHoldsAKeyShapedString(t *testing.T) {
+	const root = "../.."
+	out, err := exec.Command("git", "-C", root, "ls-files", "-z").Output()
+	if err != nil {
+		t.Skip("not a git checkout:", err)
+	}
+	files := 0
+	for _, name := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+		if name == "go.sum" {
+			continue // hashes, which are nobody's to write differently
+		}
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
+		if err != nil || bytes.IndexByte(data, 0) >= 0 {
+			continue // gone from the working tree, or not text
+		}
+		files++
+		for i, line := range strings.Split(string(data), "\n") {
+			if Redact(line) != line {
+				t.Errorf("%s:%d holds a key-shaped string", name, i+1)
+			}
+		}
+	}
+	if files < 50 {
+		t.Errorf("read %d files: this is not the repository", files)
 	}
 }
 

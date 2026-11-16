@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -89,26 +90,28 @@ func TestWhenAQuestionWaitsForTheStores(t *testing.T) {
 		t.Error("a stale index was not read again when asked")
 	}
 	// Questions that arrive together share one read: the first claims it before it lets
-	// go, and the next finds it under way rather than starting its own
+	// go, and the rest find it under way rather than each starting its own
 	a.mu.Lock()
 	a.last = time.Now().Add(-time.Minute)
 	a.mu.Unlock()
-	a.Fresh(ctx, maxAge, time.Nanosecond)
-	a.mu.Lock()
-	claimed := a.running
-	a.mu.Unlock()
-	if claimed == nil {
-		t.Fatal("a stale index was asked about, and when the question returned no read was under way")
+	before := a.syncs.Load()
+	gate := make(chan struct{})
+	var asked sync.WaitGroup
+	for range 32 {
+		asked.Add(1)
+		go func() {
+			defer asked.Done()
+			<-gate
+			if !a.Fresh(ctx, maxAge, 5*time.Second) {
+				t.Error("a question was not answered fresh")
+			}
+		}()
 	}
-	a.Fresh(ctx, maxAge, time.Nanosecond)
-	a.mu.Lock()
-	second := a.running
-	a.mu.Unlock()
-	if second != nil && second != claimed {
-		t.Error("a second read was started beside the first")
+	close(gate)
+	asked.Wait()
+	if n := a.syncs.Load() - before; n != 1 {
+		t.Errorf("questions arriving together on a stale index made %d reads, not one", n)
 	}
-	<-claimed
-	time.Sleep(10 * time.Millisecond)
 
 	// And then it is fresh, with nothing to do
 	read = synced()

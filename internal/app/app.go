@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/itswl/agent-session-query/internal/catalog"
@@ -35,6 +36,7 @@ type App struct {
 	mu      sync.Mutex
 	running chan struct{} // closed when the sync in flight ends; nil when none is
 	began   time.Time     // when the sync in flight began
+	syncs   atomic.Int64  // how many reads of the stores have run
 	last    time.Time     // when the last sync ended
 	lastErr error
 }
@@ -91,6 +93,7 @@ func (a *App) claim() chan struct{} {
 
 // run is the sync a claim was made for.
 func (a *App) run(ctx context.Context, opts index.SyncOptions, done chan struct{}) (index.SyncResult, error) {
+	a.syncs.Add(1)
 	res, err := a.Index.Sync(ctx, a.Set.Present(), opts)
 	a.mu.Lock()
 	a.running, a.last, a.lastErr = nil, time.Now(), err

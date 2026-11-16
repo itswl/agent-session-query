@@ -589,7 +589,7 @@ func cmdFailures(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return usageError{err}
 	}
-	rep, err := a.Index.Failures(ctx, f, w, *tool, index.Page{Limit: c.limit, Offset: c.offset})
+	rep, err := a.Failures(ctx, f, w, *tool, index.Page{Limit: c.limit, Offset: c.offset})
 	if err != nil {
 		return err
 	}
@@ -652,7 +652,7 @@ func cmdFiles(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return usageError{err}
 	}
-	list, total, err := a.Index.Files(ctx, f, w, rest[0], *changed, index.Page{Limit: c.limit, Offset: c.offset})
+	list, total, err := a.Files(ctx, f, w, rest[0], *changed, index.Page{Limit: c.limit, Offset: c.offset})
 	if err != nil {
 		return err
 	}

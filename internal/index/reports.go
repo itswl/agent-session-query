@@ -131,6 +131,19 @@ type Failure struct {
 	Exit    *int      `json:"exit,omitempty"`
 	Command string    `json:"command,omitempty"`
 	Output  string    `json:"output,omitempty"` // the end of it, where it says why
+	// Later is where the same program, asked the same thing by the same tool, next
+	// succeeded in the same session — go test after go test — when it did within a few
+	// turns; the fix, if there was one, lies between. Filled in by the program (see
+	// app.Failures): the failures table knows only the failures.
+	Later *Later `json:"passedLater,omitempty"`
+}
+
+// Later is a step that ran a failed command again, in some form, and succeeded.
+type Later struct {
+	Turn    int       `json:"turn"`
+	Seq     int       `json:"seq"`
+	At      time.Time `json:"at,omitzero"`
+	Command string    `json:"command"` // as it was run then, which need not be as it failed
 }
 
 // FailureCount is how often one tool failed.
@@ -215,10 +228,47 @@ type FileTouch struct {
 	Changed bool      `json:"changed"`
 	Session string    `json:"session"`
 	Title   string    `json:"title,omitempty"`
+	Cwd     string    `json:"cwd,omitempty"` // the session's directory, which a relative path is relative to
 	Turn    int       `json:"turn"`
 	At      time.Time `json:"at,omitzero"`
 	Ask     string    `json:"ask,omitempty"`
+	// Ended is when the turn ended: what the file is measured against.
+	Ended time.Time `json:"-"`
+	// Now is how the file stands now against what the turn left. Filled in by the program,
+	// which can look at the file (see app.Files); nil when it cannot be said — the file is
+	// not on this machine, or the path names nothing it can read.
+	Now *FileNow `json:"now,omitempty"`
 }
+
+// FileNow is how a file stands now, against what a turn left it as.
+//
+// State is one of:
+//
+//	same     By content: everything the turn's last write to it put there is still in it.
+//	         By time: it has not been written since the turn ended.
+//	changed  By content: some of what the turn's last write put there is no longer in it.
+//	written  By time: it has been written since the turn ended. What changed, if anything,
+//	         is not known: a checkout or a formatter writes a file as well as an edit does.
+//	deleted  It is gone, and the directory it was in is still here.
+//
+// By says which evidence: "content" compares the text the turn wrote with the file, and
+// is the one to trust; "time" compares the file's modification time with the end of the
+// turn, and says less.
+type FileNow struct {
+	State string `json:"state"`
+	By    string `json:"by,omitempty"`
+}
+
+// The states and kinds of evidence of FileNow.
+const (
+	FileSame    = "same"
+	FileChanged = "changed"
+	FileWritten = "written"
+	FileDeleted = "deleted"
+
+	ByContent = "content"
+	ByTime    = "time"
+)
 
 // Files lists the turns that named a file whose path contains path, newest first:
 // which sessions changed it, in which turn, and what was being asked there. With
@@ -241,7 +291,7 @@ func (ix *Index) Files(ctx context.Context, f Filter, w Window, path string, cha
 		p.Limit = 50
 	}
 	rows, err := ix.ro.QueryContext(ctx, `
-SELECT x.path, x.changed, s.source, s.id, s.title, x.idx, x.at, json_extract(t.head, '$.ask')`+from+`
+SELECT x.path, x.changed, s.source, s.id, s.title, s.cwd, x.idx, x.at, max(t.ended_at, t.last_at, x.at), json_extract(t.head, '$.ask')`+from+`
 ORDER BY x.at DESC, x.sid DESC, x.idx DESC LIMIT ? OFFSET ?`, append(args, p.Limit, p.Offset)...)
 	if err != nil {
 		return nil, 0, err
@@ -252,12 +302,12 @@ ORDER BY x.at DESC, x.sid DESC, x.idx DESC LIMIT ? OFFSET ?`, append(args, p.Lim
 		var x FileTouch
 		var source, id string
 		var changed int
-		var at int64
+		var at, ended int64
 		var ask *string
-		if err := rows.Scan(&x.Path, &changed, &source, &id, &x.Title, &x.Turn, &at, &ask); err != nil {
+		if err := rows.Scan(&x.Path, &changed, &source, &id, &x.Title, &x.Cwd, &x.Turn, &at, &ended, &ask); err != nil {
 			return nil, 0, err
 		}
-		x.Changed, x.Session, x.At = changed != 0, source+"/"+id, fromMs(at)
+		x.Changed, x.Session, x.At, x.Ended = changed != 0, source+"/"+id, fromMs(at), fromMs(ended)
 		if ask != nil {
 			x.Ask = *ask
 		}

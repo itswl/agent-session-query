@@ -87,9 +87,27 @@ match's `seq` is the step to open (`/items/{seq}`).
 | `GET /api/usage?by=model\|day\|source\|project\|session` | `{"by", "rows", "total"}` |
 | `GET /api/failures?tool=` | `{"failures", "total", "byTool"}` — the last 7 days unless `since` says otherwise. `tool` names one tool exactly (`Bash` is not `bash`), or with a trailing `*` by how its name begins; `byTool` counts every tool of the window whichever is asked for |
 | `GET /api/digest` | `{"projects", "total"}` — likewise |
-| `GET /api/files?path=&changed=1` | `{"files", "total"}` |
+| `GET /api/files?path=&changed=1` | `{"files", "total"}` — each file with `now`, how it stands against what that turn left (below) |
 | `GET /api/projects` | `{"projects"}` |
 | `GET /api/pack?turns=1` | `{"pack", "sessions"}` — Markdown |
+
+A failure whose command later succeeded in the same session carries
+`"passedLater": {"turn", "seq", "at", "command"}`: the first later run, by the same tool, of the
+same program and subcommand — `go test`, `pnpm build`, `git push`, past a `cd` and variables set
+in front — in that turn or the three after it, that did not fail. The match is that loose on
+purpose: an agent rarely runs a failed command again word for word (it narrows the test, adds a
+flag, pipes the output to `tail`), so `command` is what was run then, and whether it is the same
+thing passing is for the reader to judge. The turns between are how it was got past. It is left
+out when there is none; another session is not looked in.
+
+A file's `now` is `{"state", "by"}`, or absent when nothing can be said — the file is not on
+the machine `asq` runs on. `state` is `same`, `changed`, `written` or `deleted`; `by` is the
+evidence. `content`: the text that turn's last write put in the file — what an edit inserted,
+the whole of a file it wrote, the lines a patch added — is all still there (`same`) or is not
+(`changed`). `time`: the file's modification time against the end of the turn — not written
+since (`same`), or written since (`written`), which a checkout or a formatter does as well as an
+edit. Content is used where the write recorded any; a turn that only read the file, or a write
+that only removed text, is judged by time. A file over 8 MB is judged by time.
 
 All take the list's filters. A usage row is
 `{"key", "sessions", "calls", "usage": {"input", "output", "cacheRead", "cacheWrite", "reasoning"}, "total", "cacheHit"}`

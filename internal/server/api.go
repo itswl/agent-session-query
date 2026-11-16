@@ -417,7 +417,7 @@ func (s *Server) handleFailures(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	rep, err := s.app.Index.Failures(r.Context(), f, win, r.URL.Query().Get("tool"), page)
+	rep, err := s.app.Failures(r.Context(), f, win, r.URL.Query().Get("tool"), page)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -452,7 +452,7 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	list, total, err := s.app.Index.Files(r.Context(), f, win, r.URL.Query().Get("path"), flagOf(r, "changed"), page)
+	list, total, err := s.app.Files(r.Context(), f, win, r.URL.Query().Get("path"), flagOf(r, "changed"), page)
 	if err != nil {
 		s.fail(w, r, err)
 		return

@@ -149,7 +149,8 @@ var tools = []tool{
 		name:  "failures",
 		title: "Failed tool calls",
 		about: "The tool calls that failed or were interrupted, newest first: the command, how it ended and the end of its output, with the ref of the turn it happened in. " +
-			"Covers the last 7 days unless since says otherwise. Use it for \"what keeps going wrong\" and to see how an error was hit before.",
+			"Covers the last 7 days unless since says otherwise. Use it for \"what keeps going wrong\" and to see how an error was hit before. " +
+			"When the same program and subcommand (go test, pnpm build, git push) later succeeded in the same session, a line says where (\"passed 40m later: <ref>#<turn> step <n>\") and, if it was run differently, how (\"as $ go test ./internal/x\"): judge from that whether it is the same thing passing. What changed in between is how it was got past — read those turns rather than guess.",
 		props: []prop{
 			{"tool", "string", "Only this tool's calls, named exactly as the answer prints it (Bash is not bash); a trailing * matches by prefix: mcp__playwright*."},
 			pSource, pProject, pBranch, pSince, pUntil, pLimit, pOffset, pChars,
@@ -167,7 +168,7 @@ var tools = []tool{
 	{
 		name:  "files",
 		title: "Turns that touched a file",
-		about: "Which turns read or changed a file, newest first, each with the ask that led to it. Use it for \"who changed this file and why\".",
+		about: "Which turns read or changed a file, newest first, each with the ask that led to it. Use it for \"who changed this file and why\". Each line also says how the file stands now against what that turn left: \"as this turn left it\" (the text it wrote is still there), \"changed since\", \"written since\" (only its time says so), \"deleted\". A turn's account of a file that has changed since is out of date: read the file before acting on it.",
 		props: []prop{
 			{"path", "string", "Part of the file's path, e.g. internal/server/auth.go or just auth.go."},
 			{"changed", "boolean", "Only the turns that changed it, not those that only read it."},
@@ -615,7 +616,7 @@ func runFailures(ctx context.Context, s *Server, a *args) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	rep, err := s.App.Index.Failures(ctx, f, w, a.str("tool"), index.Page{Limit: a.limit(10), Offset: a.offset()})
+	rep, err := s.App.Failures(ctx, f, w, a.str("tool"), index.Page{Limit: a.limit(10), Offset: a.offset()})
 	if err != nil {
 		return "", err
 	}
@@ -653,7 +654,7 @@ func runFiles(ctx context.Context, s *Server, a *args) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	list, total, err := s.App.Index.Files(ctx, f, w, a.str("path"), a.flag("changed"), index.Page{Limit: a.limit(20), Offset: a.offset()})
+	list, total, err := s.App.Files(ctx, f, w, a.str("path"), a.flag("changed"), index.Page{Limit: a.limit(20), Offset: a.offset()})
 	if err != nil {
 		return "", err
 	}

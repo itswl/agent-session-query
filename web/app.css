@@ -445,6 +445,8 @@ th.n, td.n { text-align: right; }
 .f-head { color: var(--muted); font-size: 13px; }
 .f-cmd { max-height: 4.5em; overflow: hidden; font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .f-out { max-height: 16em; }
+.f-later { display: grid; gap: 4px; font-size: 13px; color: var(--ok); }
+.f-later a { font-variant-numeric: tabular-nums; }
 
 .digest { margin: 0; padding: 0; list-style: none; }
 .d-project { padding: 16px 0; border-bottom: 1px solid var(--line); }

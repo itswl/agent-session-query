@@ -57,7 +57,11 @@ Punctuation separates words, as it does in the index: `session_query`, `session-
 `--per-session N` bounds how many turns of one session are shown (default 3, `0` for no bound).
 
 **`asq files <path>`** — the turns that named a file, newest first, each with the ask that led
-to it. `--changed` keeps only turns that changed it.
+to it. `--changed` keeps only turns that changed it. Each says how the file stands now against
+what that turn left: *as this turn left it* (the text it wrote is still there), *changed since*,
+*written since* (only its modification time says so), *not written since*, *deleted* — the
+difference between a history that still holds and one that has moved on
+([how it is judged](api.md#reports)).
 
 **`asq projects`** — the working directories sessions ran in, most recently used first.
 
@@ -126,6 +130,10 @@ session's own cost, where its CLI recorded one, is shown with the session (`asq 
 newest first, with the count per tool on top. `--tool Bash` narrows to one tool, named exactly —
 Claude Code's `Bash` is not Pi's `bash` — and `--tool 'mcp__playwright*'` to every tool whose
 name begins that way.
+When the same program and subcommand succeeded later in the session — `go test` after
+`go test`, in that turn or the next three — the failure says where
+(`↳ passed 40m later: claude/3f2a…#5 step 212`), and how it was run if that differs; the turns
+between are how it was got past.
 
 **`asq digest`** — the last 7 days (`--since`) per project: sessions, turns, tool calls,
 failures, tokens, files changed by kind (code / test / docs / config), models and CLIs used.

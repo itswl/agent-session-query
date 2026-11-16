@@ -82,5 +82,21 @@ function row(x) {
       h('span', { class: 'mono tool-name' }, x.tool),
       h('span', { class: 'bad' }, x.status, x.exit != null && ` · exit ${x.exit}`)),
     x.command && h('pre', { class: 'f-cmd' }, x.command),
-    tail && h('pre', { class: 'io out f-out' }, (lines.length > 12 ? '…\n' : '') + tail));
+    tail && h('pre', { class: 'io out f-out' }, (lines.length > 12 ? '…\n' : '') + tail),
+    x.passedLater && passed(x));
+}
+
+// Where the same command next succeeded in the session: what changed in between is how
+// it was got past.
+function passed(x) {
+  const l = x.passedLater;
+  const after = f.when(l.at) - f.when(x.at);
+  const same = l.command === (x.command || '').trim().split(/\s+/).join(' ');
+  return h('div', { class: 'f-later' },
+    h('p', null, 'Passed ', after > 0 ? f.dur(after) + ' later' : 'later', ', at ',
+      h('a', { href: sessionHref(x.session, `${l.turn}.${l.seq}`) }, `#${l.turn} step ${l.seq}`),
+      h('span', { class: 'dim' }, ' — the turns between are how it was got past')),
+    // Run again in another form: shown, so that whether it is the same thing passing is
+    // the reader's to judge
+    !same && h('pre', { class: 'f-cmd' }, l.command));
 }

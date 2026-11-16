@@ -608,10 +608,45 @@ func Failures(w io.Writer, rep index.FailureReport, st Style) {
 				fmt.Fprintf(w, "  %s\n", st.dim(st.fit(line, 2)))
 			}
 		}
+		if l := f.Later; l != nil {
+			fmt.Fprintf(w, "  %s %s\n", st.green("↳ passed "+laterBy(f.At, l.At)), st.cyan(fmt.Sprintf("%s#%d step %d", f.Session, l.Turn, l.Seq)))
+			if l.Command != txt.OneLine(f.Command, 0) {
+				fmt.Fprintf(w, "    %s\n", st.dim("as $ "+st.fit(l.Command, 9)))
+			}
+		}
 	}
 	if len(rep.Failures) < rep.Total {
 		fmt.Fprintln(w, st.dim(fmt.Sprintf("\n… %d more: %s, or narrow with %s / %s / %s", rep.Total-len(rep.Failures), st.opt("limit"), st.opt("tool"), st.opt("project"), st.opt("since"))))
 	}
+}
+
+// laterBy says how long after a failure the same command succeeded.
+func laterBy(failed, passed time.Time) string {
+	if failed.IsZero() || passed.IsZero() || !passed.After(failed) {
+		return "later:"
+	}
+	return txt.Duration(passed.Sub(failed)) + " later:"
+}
+
+// FileNowLine says how a file stands against what a turn left, and on what evidence; ""
+// when nothing can be said.
+func FileNowLine(n *index.FileNow) string {
+	if n == nil {
+		return ""
+	}
+	switch {
+	case n.State == index.FileSame && n.By == index.ByContent:
+		return "now: as this turn left it"
+	case n.State == index.FileSame:
+		return "now: not written since"
+	case n.State == index.FileChanged:
+		return "now: changed since — what this turn wrote is no longer all there"
+	case n.State == index.FileWritten:
+		return "now: written since (by its time; the text was not compared)"
+	case n.State == index.FileDeleted:
+		return "now: deleted"
+	}
+	return ""
 }
 
 // Digest prints what a window's work added up to, per project.
@@ -677,6 +712,16 @@ func Files(w io.Writer, list []index.FileTouch, total int, st Style) {
 		fmt.Fprintf(w, "%s  %s  %s  %s\n", st.dim(f.At.Local().Format("2006-01-02 15:04")), verb, st.cyan(f.Session+"#"+strconv.Itoa(f.Turn)), st.Path(f.Path))
 		if f.Ask != "" {
 			fmt.Fprintf(w, "    %s\n", st.dim(st.fit(txt.OneLine(f.Ask, 0), 4)))
+		}
+		if line := FileNowLine(f.Now); line != "" {
+			paint := st.dim
+			switch f.Now.State {
+			case index.FileChanged, index.FileDeleted:
+				paint = st.yellow
+			case index.FileWritten:
+				paint = st.yellow
+			}
+			fmt.Fprintf(w, "    %s\n", paint(line))
 		}
 	}
 	if total > len(list) {

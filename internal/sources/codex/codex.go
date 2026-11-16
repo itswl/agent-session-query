@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/sources"
@@ -202,6 +203,57 @@ func (u usage) canonical() *model.Usage {
 	}
 }
 
+// spentAt reads one token_count snapshot of a rollout that has no records, and returns
+// what the response it follows cost — or nil when the snapshot reports no response.
+//
+// The running total is not the session's total, though it reads like one. Measured on
+// real rollouts, and reported upstream from others: Codex writes a snapshot again after
+// the fact (the same counters, a later time); a snapshot written after a compaction
+// repeats the total with a last usage of zero, as a marker of the new context's size; an
+// old snapshot can be re-sent at the end of the file, below the ones before it; a session
+// resumed in a new process starts its total again from that request; and a request can
+// continue from an earlier total than the newest. So the last snapshot can be far below
+// what was spent, and so can the highest. What each response cost is the one figure that
+// adds up: a snapshot counts once, for its last usage, and one seen before does not count.
+//
+// A snapshot from before Codex wrote last_token_usage carries the total alone. There what
+// a response cost is how far it moved the total past its highest — and a total below that
+// is an old one sent again, which moves nothing.
+func spentAt(last, total *usage, seen map[[2]usage]bool, high *usage) *usage {
+	if last == nil && total == nil {
+		return nil
+	}
+	var key [2]usage
+	if last != nil {
+		key[0] = *last
+	}
+	if total != nil {
+		key[1] = *total
+	}
+	if seen[key] {
+		return nil
+	}
+	seen[key] = true
+
+	cost := last
+	if last == nil {
+		if total.Input < high.Input || total.Cached < high.Cached || total.CacheWrite < high.CacheWrite ||
+			total.Output < high.Output || total.Reasoning < high.Reasoning {
+			return nil
+		}
+		cost = &usage{Input: total.Input - high.Input, Cached: total.Cached - high.Cached, CacheWrite: total.CacheWrite - high.CacheWrite,
+			Output: total.Output - high.Output, Reasoning: total.Reasoning - high.Reasoning}
+	}
+	if total != nil {
+		high.Input, high.Cached, high.CacheWrite = max(high.Input, total.Input), max(high.Cached, total.Cached), max(high.CacheWrite, total.CacheWrite)
+		high.Output, high.Reasoning = max(high.Output, total.Output), max(high.Reasoning, total.Reasoning)
+	}
+	if cost.Input+cost.Output == 0 {
+		return nil // the size of a context, not a response
+	}
+	return cost
+}
+
 // Read parses one rollout.
 func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer) error {
 	path := ref.Key
@@ -226,7 +278,10 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		pending   []transcript.Message  // a response's rows, held until its usage arrives
 		responses int
 		anyRecord bool
-		lastTotal *usage // the last cumulative token_count, for rollouts with no records
+		// For a rollout too old to have records: the snapshots already read, and the
+		// highest each cumulative counter has stood
+		snapshots = map[[2]usage]bool{}
+		high      usage
 	)
 	// A model response is written as several rows — reasoning, words, each call — and
 	// closed by a token_usage_record saying what the response cost: one record per
@@ -234,26 +289,49 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	// response id, over 6 turns — one turn held 65). The rows are held until the record
 	// arrives so they go in as one model call carrying that usage; a rollout too old to
 	// have records releases them when anything else arrives.
-	flush := func(rec *row) {
-		if len(pending) == 0 && rec == nil {
+	// end closes the response whose rows are pending: they go in as one model call, with
+	// what it cost when that is known.
+	//
+	// A record is written as its response ends, ahead of the outputs of the calls it
+	// made; the snapshot an old rollout has instead is written after them (measured:
+	// call, record, output, snapshot). So a snapshot usually finds its response already
+	// closed by the first output, and its cost belongs to that response — unpaid is the
+	// one that is waiting for it.
+	unpaid := ""
+	end := func(responseID string, cost *usage, at time.Time) {
+		if len(pending) == 0 && cost == nil {
 			return
 		}
-		responses++
-		id := "response-" + strconv.Itoa(responses)
-		if rec != nil && rec.Payload.ResponseID != "" {
-			// The API's own id for the response. A record written twice — the CLI
-			// rewriting a finished response — names the same id and is counted once
-			id = rec.Payload.ResponseID
+		id := unpaid
+		if len(pending) > 0 || responseID != "" || id == "" {
+			responses++
+			id = "response-" + strconv.Itoa(responses)
+			if responseID != "" {
+				// The API's own id for the response. A record written twice — the CLI
+				// rewriting a finished response — names the same id and is counted once
+				id = responseID
+			}
 		}
 		for _, m := range pending {
 			m.Response = id
 			w.Add(m)
 		}
-		if rec != nil && rec.Payload.Usage != nil && !copied[turn] {
-			w.Add(transcript.Message{Role: transcript.Assistant, At: kit.Time(rec.Timestamp), Response: id,
-				Model: turnModel, Usage: rec.Payload.Usage.canonical()})
+		unpaid = id
+		if cost != nil {
+			unpaid = ""
+			if !copied[turn] {
+				w.Add(transcript.Message{Role: transcript.Assistant, At: at, Response: id,
+					Model: turnModel, Usage: cost.canonical()})
+			}
 		}
 		pending = pending[:0]
+	}
+	flush := func(rec *row) {
+		if rec == nil {
+			end("", nil, time.Time{})
+			return
+		}
+		end(rec.Payload.ResponseID, rec.Payload.Usage, kit.Time(rec.Timestamp))
 	}
 
 	n := 0
@@ -327,12 +405,20 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				w.Add(transcript.Message{Role: transcript.System, At: at, Inherited: inherited,
 					Blocks: []transcript.Block{transcript.EventOf(model.EventInterrupted, "Turn aborted: "+reason)}})
 			case "token_count":
-				// info.total_token_usage is cumulative, so the last one is the session's total
+				// The counters Codex writes after a response: what that response cost
+				// (last_token_usage) and the running total (total_token_usage). A rollout
+				// with records does not need them — a record says what its response cost,
+				// and the snapshots leave out what a compaction spent. A rollout too old
+				// to have records has nothing else.
 				var info struct {
+					Last  *usage `json:"last_token_usage"`
 					Total *usage `json:"total_token_usage"`
 				}
-				if json.Unmarshal(p.Info, &info) == nil && info.Total != nil {
-					lastTotal = info.Total
+				if anyRecord || json.Unmarshal(p.Info, &info) != nil {
+					return true
+				}
+				if cost := spentAt(info.Last, info.Total, snapshots, &high); cost != nil {
+					end("", cost, at)
 				}
 			}
 			return true
@@ -428,9 +514,6 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 
 	w.S.ID = sessionIDOf(ownID, sessionID, salvaged, hasMeta, forkedOf != "" || parentID != "", stem(path))
 	w.S.Model = turnModel
-	if !anyRecord && lastTotal != nil {
-		w.S.Recorded = &model.Recorded{Usage: lastTotal.canonical()}
-	}
 	// A subagent's rollout says so itself, and names the thread that spawned it. A fork
 	// or a resumed session a person carries on is no one's subagent: it stays a session
 	// of its own, its copied turns marked as its parent's.

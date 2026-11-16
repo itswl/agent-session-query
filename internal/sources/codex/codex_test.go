@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -121,7 +122,7 @@ func TestToolRows(t *testing.T) {
 		`{"timestamp":"2026-10-01T10:00:25Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_build","output":"{\"output\":\"test failed\\n\",\"metadata\":{\"exit_code\":101,\"duration_seconds\":3}}"}}`,
 		`{"timestamp":"2026-10-01T10:00:26Z","type":"response_item","payload":{"type":"web_search_call","status":"completed","action":{"type":"search","query":"cargo test flags"}}}`,
 		`{"timestamp":"2026-10-01T10:00:30Z","type":"response_item","payload":{"type":"message","id":"msg_final","role":"assistant","content":[{"type":"output_text","text":"README updated."}]}}`,
-		`{"timestamp":"2026-10-01T10:00:31Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":9,"total_tokens":109},"last_token_usage":{"input_tokens":50}}}}`,
+		`{"timestamp":"2026-10-01T10:00:31Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":9,"total_tokens":109},"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":9,"total_tokens":109}}}}`,
 		`{"timestamp":"2026-10-01T10:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"run it again"}]}}`,
 		`{"timestamp":"2026-10-01T10:01:05Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t2","reason":"interrupted","duration_ms":95000}}`,
 		`{"timestamp":"2026-10-01T10:01:06Z","type":"compacted","payload":{"message":""}}`,
@@ -189,9 +190,9 @@ func TestToolRows(t *testing.T) {
 	if !two.Interrupted || sourcetest.Kinds(two) != "prompt event event" || two.Items[1].Event != model.EventInterrupted || two.Items[2].Event != model.EventCompaction {
 		t.Errorf("turn 2 = %s interrupted=%v", sourcetest.Kinds(two), two.Interrupted)
 	}
-	// No token_usage_record: the last cumulative token_count is the session's total
-	if want := (model.Usage{Input: 60, Output: 9, CacheRead: 40}); s.Stats.Usage != want {
-		t.Errorf("usage = %+v, want %+v", s.Stats.Usage, want)
+	// No token_usage_record: the snapshot written after the response says what it cost
+	if want := (model.Usage{Input: 60, Output: 9, CacheRead: 40}); s.Stats.Usage != want || one.Usage != want {
+		t.Errorf("usage = %+v, turn 1's %+v, want %+v on the turn the response was made in", s.Stats.Usage, one.Usage, want)
 	}
 }
 
@@ -350,5 +351,145 @@ func TestLocate(t *testing.T) {
 	}
 	if got := Spec.Locate(sourcetest.Env("/home/u", "CODEX_HOME", "/data/codex")); got != filepath.Join("/data/codex", "sessions") {
 		t.Errorf("relocated = %s", got)
+	}
+}
+
+// A rollout too old to have token_usage_record has only the counters Codex writes after
+// each response. Their running total reads like the session's total and is not: every
+// shape below was measured on a real rollout or reported upstream from one. What adds up
+// is what each response cost — counted once.
+func TestSnapshotsOfARolloutWithNoRecords(t *testing.T) {
+	snap := func(ts string, last, total [4]int) string {
+		u := func(v [4]int) string {
+			return fmt.Sprintf(`{"input_tokens":%d,"cached_input_tokens":%d,"output_tokens":%d,"reasoning_output_tokens":%d,"total_tokens":%d}`, v[0], v[1], v[2], v[3], v[0]+v[2])
+		}
+		return `{"timestamp":"2026-08-01T10:` + ts + `Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":` + u(last) + `,"total_token_usage":` + u(total) + `}}}`
+	}
+	said := func(ts, text string) string {
+		return `{"timestamp":"2026-08-01T10:` + ts + `Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"` + text + `"}]}}`
+	}
+	a, b, c, d := [4]int{1000, 600, 50, 10}, [4]int{2000, 1500, 80, 0}, [4]int{500, 0, 20, 0}, [4]int{700, 600, 30, 0}
+	ab, ad := [4]int{3000, 2100, 130, 10}, [4]int{1700, 1200, 80, 10}
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "2026", "08", "01", "rollout-2026-08-01T10-00-00-old.jsonl"),
+		`{"timestamp":"2026-08-01T10:00:00Z","type":"session_meta","payload":{"id":"codex-old","cwd":"/p"}}`,
+		`{"type":"turn_context","payload":{"turn_id":"t1","model":"gpt-5"}}`,
+		`{"timestamp":"2026-08-01T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"start"}]}}`,
+		said("00:05", "first"), snap("00:06", a, a),
+		// the same counters written again, later: not a second response
+		snap("00:09", a, a),
+		said("00:20", "second"), snap("00:21", b, ab),
+		// after a compaction: the total repeated, and a last usage of nothing
+		`{"timestamp":"2026-08-01T10:00:30Z","type":"compacted","payload":{"message":"summary"}}`,
+		snap("00:31", [4]int{0, 0, 0, 0}, ab),
+		// resumed in a new process: the total starts again from this response
+		`{"timestamp":"2026-08-01T10:10:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"carry on"}]}}`,
+		said("10:05", "third"), snap("10:06", c, c),
+		// a response that continues from an earlier total than the newest
+		said("10:20", "fourth"), snap("10:21", d, ad),
+		// an old snapshot sent again at the end of the file
+		snap("10:30", b, ab),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	// 400+500+500+100 uncached in, 600+1500+600 from cache, 50+80+20+30 out
+	want := model.Usage{Input: 1500, Output: 180, CacheRead: 2700, Reasoning: 10}
+	if s.Stats.Usage != want || s.Stats.Calls != 4 {
+		t.Errorf("usage = %+v in %d calls, want %+v in 4", s.Stats.Usage, s.Stats.Calls, want)
+	}
+	if s.Session.Recorded != nil {
+		t.Error("the snapshots are read per response: nothing is left to record against the session as a lump")
+	}
+	// Each response's cost lands in the turn it was made in
+	if one, two := s.Turn(t, 1), s.Turn(t, 2); one.Usage.Output != 130 || two.Usage.Output != 50 || len(one.Calls) != 2 || one.Calls[0].Model != "gpt-5" {
+		t.Errorf("turn 1 = %+v in %d calls, turn 2 = %+v", one.Usage, len(one.Calls), two.Usage)
+	}
+}
+
+// Before Codex wrote last_token_usage a snapshot carried the running total alone. What a
+// response cost is then how far it moved the total past its highest, and a total below
+// that is an old one sent again: the session adds up to the highest total, not the last.
+func TestSnapshotsThatCarryOnlyATotal(t *testing.T) {
+	total := func(ts string, in, cached, out int) string {
+		return fmt.Sprintf(`{"timestamp":"2026-07-01T10:00:%sZ","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%d,"cached_input_tokens":%d,"output_tokens":%d}}}}`, ts, in, cached, out)
+	}
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "2026", "07", "01", "rollout-2026-07-01T10-00-00-older.jsonl"),
+		`{"timestamp":"2026-07-01T10:00:00Z","type":"session_meta","payload":{"id":"codex-older","cwd":"/p"}}`,
+		`{"timestamp":"2026-07-01T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"start"}]}}`,
+		total("05", 100, 40, 9),
+		total("10", 250, 140, 20),
+		total("11", 250, 140, 20), // written twice
+		total("20", 400, 240, 31),
+		total("30", 250, 140, 20), // an old one, sent again last
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	if want := (model.Usage{Input: 160, Output: 31, CacheRead: 240}); s.Stats.Usage != want || s.Stats.Calls != 3 {
+		t.Errorf("usage = %+v in %d calls, want %+v in 3: the highest total, not the last", s.Stats.Usage, s.Stats.Calls, want)
+	}
+}
+
+// A rollout with records does not read its snapshots: a record says what its response
+// cost, and the snapshots leave out what a compaction spent.
+func TestRecordsOutrankSnapshots(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "2026", "10", "02", "rollout-2026-10-02T10-00-00-new.jsonl"),
+		`{"timestamp":"2026-10-02T10:00:00Z","type":"session_meta","payload":{"id":"codex-new","cwd":"/p"}}`,
+		`{"timestamp":"2026-10-02T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"start"}]}}`,
+		`{"timestamp":"2026-10-02T10:00:05Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}`,
+		`{"timestamp":"2026-10-02T10:00:06Z","type":"token_usage_record","payload":{"response_id":"resp_1","usage":{"input_tokens":1000,"cached_input_tokens":600,"output_tokens":50}}}`,
+		`{"timestamp":"2026-10-02T10:00:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":600,"output_tokens":50},"total_token_usage":{"input_tokens":1000,"cached_input_tokens":600,"output_tokens":50}}}}`,
+		// the compaction's own request: a record, and a snapshot that leaves it out
+		`{"timestamp":"2026-10-02T10:00:20Z","type":"token_usage_record","payload":{"response_id":"resp_2","usage":{"input_tokens":900,"cached_input_tokens":800,"output_tokens":70}}}`,
+		`{"timestamp":"2026-10-02T10:00:21Z","type":"compacted","payload":{"message":"summary"}}`,
+		`{"timestamp":"2026-10-02T10:00:21Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":0,"output_tokens":0},"total_token_usage":{"input_tokens":1000,"cached_input_tokens":600,"output_tokens":50}}}}`,
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	if want := (model.Usage{Input: 500, Output: 120, CacheRead: 1400}); s.Stats.Usage != want || s.Stats.Calls != 2 {
+		t.Errorf("usage = %+v in %d calls, want %+v in 2", s.Stats.Usage, s.Stats.Calls, want)
+	}
+}
+
+// A record is written as its response ends; a snapshot only after the outputs of the
+// calls that response made (measured on real rollouts: call, record, output, snapshot).
+// Read without its record, the response has been closed by the output by the time its
+// snapshot arrives — and the snapshot's cost is still that response's, not a call of its
+// own with nothing in it.
+func TestASnapshotFollowsTheOutputsOfItsResponse(t *testing.T) {
+	root := t.TempDir()
+	usage := func(in, out int) string {
+		return fmt.Sprintf(`{"input_tokens":%d,"cached_input_tokens":0,"output_tokens":%d,"total_tokens":%d}`, in, out, in+out)
+	}
+	sourcetest.Write(t, filepath.Join(root, "2026", "08", "02", "rollout-2026-08-02T10-00-00-order.jsonl"),
+		`{"timestamp":"2026-08-02T10:00:00Z","type":"session_meta","payload":{"id":"codex-order","cwd":"/p"}}`,
+		`{"type":"turn_context","payload":{"turn_id":"t1","model":"gpt-5"}}`,
+		`{"timestamp":"2026-08-02T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"list the files"}]}}`,
+		`{"timestamp":"2026-08-02T10:00:03Z","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"look first"}]}}`,
+		`{"timestamp":"2026-08-02T10:00:04Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"ls\"}","call_id":"call_1"}}`,
+		`{"timestamp":"2026-08-02T10:00:05Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}","call_id":"call_2"}}`,
+		`{"timestamp":"2026-08-02T10:00:06Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"a.go"}}`,
+		`{"timestamp":"2026-08-02T10:00:07Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_2","output":"/p"}}`,
+		`{"timestamp":"2026-08-02T10:00:07Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":`+usage(900, 40)+`,"total_token_usage":`+usage(900, 40)+`}}}`,
+		`{"timestamp":"2026-08-02T10:00:09Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"One file: a.go."}]}}`,
+		`{"timestamp":"2026-08-02T10:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":`+usage(1000, 12)+`,"total_token_usage":`+usage(1900, 52)+`}}}`,
+	)
+	turn := sourcetest.One(t, Spec.Open(root)).Turn(t, 1)
+	if len(turn.Calls) != 2 {
+		t.Fatalf("calls = %d, want the two responses: %+v", len(turn.Calls), turn.Calls)
+	}
+	first, second := turn.Calls[0], turn.Calls[1]
+	if first.Usage == nil || first.Usage.Input != 900 || second.Usage == nil || second.Usage.Output != 12 {
+		t.Errorf("calls = %+v / %+v: each carries what its snapshot says it cost", first.Usage, second.Usage)
+	}
+	for _, it := range turn.Items {
+		switch it.Kind {
+		case model.Thinking, model.ToolUse:
+			if it.Call != 1 {
+				t.Errorf("%s (seq %d) belongs to call %d, want the first response", it.Kind, it.Seq, it.Call)
+			}
+		case model.Reply:
+			if it.Call != 2 {
+				t.Errorf("the reply belongs to call %d, want the second response", it.Call)
+			}
+		}
 	}
 }

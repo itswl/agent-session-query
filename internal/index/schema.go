@@ -106,6 +106,9 @@ CREATE TABLE IF NOT EXISTS turns (
   PRIMARY KEY (sid, idx)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS turns_started ON turns (started_at);
+-- What a report adds up over the turns of a window, in the index itself. A turn's row
+-- holds its text, so a month of turns read for four numbers each is most of the file.
+CREATE INDEX IF NOT EXISTS turns_report ON turns (started_at, tools, failures, ended_at);
 
 -- The text a turn's items hold in full, where the turn keeps only a preview.
 CREATE TABLE IF NOT EXISTS bodies (

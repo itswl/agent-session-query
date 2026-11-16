@@ -309,11 +309,7 @@ func (ix *Index) Digest(ctx context.Context, f Filter, w Window) (DigestReport, 
 	// subagent's transcript is neither — but the tools it ran, what failed and what it
 	// spent are work the session did, and are counted with it.
 	when, whenArgs := w.where("t.started_at")
-	rows, err := ix.ro.QueryContext(ctx, `
-SELECT s.cwd, s.source, count(DISTINCT t.sid) FILTER (WHERE s.parent_session = ''), count(*) FILTER (WHERE s.parent_session = ''),
-  sum(t.tools), sum(t.failures), min(t.started_at), max(max(t.ended_at, t.started_at))
-FROM turns t JOIN sessions s ON s.sid = t.sid WHERE t.idx > 0 AND `+where+` AND `+when+` GROUP BY s.cwd, s.source`,
-		append(append([]any{}, args...), whenArgs...)...)
+	rows, err := ix.ro.QueryContext(ctx, digestTurns(where, when), append(append([]any{}, args...), whenArgs...)...)
 	if err != nil {
 		return rep, err
 	}
@@ -408,6 +404,16 @@ SELECT DISTINCT s.cwd, x.path FROM files x JOIN sessions s ON s.sid = x.sid WHER
 		return a.Cwd < b.Cwd
 	})
 	return rep, nil
+}
+
+// digestTurns is what a digest adds up over the turns of a window. Everything it reads
+// of a turn is in the index turns_report, so that a week's digest reads a week of small
+// rows and not the turns themselves, text and all.
+func digestTurns(where, when string) string {
+	return `
+SELECT s.cwd, s.source, count(DISTINCT t.sid) FILTER (WHERE s.parent_session = ''), count(*) FILTER (WHERE s.parent_session = ''),
+  sum(t.tools), sum(t.failures), min(t.started_at), max(max(t.ended_at, t.started_at))
+FROM turns t JOIN sessions s ON s.sid = t.sid WHERE t.idx > 0 AND ` + where + ` AND ` + when + ` GROUP BY s.cwd, s.source`
 }
 
 func newDigest(cwd string) Digest {

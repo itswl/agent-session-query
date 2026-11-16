@@ -78,7 +78,11 @@ func (f Filter) where() (string, []any) {
 	conds := []string{"s.copy_of = 0"}
 	var args []any
 	if len(f.Stores) > 0 {
-		conds = append(conds, "s.source IN ("+placeholders(len(f.Stores))+")")
+		// The + keeps this term from choosing the plan. It names the stores this process
+		// reads, which as a rule is every session there is; taken for a narrow search, it
+		// starts every report from the sessions and walks all their turns to find the
+		// week's, where the index on the time finds them directly.
+		conds = append(conds, "+s.source IN ("+placeholders(len(f.Stores))+")")
 		for _, name := range f.Stores {
 			args = append(args, name)
 		}

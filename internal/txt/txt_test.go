@@ -105,7 +105,9 @@ func TestCutting(t *testing.T) {
 }
 
 func TestFigures(t *testing.T) {
-	for n, want := range map[int64]string{0: "0", 940: "940", 1000: "1.0k", 18_240: "18.2k", 3_400_000: "3.4M", 1_200_000_000: "1.2B"} {
+	for n, want := range map[int64]string{0: "0", 940: "940", 999: "999", 1000: "1.0k", 18_240: "18.2k", 999_949: "999.9k",
+		// what rounds up to a whole unit is written in that unit
+		999_950: "1.0M", 999_999: "1.0M", 3_400_000: "3.4M", 999_960_000: "1.0B", 1_200_000_000: "1.2B", 2_500_000_000_000: "2500.0B"} {
 		if got := Tokens(n); got != want {
 			t.Errorf("Tokens(%d) = %q, want %q", n, got, want)
 		}

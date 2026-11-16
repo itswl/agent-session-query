@@ -1,6 +1,7 @@
 package txt
 
 import (
+	"math"
 	"strconv"
 	"time"
 )
@@ -13,15 +14,16 @@ func trimFloat(f float64) string {
 
 // Tokens renders a token count the way a line reads it: 940, 18.2k, 3.4M, 1.2B.
 func Tokens(n int64) string {
-	switch {
-	case n >= 1_000_000_000:
-		return trimFloat(float64(n)/1e9) + "B"
-	case n >= 1_000_000:
-		return trimFloat(float64(n)/1e6) + "M"
-	case n >= 1_000:
-		return trimFloat(float64(n)/1e3) + "k"
+	if n < 1000 {
+		return strconv.FormatInt(n, 10)
 	}
-	return strconv.FormatInt(n, 10)
+	units := [...]string{"k", "M", "B"}
+	v, i := float64(n)/1e3, 0
+	// What would round up to a whole unit is written in that unit: 1.0M, not 1000.0k
+	for i < len(units)-1 && math.Round(v*10) >= 10_000 {
+		v, i = v/1e3, i+1
+	}
+	return trimFloat(v) + units[i]
 }
 
 // Duration renders an elapsed time compactly: 850ms, 12s, 4m07s, 2h13m, 3d4h.

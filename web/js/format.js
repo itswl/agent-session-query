@@ -15,6 +15,8 @@ export const plural = (n, one, many = one + 's') => `${num(n)} ${n === 1 ? one :
 function scaled(v, units, base) {
   let i = 0;
   while (Math.abs(v) >= base && i < units.length - 1) { v /= base; i++; }
+  // What would round up to a whole unit is written in that unit: 1M, not 1000k
+  if (Math.round(Math.abs(v)) >= base && i < units.length - 1) { v /= base; i++; }
   return [v >= 100 || i === 0 ? String(Math.round(v)) : v.toFixed(1).replace(/\.0$/, ''), units[i]];
 }
 

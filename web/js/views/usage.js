@@ -1,6 +1,6 @@
 // What the model calls consumed: rolling windows, the last thirty days, and where it went.
 
-import { h, mark, skeleton, errorBox } from '../dom.js';
+import { h, mark, skeleton, errorBox, stale } from '../dom.js';
 import { api, qs, last } from '../api.js';
 import { coalesce } from '../live.js';
 import * as f from '../format.js';
@@ -17,16 +17,21 @@ export function mount(main, route, ctx) {
   // What it showed last time is shown at once; the fresh report replaces it when it comes
   const state = { withCache: true, table: false, report: last(first()) };
   const body = h('div', { class: 'page-body' }, state.report ? null : skeleton(6, 'line'));
-  main.append(h('div', { class: 'page' }, h('header', { class: 'page-head' }, h('h1', { tabIndex: -1 }, 'Usage')), body));
+  const note = stale();
+  main.append(h('div', { class: 'page' }, h('header', { class: 'page-head' }, h('h1', { tabIndex: -1 }, 'Usage')), note.el, body));
 
   async function load() {
     try {
       const report = await api(first(), { signal: ctx.signal, keep: true });
+      note.say();
       if (report === state.report) return; // nothing changed: what is drawn stays as it is, under the pointer
       state.report = report;
       render();
     } catch (e) {
-      if (e.name !== 'AbortError' && !state.report) body.replaceChildren(errorBox(e, load));
+      if (e.name === 'AbortError') return;
+      // What is drawn stays, and says it is from earlier
+      if (state.report) note.say(e, load);
+      else body.replaceChildren(errorBox(e, load));
     }
   }
 

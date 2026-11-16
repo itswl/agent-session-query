@@ -1,6 +1,6 @@
 // The tool calls that failed in a window, newest first, and which tools failed most.
 
-import { h, time, skeleton, errorBox, empty, choices, fill } from '../dom.js';
+import { h, time, skeleton, errorBox, empty, choices, fill, stale } from '../dom.js';
 import { api, qs, sessionHref, isAbort, last } from '../api.js';
 import { coalesce } from '../live.js';
 import * as f from '../format.js';
@@ -25,11 +25,12 @@ export function mount(main, route, ctx) {
   const list = h('ol', { class: 'fails' });
   const more = h('div', { class: 'more-row' });
   const body = h('div', { class: 'page-body' }, skeleton(6, 'row'));
+  const note = stale();
   const windowName = WINDOWS.find(([k]) => k === since)[1];
   main.append(h('div', { class: 'page' },
     h('header', { class: 'page-head' }, h('h1', { tabIndex: -1 }, 'Failures'),
       choices('Window', WINDOWS.map(([k, label]) => [href({ since: k }), label, k === since]))),
-    summary, chips, body));
+    note.el, summary, chips, body));
 
   function show(r, reset) {
     if (reset) v.top = r;
@@ -52,11 +53,13 @@ export function mount(main, route, ctx) {
     v.busy = true;
     try {
       const r = await api(pageAt(route.query, reset ? 0 : v.items.length), { signal: ctx.signal, keep: reset });
+      if (reset) note.say();
       if (reset && r === v.top) return; // the first page is what is on screen already
       show(r, reset);
     } catch (e) {
       if (isAbort(e)) return;
-      if (reset && v.top) return; // what was shown before stays; the next change asks again
+      // What was shown before stays, says it is from earlier, and the next change asks again
+      if (reset && v.top) return note.say(e, () => load(true));
       (body.contains(list) ? more : body).replaceChildren(errorBox(e, () => { v.busy = false; load(reset); }));
     } finally {
       v.busy = false;

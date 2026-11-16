@@ -1,6 +1,6 @@
 // What a window's work added up to, per project.
 
-import { h, mark, skeleton, errorBox, empty, choices } from '../dom.js';
+import { h, mark, skeleton, errorBox, empty, choices, stale } from '../dom.js';
 import { api, qs, isAbort, last } from '../api.js';
 import { coalesce } from '../live.js';
 import * as f from '../format.js';
@@ -20,10 +20,11 @@ export function mount(main, route, ctx) {
   let shown = null;
   const summary = h('p', { class: 'summary' });
   const body = h('div', { class: 'page-body' }, skeleton(5, 'block'));
+  const note = stale();
   main.append(h('div', { class: 'page' },
     h('header', { class: 'page-head' }, h('h1', { tabIndex: -1 }, 'Digest'),
       choices('Window', WINDOWS.map(([k, label]) => ['/digest' + qs({ since: k }), label, k === since]))),
-    summary, body));
+    note.el, summary, body));
 
   function show(r) {
     shown = r;
@@ -44,9 +45,13 @@ export function mount(main, route, ctx) {
   async function load() {
     try {
       const r = await api(path, { signal: ctx.signal, keep: true });
+      note.say();
       if (r !== shown) show(r);
     } catch (e) {
-      if (!isAbort(e) && !shown) body.replaceChildren(errorBox(e, load));
+      if (isAbort(e)) return;
+      // What is drawn stays, and says it is from earlier
+      if (shown) note.say(e, load);
+      else body.replaceChildren(errorBox(e, load));
     }
   }
 

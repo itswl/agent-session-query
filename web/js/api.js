@@ -20,11 +20,15 @@ const KEPT = 24;
 const answers = new Map();
 
 const forgetFns = new Set();
+// era counts the sign-ins lost. An answer asked for before one is not kept after it: a
+// request already on its way, such as one asked for ahead, can land later.
+let era = 0;
 
 export const last = (path) => answers.get(path)?.data;
 // onForget registers what else must be let go of when the sign-in is lost
 export const onForget = (fn) => { forgetFns.add(fn); };
 export function forget() {
+  era++;
   answers.clear();
   forgetFns.forEach((fn) => fn());
 }
@@ -43,6 +47,7 @@ function keepAnswer(path, text, data) {
 // api asks the server. With keep, the answer is remembered for last(), and an answer that
 // has not changed is the very object returned before.
 export async function api(path, { signal, method = 'GET', body, keep = false } = {}) {
+  const askedIn = era;
   let res;
   try {
     res = await fetch(path, {
@@ -58,11 +63,13 @@ export async function api(path, { signal, method = 'GET', body, keep = false } =
   let data = null;
   try { data = JSON.parse(text); } catch { /* not JSON: an error page from something in between */ }
   if (res.status === 401 && path !== '/api/login') {
-    forget();
+    // The page is left first, and what it was showing let go of after: leaving puts the
+    // list on screen away to come back to, and that too must go
     lost();
+    forget();
   }
   if (!res.ok) throw new ApiError(res.status, data?.error || `${res.status} ${res.statusText}`);
-  return keep && data != null ? keepAnswer(path, text, data) : data;
+  return keep && data != null && askedIn === era ? keepAnswer(path, text, data) : data;
 }
 
 // ahead asks for what a view will want before it is opened — when a link to it is

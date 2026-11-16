@@ -130,6 +130,11 @@ kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width:
 .error-box { display: flex; align-items: center; gap: 10px; margin: 16px 0; padding: 10px 12px; background: var(--bad-soft); border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent); border-radius: 6px; }
 .error-box p { flex: 1; }
 .error-box > .icon { color: var(--bad); }
+/* What is drawn is from earlier: said quietly above it, and taking no room when not said */
+.stale { display: flex; align-items: center; gap: 6px; margin: 0 0 12px; color: var(--muted); font-size: 12.5px; }
+.stale:empty { margin: 0; }
+.stale > .icon { width: 14px; height: 14px; color: var(--warn); }
+.stale .link-btn { padding: 0 2px; font-size: inherit; }
 .notice { display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px; border-radius: 6px; font-size: 13px; }
 .notice.warn { background: var(--warn-soft); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
 .notice > .icon { margin-top: 2px; color: var(--warn); }

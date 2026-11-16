@@ -18,6 +18,7 @@ let retry = 1000;
 let retryTimer = 0;
 let awayTimer = 0;
 let away = false;
+let line = 0; // counts the times the stream was let go of, so that a reconnect under way can tell
 let missed = false;
 let healthP = null;
 let healthKey = '';
@@ -38,6 +39,9 @@ export function start() {
   connect();
   refreshHealth();
   document.addEventListener('visibilitychange', seen);
+  // A tab opened in the background is told nothing until it is first shown: it is hidden
+  // from the start, and lets go of the stream a minute after it as well
+  if (document.hidden) seen();
 }
 
 export function stop() {
@@ -47,6 +51,7 @@ export function stop() {
 }
 
 function hangUp() {
+  line++;
   clearTimeout(retryTimer);
   es?.close();
   es = null;
@@ -70,6 +75,9 @@ function seen() {
 }
 
 function connect() {
+  // One stream at a time: one opened before and not closed would be heard twice over, and
+  // would hold the server to the stores for as long as the page is open
+  es?.close();
   es = new EventSource('/api/events');
   es.addEventListener('hello', (e) => {
     retry = 1000;
@@ -93,11 +101,14 @@ function connect() {
 // A stream the server refused stays closed; ask why before opening another, so that a
 // lost sign-in shows the login rather than a retry loop.
 async function reconnect() {
+  const was = line;
   try {
     await refreshHealth(true);
-    connect();
+    // Let go of while the answer was on its way — the tab went away, or the page stopped:
+    // the stream is opened again by whatever brings the page back, not from here
+    if (line === was) connect();
   } catch (e) {
-    if (e.status !== 401) retryTimer = setTimeout(reconnect, retry);
+    if (e.status !== 401 && line === was) retryTimer = setTimeout(reconnect, retry);
   }
 }
 

@@ -123,10 +123,19 @@ list is never the only sign that something broke.
 **Going from one view to another is not a wait.** Each view keeps what it was last answered for
 as long as the page is open. Opened again, it draws that at once and asks for the fresh answer
 behind it; an answer that has not changed draws nothing, so what is under the pointer stays
-there. A list is kept by its address, so Back from a session, the link in the bar and a filter
-taken off again all return to it whole, and Back returns to where it was read. Pointing at a
-view's link asks for it before the click lands. Nothing of this outlives the page, and all of it
-is dropped when the sign-in is lost.
+there. If the fresh answer cannot be had, what is drawn stays, and a line above it says that it
+could not be refreshed and why, with a way to try again: a failure does not take away what was
+there, and what was there is not passed off as current. The next answer that comes takes the
+line away.
+
+A list is kept by its address. Back from a session returns to it whole and to where it was read,
+and the rows that changed meanwhile are folded in where they stand. The link in the bar and a
+filter taken off again show it at once from its top, and its first page then becomes what the
+server says now: what was kept below it may no longer match — *Today* is yesterday after
+midnight — or be gone. A search comes back whole on Back too, but is asked for afresh any other
+way, since what it found is ranked rather than dated and cannot be brought up to date row by row.
+Pointing at a view's link asks for it before the click lands. Nothing of this outlives the page,
+and all of it is dropped when the sign-in is lost.
 
 **The status says one of three things**: *up to date*; *reading 412 of 1,276…* while the index
 catches up — a first read, or many transcripts after a while away; *reconnecting…* if the
@@ -137,7 +146,9 @@ anyway.
 **A tab nobody is looking at asks for nothing.** Changes that arrive while the page is hidden
 are remembered as one fact — something changed — and fetched when it is looked at again. After a
 minute hidden it lets go of the stream as well, so the server stops following the stores closely
-for the sake of a tab in the background.
+for the sake of a tab in the background. A tab opened in the background counts that minute from
+when it loaded, and one whose stream was being reconnected when the minute ran out does not open
+it again until it is looked at.
 
 ## How it is built
 

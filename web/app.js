@@ -29,6 +29,8 @@ const search = h('input', { type: 'search', id: 'q', placeholder: 'Search every 
 const helpBtn = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Search syntax and keys', title: 'Search syntax and keys (?)' }, icon('help'));
 const themeBtn = h('button', { type: 'button', class: 'icon-btn' });
 const syncEl = h('span', { class: 'sync', role: 'status' });
+const syncDot = h('span', { class: 'dot', 'aria-hidden': 'true' });
+const syncText = h('span', { class: 'sync-text' });
 const navLinks = NAV.map(([href, label, names]) => h('a', { href, dataset: { names } }, label));
 // Pointing at a view asks for what it will show, so that it is there when the click lands
 for (const a of navLinks) {
@@ -205,12 +207,15 @@ function renderStatus(st) {
   drawStatus(cls, text, title);
 }
 
+// The dot and the words are made once and changed in place: a dot made anew starts its
+// pulse over, and a catch-up changes its figure every second.
 function drawStatus(cls, text, title) {
   syncEl.title = title;
   if (shownStatus === cls + '\n' + text) return;
   shownStatus = cls + '\n' + text;
-  syncEl.className = 'sync ' + cls;
-  syncEl.replaceChildren(h('span', { class: 'dot', 'aria-hidden': 'true' }), h('span', { class: 'sync-text' }, text));
+  if (syncEl.className !== 'sync ' + cls) syncEl.className = 'sync ' + cls;
+  syncText.textContent = text;
+  if (!syncEl.contains(syncDot)) syncEl.append(syncDot, syncText);
 }
 
 // A store that could not be read says so, so that its silence is not read as "no sessions"

@@ -1,7 +1,7 @@
 // The list of sessions, and the turns a search found. Both share the filters, which live
 // in the address: a filtered view can be linked, and Back undoes a filter.
 
-import { h, icon, mark, time, skeleton, errorBox, empty, fill } from '../dom.js';
+import { h, icon, mark, time, skeleton, errorBox, empty, fill, stale } from '../dom.js';
 import { api, qs, sessionHref, isAbort, onForget } from '../api.js';
 import { go, savedY } from '../router.js';
 import { health, coalesce, onStatus, status } from '../live.js';
@@ -14,8 +14,8 @@ const WHEN = [['', 'All time'], ['today', 'Today'], ['7d', '7 days'], ['30d', '3
 const TOP_PROJECTS = 8;
 
 // Each list as it was left, by its address. Coming back to one — by Back from a session,
-// by its link in the bar, by taking a filter off again — shows it whole and at once, and
-// then asks what has changed since.
+// by its link in the bar, by taking a filter off again — shows it at once, and then asks
+// what has changed since. A search is kept for Back only: see start().
 const KEPT = 12;
 const kept = new Map();
 const keyOf = (route) => (route.name === 'search' ? '/search?' : '/?') + route.query.toString();
@@ -40,7 +40,7 @@ function hrefWith(route, changes) {
 }
 
 export function mount(main, route, ctx) {
-  const v = { route, items: [], total: 0, sessions: 0, end: false, sel: null, busy: null, rows: new Map() };
+  const v = { route, items: [], total: 0, sessions: 0, end: false, sel: null, busy: null, rows: new Map(), renew: false };
   const aside = h('aside', { class: 'filters', id: 'filters', 'aria-label': 'Filters' });
   const toggle = h('button', { type: 'button', class: 'btn filters-toggle', 'aria-expanded': 'false', 'aria-controls': 'filters' }, icon('filter'), 'Filters');
   toggle.addEventListener('click', () => {
@@ -51,8 +51,9 @@ export function mount(main, route, ctx) {
   const count = h('span', { class: 'count' });
   const list = h('div', { class: 'list' });
   const more = h('div', { class: 'more-row' });
+  const note = stale();
   main.append(h('div', { class: 'browse' }, h('header', { class: 'results-head' }, title, count, toggle), aside,
-    h('section', { class: 'results', 'aria-labelledby': 'list-title' }, list, more)));
+    h('section', { class: 'results', 'aria-labelledby': 'list-title' }, note.el, list, more)));
 
   list.addEventListener('focusin', (e) => {
     const row = e.target.closest('.row');
@@ -60,10 +61,16 @@ export function mount(main, route, ctx) {
   });
   const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting) && !v.busy && !v.end && v.items.length) load(false); }, { rootMargin: '600px' });
   io.observe(more);
-  // The filters list the stores health reports; they are drawn again when it changes
+  // The filters list the stores health reports; they are drawn again when it changes. So
+  // is a list that came back empty, which says when a store could not be read: the list
+  // does not wait for the report, and is often answered first.
   let seenHealth = status.health;
+  let saidEmpty = false;
   const offStatus = onStatus((st) => {
-    if (st.health && st.health !== seenHealth) { seenHealth = st.health; renderFilters(); }
+    if (!st.health || st.health === seenHealth) return;
+    seenHealth = st.health;
+    renderFilters();
+    if (saidEmpty && !v.busy) renderList();
   });
 
   const searching = () => v.route.name === 'search';
@@ -128,6 +135,7 @@ export function mount(main, route, ctx) {
   function renderList() {
     renderHead();
     const focused = list.contains(document.activeElement) ? document.activeElement : null;
+    saidEmpty = !v.items.length;
     if (!v.items.length) {
       list.replaceChildren(emptyState());
     } else if (searching()) {
@@ -165,6 +173,7 @@ export function mount(main, route, ctx) {
 
   async function load(reset) {
     v.busy?.abort();
+    v.renew = false; // a list loaded afresh, or read on into, is folded into from now on
     const c = new AbortController();
     v.busy = c;
     const signal = AbortSignal.any([ctx.signal, c.signal]);
@@ -173,6 +182,8 @@ export function mount(main, route, ctx) {
       v.items = [];
       v.total = 0;
       v.end = false;
+      saidEmpty = false;
+      note.say();
       list.replaceChildren(skeleton(8, searching() ? 'hit' : 'row'));
       more.replaceChildren();
       renderHead();
@@ -204,20 +215,33 @@ export function mount(main, route, ctx) {
 
   // A change refetches the first page and folds it into what is shown: rows already
   // on screen are patched where they stand, so neither the scroll nor the selection moves.
+  // A list come back to by a link rather than by Back is shown from its top, and there the
+  // first page simply replaces it: what was kept below may no longer match ("today" was
+  // yesterday) or be gone, and is not shown as if it did. An empty first page is an
+  // empty list, however it was come to — and an empty list is asked again like any other,
+  // so that a session appears in it as soon as an agent writes one.
   async function refresh() {
-    if (searching() || !v.items.length) return;
+    if (searching()) return;
     if (v.busy) return changes();
     const c = new AbortController();
     v.busy = c;
     try {
       const r = await api('/api/sessions' + qs({ ...apiFilters(v.route.query), agents: v.route.query.get('agents') === '1', limit: PAGE }), { signal: AbortSignal.any([ctx.signal, c.signal]) });
-      const fresh = new Set(r.sessions.map((s) => s.ref));
-      const floor = r.sessions.length ? f.when(r.sessions.at(-1).updatedAt) : Infinity;
-      v.items = [...r.sessions, ...v.items.filter((s) => !fresh.has(s.ref) && f.when(s.updatedAt) <= floor)];
+      if (v.renew || !r.sessions.length) {
+        v.items = r.sessions;
+        v.end = r.sessions.length < PAGE;
+      } else {
+        const fresh = new Set(r.sessions.map((s) => s.ref));
+        const floor = f.when(r.sessions.at(-1).updatedAt);
+        v.items = [...r.sessions, ...v.items.filter((s) => !fresh.has(s.ref) && f.when(s.updatedAt) <= floor)];
+      }
+      v.renew = false;
       v.total = r.total;
+      note.say();
       renderList();
     } catch (e) {
-      if (!isAbort(e)) changes();
+      // What is drawn stays, and says it is from earlier; the next change asks again
+      if (!isAbort(e)) note.say(e, refresh);
     } finally {
       if (v.busy === c) v.busy = null;
     }
@@ -236,13 +260,16 @@ export function mount(main, route, ctx) {
 
   function start(how) {
     renderFilters();
+    note.say();
     const was = kept.get(keyOf(v.route));
-    if (was) {
-      Object.assign(v, was, { busy: null, rows: new Map() });
+    // A search is ranked, not dated, so what it found cannot be brought up to date row by
+    // row: it comes back whole on Back, and is asked for afresh any other way
+    if (was && (how === 'pop' || !searching())) {
+      Object.assign(v, was, { busy: null, rows: new Map(), renew: how !== 'pop' });
       renderList();
       // Back returns to where the list was read; a link to it starts at its top
       scrollTo(0, how === 'pop' ? savedY() ?? 0 : 0);
-      changes();
+      refresh();
     } else {
       scrollTo(0, 0);
       load(true);

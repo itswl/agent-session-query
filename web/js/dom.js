@@ -174,6 +174,24 @@ export const errorBox = (err, retry) =>
     h('p', null, err?.message || String(err)),
     retry && h('button', { type: 'button', class: 'btn', onclick: retry }, 'Retry'));
 
+// stale is the line above a view drawn from an earlier answer that says a fresh one could
+// not be had. What is drawn stays — a failure should not take away what was there — but is
+// not passed off as current. say(err, retry) puts the line up; say() takes it down, as the
+// next answer that arrives does. It is redrawn only when what it says changes, so that a
+// failure repeated on every change is not announced on every change.
+export function stale() {
+  const el = h('p', { class: 'stale', role: 'status' });
+  let said = '';
+  const say = (err, retry) => {
+    const text = err ? err.message || String(err) : '';
+    if (text === said) return;
+    said = text;
+    fill(el, text && [icon('alert'), h('span', { class: 'dots' }, h('span', null, 'Could not refresh: ', text),
+      h('button', { type: 'button', class: 'link-btn', onclick() { say(); retry(); } }, 'Retry'))]);
+  };
+  return { el, say };
+}
+
 export const empty = (title, ...hints) =>
   h('div', { class: 'empty' }, h('p', { class: 'empty-title' }, title), hints.map((x) => h('p', null, x)));
 

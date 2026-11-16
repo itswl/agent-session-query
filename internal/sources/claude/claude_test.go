@@ -28,12 +28,11 @@ func assistantRow(uuid, ts, response string, usage M, content ...M) M {
 		"message": M{"id": response, "role": "assistant", "model": "claude-opus", "content": content, "usage": usage, "stop_reason": "end_turn"}}
 }
 
-func TestSession(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "-work-proj", "sess-1.jsonl")
-	sourcetest.Write(t, path,
+// sessionRows is a session of one turn, among rows that are not conversation.
+func sessionRows() []any {
+	return []any{
 		M{"type": "queue-operation", "operation": "enqueue"},
-		M{"type": "attachment", "attachment": M{"type": "hook_output", "content": "hook says hi"}},
+		M{"type": "attachment", "attachment": M{"type": "hook_success", "content": "hook says hi"}},
 		userRow("u1", "2026-10-01T10:00:00Z", "fix the flaky test"),
 		assistantRow("a1", "2026-10-01T10:00:05Z", "msg_1", M{"input_tokens": 10, "output_tokens": 3, "cache_read_input_tokens": 500, "cache_creation_input_tokens": 20},
 			M{"type": "thinking", "thinking": "look at it"}),
@@ -47,8 +46,14 @@ func TestSession(t *testing.T) {
 			M{"type": "text", "text": "The test depended on map order; fixed."}),
 		M{"type": "ai-title", "aiTitle": "Fix flaky test"},
 		M{"type": "cost-state", "totalCostUSD": 0.42},
-	)
+	}
+}
+
+func TestSession(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "-work-proj", "sess-1.jsonl"), sessionRows()...)
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 
 	if s.Session.ID != "sess-1" || s.Session.Cwd != "/work/proj" || s.Session.Branch != "main" || s.Session.Version != "2.1.300" {
 		t.Errorf("session = %+v", s.Session)
@@ -83,9 +88,10 @@ func TestSession(t *testing.T) {
 	}
 }
 
-func TestEventsQueuedPromptsAndInjectedRows(t *testing.T) {
-	root := t.TempDir()
-	sourcetest.Write(t, filepath.Join(root, "p", "s.jsonl"),
+// eventsRows is a session of what happens around the two sides' words: a prompt queued
+// mid-turn, an interruption, a compaction, a failed hook, slash commands.
+func eventsRows() []any {
+	return []any{
 		userRow("u1", "2026-10-01T10:00:00Z", "start the migration"),
 		assistantRow("a1", "2026-10-01T10:00:01Z", "m1", nil, M{"type": "tool_use", "id": "t1", "name": "Bash", "input": M{"command": "sleep 100"}}),
 		M{"type": "attachment", "uuid": "q1", "timestamp": "2026-10-01T10:00:30Z",
@@ -103,8 +109,14 @@ func TestEventsQueuedPromptsAndInjectedRows(t *testing.T) {
 		userRow("u7", "2026-10-01T10:03:00Z", "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>the diff</command-args>"),
 		userRow("u8", "2026-10-01T10:03:01Z", "You are reviewing a diff. Follow these steps…", M{"isMeta": true}),
 		assistantRow("a2", "2026-10-01T10:03:05Z", "m2", nil, M{"type": "text", "text": "Looks good."}),
-	)
+	}
+}
+
+func TestEventsQueuedPromptsAndInjectedRows(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "p", "s.jsonl"), eventsRows()...)
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	if len(s.Turns) != 2 {
 		for _, turn := range s.Turns {
 			t.Logf("turn %d ask %q: %s", turn.Index, turn.Ask, sourcetest.Kinds(turn))
@@ -148,7 +160,9 @@ func TestSavedOutputIsReadInPlaceOfItsStub(t *testing.T) {
 		// source's own root is never followed
 		userRow("u3", "2026-10-01T10:00:03Z", []M{{"type": "tool_result", "tool_use_id": "t2", "content": "see: Full output saved to: /etc/passwd"}}),
 	)
-	tools := sourcetest.Tools(sourcetest.One(t, Spec.Open(root)).Turn(t, 1))
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	tools := sourcetest.Tools(s.Turn(t, 1))
 	if !strings.Contains(tools[0].Output, "the last line says why it failed") || strings.Contains(tools[0].Output, "persisted-output") {
 		t.Errorf("output = %q, want the saved file", tools[0].Output)
 	}
@@ -193,6 +207,7 @@ func TestSubagents(t *testing.T) {
 		M{"agentType": "general-purpose", "parentAgentId": "aaa"})
 
 	all := sourcetest.All(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, all...)
 	if len(all) != 3 {
 		t.Fatalf("sessions = %d", len(all))
 	}
@@ -211,11 +226,11 @@ func TestSubagents(t *testing.T) {
 	}
 }
 
-func TestForkInheritsItsParentsRows(t *testing.T) {
-	root := t.TempDir()
-	dir := filepath.Join(root, "proj", "sess-1", "subagents")
+// forkRows is a fork's transcript: a copy of its parent's conversation up to the call
+// that started it, then the row that hands it its directive, then its own work.
+func forkRows() []any {
 	side := func(row M) M { row["isSidechain"] = true; row["agentId"] = "fff"; return row }
-	sourcetest.Write(t, filepath.Join(dir, "agent-fff.jsonl"),
+	return []any{
 		side(userRow("p1", "2026-10-01T09:00:00Z", "the parent's question")),
 		side(assistantRow("p2", "2026-10-01T09:00:05Z", "pm", M{"input_tokens": 1000, "output_tokens": 1000},
 			M{"type": "tool_use", "id": "toolu_fork", "name": "Agent", "input": M{}})),
@@ -223,9 +238,16 @@ func TestForkInheritsItsParentsRows(t *testing.T) {
 			{"type": "tool_result", "tool_use_id": "toolu_fork", "content": "forked"},
 			{"type": "text", "text": "<fork-boilerplate>You are a fork.</fork-boilerplate>\n\nCheck the tests"}})),
 		side(assistantRow("f2", "2026-10-01T09:00:09Z", "fm", M{"input_tokens": 5, "output_tokens": 7}, M{"type": "text", "text": "They pass."})),
-	)
+	}
+}
+
+func TestForkInheritsItsParentsRows(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "proj", "sess-1", "subagents")
+	sourcetest.Write(t, filepath.Join(dir, "agent-fff.jsonl"), forkRows()...)
 	sourcetest.Write(t, filepath.Join(dir, "agent-fff.meta.json"), M{"agentType": "fork", "toolUseId": "toolu_fork"})
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	if !s.Session.Parent.Fork {
 		t.Error("the parent link should say it is a fork")
 	}
@@ -248,5 +270,150 @@ func TestLocate(t *testing.T) {
 	}
 	if got := Spec.Locate(sourcetest.Env("/home/u", "CLAUDE_CONFIG_DIR", "/cfg")); got != filepath.Join("/cfg", "projects") {
 		t.Errorf("relocated = %s", got)
+	}
+}
+
+// passedOverRows is a turn among the records Claude Code writes beside the conversation,
+// each of a kind the adapter passes over knowing what it is.
+func passedOverRows() []any {
+	return []any{
+		M{"type": "mode", "mode": "normal", "sessionId": "sess-1"},
+		M{"type": "permission-mode", "permissionMode": "default", "sessionId": "sess-1"},
+		M{"type": "session-owner", "sessionId": "sess-1"},
+		M{"type": "file-history-snapshot", "messageId": "u1", "snapshot": M{}, "isSnapshotUpdate": false},
+		M{"type": "attachment", "attachment": M{"type": "skill_listing", "content": "- review: reviews a diff"}},
+		M{"type": "attachment", "attachment": M{"type": "deferred_tools_delta", "addedNames": []string{"WebFetch"}}},
+		M{"type": "attachment", "attachment": M{"type": "queued_command", "commandMode": "task-notification", "prompt": "task done"}},
+		M{"type": "attachment", "attachment": M{"type": "queued_command", "commandMode": "prompt", "isMeta": true, "prompt": "a peer's note"}},
+		userRow("u1", "2026-10-01T10:00:00Z", []M{{"type": "text", "text": "what is in this picture"}, {"type": "image", "source": M{"type": "base64"}}}),
+		M{"type": "api-request", "id": "req", "sessionId": "sess-1"},
+		M{"type": "system", "subtype": "api_error", "uuid": "e1", "timestamp": "2026-10-01T10:00:02Z", "retryAttempt": 1},
+		assistantRow("a1", "2026-10-01T10:00:04Z", "m1", M{"input_tokens": 3, "output_tokens": 4},
+			M{"type": "redacted_thinking", "data": "c2VjcmV0"},
+			M{"type": "tool_use", "id": "t1", "name": "ToolSearch", "input": M{"query": "select:Read"}}),
+		userRow("u2", "2026-10-01T10:00:05Z", []M{{"type": "tool_result", "tool_use_id": "t1",
+			"content": []M{{"type": "tool_reference", "tool_name": "Read"}, {"type": "text", "text": "loaded"}}}}),
+		M{"type": "attachment", "attachment": M{"type": "total_tokens_reminder", "text": "tokens left"}},
+		assistantRow("a2", "2026-10-01T10:00:06Z", "m2", nil, M{"type": "fallback", "from": M{"model": "claude-opus"}, "to": M{"model": "claude-sonnet"}}),
+		assistantRow("a3", "2026-10-01T10:00:08Z", "m3", M{"input_tokens": 2, "output_tokens": 5}, M{"type": "text", "text": "A cat."}),
+		M{"type": "system", "subtype": "turn_duration", "uuid": "d1", "timestamp": "2026-10-01T10:00:09Z", "durationMs": 9000},
+		M{"type": "system", "subtype": "away_summary", "uuid": "s1", "timestamp": "2026-10-01T11:00:00Z", "content": "You asked about a picture"},
+		M{"type": "last-prompt", "lastPrompt": "what is in this picture", "sessionId": "sess-1"},
+		M{"type": "pr-link", "prNumber": 7, "sessionId": "sess-1"},
+		M{"type": "tools-used", "tools": []string{"ToolSearch"}, "sessionId": "sess-1"},
+		M{"type": "progress", "data": M{"type": "hook_progress"}},
+		M{"type": "custom-title", "customTitle": "A picture"},
+	}
+}
+
+func TestKindsPassedOverOnPurpose(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "proj", "sess-1.jsonl"), passedOverRows()...)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	if len(s.Turns) != 1 || s.Session.Title != "A picture" {
+		t.Fatalf("turns = %d, title %q", len(s.Turns), s.Session.Title)
+	}
+	turn := s.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt tool reply" {
+		t.Errorf("items = %s: nothing passed over is an item", got)
+	}
+	if turn.Ask != "what is in this picture" || turn.Answer != "A cat." || sourcetest.Tools(turn)[0].Output != "loaded" {
+		t.Errorf("ask %q answer %q tool %+v", turn.Ask, turn.Answer, sourcetest.Tools(turn)[0])
+	}
+}
+
+// A record of a kind the adapter has never heard of is counted under what it is, and the
+// session reads as it would without it.
+func TestUnknownKindsAreCounted(t *testing.T) {
+	session := func(unknown bool) sourcetest.Session {
+		rows := []any{
+			userRow("u1", "2026-10-01T10:00:00Z", "fix the flaky test"),
+			assistantRow("a1", "2026-10-01T10:00:05Z", "msg_1", M{"input_tokens": 10, "output_tokens": 3},
+				M{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": M{"command": "go test ./..."}}),
+			userRow("u2", "2026-10-01T10:00:09Z", []M{{"type": "tool_result", "tool_use_id": "toolu_1", "content": []M{{"type": "text", "text": "FAIL"}}, "is_error": true}}),
+			assistantRow("a2", "2026-10-01T10:00:20Z", "msg_2", M{"input_tokens": 1, "output_tokens": 9},
+				M{"type": "text", "text": "Fixed."}),
+		}
+		if unknown {
+			rows = []any{
+				M{"type": "hologram", "sessionId": "sess-1"},
+				M{"type": "attachment", "attachment": M{"type": "hologram"}},
+				M{"type": "attachment", "uuid": "q", "timestamp": "2026-10-01T10:00:01Z",
+					"attachment": M{"type": "queued_command", "commandMode": "hologram", "prompt": "beam me up"}},
+				userRow("u1", "2026-10-01T10:00:00Z", []M{{"type": "text", "text": "fix the flaky test"}, {"type": "hologram_note"}}),
+				assistantRow("a1", "2026-10-01T10:00:05Z", "msg_1", M{"input_tokens": 10, "output_tokens": 3},
+					M{"type": "hologram_call", "name": "Bash"},
+					M{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": M{"command": "go test ./..."}}),
+				M{"type": "system", "subtype": "hologram", "uuid": "h", "timestamp": "2026-10-01T10:00:06Z", "content": "a hologram"},
+				userRow("u2", "2026-10-01T10:00:09Z", []M{{"type": "tool_result", "tool_use_id": "toolu_1",
+					"content": []M{{"type": "hologram_frame"}, {"type": "text", "text": "FAIL"}}, "is_error": true}}),
+				assistantRow("a2", "2026-10-01T10:00:20Z", "msg_2", M{"input_tokens": 1, "output_tokens": 9},
+					M{"type": "text", "text": "Fixed."}),
+				M{"type": "hologram", "sessionId": "sess-1"},
+			}
+		}
+		root := t.TempDir()
+		sourcetest.Write(t, filepath.Join(root, "proj", "sess-1.jsonl"), rows...)
+		return sourcetest.One(t, Spec.Open(root))
+	}
+	plain, odd := session(false), session(true)
+	sourcetest.NothingUnread(t, plain)
+
+	want := map[string]int{
+		"row:hologram":            2,
+		"attachment:hologram":     1,
+		"queued_command:hologram": 1,
+		"system:hologram":         1,
+		"block:hologram_note":     1,
+		"block:hologram_call":     1,
+		"block:hologram_frame":    1,
+	}
+	if len(odd.Unread) != len(want) {
+		t.Errorf("unread = %v, want %v", odd.Unread, want)
+	}
+	for kind, n := range want {
+		if odd.Unread[kind] != n {
+			t.Errorf("unread[%s] = %d, want %d (all: %v)", kind, odd.Unread[kind], n, odd.Unread)
+		}
+	}
+	if odd.Stats != plain.Stats || len(odd.Turns) != len(plain.Turns) {
+		t.Fatalf("stats = %+v, want %+v as without the unknown records", odd.Stats, plain.Stats)
+	}
+	for i := range plain.Turns {
+		a, b := plain.Turns[i], odd.Turns[i]
+		if sourcetest.Kinds(a) != sourcetest.Kinds(b) || a.Ask != b.Ask || a.Answer != b.Answer {
+			t.Errorf("turn %d = %s %q %q, want %s %q %q", a.Index, sourcetest.Kinds(b), b.Ask, b.Answer, sourcetest.Kinds(a), a.Ask, a.Answer)
+		}
+		for j, tool := range sourcetest.Tools(a) {
+			if got := sourcetest.Tools(b)[j]; got.Output != tool.Output || got.Status != tool.Status {
+				t.Errorf("tool %d = %q %q, want %q %q", j, got.Output, got.Status, tool.Output, tool.Status)
+			}
+		}
+	}
+}
+
+// A row can say anything of its counts. One below zero, or past what any response could
+// count, is no count: added up, the first takes from the session's and the second wraps
+// it around to below zero. A duration no clock could measure is none either.
+func TestCountsHeldToWhatACountCanBe(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "proj", "sess-1.jsonl"),
+		userRow("u1", "2026-10-01T10:00:00Z", "count"),
+		M{"type": "assistant", "uuid": "a1", "timestamp": "2026-10-01T10:00:01Z", "message": M{"id": "m1", "role": "assistant", "costUSD": -2,
+			"content": []M{{"type": "tool_use", "id": "t1", "name": "Bash", "input": M{"command": "true"}}},
+			"usage":   M{"input_tokens": -5, "output_tokens": 3, "cache_read_input_tokens": int64(9223372036854775807)}}},
+		userRow("u2", "2026-10-01T10:00:02Z", []M{{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}}, M{"toolUseResult": M{"durationMs": 1e300}}),
+		M{"type": "assistant", "uuid": "a2", "timestamp": "2026-10-01T10:00:03Z", "message": M{"id": "m2", "role": "assistant",
+			"content": []M{{"type": "text", "text": "done"}},
+			"usage":   M{"input_tokens": 4, "cache_read_input_tokens": int64(9223372036854775807)}}},
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.Invariants(t, s)
+	if want := (model.Usage{Input: 4, Output: 3}); s.Stats.Usage != want || s.Stats.CostUSD != 0 {
+		t.Errorf("usage = %+v cost %v, want %+v and no cost", s.Stats.Usage, s.Stats.CostUSD, want)
+	}
+	if tool := sourcetest.Tools(s.Turn(t, 1))[0]; tool.DurMs != 0 {
+		t.Errorf("duration = %d ms, want none", tool.DurMs)
 	}
 }

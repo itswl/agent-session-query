@@ -97,9 +97,30 @@ type Reader struct {
 	Cwd       string // the directory on the session row
 	Platform  string // the channel Hermes's session_meta row names
 
+	// Unread is told of every row, message and block passed over without knowing what it
+	// was, named the way transcript.Writer.Unread takes it. Nil when no one asks.
+	Unread func(kind string)
+
 	// spent is what a row cost beyond the message it was read as: a tool that called a
 	// model of its own reports those tokens on its result. Take hands it over.
 	spent *transcript.Message
+}
+
+// note tells Unread, if anyone listens, of a record of a kind the reader does not know.
+func (r *Reader) note(kind string) {
+	if r.Unread != nil {
+		r.Unread(kind)
+	}
+}
+
+// unknown names a record of a kind the reader does not know, for Writer.Unread. One that
+// does not say what it is — a line of JSON with no type, a block with no type — is such a
+// record too.
+func unknown(what, kind string) string {
+	if kind == "" {
+		kind = "(untyped)"
+	}
+	return what + ":" + kind
 }
 
 // Take returns the message the last Row left behind, if it left one: tokens a tool's
@@ -143,6 +164,7 @@ func (r *Reader) Row(line []byte) (transcript.Message, bool) {
 	}
 	switch x.Type {
 	case "message":
+		// One whose message is missing has nothing to read, though what it is is known
 		if x.Message != nil {
 			return r.typed(&x)
 		}
@@ -166,8 +188,28 @@ func (r *Reader) Row(line []byte) (transcript.Message, bool) {
 		// The context the model sees was rewritten here; the row carries the summary that
 		// took the place of what was folded away
 		return r.event(&x, model.EventCompaction, kit.First(x.Summary, "Context compacted")), true
+	case "custom":
+		// An extension's own state, kept for it to rebuild from (OpenClaw's model
+		// snapshot); it never reaches the model
+	case "custom_message":
+		// What an extension put in front of the model — OpenClaw's runtime context — and
+		// nobody typed or was shown
+	case "thinking_level_change":
+		// A setting changed, not something said
+	case "label":
+		// A bookmark put on an earlier row
+	case "session_info":
+		// The name given to the session; OpenClaw keeps its own beside the transcript
+	case "context_edit":
+		// A later change to what an earlier row puts in front of the model, or its removal
+		// from it: the row as it was written is what was said
+	case "":
+		// Hermes's rows have no type: each is the message itself
+		return r.flat(&x)
+	default:
+		r.note(unknown("row", x.Type))
 	}
-	return r.flat(&x)
+	return transcript.Message{}, false
 }
 
 func (r *Reader) event(x *row, kind, text string) transcript.Message {
@@ -190,7 +232,7 @@ func (r *Reader) typed(x *row) (transcript.Message, bool) {
 	switch msg.Role {
 	case "user":
 		m.Role = transcript.User
-		m.Blocks = wordBlocks(msg.Content)
+		m.Blocks = wordBlocks(msg.Content, r.note)
 		return m, len(m.Blocks) > 0
 	case "assistant":
 		m.Role = transcript.Assistant
@@ -207,7 +249,7 @@ func (r *Reader) typed(x *row) (transcript.Message, bool) {
 		if !u.IsZero() {
 			m.Usage = &u
 		}
-		m.Blocks = assistantBlocks(msg.Content)
+		m.Blocks = assistantBlocks(msg.Content, r.note)
 		// How a response ended, where that is something that happened rather than
 		// something said: stopped by the person, or failed at the provider — a 429, a
 		// dropped connection — with errorMessage carrying the reason either way
@@ -226,7 +268,7 @@ func (r *Reader) typed(x *row) (transcript.Message, bool) {
 		// a command, how it exited and how long it ran
 		var details map[string]any
 		_ = json.Unmarshal(msg.Details, &details)
-		m.Blocks = []transcript.Block{transcript.ResultOf(msg.ToolCallID, msg.ToolName, partsText(msg.Content), outcomeOf(kit.Truthy(msg.IsError), details))}
+		m.Blocks = []transcript.Block{transcript.ResultOf(msg.ToolCallID, msg.ToolName, partsText(msg.Content, r.note), outcomeOf(kit.Truthy(msg.IsError), details))}
 		// A tool that called a model of its own says what that cost on its result
 		if u, cost := Usage(msg.Usage); !u.IsZero() || cost > 0 {
 			r.spent = &transcript.Message{Role: transcript.Assistant, At: at, Model: kit.First(msg.Model, r.Model), Usage: &u, CostUSD: cost}
@@ -234,12 +276,17 @@ func (r *Reader) typed(x *row) (transcript.Message, bool) {
 		return m, true
 	case "custom":
 		if msg.CustomType == nestedToolType {
-			return nestedTool(m, msg)
+			return nestedTool(m, msg, r.note)
 		}
+		// Any other is what an extension of the CLI's put in front of the model, read
+		// below as the CLI's own words
+	default:
+		// A role the CLI had not written when this was made. What it is is not known, and
+		// it is counted so; the words it holds, if any, are still read as the CLI's own.
+		r.note(unknown("role", msg.Role))
 	}
-	// Any other role is the CLI's own
 	m.Role = transcript.System
-	m.Blocks = wordBlocks(msg.Content)
+	m.Blocks = wordBlocks(msg.Content, r.note)
 	return m, len(m.Blocks) > 0
 }
 
@@ -251,7 +298,8 @@ func (r *Reader) typed(x *row) (transcript.Message, bool) {
 const nestedToolType = "openclaw.nested-tool.v1"
 
 // nestedTool reads such a row as what it records: a call, and the result that answered it.
-func nestedTool(m transcript.Message, msg *message) (transcript.Message, bool) {
+// unread is told of every block of its result of a type a result does not hold.
+func nestedTool(m transcript.Message, msg *message, unread func(kind string)) (transcript.Message, bool) {
 	var d struct {
 		ToolCallID string          `json:"toolCallId"`
 		ToolName   string          `json:"toolName"`
@@ -275,7 +323,7 @@ func nestedTool(m transcript.Message, msg *message) (transcript.Message, bool) {
 			outcome.DurMs = ended.Sub(started).Milliseconds()
 		}
 	}
-	output := partsText(d.Result.Content)
+	output := partsText(d.Result.Content, unread)
 	if output == "" {
 		output = kit.First(kit.Str(d.Result.Details["aggregated"]), kit.Str(d.Result.Details["content"]))
 	}
@@ -336,6 +384,10 @@ func (r *Reader) flat(x *row) (transcript.Message, bool) {
 		m.Role = transcript.ToolRole
 		m.Blocks = []transcript.Block{Result(x.CallID, kit.First(x.Tool, x.Name), contentText(x.Content))}
 		return m, true
+	case "system":
+		// The system prompt: what the model was told to be, not something said
+	default:
+		r.note(unknown("role", x.Role))
 	}
 	return m, false
 }
@@ -440,26 +492,41 @@ func Usage(raw map[string]any) (u model.Usage, cost float64) {
 	for key, v := range raw {
 		switch strings.ReplaceAll(strings.ToLower(key), "_", "") {
 		case "input", "inputtokens":
-			u.Input = kit.Int(v)
+			u.Input = Count(v)
 		case "output", "outputtokens":
-			u.Output = kit.Int(v)
+			u.Output = Count(v)
 		case "cacheread", "cachereadtokens", "cachereadinputtokens":
-			u.CacheRead = kit.Int(v)
+			u.CacheRead = Count(v)
 		case "cachewrite", "cachewritetokens", "cachecreationinputtokens":
-			u.CacheWrite = kit.Int(v)
+			u.CacheWrite = Count(v)
 		case "reasoning", "reasoningtokens":
-			u.Reasoning = kit.Int(v)
+			u.Reasoning = Count(v)
 		case "cost":
 			// {"cost": {"total": 0.0021, …}}; a writer that gives the number alone is read too
 			if nested, ok := v.(map[string]any); ok {
 				v = nested["total"]
 			}
-			if f, ok := kit.Num(v); ok {
-				cost = f
+			if f, ok := kit.Num(v); ok && f > 0 {
+				cost = f // a price below zero is not one
 			}
 		}
 	}
 	return u, cost
+}
+
+// maxCount bounds a counter that is read. No response or session comes near a trillion
+// tokens, and counts that large, added together, would run past what an int64 holds and
+// turn negative.
+const maxCount = 1 << 40
+
+// Count reads a token counter. One below zero, or past what any session could spend, is
+// not a count of anything and is read as none.
+func Count(v any) int64 {
+	n := kit.Int(v)
+	if n < 0 || n > maxCount {
+		return 0
+	}
+	return n
 }
 
 // decode reads one line into v. A field of the wrong type is left empty and the rest of
@@ -498,10 +565,18 @@ func partText(p part) string {
 }
 
 // partsText is the text of a content array, one block per line. An image has none and
-// adds nothing.
-func partsText(raw json.RawMessage) string {
+// adds nothing. unread is told of every block of a type such content does not hold.
+func partsText(raw json.RawMessage, unread func(kind string)) string {
 	var texts []string
 	for _, p := range parts(raw) {
+		switch p.Type {
+		case "text": // read below
+		case "image":
+			continue // a picture a tool returned, which has no text
+		default:
+			// Its text, if it has any, is still what the block said
+			unread(unknown("block", p.Type))
+		}
 		if text := partText(p); text != "" {
 			texts = append(texts, text)
 		}
@@ -511,21 +586,29 @@ func partsText(raw json.RawMessage) string {
 
 // resultBlock is a result written as a block of a message's content, the shape older
 // transcripts used. Its status is written only when the block says one.
-func resultBlock(p part) transcript.Block {
+func resultBlock(p part, unread func(kind string)) transcript.Block {
 	var outcome transcript.Outcome
 	if p.IsError != nil {
 		outcome.Status = transcript.StatusOf(*p.IsError)
 	}
-	return transcript.ResultOf(p.ToolCallID, p.ToolName, partsText(p.Content), outcome)
+	return transcript.ResultOf(p.ToolCallID, p.ToolName, partsText(p.Content, unread), outcome)
 }
 
 // wordBlocks is a message's words: the blocks that carry text, and any result among them.
-func wordBlocks(raw json.RawMessage) []transcript.Block {
+// unread is told of every block of a type such a message does not hold.
+func wordBlocks(raw json.RawMessage, unread func(kind string)) []transcript.Block {
 	var out []transcript.Block
 	for _, p := range parts(raw) {
-		if p.Type == "toolResult" {
-			out = append(out, resultBlock(p))
+		switch p.Type {
+		case "toolResult":
+			out = append(out, resultBlock(p, unread))
 			continue
+		case "text": // read below
+		case "image":
+			continue // a picture attached to the message, which has no words
+		default:
+			// Its text, if it has any, is still what the message said
+			unread(unknown("block", p.Type))
 		}
 		if text := partText(p); text != "" {
 			out = append(out, transcript.TextOf(text))
@@ -534,12 +617,14 @@ func wordBlocks(raw json.RawMessage) []transcript.Block {
 	return out
 }
 
-func assistantBlocks(raw json.RawMessage) []transcript.Block {
+// assistantBlocks is what a response said and did. unread is told of every block of a
+// type a response does not hold.
+func assistantBlocks(raw json.RawMessage, unread func(kind string)) []transcript.Block {
 	var out []transcript.Block
 	for _, p := range parts(raw) {
 		switch p.Type {
 		case "thinking":
-			if p.Thinking != "" {
+			if p.Thinking != "" { // a redacted block keeps only its signature
 				out = append(out, transcript.ThinkingOf(p.Thinking))
 			}
 		case "toolCall":
@@ -549,8 +634,14 @@ func assistantBlocks(raw json.RawMessage) []transcript.Block {
 			}
 			out = append(out, transcript.CallOf(p.ID, p.Name, args))
 		case "toolResult":
-			out = append(out, resultBlock(p))
+			out = append(out, resultBlock(p, unread))
+		case "text":
+			if text := partText(p); text != "" {
+				out = append(out, transcript.TextOf(text))
+			}
 		default:
+			// Its text, if it has any, is still what the response said
+			unread(unknown("block", p.Type))
 			if text := partText(p); text != "" {
 				out = append(out, transcript.TextOf(text))
 			}

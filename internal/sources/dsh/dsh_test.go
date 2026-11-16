@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -171,6 +173,7 @@ func TestSession(t *testing.T) {
 	}
 	s := sourcetest.One(t, src)
 	checkSession(t, s)
+	sourcetest.NothingUnread(t, s)
 	if s.Session.Path != sessionDir(root) {
 		t.Errorf("path = %s", s.Session.Path)
 	}
@@ -182,7 +185,9 @@ func TestZstdFrames(t *testing.T) {
 	root := t.TempDir()
 	data := append(frames(t, encode(t, transcriptRows()), 97), halfFrame(t)...)
 	put(t, filepath.Join(sessionDir(root), "session.v4.jsonl.zstd"), data)
-	checkSession(t, sourcetest.One(t, Spec.Open(root)))
+	s := sourcetest.One(t, Spec.Open(root))
+	checkSession(t, s)
+	sourcetest.NothingUnread(t, s)
 }
 
 // TestZstdTailCutAnywhere: the harness appends to the file while it is read, so the last
@@ -198,13 +203,17 @@ func TestZstdTailCutAnywhere(t *testing.T) {
 		if s.Stats.Turns != 1 || s.Stats.Calls != 2 || s.Session.ID != "dsh-1" {
 			t.Fatalf("a tail cut at %d of %d bytes: session %+v stats %+v", cut, len(next), s.Session, s.Stats)
 		}
+		// a line cut short is the append still being written, not a record of some other kind
+		sourcetest.NothingUnread(t, s)
 	}
 	// The whole next frame is complete rows, and read
 	root := t.TempDir()
 	put(t, filepath.Join(sessionDir(root), "session.v4.jsonl.zstd"), append(append([]byte{}, complete...), next...))
-	if s := sourcetest.One(t, Spec.Open(root)); s.Stats.Calls != 3 {
+	s := sourcetest.One(t, Spec.Open(root))
+	if s.Stats.Calls != 3 {
 		t.Errorf("a complete frame was not read: %+v", s.Stats)
 	}
+	sourcetest.NothingUnread(t, s)
 }
 
 // TestPartialLastLine: a plain transcript's last line may be an append still being written
@@ -212,14 +221,18 @@ func TestPartialLastLine(t *testing.T) {
 	root := t.TempDir()
 	data := append(encode(t, transcriptRows()), []byte(`{"type":"assistant/message","time":1,"data":{"message":{"id":"half","content":[{"type":"te`)...)
 	put(t, filepath.Join(sessionDir(root), "session.v4.jsonl"), data)
-	checkSession(t, sourcetest.One(t, Spec.Open(root)))
+	s := sourcetest.One(t, Spec.Open(root))
+	checkSession(t, s)
+	sourcetest.NothingUnread(t, s)
 
 	// a row whose newline is not written yet is complete all the same
 	whole := bytes.TrimSuffix(encode(t, append(transcriptRows(), assistantRow("a3", 6*time.Second, M{"outputTokens": 1}, M{"type": "text", "text": "late"}))), []byte("\n"))
 	put(t, filepath.Join(sessionDir(root), "session.v4.jsonl"), whole)
-	if s := sourcetest.One(t, Spec.Open(root)); s.Stats.Calls != 3 || s.Turn(t, 1).Answer != "late" {
+	s = sourcetest.One(t, Spec.Open(root))
+	if s.Stats.Calls != 3 || s.Turn(t, 1).Answer != "late" {
 		t.Errorf("stats = %+v", s.Stats)
 	}
+	sourcetest.NothingUnread(t, s)
 }
 
 // TestFirstFrameStillBeingWritten: a session that has only just begun may hold nothing but
@@ -231,6 +244,7 @@ func TestFirstFrameStillBeingWritten(t *testing.T) {
 	if s.Session.ID != "session-abc" || s.Stats.Turns != 0 {
 		t.Errorf("session = %+v stats = %+v", s.Session, s.Stats)
 	}
+	sourcetest.NothingUnread(t, s)
 }
 
 // TestNotZstd: bytes that are no zstd stream are a failure to read, which is not an empty session
@@ -260,6 +274,7 @@ func TestHighestGeneration(t *testing.T) {
 	if s.Session.ID != "cur" || s.Session.Title != "current title" {
 		t.Errorf("session = %+v: v10 is the highest, not v9", s.Session)
 	}
+	sourcetest.NothingUnread(t, s)
 }
 
 func TestGeneration(t *testing.T) {
@@ -374,9 +389,11 @@ func TestSameGenerationBothWays(t *testing.T) {
 	dir := sessionDir(root)
 	put(t, filepath.Join(dir, "session.v2.jsonl"), encode(t, []M{headerRow("plain", "/w")}))
 	put(t, filepath.Join(dir, "session.v2.jsonl.zstd"), frames(t, encode(t, []M{headerRow("packed", "/w")}), 40))
-	if s := sourcetest.One(t, Spec.Open(root)); s.Session.ID != "packed" {
+	s := sourcetest.One(t, Spec.Open(root))
+	if s.Session.ID != "packed" {
 		t.Errorf("id = %q", s.Session.ID)
 	}
+	sourcetest.NothingUnread(t, s)
 }
 
 // TestNoHeader: a transcript that opens without its header is still a session, named by its directory
@@ -388,6 +405,7 @@ func TestNoHeader(t *testing.T) {
 		// StartedAt comes from the first message, there being no createdAt
 		t.Errorf("session = %+v", s.Session)
 	}
+	sourcetest.NothingUnread(t, s)
 }
 
 // TestInjectedUserRows: a user row the harness wrote itself is context, and no ask
@@ -417,6 +435,7 @@ func TestInjectedUserRows(t *testing.T) {
 	if tool := sourcetest.Tools(turn)[0]; tool.Command != "ls" || tool.Done {
 		t.Errorf("tool = %+v", tool)
 	}
+	sourcetest.NothingUnread(t, s)
 }
 
 // TestToolFailure: isError is how a result says it failed
@@ -428,10 +447,12 @@ func TestToolFailure(t *testing.T) {
 		assistantRow("a1", time.Second, nil, M{"type": "tool-call", "id": "c1", "name": "bash", "arguments": `{"command":"make"}`}),
 		resultRow("r1", "c1", 2*time.Second, true, text("make: *** failed")),
 	}))
-	turn := sourcetest.One(t, Spec.Open(root)).Turn(t, 1)
+	s := sourcetest.One(t, Spec.Open(root))
+	turn := s.Turn(t, 1)
 	if tool := sourcetest.Tools(turn)[0]; tool.Status != model.StatusError || tool.Output != "make: *** failed" || tool.Name != "bash" || turn.Failures != 1 {
 		t.Errorf("tool = %+v, failures %d", sourcetest.Tools(turn)[0], turn.Failures)
 	}
+	sourcetest.NothingUnread(t, s)
 }
 
 func TestLocate(t *testing.T) {
@@ -443,13 +464,14 @@ func TestLocate(t *testing.T) {
 	}
 }
 
-// What a real harness (0.2.2) writes that the samples before it did not show: surfaceOp
-// as a bare string, the title it gives a session — a stopgap cut from the ask, then one a
-// model wrote — and a command's exit code, which is not on its result at all but on the
-// job that ran it.
-func TestWhatTheCurrentHarnessWrites(t *testing.T) {
-	root := t.TempDir()
-	rows := []M{
+// currentRows is a session as a real harness (0.2.2) writes it, with what the samples
+// before it did not show: surfaceOp as a bare string, the title it gives a session — a
+// stopgap cut from the ask, then one a model wrote — a command's exit code, which is not on
+// its result at all but on the job that ran it, and the rows it writes that are no part of
+// the conversation (the system prompt, a turn's bounds, a call as it was run, a job as it
+// began).
+func currentRows() []M {
+	return []M{
 		{"type": "session", "version": 4, "id": "session-real", "cwd": "/w/proj", "createdAt": ms(0)},
 		{"type": "turn/start", "seq": 5, "time": ms(0), "data": M{"turn": 1}},
 		{"type": "system/message", "seq": 8, "time": ms(time.Second), "surfaceOp": "append",
@@ -485,8 +507,14 @@ func TestWhatTheCurrentHarnessWrites(t *testing.T) {
 			"data": M{"id": "u-rewrite", "role": "user", "source": M{"kind": "user"}, "content": text("a rewritten history that opens no turn")}},
 		{"type": "turn/end", "seq": 30, "time": ms(3 * time.Second), "data": M{"turn": 1, "reason": M{"kind": "completed"}}},
 	}
-	put(t, filepath.Join(root, "project", "session-real", "session.v4.jsonl"), encode(t, rows))
+}
+
+func TestWhatTheCurrentHarnessWrites(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "project", "session-real", "session.v4.jsonl"), encode(t, currentRows()))
 	s := sourcetest.One(t, Spec.Open(root))
+	// every row it writes is one the adapter knows, the ones it passes over included
+	sourcetest.NothingUnread(t, s)
 
 	if s.Session.Title != "Read notes and list a directory" || s.Session.ID != "session-real" || s.Session.Cwd != "/w/proj" {
 		t.Errorf("session = %+v", s.Session)
@@ -525,5 +553,58 @@ func TestAResponseWithNoContentStillCounts(t *testing.T) {
 	s := sourcetest.One(t, Spec.Open(root))
 	if want := (model.Usage{Input: 910, Output: 75}); s.Stats.Usage != want || s.Stats.Calls != 2 {
 		t.Errorf("usage = %+v in %d calls, want %+v in 2", s.Stats.Usage, s.Stats.Calls, want)
+	}
+	sourcetest.NothingUnread(t, s)
+}
+
+// TestUnknownKindsAreCounted: a row, or a part of a message, of a type the harness had not
+// written when the adapter was made is passed over and counted under its name — as is a
+// row that does not say what it is — and the rest of the session reads as it did.
+func TestUnknownKindsAreCounted(t *testing.T) {
+	root := t.TempDir()
+	rows := transcriptRows()
+	image := M{"type": "image", "mediaType": "image/png", "data": "iVBORw0KGgo="}
+	// parts of kinds it has never seen, beside the ones it knows: in the ask, in the
+	// result, where a part with no text is all there is to pass over, and in the answer
+	ask, result, answer := rows[1]["data"].(M), rows[3]["data"].(M)["message"].(M), rows[4]["data"].(M)["message"].(M)
+	ask["content"] = []M{{"type": "text", "text": "fix the uploader"}, image}
+	result["content"] = []M{{"type": "text", "text": "package x"}, image}
+	answer["content"] = []M{{"type": "redacted-reasoning", "data": "opaque"}, {"type": "text", "text": "done"}}
+	// The repeat of a message and a compaction's rewrite are passed over knowingly, and
+	// what they hold is not looked at, let alone counted
+	repeat, rewrite := rows[5]["data"].(M)["message"].(M), rows[6]["data"].(M)
+	repeat["content"] = []M{{"type": "text", "text": "dup"}, image}
+	rewrite["content"] = []M{{"type": "text", "text": "compacted summary"}, image}
+	// rows of kinds it has never seen, between the ask and what answers it
+	rows = slices.Insert(rows, 2,
+		M{"type": "session/fork", "time": ms(500 * time.Millisecond), "data": M{"from": "dsh-0"}},
+		M{"time": ms(600 * time.Millisecond), "data": M{"note": "a row with no type"}})
+	put(t, filepath.Join(sessionDir(root), "session.v4.jsonl"), encode(t, rows))
+
+	s := sourcetest.One(t, Spec.Open(root))
+	want := map[string]int{"row:session/fork": 1, "row:(untyped)": 1, "part:image": 2, "part:redacted-reasoning": 1}
+	if !maps.Equal(s.Unread, want) {
+		t.Errorf("unread = %v, want %v", s.Unread, want)
+	}
+	checkSession(t, s)
+}
+
+// TestCountsThatAreNoCounts: a token count below zero, or past anything one response could
+// use, is no count and is read as none — taken as it is, the one would take a session's
+// total below zero, and two of the other would add up past what the total can hold and
+// wrap below it.
+func TestCountsThatAreNoCounts(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(sessionDir(root), "session.v1.jsonl"), encode(t, []M{
+		headerRow("dsh-counts", "/w"),
+		userRow("u1", 0, text("count")),
+		assistantRow("a1", time.Second, M{"inputTokens": -5, "outputTokens": 3}, M{"type": "text", "text": "one"}),
+		assistantRow("a2", 2*time.Second, M{"inputTokens": 9e18, "outputTokens": 1e300, "cacheReadTokens": 7}, M{"type": "text", "text": "two"}),
+		assistantRow("a3", 3*time.Second, M{"inputTokens": 9e18, "outputTokens": 4}, M{"type": "text", "text": "three"}),
+	}))
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.Invariants(t, s)
+	if want := (model.Usage{Output: 7, CacheRead: 7}); s.Stats.Usage != want || s.Stats.Calls != 3 {
+		t.Errorf("usage = %+v in %d calls, want %+v in 3", s.Stats.Usage, s.Stats.Calls, want)
 	}
 }

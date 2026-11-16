@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n{\"type\":\"assistant\",\"message\":{\"id\":\"m\",\"content\":\"x\",\"costUSD\":-2,\"usage\":{\"input_tokens\":-5,\"output_tokens\":3}}}\n")

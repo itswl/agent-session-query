@@ -192,14 +192,27 @@ type usage struct {
 	Reasoning  int64 `json:"reasoning_output_tokens"`
 }
 
+// mostTokens is far more than any one model response has spent: a counter past it, like
+// one below zero, is not a count.
+const mostTokens = 1 << 40
+
 // canonical takes the cached tokens back out of the input, so the parts do not overlap.
+// A counter that is not a count reads as none: one corrupt record must not take a
+// session's tokens below zero, or carry their sum past what an int64 holds.
 func (u usage) canonical() *model.Usage {
+	count := func(n int64) int64 {
+		if n < 0 || n > mostTokens {
+			return 0
+		}
+		return n
+	}
+	in, cached, written := count(u.Input), count(u.Cached), count(u.CacheWrite)
 	return &model.Usage{
-		Input:      max(u.Input-u.Cached-u.CacheWrite, 0),
-		Output:     u.Output,
-		CacheRead:  u.Cached,
-		CacheWrite: u.CacheWrite,
-		Reasoning:  u.Reasoning,
+		Input:      max(in-cached-written, 0),
+		Output:     count(u.Output),
+		CacheRead:  cached,
+		CacheWrite: written,
+		Reasoning:  count(u.Reasoning),
 	}
 }
 
@@ -420,10 +433,44 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				if cost := spentAt(info.Last, info.Total, snapshots, &high); cost != nil {
 					end("", cost, at)
 				}
+			case "user_message", "agent_message", "agent_reasoning", "agent_reasoning_raw_content":
+				// The event stream's copy of the words and the thinking, which the
+				// response_item rows hold: older versions write both
+			case "item_started", "item_completed":
+				// The event stream's copy of each item — a message, a thought, a call and
+				// its result — which the response_item rows hold
+			case "task_started", "task_complete", "thread_settings_applied":
+				// A turn starting and ending, and the settings it runs with: turn_context
+				// opens a turn, and the rows in it say how it went
+			case "context_compacted":
+				// The event for a compaction, which the compacted row records
+			case "entered_review_mode", "exited_review_mode":
+				// /review starting and ending: what the review found is written as
+				// messages too
+			default:
+				if p.Type != "" {
+					w.Unread("event:" + p.Type)
+				}
 			}
+			return true
+		case "world_state", "dynamic_tools_updated":
+			// What the model is given to work with — instructions, tools, skills,
+			// permissions — and the tools changing: the CLI's setup, not conversation
+			return true
+		case "retained_context":
+			// What a compaction keeps of the conversation: copies of what was already read
+			return true
+		case "inter_agent_communication_metadata":
+			// Whether a message between agents starts a turn; the message is a row of its own
+			return true
+		case "security_risk_score":
+			// Risk scores sampled for what the session did: the CLI's bookkeeping
 			return true
 		case "response_item":
 		default:
+			if r.Type != "" {
+				w.Unread("row:" + r.Type)
+			}
 			return true
 		}
 
@@ -434,25 +481,29 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		callID := kit.First(p.CallID, p.ID)
 		switch p.Type {
 		case "message":
-			text := messageText(p.Content)
 			switch p.Role {
 			case "assistant":
-				if text != "" {
+				if text := messageText(p.Content, w.Unread); text != "" {
 					assistant(transcript.TextOf(text))
 				}
 			case "user":
 				flush(nil)
-				if text != "" {
+				if text := messageText(p.Content, w.Unread); text != "" {
 					w.Add(transcript.Message{ID: p.ID, Role: transcript.User, At: at, Inherited: inherited,
 						Blocks: []transcript.Block{transcript.TextOf(text)}})
 				}
+			case "developer":
+				// instructions the CLI assembled: not conversation
+			default:
+				if p.Role != "" {
+					w.Unread("role:" + p.Role)
+				}
 			}
-			// developer rows are instructions the CLI assembled: not conversation
 		case "agent_message":
 			// One agent of a team speaking to another. Addressed to a subagent by the agent
 			// above it, it is that subagent's ask; anything else is news that arrived
 			flush(nil)
-			text := messageText(p.Content)
+			text := messageText(p.Content, w.Unread)
 			if text == "" {
 				return true
 			}
@@ -466,7 +517,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		case "reasoning":
 			// The summary entries, then the content when it is not encrypted; a row with
 			// only encrypted content shows a reader nothing
-			if text := reasoningText(p.Summary, p.Content); text != "" {
+			if text := reasoningText(w.Unread, p.Summary, p.Content); text != "" {
 				assistant(transcript.ThinkingOf(text))
 			}
 		case "function_call":
@@ -494,13 +545,25 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			assistant(transcript.CallOf("", "web_search", p.Action), transcript.ResultOf("", "web_search", "", outcome))
 		case "function_call_output", "custom_tool_call_output":
 			flush(nil)
-			text, outcome := output(p.Output)
+			text, outcome := output(p.Output, w.Unread)
 			if names[p.CallID] == "apply_patch" && patchRejected(text) {
 				// A rejected patch has no exit code and would otherwise read as applied
 				outcome.Status = model.StatusError
 			}
 			w.Add(transcript.Message{ID: p.ID, Role: transcript.ToolRole, At: at, Inherited: inherited,
 				Blocks: []transcript.Block{transcript.ResultOf(p.CallID, names[p.CallID], text, outcome)}})
+		case "additional_tools", "configuration_update":
+			// Tools put before the model mid-session, and its settings changed: the CLI's
+			// setup, not conversation
+		case "ghost_snapshot":
+			// The git snapshot older versions took for /undo: nothing a reader is shown
+		case "compaction":
+			// What a compaction on the server left, encrypted: the compacted row is what
+			// says it happened
+		default:
+			if p.Type != "" {
+				w.Unread("item:" + p.Type)
+			}
 		}
 		return true
 	})
@@ -592,18 +655,46 @@ func (s *Source) parentTurns(id string) map[string]bool {
 	return ids
 }
 
-// messageText joins the text entries of a message's content.
-func messageText(raw json.RawMessage) string {
-	var items []struct {
-		Text *string `json:"text"`
+// part is one entry of a content list: [{type, text}].
+type part struct {
+	Type string  `json:"type"`
+	Text *string `json:"text"`
+}
+
+// text is what an entry shows a reader. The kinds known to hold no text have a case of
+// their own; an entry of a kind never seen, with no text to read, is passed over and
+// counted as unread. One of a kind never seen that does hold text is read like any other.
+func (p part) text(unread func(kind string)) string {
+	switch p.Type {
+	case "input_image", "image", "input_audio":
+		// a picture or a sound: nothing a reader of the words is shown
+		return ""
+	case "encrypted_content":
+		// what Codex keeps encrypted, such as one agent's message to another
+		return ""
 	}
+	if p.Text != nil {
+		return *p.Text
+	}
+	switch p.Type {
+	case "", "input_text", "output_text", "summary_text", "reasoning_text", "text":
+		// a kind that holds text, with none in it this time
+	default:
+		unread("part:" + p.Type)
+	}
+	return ""
+}
+
+// messageText joins the text entries of a message's content.
+func messageText(raw json.RawMessage, unread func(string)) string {
+	var items []part
 	if json.Unmarshal(raw, &items) != nil {
 		return contentString(raw)
 	}
 	var texts []string
 	for _, item := range items {
-		if item.Text != nil && *item.Text != "" {
-			texts = append(texts, *item.Text)
+		if text := item.text(unread); text != "" {
+			texts = append(texts, text)
 		}
 	}
 	return strings.Join(texts, "\n")
@@ -619,17 +710,15 @@ func contentString(raw json.RawMessage) string {
 }
 
 // reasoningText joins what a reasoning row shows. Either list is [{type, text}].
-func reasoningText(lists ...json.RawMessage) string {
+func reasoningText(unread func(string), lists ...json.RawMessage) string {
 	var texts []string
 	for _, raw := range lists {
-		var items []struct {
-			Text string `json:"text"`
-		}
+		var items []part
 		if json.Unmarshal(raw, &items) != nil {
 			continue
 		}
 		for _, item := range items {
-			if text := strings.TrimSpace(item.Text); text != "" {
+			if text := strings.TrimSpace(item.text(unread)); text != "" {
 				texts = append(texts, text)
 			}
 		}
@@ -658,7 +747,7 @@ func arguments(raw json.RawMessage) any {
 // a header of known lines — "Exit code: N", "Wall time: 0.3 seconds", "Script completed",
 // "Process exited with code N" — closed by a line reading "Output:". The header is
 // information, not output, so it is read and removed.
-func output(raw json.RawMessage) (string, transcript.Outcome) {
+func output(raw json.RawMessage, unread func(string)) (string, transcript.Outcome) {
 	ok := transcript.Outcome{Status: model.StatusOK}
 	if text := contentString(raw); text != "" || bytes.HasPrefix(bytes.TrimSpace(raw), []byte(`"`)) {
 		if body, outcome, legacy := legacyOutput(text); legacy {
@@ -666,20 +755,18 @@ func output(raw json.RawMessage) (string, transcript.Outcome) {
 		}
 		return stripHeader(text)
 	}
-	var items []struct {
-		Type string  `json:"type"`
-		Text *string `json:"text"`
-	}
+	var items []part
 	if json.Unmarshal(raw, &items) != nil {
 		return "", ok
 	}
 	var outcome transcript.Outcome
 	var bodies []string
 	for _, item := range items {
-		if item.Type == "input_image" || item.Type == "image" || item.Text == nil {
+		text := item.text(unread)
+		if text == "" {
 			continue
 		}
-		body, found := stripHeader(*item.Text)
+		body, found := stripHeader(text)
 		if outcome.Exit == nil {
 			outcome.Exit = found.Exit
 		}
@@ -723,10 +810,20 @@ func legacyOutput(text string) (string, transcript.Outcome, bool) {
 			}
 		}
 		if m.DurationSeconds != nil {
-			outcome.DurMs = int64(*m.DurationSeconds*1000 + 0.5)
+			outcome.DurMs = millis(*m.DurationSeconds)
 		}
 	}
 	return legacy.Output, outcome, true
+}
+
+// millis is a duration in seconds as whole milliseconds, or 0 when it is not a duration a
+// command could have run for: below zero, not a number, or longer than thirty years — past
+// which the conversion, and the time the step ended, would overflow.
+func millis(secs float64) int64 {
+	if !(secs >= 0 && secs <= 1e9) {
+		return 0
+	}
+	return int64(secs*1000 + 0.5)
 }
 
 // stripHeader removes an output header when the text has one. Only a run of known header
@@ -750,8 +847,8 @@ func stripHeader(text string) (string, transcript.Outcome) {
 		case strings.HasPrefix(line, "Wall time"):
 			secs := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line[len("Wall time"):]), ":"))
 			secs = strings.TrimSpace(strings.TrimSuffix(secs, "seconds"))
-			if f, err := strconv.ParseFloat(secs, 64); err == nil && f >= 0 {
-				outcome.DurMs = int64(f*1000 + 0.5)
+			if f, err := strconv.ParseFloat(secs, 64); err == nil {
+				outcome.DurMs = millis(f)
 			}
 		case strings.HasPrefix(line, "Process exited with code "), strings.HasPrefix(line, "Exit code: "):
 			if code, err := strconv.Atoi(strings.TrimSpace(line[strings.LastIndexByte(line, ' ')+1:])); err == nil {

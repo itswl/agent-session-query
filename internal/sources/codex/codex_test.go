@@ -29,6 +29,7 @@ func TestSession(t *testing.T) {
 		`{"type":"token_usage_record","timestamp":"2026-09-13T23:07:12Z","payload":{"response_id":"resp_2","turn_id":"t1","usage":{"input_tokens":7,"output_tokens":2}}}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	if s.Session.ID != "codex-1" || s.Session.Version != "0.154.0" || s.Session.Cwd != "/home/u/x" || s.Session.Branch != "main" || s.Session.Model != "gpt-6.1" {
 		t.Fatalf("session = %+v", s.Session)
 	}
@@ -90,7 +91,9 @@ func TestSessionID(t *testing.T) {
 			lines[i] = l
 		}
 		sourcetest.Write(t, filepath.Join(root, "2026", "09", "13", "rollout-x.jsonl"), lines...)
-		if got := sourcetest.One(t, Spec.Open(root)).Session.ID; got != c.want {
+		s := sourcetest.One(t, Spec.Open(root))
+		sourcetest.NothingUnread(t, s)
+		if got := s.Session.ID; got != c.want {
 			t.Errorf("%s: id = %q, want %q", c.name, got, c.want)
 		}
 	}
@@ -128,6 +131,7 @@ func TestToolRows(t *testing.T) {
 		`{"timestamp":"2026-10-01T10:01:06Z","type":"compacted","payload":{"message":""}}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	if s.Session.Model != "gpt-6.1" || s.Session.ID != "codex-tools" {
 		t.Errorf("session = %+v", s.Session)
 	}
@@ -206,19 +210,20 @@ func kitFirst(a, b string) string {
 // Only a run of known lines closed by "Output:" is a header; anything else is output and
 // stays whole.
 func TestOutputHeaders(t *testing.T) {
-	body, o := output([]byte(`"Chunk ID: abc\nWall time: 2.5 seconds\nProcess exited with code 3\nOutput:\nboom\n"`))
+	none := func(kind string) { t.Errorf("unread %s", kind) }
+	body, o := output([]byte(`"Chunk ID: abc\nWall time: 2.5 seconds\nProcess exited with code 3\nOutput:\nboom\n"`), none)
 	if body != "boom\n" || o.Exit == nil || *o.Exit != 3 || o.DurMs != 2500 || o.Status != model.StatusError {
 		t.Errorf("header parse = %q %+v", body, o)
 	}
-	body, o = output([]byte(`"Script failed\nWall time 0.2 seconds\nOutput:\n"`))
+	body, o = output([]byte(`"Script failed\nWall time 0.2 seconds\nOutput:\n"`), none)
 	if body != "" || o.Status != model.StatusError {
 		t.Errorf("Script failed must be an error: %q %+v", body, o)
 	}
-	body, o = output([]byte(`"Exit code: 1 is what the docs say\nreal output"`))
+	body, o = output([]byte(`"Exit code: 1 is what the docs say\nreal output"`), none)
 	if body != "Exit code: 1 is what the docs say\nreal output" || o.Exit != nil {
 		t.Errorf("a non-header must stay whole: %q %+v", body, o)
 	}
-	body, _ = output([]byte(`"{\"result\": 1}"`))
+	body, _ = output([]byte(`"{\"result\": 1}"`), none)
 	if body != `{"result": 1}` {
 		t.Errorf("non-legacy JSON must stay whole: %q", body)
 	}
@@ -238,7 +243,9 @@ func TestArchivedAndCompressed(t *testing.T) {
 	sourcetest.Write(t, filepath.Join(home, "archived_sessions", "2026", "09", "01", "rollout-2026-09-01T10-00-00-dated.jsonl"), meta("dated"))
 
 	got := map[string]bool{}
-	for _, s := range sourcetest.All(t, Spec.Open(sessions)) {
+	all := sourcetest.All(t, Spec.Open(sessions))
+	sourcetest.NothingUnread(t, all...)
+	for _, s := range all {
 		got[s.Session.ID] = s.Session.Archived
 	}
 	if len(got) != 3 || got["live"] || !got["flat"] || !got["dated"] {
@@ -287,6 +294,7 @@ func TestForkInheritsCopiedTurns(t *testing.T) {
 			turn("t3", 40, "2026-10-23T12:00:02Z"), turn("t4", 80, "2026-10-23T12:00:03Z"))...)
 
 	all := sourcetest.All(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, all...)
 	var total int64
 	for id, want := range map[string]int64{"parent-1": 30, "child-1": 40, "leaf-1": 80} {
 		s := sourcetest.ByID(t, all, id)
@@ -327,6 +335,7 @@ func TestSubagentThread(t *testing.T) {
 		`{"timestamp":"2026-11-01T10:04:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"two findings"}]}}`,
 	)
 	all := sourcetest.All(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, all...)
 	sub, main := sourcetest.ByID(t, all, "sub-1"), sourcetest.ByID(t, all, "root-1")
 	if sub.Session.Parent == nil || sub.Session.Parent.Session != "root-1" || sub.Session.Parent.Type != "pr_review" {
 		t.Fatalf("subagent parent = %+v", sub.Session.Parent)
@@ -391,6 +400,7 @@ func TestSnapshotsOfARolloutWithNoRecords(t *testing.T) {
 		snap("10:30", b, ab),
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	// 400+500+500+100 uncached in, 600+1500+600 from cache, 50+80+20+30 out
 	want := model.Usage{Input: 1500, Output: 180, CacheRead: 2700, Reasoning: 10}
 	if s.Stats.Usage != want || s.Stats.Calls != 4 {
@@ -423,6 +433,7 @@ func TestSnapshotsThatCarryOnlyATotal(t *testing.T) {
 		total("30", 250, 140, 20), // an old one, sent again last
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	if want := (model.Usage{Input: 160, Output: 31, CacheRead: 240}); s.Stats.Usage != want || s.Stats.Calls != 3 {
 		t.Errorf("usage = %+v in %d calls, want %+v in 3: the highest total, not the last", s.Stats.Usage, s.Stats.Calls, want)
 	}
@@ -444,6 +455,7 @@ func TestRecordsOutrankSnapshots(t *testing.T) {
 		`{"timestamp":"2026-10-02T10:00:21Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":0,"output_tokens":0},"total_token_usage":{"input_tokens":1000,"cached_input_tokens":600,"output_tokens":50}}}}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	if want := (model.Usage{Input: 500, Output: 120, CacheRead: 1400}); s.Stats.Usage != want || s.Stats.Calls != 2 {
 		t.Errorf("usage = %+v in %d calls, want %+v in 2", s.Stats.Usage, s.Stats.Calls, want)
 	}
@@ -472,7 +484,9 @@ func TestASnapshotFollowsTheOutputsOfItsResponse(t *testing.T) {
 		`{"timestamp":"2026-08-02T10:00:09Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"One file: a.go."}]}}`,
 		`{"timestamp":"2026-08-02T10:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":`+usage(1000, 12)+`,"total_token_usage":`+usage(1900, 52)+`}}}`,
 	)
-	turn := sourcetest.One(t, Spec.Open(root)).Turn(t, 1)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	turn := s.Turn(t, 1)
 	if len(turn.Calls) != 2 {
 		t.Fatalf("calls = %d, want the two responses: %+v", len(turn.Calls), turn.Calls)
 	}
@@ -490,6 +504,160 @@ func TestASnapshotFollowsTheOutputsOfItsResponse(t *testing.T) {
 			if it.Call != 2 {
 				t.Errorf("the reply belongs to call %d, want the second response", it.Call)
 			}
+		}
+	}
+}
+
+// The rows Codex writes that say nothing a reader is shown — its setup, its bookkeeping,
+// the event stream's copies of what the response items hold — are passed over knowingly:
+// none is counted as unread, and the session reads as the response items alone make it.
+func TestRowsCodexWritesAndPassesOver(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "2026", "11", "05", "rollout-2026-11-05T10-00-00-quiet.jsonl"),
+		`{"timestamp":"2026-11-05T10:00:00Z","type":"session_meta","payload":{"id":"codex-quiet","cwd":"/p","cli_version":"0.167.0"}}`,
+		`{"timestamp":"2026-11-05T10:00:00Z","type":"world_state","payload":{"full":true,"state":{"model":"gpt-6.1","tools":[]}}}`,
+		`{"timestamp":"2026-11-05T10:00:00Z","type":"dynamic_tools_updated","payload":{"tools":[]}}`,
+		`{"timestamp":"2026-11-05T10:00:00Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_id":"codex-quiet","thread_settings":{}}}`,
+		`{"timestamp":"2026-11-05T10:00:01Z","type":"turn_context","payload":{"turn_id":"t1","model":"gpt-6.1","cwd":"/p"}}`,
+		`{"timestamp":"2026-11-05T10:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`,
+		`{"timestamp":"2026-11-05T10:00:01Z","type":"response_item","payload":{"type":"additional_tools","role":"developer","tools":[]}}`,
+		`{"timestamp":"2026-11-05T10:00:01Z","type":"response_item","payload":{"type":"configuration_update","reasoning":{"effort":"high"}}}`,
+		`{"timestamp":"2026-11-05T10:00:01Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>"}]}}`,
+		`{"timestamp":"2026-11-05T10:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"what is in this picture?"},{"type":"input_image","image_url":"data:image/png;base64,AAAA"},{"type":"input_audio","audio_url":"data:audio/wav;base64,AAAA"}]}}`,
+		`{"timestamp":"2026-11-05T10:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"what is in this picture?"}}`,
+		`{"timestamp":"2026-11-05T10:00:02Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"t1","item":{"type":"UserMessage"}}}`,
+		`{"timestamp":"2026-11-05T10:00:03Z","type":"response_item","payload":{"type":"ghost_snapshot","ghost_commit":{"id":"abc"}}}`,
+		`{"timestamp":"2026-11-05T10:00:04Z","type":"event_msg","payload":{"type":"item_started","turn_id":"t1","item":{"type":"Reasoning"}}}`,
+		`{"timestamp":"2026-11-05T10:00:04Z","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"a cat, probably"}],"content":[{"type":"reasoning_text","text":"look closer"}],"encrypted_content":"gAAA"}}`,
+		`{"timestamp":"2026-11-05T10:00:04Z","type":"event_msg","payload":{"type":"agent_reasoning","text":"a cat, probably"}}`,
+		`{"timestamp":"2026-11-05T10:00:04Z","type":"event_msg","payload":{"type":"agent_reasoning_raw_content","text":"look closer"}}`,
+		`{"timestamp":"2026-11-05T10:00:05Z","type":"response_item","payload":{"type":"function_call","name":"view_image","arguments":"{\"path\":\"cat.png\"}","call_id":"call_view"}}`,
+		`{"timestamp":"2026-11-05T10:00:05Z","type":"token_usage_record","payload":{"response_id":"resp_1","usage":{"input_tokens":100,"output_tokens":10}}}`,
+		`{"timestamp":"2026-11-05T10:00:06Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_view","output":[{"type":"input_text","text":"cat.png"},{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}}`,
+		`{"timestamp":"2026-11-05T10:00:07Z","type":"event_msg","payload":{"type":"entered_review_mode","target":{"type":"uncommittedChanges"}}}`,
+		`{"timestamp":"2026-11-05T10:00:08Z","type":"event_msg","payload":{"type":"exited_review_mode","review_output":null}}`,
+		`{"timestamp":"2026-11-05T10:00:09Z","type":"response_item","payload":{"type":"agent_message","author":"/root/helper","recipient":"/root","content":[{"type":"encrypted_content","encrypted_content":"gAAB"},{"type":"input_text","text":"the picture is a cat"}]}}`,
+		`{"timestamp":"2026-11-05T10:00:09Z","type":"inter_agent_communication_metadata","payload":{"trigger_turn":false}}`,
+		`{"timestamp":"2026-11-05T10:00:10Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"A cat."}]}}`,
+		`{"timestamp":"2026-11-05T10:00:10Z","type":"event_msg","payload":{"type":"agent_message","message":"A cat."}}`,
+		`{"timestamp":"2026-11-05T10:00:10Z","type":"token_usage_record","payload":{"response_id":"resp_2","usage":{"input_tokens":120,"output_tokens":3}}}`,
+		`{"timestamp":"2026-11-05T10:00:11Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":"A cat."}}`,
+		`{"timestamp":"2026-11-05T10:00:12Z","type":"security_risk_score","payload":{"scores":{},"sampled_at":"2026-11-05T10:00:12Z"}}`,
+		`{"timestamp":"2026-11-05T10:00:20Z","type":"response_item","payload":{"type":"compaction","encrypted_content":"gAAC"}}`,
+		`{"timestamp":"2026-11-05T10:00:20Z","type":"compacted","payload":{"message":"","replacement_history":[]}}`,
+		`{"timestamp":"2026-11-05T10:00:20Z","type":"event_msg","payload":{"type":"context_compacted"}}`,
+		`{"timestamp":"2026-11-05T10:00:20Z","type":"retained_context","payload":{"user_messages":[],"assistant_messages":[]}}`,
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	turn := s.Turn(t, 1)
+	if s.Stats.Turns != 1 || turn.Ask != "what is in this picture?" || turn.Answer != "A cat." {
+		t.Errorf("%d turns, ask %q answer %q", s.Stats.Turns, turn.Ask, turn.Answer)
+	}
+	if got := sourcetest.Kinds(turn); got != "prompt thinking tool context reply event" {
+		t.Errorf("items = %s", got)
+	}
+	if tool := sourcetest.Tools(turn)[0]; tool.Output != "cat.png" {
+		t.Errorf("the image beside the output's text is not text: %q", tool.Output)
+	}
+	if want := (model.Usage{Input: 220, Output: 13}); s.Stats.Usage != want || s.Stats.Calls != 2 {
+		t.Errorf("usage = %+v in %d calls, want %+v in 2", s.Stats.Usage, s.Stats.Calls, want)
+	}
+}
+
+// What the adapter has never heard of — a row, a response item, an event, a role, an
+// entry of a content list — is counted under its kind, and everything around it reads as
+// it would without it.
+func TestUnknownKindsAreCounted(t *testing.T) {
+	lines := func(unknown bool) []any {
+		var out []any
+		// add writes a line; one that is unknown only with the unknown records
+		add := func(line string, isUnknown bool) {
+			if !isUnknown || unknown {
+				out = append(out, line)
+			}
+		}
+		// also is what an unknown record adds to a line that is there either way
+		also := func(entries string) string {
+			if !unknown {
+				return ""
+			}
+			return entries
+		}
+		add(`{"timestamp":"2026-11-06T10:00:00Z","type":"session_meta","payload":{"id":"codex-new","cwd":"/p"}}`, false)
+		add(`{"timestamp":"2026-11-06T10:00:00Z","type":"hologram_state","payload":{"depth":3}}`, true)
+		add(`{"timestamp":"2026-11-06T10:00:01Z","type":"turn_context","payload":{"turn_id":"t1","model":"gpt-7"}}`, false)
+		add(`{"timestamp":"2026-11-06T10:00:01Z","type":"response_item","payload":{"type":"message","role":"oracle","content":[{"type":"input_text","text":"a voice from nowhere"}]}}`, true)
+		add(`{"timestamp":"2026-11-06T10:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the build"}`+
+			also(`,{"type":"input_hologram","hologram_id":"h1"},{"type":"input_poem","text":"read anyway"}`)+`]}}`, false)
+		add(`{"timestamp":"2026-11-06T10:00:03Z","type":"event_msg","payload":{"type":"telepathy_begin","turn_id":"t1"}}`, true)
+		add(`{"timestamp":"2026-11-06T10:00:04Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"make\"}","call_id":"call_1"}}`, false)
+		add(`{"timestamp":"2026-11-06T10:00:04Z","type":"response_item","payload":{"type":"telepathy_call","call_id":"call_2","thought":"x"}}`, true)
+		add(`{"timestamp":"2026-11-06T10:00:04Z","type":"token_usage_record","payload":{"response_id":"resp_1","usage":{"input_tokens":50,"output_tokens":5}}}`, false)
+		add(`{"timestamp":"2026-11-06T10:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_text","text":"Exit code: 0\nOutput:\nok\n"}`+
+			also(`,{"type":"input_hologram","hologram_id":"h2"}`)+`]}}`, false)
+		add(`{"timestamp":"2026-11-06T10:00:06Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Built."}]}}`, false)
+		add(`{"timestamp":"2026-11-06T10:00:06Z","type":"token_usage_record","payload":{"response_id":"resp_2","usage":{"input_tokens":60,"output_tokens":2}}}`, false)
+		return out
+	}
+	read := func(unknown bool) sourcetest.Session {
+		root := t.TempDir()
+		sourcetest.Write(t, filepath.Join(root, "2026", "11", "06", "rollout-2026-11-06T10-00-00-new.jsonl"), lines(unknown)...)
+		return sourcetest.One(t, Spec.Open(root))
+	}
+	plain, strange := read(false), read(true)
+	sourcetest.NothingUnread(t, plain)
+	want := map[string]int{"row:hologram_state": 1, "role:oracle": 1, "event:telepathy_begin": 1, "item:telepathy_call": 1, "part:input_hologram": 2}
+	if fmt.Sprint(strange.Unread) != fmt.Sprint(want) {
+		t.Errorf("unread = %v, want %v", strange.Unread, want)
+	}
+	// An entry of a kind never seen that holds text is read, not passed over
+	if got := strange.Turn(t, 1).Ask; got != "fix the build\nread anyway" {
+		t.Errorf("ask = %q", got)
+	}
+	a, b := plain.Turn(t, 1), strange.Turn(t, 1)
+	if sourcetest.Kinds(a) != sourcetest.Kinds(b) || a.Answer != b.Answer || plain.Stats != strange.Stats ||
+		sourcetest.Tools(a)[0].Output != sourcetest.Tools(b)[0].Output || sourcetest.Tools(b)[0].Output != "ok\n" {
+		t.Errorf("with the unknown records the session reads differently:\n%s %+v\n%s %+v", sourcetest.Kinds(a), plain.Stats, sourcetest.Kinds(b), strange.Stats)
+	}
+}
+
+// A counter no response could have — below zero, or past anything a response spends — is
+// not a count, and reads as none: a corrupt row cannot take a session's tokens below zero,
+// nor carry their sum past what an int64 holds and round to below zero there.
+func TestCountsThatAreNotCounts(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "2026", "11", "07", "rollout-2026-11-07T10-00-00-corrupt.jsonl"),
+		`{"type":"session_meta","payload":{"id":"codex-corrupt","cwd":"/p"}}`,
+		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"q"}]}}`,
+		`{"type":"token_usage_record","payload":{"response_id":"r1","usage":{"input_tokens":-5,"cached_input_tokens":-3,"cache_write_input_tokens":-2,"output_tokens":-7,"reasoning_output_tokens":-1}}}`,
+		`{"type":"token_usage_record","payload":{"response_id":"r2","usage":{"input_tokens":9223372036854775807,"output_tokens":9223372036854775807}}}`,
+		`{"type":"token_usage_record","payload":{"response_id":"r3","usage":{"input_tokens":9223372036854775807,"output_tokens":9223372036854775807}}}`,
+		// a cache read past the input it is part of must not wrap the input round to the top
+		`{"type":"token_usage_record","payload":{"response_id":"r4","usage":{"input_tokens":-9223372036854775808,"cached_input_tokens":1,"output_tokens":1}}}`,
+		`{"type":"token_usage_record","payload":{"response_id":"r5","usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":9}}}`,
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.Invariants(t, s)
+	if want := (model.Usage{Input: 60, Output: 10, CacheRead: 41}); s.Stats.Usage != want {
+		t.Errorf("usage = %+v, want %+v: only the counts that are counts", s.Stats.Usage, want)
+	}
+}
+
+// A duration no command ran for — below zero, not a number, longer than thirty years —
+// is none, rather than a conversion that overflows to whatever the machine makes of it.
+func TestDurationsThatAreNotDurations(t *testing.T) {
+	none := func(kind string) { t.Errorf("unread %s", kind) }
+	for _, raw := range []string{
+		`"{\"output\":\"x\",\"metadata\":{\"exit_code\":0,\"duration_seconds\":-1e300}}"`,
+		`"{\"output\":\"x\",\"metadata\":{\"exit_code\":0,\"duration_seconds\":1e300}}"`,
+		`"Wall time: 1e300 seconds\nOutput:\nx"`,
+		`"Wall time: Inf seconds\nOutput:\nx"`,
+		`"Wall time: NaN seconds\nOutput:\nx"`,
+		`"Wall time: -3 seconds\nOutput:\nx"`,
+	} {
+		if body, o := output([]byte(raw), none); body != "x" || o.DurMs != 0 {
+			t.Errorf("%s: %q in %d ms, want x in none", raw, body, o.DurMs)
 		}
 	}
 }

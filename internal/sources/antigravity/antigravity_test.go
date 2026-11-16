@@ -101,6 +101,7 @@ func TestScanAndSession(t *testing.T) {
 	}
 
 	all := sourcetest.All(t, src)
+	sourcetest.NothingUnread(t, all...)
 	one := sourcetest.ByID(t, all, "sess-1")
 	if one.Session.Title != "Build fix" || one.Session.Path != refs["sess-1"].Key {
 		t.Errorf("indexed session = %+v", one.Session)
@@ -131,6 +132,7 @@ func TestScanWithoutIndex(t *testing.T) {
 	if len(all) != 2 {
 		t.Fatalf("sessions = %d, want 2", len(all))
 	}
+	sourcetest.NothingUnread(t, all...)
 	for _, s := range all {
 		if s.Session.Title == "" {
 			t.Errorf("session %s has no title", s.Session.ID)
@@ -147,6 +149,7 @@ func TestScanWithoutIndex(t *testing.T) {
 func TestSteps(t *testing.T) {
 	root := newFixture(t, true)
 	s := sourcetest.ByID(t, sourcetest.All(t, Spec.Open(root)), "sess-1")
+	sourcetest.NothingUnread(t, s)
 
 	if len(s.Turns) != 1 {
 		t.Fatalf("turns = %d", len(s.Turns))
@@ -193,6 +196,7 @@ func TestOnlyFinishedStepsAreCounted(t *testing.T) {
 		`{"step_index":3,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-12T10:00:03Z","content":"two"}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	if want := (model.Usage{Input: 10, Output: 3, CacheRead: 4, CacheWrite: 6}); s.Stats.Usage != want {
 		t.Errorf("usage = %+v, want %+v", s.Stats.Usage, want)
 	}
@@ -218,6 +222,9 @@ func TestContextIsNotAnAsk(t *testing.T) {
 		`not json`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	// A checkpoint is a step agy writes; a line that is not a step is not a record of an
+	// unknown kind, it is no record at all
+	sourcetest.NothingUnread(t, s)
 	if got := sourcetest.Kinds(s.Turn(t, 0)); got != "context" {
 		t.Errorf("turn 0 = %s: agy's own context is not what the person asked", got)
 	}
@@ -268,8 +275,10 @@ func TestStamps(t *testing.T) {
 		t.Errorf("a row for sess-2 appeared: sess-2 %q → %q, sess-1 %q → %q",
 			after["sess-2"].Stamp, learned["sess-2"].Stamp, after["sess-1"].Stamp, learned["sess-1"].Stamp)
 	}
-	if s := sourcetest.Read(t, src, learned["sess-2"]); s.Session.Title != "Harness" {
-		t.Errorf("title = %q after the index named it", s.Session.Title)
+	named := sourcetest.Read(t, src, learned["sess-2"])
+	sourcetest.NothingUnread(t, named)
+	if named.Session.Title != "Harness" {
+		t.Errorf("title = %q after the index named it", named.Session.Title)
 	}
 
 	// and renames sess-1, which moves its stamp only
@@ -355,6 +364,7 @@ func TestIndexColumnsAndTimeFormats(t *testing.T) {
 	if len(all) != 3 {
 		t.Fatalf("sessions = %d", len(all))
 	}
+	sourcetest.NothingUnread(t, all...)
 	if got, want := sourcetest.ByID(t, all, "a1").Session.UpdatedAt, time.Date(2026, 10, 12, 10, 0, 9, 250_000_000, time.UTC); !got.Equal(want) {
 		t.Errorf("naive time = %v, want %v", got, want)
 	}
@@ -381,6 +391,7 @@ func TestOnlyConversationsAreListed(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	if s.Session.ID != "good-1" || s.Turn(t, 1).Ask != "hi" {
 		t.Errorf("session = %+v", s.Session)
 	}
@@ -438,11 +449,63 @@ func TestAStepWithAnOddlyTypedField(t *testing.T) {
 		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":1791799201,"model":{"id":"gemini-3"},"content":"Two files changed.","input_tokens":120,"output_tokens":30}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	turn := s.Turn(t, 1)
 	if turn.Answer != "Two files changed." || s.Stats.Usage.Input != 120 || s.Stats.Usage.Output != 30 {
 		t.Errorf("answer %q, usage %+v: the step was dropped for one field's sake", turn.Answer, s.Stats.Usage)
 	}
 	if turn.Items[len(turn.Items)-1].At.IsZero() {
 		t.Error("a time written as a number is still a time")
+	}
+}
+
+// A step of a type agy had not written when this reader was made is shown under its type and
+// counted as unread, once however often it was rewritten; the steps around it, and a tool
+// step agy does write, read as they always have.
+func TestAStepOfAnUnknownTypeIsCounted(t *testing.T) {
+	root := t.TempDir()
+	writeSteps(t, root, "antigravity-cli", "sess-new",
+		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-12T10:00:00Z","content":"<USER_REQUEST>tidy the repo</USER_REQUEST>"}`,
+		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-12T10:00:01Z","content":"looking","input_tokens":40,"output_tokens":4}`,
+		`{"step_index":2,"source":"MODEL","type":"HOLOGRAM_PROJECTION","status":"RUNNING","created_at":"2026-10-12T10:00:02Z","content":"warming up"}`,
+		`{"step_index":3,"source":"MODEL","type":"VIEW_FILE","status":"DONE","created_at":"2026-10-12T10:00:03Z","content":"package main"}`,
+		`{"step_index":2,"source":"MODEL","type":"HOLOGRAM_PROJECTION","status":"DONE","created_at":"2026-10-12T10:00:04Z","content":"projected"}`,
+		`{"step_index":4,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-12T10:00:05Z","content":"tidied","input_tokens":50,"output_tokens":6}`,
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	if len(s.Unread) != 1 || s.Unread["step:HOLOGRAM_PROJECTION"] != 1 {
+		t.Errorf("unread = %v, want step:HOLOGRAM_PROJECTION once", s.Unread)
+	}
+	turn := s.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt reply event event reply" {
+		t.Fatalf("items = %s", got)
+	}
+	if ev := turn.Items[2]; ev.Event != "HOLOGRAM_PROJECTION" || ev.Text != "projected" {
+		t.Errorf("unknown step = %+v, want an event naming it, at its latest line", ev)
+	}
+	if ev := turn.Items[3]; ev.Event != "VIEW_FILE" || ev.Text != "package main" {
+		t.Errorf("tool step = %+v", ev)
+	}
+	if turn.Ask != "tidy the repo" || turn.Answer != "tidied" || s.Stats.Usage != (model.Usage{Input: 90, Output: 10}) {
+		t.Errorf("ask %q, answer %q, usage %+v", turn.Ask, turn.Answer, s.Stats.Usage)
+	}
+}
+
+// A counter no model call could have spent is not a count: taken as one, two of them sum
+// past the largest total and wrap it below zero. The rest of the step is read as it is.
+func TestACounterPastAnyCountIsNotCounted(t *testing.T) {
+	root := t.TempDir()
+	writeSteps(t, root, "antigravity-cli", "sess-huge",
+		`{"step_index":0,"type":"USER_INPUT","content":"<USER_REQUEST>go</USER_REQUEST>"}`,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","content":"one","input_tokens":9e18,"output_tokens":7}`,
+		`{"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","content":"two","input_tokens":1e300,"output_tokens":5,"cache_read_tokens":3}`,
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.Invariants(t, s)
+	if want := (model.Usage{Output: 12, CacheRead: 3}); s.Stats.Usage != want {
+		t.Errorf("usage = %+v, want %+v", s.Stats.Usage, want)
+	}
+	if turn := s.Turn(t, 1); turn.Answer != "two" || len(turn.Calls) != 2 {
+		t.Errorf("answer %q, calls %d: the steps are still there", turn.Answer, len(turn.Calls))
 	}
 }

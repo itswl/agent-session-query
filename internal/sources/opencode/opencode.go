@@ -166,13 +166,16 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	}
 	// A read that met a write in flight is run again from the start: what it had added
 	// is discarded with the writer the caller hands over only once, so the rows are
-	// gathered first and added after
+	// gathered first and added after — and so is what was passed over unknown, which a
+	// read run again would otherwise count twice
 	var msgs []transcript.Message
 	var sess model.Session
+	var unread []string
+	note := func(kind string) { unread = append(unread, kind) }
 	err := kit.ReadDB(ctx, s.db, func(db *sql.DB) error {
-		msgs, sess = msgs[:0], model.Session{}
+		msgs, sess, unread = msgs[:0], model.Session{}, unread[:0]
 		if hasV2(db) {
-			found, err := readV2(ctx, db, id, &sess, &msgs)
+			found, err := readV2(ctx, db, id, &sess, &msgs, note)
 			if err != nil || found {
 				return err
 			}
@@ -180,7 +183,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		if !kit.HasTable(db, "session") {
 			return sql.ErrNoRows
 		}
-		return readV1(ctx, db, id, &sess, &msgs)
+		return readV1(ctx, db, id, &sess, &msgs, note)
 	})
 	if err != nil {
 		return err
@@ -190,7 +193,19 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	for _, m := range msgs {
 		w.Add(m)
 	}
+	for _, kind := range unread {
+		w.Unread(kind)
+	}
 	return nil
+}
+
+// unknown names a record of a kind the adapter does not know, for Writer.Unread. One that
+// does not say what it is — a part with no type — is such a record too.
+func unknown(what, kind string) string {
+	if kind == "" {
+		kind = "(untyped)"
+	}
+	return what + ":" + kind
 }
 
 // rowOf reads a query's first row as column → value, so a column a version of the schema
@@ -245,15 +260,15 @@ func sessionOf(row map[string]any, sess *model.Session) {
 	// 2.3: not its subagents', and for a fork not the rows it copied — and they hold what
 	// no message does: the call that gave the session its title.
 	if _, kept := kit.Num(row["tokens_input"]); kept {
-		reasoning := kit.Int(row["tokens_reasoning"])
+		reasoning := count(row["tokens_reasoning"])
 		u := model.Usage{
-			Input:      kit.Int(row["tokens_input"]),
-			Output:     kit.Int(row["tokens_output"]) + reasoning,
-			CacheRead:  kit.Int(row["tokens_cache_read"]),
-			CacheWrite: kit.Int(row["tokens_cache_write"]),
+			Input:      count(row["tokens_input"]),
+			Output:     count(row["tokens_output"]) + reasoning,
+			CacheRead:  count(row["tokens_cache_read"]),
+			CacheWrite: count(row["tokens_cache_write"]),
 			Reasoning:  reasoning,
 		}
-		cost, _ := kit.Num(row["cost"])
+		cost := price(row["cost"])
 		if !u.IsZero() || cost > 0 {
 			sess.Recorded = &model.Recorded{Usage: &u, CostUSD: cost}
 		}
@@ -309,18 +324,40 @@ func usageOf(data map[string]any) *model.Usage {
 		return nil
 	}
 	cache := kit.Map(tokens["cache"])
-	reasoning := kit.Int(tokens["reasoning"])
+	reasoning := count(tokens["reasoning"])
 	u := model.Usage{
-		Input:      kit.Int(tokens["input"]),
-		Output:     kit.Int(tokens["output"]) + reasoning,
-		CacheRead:  kit.Int(cache["read"]),
-		CacheWrite: kit.Int(cache["write"]),
+		Input:      count(tokens["input"]),
+		Output:     count(tokens["output"]) + reasoning,
+		CacheRead:  count(cache["read"]),
+		CacheWrite: count(cache["write"]),
 		Reasoning:  reasoning,
 	}
 	if u.IsZero() {
 		return nil
 	}
 	return &u
+}
+
+// maxCount bounds a token counter: no model call has read or written a trillion tokens,
+// and counts below it add up over any session without overflowing.
+const maxCount = 1 << 40
+
+// count reads a token counter. A value no counter holds — below zero, or past maxCount —
+// was not written by OpenCode as a count and reads as none: summed with the rest, it would
+// carry a session's totals below zero.
+func count(v any) int64 {
+	if n, _ := kit.Num(v); n > 0 && n <= maxCount {
+		return int64(n)
+	}
+	return 0
+}
+
+// price reads a cost in dollars; one below zero is not a price and reads as none.
+func price(v any) float64 {
+	if n, _ := kit.Num(v); n > 0 {
+		return n
+	}
+	return 0
 }
 
 // assistant fills in what an assistant message says about the model call it is: which
@@ -330,9 +367,7 @@ func usageOf(data map[string]any) *model.Usage {
 func assistant(m *transcript.Message, data map[string]any, parts []any) {
 	m.Model = messageModel(data)
 	m.Usage = usageOf(data)
-	if cost, ok := kit.Num(data["cost"]); ok {
-		m.CostUSD = cost
-	}
+	m.CostUSD = price(data["cost"])
 	m.Stop = kit.Str(data["finish"])
 	tm := kit.Map(data["time"])
 	created := kit.Int(tm["created"])
@@ -368,10 +403,11 @@ func errorText(v any) string {
 	return ""
 }
 
-// blocksOf maps one part onto blocks. step-start and step-finish are boundaries, not
-// content, and yield nothing.
-func blocksOf(part map[string]any) []transcript.Block {
-	switch kit.Str(part["type"]) {
+// blocksOf maps one part onto blocks. The parts 1.x wrote beside the content — where a
+// step began and ended, what it changed — yield nothing; unread is told of a part of a
+// type neither layout writes.
+func blocksOf(part map[string]any, unread func(kind string)) []transcript.Block {
+	switch kind := kit.Str(part["type"]); kind {
 	case "text":
 		if text := kit.Str(part["text"]); text != "" {
 			return []transcript.Block{transcript.TextOf(text)}
@@ -398,7 +434,7 @@ func blocksOf(part map[string]any) []transcript.Block {
 			return []transcript.Block{call}
 		}
 		outcome := transcript.Outcome{Status: model.StatusOK}
-		text := toolOutput(state)
+		text := toolOutput(state, unread)
 		if status == "error" {
 			outcome.Status = model.StatusError
 			errText := errorText(state["error"])
@@ -435,25 +471,45 @@ func blocksOf(part map[string]any) []transcript.Block {
 			}
 		}
 		return []transcript.Block{call, transcript.ResultOf(callID, name, text, outcome)}
+	case "step-start", "step-finish":
+		// 1.x: where a model call began and ended — boundaries, not content; the message
+		// carries the call's usage
+	case "snapshot", "patch":
+		// 1.x: the worktree's snapshot hash, and the files a step changed under it —
+		// OpenCode's bookkeeping for undo; the tools that changed them are read
+	case "file", "agent":
+		// 1.x: a file the person attached to a prompt, an agent they @-mentioned in it —
+		// what the prompt's text names; 2.x keeps both on the user row, not read there either
+	case "subtask":
+		// 1.x: a command handing a prompt to a subagent, whose session is listed on its own
+	case "retry":
+		// 1.x: a model call that failed and was made again; the call that answered is read
+	case "compaction":
+		// 1.x: the marker on a prompt that asked for the context to be compacted; the
+		// summary is the assistant message that follows
+	default:
+		unread(unknown("part", kind))
 	}
 	return nil
 }
 
 // toolOutput is what a finished tool returned: a plain string in 1.x (state.output), a
 // list of content items in 2.x (state.content) whose text entries are the output and
-// whose files are named.
-func toolOutput(state map[string]any) string {
+// whose files are named. unread is told of an item of any other type.
+func toolOutput(state map[string]any, unread func(kind string)) string {
 	if out, ok := state["output"].(string); ok {
 		return out
 	}
 	var parts []string
 	for _, item := range kit.List(state["content"]) {
 		m := kit.Map(item)
-		switch kit.Str(m["type"]) {
+		switch kind := kit.Str(m["type"]); kind {
 		case "text":
 			parts = append(parts, kit.Str(m["text"]))
 		case "file":
 			parts = append(parts, "[file: "+kit.First(kit.Str(m["name"]), kit.Str(m["uri"]))+"]")
+		default:
+			unread(unknown("output", kind))
 		}
 	}
 	return strings.Join(parts, "\n")
@@ -461,8 +517,9 @@ func toolOutput(state map[string]any) string {
 
 // readV2 reads a 2.x session: one session_message row per message, ordered by seq, its
 // type the role, its parts inline under data.content. It reports whether the session is
-// in this layout at all.
-func readV2(ctx context.Context, db *sql.DB, id string, sess *model.Session, msgs *[]transcript.Message) (bool, error) {
+// in this layout at all; unread is told of every row and part it passed over not knowing
+// what it was.
+func readV2(ctx context.Context, db *sql.DB, id string, sess *model.Session, msgs *[]transcript.Message, unread func(kind string)) (bool, error) {
 	row, err := rowOf(ctx, db, `SELECT * FROM session_v2 WHERE id = ?`, id)
 	if err != nil || row == nil {
 		return false, err
@@ -517,7 +574,7 @@ FROM session_message m JOIN session_v2 s ON s.id = m.session_id WHERE m.session_
 			parts := kit.List(data["content"])
 			var blocks []transcript.Block
 			for _, p := range parts {
-				blocks = append(blocks, blocksOf(kit.Map(p))...)
+				blocks = append(blocks, blocksOf(kit.Map(p), unread)...)
 			}
 			if text, ok := data["content"].(string); ok && text != "" {
 				blocks = append(blocks, transcript.TextOf(text))
@@ -535,9 +592,9 @@ FROM session_message m JOIN session_v2 s ON s.id = m.session_id WHERE m.session_
 				}
 			}
 			*msgs = append(*msgs, m)
-		case "system", "synthetic":
+		case "system", "synthetic", "skill":
 			// Text OpenCode put before the model itself: updated instructions, a background
-			// command reporting in
+			// command reporting in, the instructions of a skill once it was activated
 			text := strings.TrimSpace(kit.Str(data["text"]))
 			if desc := strings.TrimSpace(kit.Str(data["description"])); desc != "" && !strings.HasPrefix(text, desc) {
 				text = strings.TrimSpace(desc + "\n\n" + text)
@@ -584,6 +641,9 @@ FROM session_message m JOIN session_v2 s ON s.id = m.session_id WHERE m.session_
 			if agent := kit.Str(data["agent"]); agent != "" {
 				event("agent_switch", strings.TrimPrefix(kit.Str(data["previous"])+" → "+agent, " → "))
 			}
+		case "location-switched":
+			// The session moved to another directory or worktree; the session row says where
+			// it is now
 		case "idle":
 			// How the turn ended, once it had
 			switch kit.Str(data["outcome"]) {
@@ -593,8 +653,12 @@ FROM session_message m JOIN session_v2 s ON s.id = m.session_id WHERE m.session_
 				}
 			case "failed":
 				event("error", kit.First(errorText(data["error"]), "The turn failed"))
+			case "succeeded":
+				// A turn that ended as it should: its last reply says so
 			}
 			stopped = false
+		default:
+			unread(unknown("row", kind))
 		}
 	}
 	return true, rows.Err()
@@ -621,13 +685,14 @@ const copied = `(m.time_created < s.time_created AND EXISTS (
         WHERE p.time_created = m.time_created AND p.seq = m.seq AND p.type = m.type AND p.session_id <> s.id
           AND (o.time_created < s.time_created OR (o.time_created = s.time_created AND o.id < s.id))))`
 
-// readV1 reads a 1.x session: messages and their parts joined in display order.
+// readV1 reads a 1.x session: messages and their parts joined in display order. unread is
+// told of every message and part it passed over not knowing what it was.
 //
 // message_id alone joins the parts: a part belongs to the message it names, whatever its
 // own session_id column holds. Matching on p.session_id as well invites the planner to
 // drive the join from a session-wide part index instead — measured on a 2 000-message /
 // 20 000-part database, 2.96 s with that plan against 0.02 s without.
-func readV1(ctx context.Context, db *sql.DB, id string, sess *model.Session, msgs *[]transcript.Message) error {
+func readV1(ctx context.Context, db *sql.DB, id string, sess *model.Session, msgs *[]transcript.Message, unread func(kind string)) error {
 	row, err := rowOf(ctx, db, `SELECT * FROM session WHERE id = ?`, id)
 	if err != nil {
 		return err
@@ -659,26 +724,32 @@ WHERE m.session_id = ? ORDER BY m.time_created, m.id, p.time_created, p.id`, id)
 		}
 		cur = nil
 	}
+	started := false // past the first row; cur is nil from then on for a message passed over
 	for rows.Next() {
 		var mid, msgRaw string
 		var partRaw sql.NullString
 		if err := rows.Scan(&mid, &msgRaw, &partRaw); err != nil {
 			return err
 		}
-		if cur == nil || curID != mid {
+		if !started || curID != mid {
 			flush()
-			curID, curData = mid, nil
+			started, curID, curData = true, mid, nil
 			// A message row that will not parse is skipped whole: its parts belong to a
 			// message that is not there to carry them
 			if json.Unmarshal([]byte(msgRaw), &curData) != nil || curData == nil {
 				continue
 			}
-			role := transcript.System
-			switch kit.Str(curData["role"]) {
+			var role transcript.Role
+			switch r := kit.Str(curData["role"]); r {
 			case "user":
 				role = transcript.User
 			case "assistant":
 				role = transcript.Assistant
+			default:
+				// 1.x writes no other role: a message of one is passed over with its parts,
+				// once, as one that will not parse is
+				unread(unknown("role", r))
+				continue
 			}
 			cur = &transcript.Message{ID: mid, Role: role, At: millis(kit.Map(curData["time"])["created"])}
 		}
@@ -687,7 +758,7 @@ WHERE m.session_id = ? ORDER BY m.time_created, m.id, p.time_created, p.id`, id)
 		}
 		var part map[string]any
 		if json.Unmarshal([]byte(partRaw.String), &part) == nil && part != nil {
-			cur.Blocks = append(cur.Blocks, blocksOf(part)...)
+			cur.Blocks = append(cur.Blocks, blocksOf(part, unread)...)
 		}
 	}
 	flush()

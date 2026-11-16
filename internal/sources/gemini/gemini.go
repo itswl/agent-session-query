@@ -3,8 +3,9 @@
 //	<root>/<project>/chats/session-<time>-<id>.jsonl      one file of a conversation
 //
 // A file is an append log: a metadata first line (sessionId, startTime …), message rows
-// (type "user" and "gemini"; the others are bookkeeping), and {"$set": …} patch rows, which
-// move the metadata's lastUpdated on and may carry messages of their own.
+// (type "user" and "gemini"; the others are bookkeeping), {"$set": …} patch rows, which
+// move the metadata's lastUpdated on and may carry messages of their own, and
+// {"$rewindTo": id} rows, which /rewind writes.
 //
 // A conversation is not always one file. Gemini CLI continues a session in a new file that
 // opens with the same sessionId (measured: two files a minute apart), so the conversation —
@@ -18,6 +19,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -232,8 +234,8 @@ const headLines = 5
 func project(path string) string { return filepath.Base(filepath.Dir(filepath.Dir(path))) }
 
 // row is one line of a session file. It is a message when it has a type, the metadata when
-// it has a sessionId, and a patch when it has $set — a patch's messages are rows of their
-// own, written inside it.
+// it has a sessionId, a patch when it has $set — a patch's messages are rows of their own,
+// written inside it — and a rewind when it has $rewindTo.
 type row struct {
 	message
 	SessionID   string `json:"sessionId"`
@@ -243,11 +245,40 @@ type row struct {
 		LastUpdated string            `json:"lastUpdated"`
 		Messages    []json.RawMessage `json:"messages"`
 	} `json:"$set"`
+	RewindTo string `json:"$rewindTo"`
 }
 
-// message is a user or gemini row. content is an array of {text} and {functionResponse}
-// entries on a user row and a string on a gemini row; thoughts, tokens and toolCalls
-// have changed shape between Gemini CLI's versions and are read loosely.
+// unknownRow names a line that is none of the rows above, for Writer.Unread: by its
+// operator when it is a patch of a kind not known here ({"$truncate": …}), and as
+// "(untyped)" when it is a record that does not say what it is — a message without a type.
+// A row of a known kind whose fields say nothing (a $set of null, an empty session id) is
+// not of an unknown kind, and neither is a line with nothing in it; both are "".
+func unknownRow(line []byte) string {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(line, &fields) != nil || len(fields) == 0 {
+		return ""
+	}
+	for _, known := range []string{"$set", "$rewindTo", "sessionId", "type"} {
+		if _, ok := fields[known]; ok {
+			return ""
+		}
+	}
+	var ops []string
+	for key := range fields {
+		if strings.HasPrefix(key, "$") {
+			ops = append(ops, key)
+		}
+	}
+	if len(ops) > 0 {
+		return slices.Min(ops)
+	}
+	return "(untyped)"
+}
+
+// message is a user or gemini row. content is an array of Gemini API parts ({text},
+// {functionResponse}, {inlineData} …) on a user row and a string on a gemini row — parts
+// too, where the row was rewritten from the model's history; thoughts, tokens and
+// toolCalls have changed shape between Gemini CLI's versions and are read loosely.
 type message struct {
 	Type      string `json:"type"`
 	ID        string `json:"id"`
@@ -287,6 +318,11 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		at[m.ID] = len(msgs)
 		msgs = append(msgs, m)
 	}
+	unknown := func(record []byte) {
+		if kind := unknownRow(record); kind != "" {
+			w.Unread("row:" + kind)
+		}
+	}
 	n := 0
 	for _, path := range files {
 		err := kit.Lines(path, func(line []byte) bool {
@@ -302,10 +338,17 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				if at := kit.Time(r.Set.LastUpdated); !at.IsZero() {
 					rd.last = at
 				}
+				// The rest of what a patch sets — the summary the session list shows, the
+				// directories added to the workspace, the memory scratchpad — is not
+				// something said in the conversation
 				for _, raw := range r.Set.Messages {
 					var m message
-					if json.Unmarshal(raw, &m) == nil && m.Type != "" {
+					switch {
+					case json.Unmarshal(raw, &m) != nil:
+					case m.Type != "":
 						keep(&m)
+					default:
+						unknown(raw)
 					}
 				}
 			case r.SessionID != "":
@@ -322,6 +365,13 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			case r.Type != "":
 				m := r.message
 				keep(&m)
+			case r.RewindTo != "":
+				// /rewind took the conversation back to before the message it names. What
+				// came after is read all the same: it was said and done, its tools ran and
+				// its tokens were spent, and without it the history cannot say how the
+				// session came to be where it is
+			default:
+				unknown(line)
 			}
 			return true
 		})
@@ -378,8 +428,7 @@ type reader struct {
 	last     time.Time         // the time on the latest row that had one
 }
 
-// add files one message row. Only the two sides' rows are the conversation; info, error
-// and warning rows are the CLI talking to itself.
+// add files one message row. Only the two sides' rows are the conversation.
 func (rd *reader) add(m *message) {
 	at := kit.Time(m.Timestamp)
 	if !at.IsZero() {
@@ -395,6 +444,12 @@ func (rd *reader) add(m *message) {
 		// has to be counted
 		rd.w.Add(transcript.Message{ID: m.ID, Role: transcript.Assistant, At: at, Model: m.Model,
 			Usage: usageOf(m.Tokens), Blocks: rd.blocks(m)})
+	case "info", "warning", "error":
+		// What the CLI showed the person beside the conversation — a notice (that the
+		// context was compressed, say), a warning, an error — and the bytes of an image or
+		// PDF a tool read: neither side said it
+	default:
+		rd.w.Unread("row:" + m.Type)
 	}
 }
 
@@ -402,7 +457,8 @@ func (rd *reader) add(m *message) {
 // words, then each call with the answer it carries.
 func (rd *reader) blocks(m *message) []transcript.Block {
 	var out []transcript.Block
-	if thoughts := thoughtText(m.Thoughts); thoughts != "" {
+	thoughts := thoughtText(m.Thoughts)
+	if thoughts != "" {
 		out = append(out, transcript.ThinkingOf(thoughts))
 	}
 	switch content := m.Content.(type) {
@@ -411,20 +467,44 @@ func (rd *reader) blocks(m *message) []transcript.Block {
 			out = append(out, transcript.TextOf(content))
 		}
 	case []any:
+		// An array is a list of Gemini API parts: what the person sent, or a row Gemini CLI
+		// rewrote from the model's own history after compressing or trimming it
 		for _, item := range content {
 			entry := kit.Map(item)
-			if text := kit.Str(entry["text"]); text != "" {
-				out = append(out, transcript.TextOf(text))
+			switch kind := partKind(entry); kind {
+			case "text":
+				text := kit.Str(entry["text"])
+				switch {
+				case text == "":
+				case entry["thought"] != true:
+					out = append(out, transcript.TextOf(text))
+				case thoughts == "":
+					// The model's thinking as the API returned it. A row with thoughts of
+					// its own says the same there, and is read from them instead
+					out = append(out, transcript.ThinkingOf(text))
+				}
+			case "functionResponse":
+				fr, ok := entry["functionResponse"].(map[string]any)
+				if !ok {
+					continue
+				}
+				id := kit.Str(fr["id"])
+				if id != "" && rd.answered[id] {
+					continue // already answered on the call itself
+				}
+				out = append(out, result(id, kit.Str(fr["name"]), kit.Map(fr["response"]), "", rd.statuses[id]))
+			case "functionCall":
+				// A call as the model's history holds it, in a row rewritten from that
+				// history: the row's toolCalls entry is the same call, with its outcome
+			case "inlineData", "fileData":
+				// An image, a PDF or another file sent with the message, by value or by
+				// reference: there is no text in it to read
+			case "":
+				// Nothing but what qualifies a part — a thought signature on its own — or
+				// nothing at all
+			default:
+				rd.w.Unread("part:" + kind)
 			}
-			fr, ok := entry["functionResponse"].(map[string]any)
-			if !ok {
-				continue
-			}
-			id := kit.Str(fr["id"])
-			if id != "" && rd.answered[id] {
-				continue // already answered on the call itself
-			}
-			out = append(out, result(id, kit.Str(fr["name"]), kit.Map(fr["response"]), "", rd.statuses[id]))
 		}
 	}
 	for _, tc := range kit.List(m.ToolCalls) {
@@ -471,6 +551,30 @@ func (rd *reader) blocks(m *message) []transcript.Block {
 		}
 	}
 	return out
+}
+
+// partKind is what a content part is: the one field of a Gemini API part that holds its
+// data. The others say something about that data — that it is thinking, the signature
+// that goes with it, which frames of a video are meant, at what resolution — and are no
+// kind of their own. A part with no data field is "".
+func partKind(part map[string]any) string {
+	for _, kind := range []string{"text", "functionResponse", "functionCall", "inlineData", "fileData"} {
+		if _, ok := part[kind]; ok {
+			return kind
+		}
+	}
+	var other []string
+	for key := range part {
+		switch key {
+		case "thought", "thoughtSignature", "videoMetadata", "mediaResolution":
+		default:
+			other = append(other, key)
+		}
+	}
+	if len(other) == 0 {
+		return ""
+	}
+	return slices.Min(other)
 }
 
 // result builds a call's result from whichever of the two shapes supplied it: the
@@ -520,6 +624,11 @@ func thoughtText(v any) string {
 	return ""
 }
 
+// maxTokens bounds one counter of one response. No model reads or writes anywhere near it
+// (a million tokens is a large context window), and the sum of a session's responses
+// bounded so stays far from overflowing.
+const maxTokens = 1 << 40
+
 // usageOf converts a gemini row's tokens to the canonical shape. The counters are the API's
 // usage metadata under short names, and they overlap in two ways the canonical shape does
 // not allow:
@@ -540,7 +649,9 @@ func usageOf(tokens any) *model.Usage {
 	counters := map[string]int64{}
 	for key, v := range kit.Map(tokens) {
 		if n, ok := kit.Num(v); ok {
-			counters[strings.ToLower(strings.ReplaceAll(key, "_", ""))] = int64(n)
+			// Bounded before it is a count: a figure past any model's reach, added to the
+			// others, would wrap the totals round to below zero
+			counters[strings.ToLower(strings.ReplaceAll(key, "_", ""))] = int64(min(max(n, 0), maxTokens))
 		}
 	}
 	found := false
@@ -548,7 +659,7 @@ func usageOf(tokens any) *model.Usage {
 		for _, name := range names {
 			if v, ok := counters[name]; ok {
 				found = true
-				return max(v, 0)
+				return v
 			}
 		}
 		return 0

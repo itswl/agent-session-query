@@ -81,6 +81,7 @@ func TestDatabaseSession(t *testing.T) {
 		msg("s1", "session_meta", "{}", 1790000008, ""),
 	)
 	s := sourcetest.One(t, src)
+	sourcetest.NothingUnread(t, s)
 	sess := s.Session
 	if sess.ID != "s1" || sess.Title != "Fix the nginx config" || sess.Cwd != "/w/proj" || sess.Branch != "main" ||
 		sess.Platform != "tui" || sess.Model != "deepseek-chat" || sess.Path != filepath.Join(dir, "state.db") {
@@ -126,6 +127,7 @@ func TestCompactedRowsStayAndCopiesCollapse(t *testing.T) {
 		msg("s1", "assistant", "second answer", 1790000011, ""),
 	)
 	s := sourcetest.One(t, src)
+	sourcetest.NothingUnread(t, s)
 	if s.Stats.Turns != 2 {
 		for _, turn := range s.Turns {
 			t.Logf("turn %d %q: %s", turn.Index, turn.Ask, sourcetest.Kinds(turn))
@@ -154,6 +156,7 @@ func TestArchivedByEitherColumnOrNeither(t *testing.T) {
 			`INSERT INTO messages VALUES ('m2', 's', 'assistant', 'hi', 1790000002)`,
 		)
 		s := sourcetest.One(t, src)
+		sourcetest.NothingUnread(t, s)
 		if s.Session.Archived != c.want {
 			t.Errorf("%s: archived = %v", name, s.Session.Archived)
 		}
@@ -239,6 +242,7 @@ func TestTranscriptFilesAndTheIndex(t *testing.T) {
 	if len(all) != 2 {
 		t.Fatalf("sessions = %d, want each session once and none for the record with nothing to read", len(all))
 	}
+	sourcetest.NothingUnread(t, all...)
 	both := sourcetest.ByID(t, all, "both")
 	if both.Turn(t, 1).Ask != "the transcript's copy" || both.Session.Title != "Held both ways" || both.Session.Cwd != "/w/both" {
 		t.Errorf("both = %+v ask %q", both.Session, both.Turn(t, 1).Ask)
@@ -265,5 +269,82 @@ func TestLocate(t *testing.T) {
 	}
 	if src, _ := home(t); src.Exists() {
 		t.Error("an empty home is no store")
+	}
+}
+
+// A row of a kind Hermes had not written when this was made is counted under its name, in
+// the database and in a transcript file alike, and the rest of the session reads as it
+// would without it.
+func TestUnknownKindsAreCounted(t *testing.T) {
+	src, dir := home(t, schema,
+		`INSERT INTO sessions (id, source, started_at) VALUES ('db', 'tui', 1790000000)`,
+		msg("db", "user", "the proxy returns 502", 1790000001, ""),
+		msg("db", "moderator", "a role from a later Hermes", 1790000002, ""),
+		msg("db", "assistant", "The upstream block pointed at the wrong port.", 1790000003, `finish_reason=>'stop'`),
+	)
+	sessions := filepath.Join(dir, "sessions")
+	sourcetest.Write(t, filepath.Join(sessions, "sessions.json"), map[string]any{
+		"agent:main:file": map[string]any{"session_id": "file", "display_name": "A file"},
+	})
+	sourcetest.Write(t, filepath.Join(sessions, "file.jsonl"),
+		map[string]any{"role": "session_meta", "platform": "tui", "model": "glm-5"},
+		map[string]any{"role": "system", "content": "the system prompt"},
+		map[string]any{"role": "user", "content": "list the files", "timestamp": "2026-09-20T10:00:01"},
+		map[string]any{"role": "moderator", "content": "a role from a later Hermes", "timestamp": "2026-09-20T10:00:02"},
+		map[string]any{"type": "checkpoint", "id": "k1", "timestamp": "2026-09-20T10:00:03"},
+		map[string]any{"content": "a row that says nothing of what it is"},
+		map[string]any{"role": "assistant", "content": "one file", "timestamp": "2026-09-20T10:00:04"})
+
+	all := sourcetest.All(t, src)
+	db, file := sourcetest.ByID(t, all, "db"), sourcetest.ByID(t, all, "file")
+	if len(db.Unread) != 1 || db.Unread["role:moderator"] != 1 {
+		t.Errorf("the database's unread = %v, want the one row of an unknown role", db.Unread)
+	}
+	want := map[string]int{"role:moderator": 1, "row:checkpoint": 1, "role:(untyped)": 1}
+	if len(file.Unread) != len(want) {
+		t.Errorf("the file's unread = %v, want %v", file.Unread, want)
+	}
+	for kind, n := range want {
+		if file.Unread[kind] != n {
+			t.Errorf("the file's unread = %v, want %v", file.Unread, want)
+			break
+		}
+	}
+	for _, s := range []sourcetest.Session{db, file} {
+		if s.Stats.Turns != 1 {
+			t.Fatalf("%s: turns = %d", s.Session.ID, s.Stats.Turns)
+		}
+		if turn := s.Turn(t, 1); sourcetest.Kinds(turn) != "prompt reply" {
+			t.Errorf("%s: items = %s, want the ask and the answer alone", s.Session.ID, sourcetest.Kinds(turn))
+		}
+	}
+}
+
+// The totals Hermes keeps for a session are read as counts: one below zero, or past what
+// any session could spend, is none, and so is a price below zero — in the database's
+// session row and in the older index alike.
+func TestTotalsThatAreNotCounts(t *testing.T) {
+	src, dir := home(t, schema,
+		`INSERT INTO sessions (id, source, started_at, input_tokens, output_tokens, cache_read_tokens, actual_cost_usd, estimated_cost_usd)
+		 VALUES ('db', 'tui', 1790000000, -1200, 300, 9e18, -0.5, -0.25)`,
+		msg("db", "user", "hello", 1790000001, ""),
+		msg("db", "assistant", "hi", 1790000002, ""),
+	)
+	sessions := filepath.Join(dir, "sessions")
+	sourcetest.Write(t, filepath.Join(sessions, "sessions.json"), map[string]any{
+		"agent:main:file": map[string]any{"session_id": "file", "input_tokens": -700, "output_tokens": 70, "cache_read_tokens": 9e18, "estimated_cost_usd": -0.5},
+	})
+	sourcetest.Write(t, filepath.Join(sessions, "file.jsonl"),
+		map[string]any{"role": "user", "content": "hello"},
+		map[string]any{"role": "assistant", "content": "hi", "usage": map[string]any{"input_tokens": -3, "output_tokens": 2}})
+	all := sourcetest.All(t, src)
+	for _, s := range all {
+		sourcetest.Invariants(t, s)
+	}
+	if db := sourcetest.ByID(t, all, "db"); db.Stats.Usage != (model.Usage{Output: 300}) || db.Stats.CostUSD != 0 {
+		t.Errorf("db: usage = %+v, cost %v", db.Stats.Usage, db.Stats.CostUSD)
+	}
+	if file := sourcetest.ByID(t, all, "file"); file.Stats.Usage != (model.Usage{Output: 70}) || file.Stats.CostUSD != 0 {
+		t.Errorf("file: usage = %+v, cost %v", file.Stats.Usage, file.Stats.CostUSD)
 	}
 }

@@ -36,6 +36,7 @@ func TestSession(t *testing.T) {
 		`{"type":"user","id":"gu2","timestamp":"t4","content":[{"functionResponse":{"id":"c1","name":"read_file","response":{"output":"{\"name\":\"larkin\"}"}}}]}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 
 	if s.Session.ID != "g-1" || s.Session.Path != path {
 		t.Errorf("session = %+v", s.Session)
@@ -118,6 +119,7 @@ func TestContinuationFilesAreOneConversation(t *testing.T) {
 		t.Errorf("key = %q, want the earliest file", refs[0].Key)
 	}
 	s := sourcetest.Read(t, src, refs[0])
+	sourcetest.NothingUnread(t, s)
 	if s.Session.ID != "sid-80e8c90b" {
 		t.Errorf("id = %q", s.Session.ID)
 	}
@@ -145,6 +147,7 @@ func TestReadWithoutAScan(t *testing.T) {
 	refs := scan(t, Spec.Open(root))
 
 	s := sourcetest.Read(t, Spec.Open(root), refs[0])
+	sourcetest.NothingUnread(t, s)
 	if s.Turn(t, 1).Ask != "one" || s.Turn(t, 1).Answer != "two" {
 		t.Errorf("turns = %+v", s.Turns)
 	}
@@ -171,6 +174,7 @@ func TestInlineToolStatus(t *testing.T) {
 		`{"type":"user","id":"u2","timestamp":"t3","content":[{"functionResponse":{"id":"run-1","name":"run_shell_command","response":{"output":"npm ERR! missing script"}}},{"functionResponse":{"id":"late-1","name":"read_file","response":{"output":"the file"}}}]}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	turn := s.Turn(t, 1)
 	if got := sourcetest.Kinds(turn); got != "prompt tool tool tool tool tool" {
 		t.Fatalf("items = %s: each call once, and the user row's copy of run-1 adds nothing", got)
@@ -224,7 +228,9 @@ func TestUsageIsConvertedToTheCanonicalShape(t *testing.T) {
 		// no counters at all
 		`{"type":"gemini","id":"d","timestamp":"2026-10-01T10:00:04Z","content":"three"}`,
 	)
-	turn := sourcetest.One(t, Spec.Open(root)).Turn(t, 1)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	turn := s.Turn(t, 1)
 	want := []model.Usage{
 		{Input: 15597, Output: 133 + 396, Reasoning: 396},
 		{Input: 300 + 30, Output: 250, CacheRead: 700, Reasoning: 200},
@@ -254,6 +260,30 @@ func TestUsageIsConvertedToTheCanonicalShape(t *testing.T) {
 	}
 }
 
+// A counter no model could reach is no count: added up as it stands, two of them wrap the
+// session's totals round to below zero. Each is bounded before it is added.
+func TestTokenCountsPastAnyModelAreBounded(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "p", "chats", "session-2026-10-01T10-00-00.jsonl"),
+		`{"sessionId":"g-8"}`,
+		`{"type":"user","id":"u","content":[{"text":"q"}]}`,
+		`{"type":"gemini","id":"a","content":"x","tokens":{"input":9e18,"output":9e18,"thoughts":9e18,"tool":9e18}}`,
+		`{"type":"gemini","id":"b","content":"y","tokens":{"input":1e30,"output":-1e30,"cached":5}}`,
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.Invariants(t, s)
+	calls := s.Turn(t, 1).Calls
+	if len(calls) != 2 || calls[0].Usage == nil || calls[1].Usage == nil {
+		t.Fatalf("calls = %+v", calls)
+	}
+	if got, want := *calls[0].Usage, (model.Usage{Input: 2 * maxTokens, Output: 2 * maxTokens, Reasoning: maxTokens}); got != want {
+		t.Errorf("usage = %+v, want %+v", got, want)
+	}
+	if got, want := *calls[1].Usage, (model.Usage{Input: maxTokens - 5, CacheRead: 5}); got != want {
+		t.Errorf("usage = %+v, want %+v", got, want)
+	}
+}
+
 // The first line's lastUpdated is its value when the file was opened; patch rows move it
 // on. The session's update time is the time on the last row that has one.
 func TestUpdateTimeIsReadFromTheLastRow(t *testing.T) {
@@ -266,6 +296,7 @@ func TestUpdateTimeIsReadFromTheLastRow(t *testing.T) {
 		`{"$set":{"lastUpdated":"2026-10-01T10:30:00.000Z"}}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	if want := time.Date(2026, 10, 1, 10, 30, 0, 0, time.UTC); !s.Session.UpdatedAt.Equal(want) {
 		t.Errorf("updated = %v, want the last patch's %v", s.Session.UpdatedAt, want)
 	}
@@ -284,6 +315,9 @@ func TestRowsThatAreNotTheConversation(t *testing.T) {
 		`{"type":"gemini","id":"g","timestamp":"2026-10-01T10:00:04Z","content":"ok"}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	// Info and error rows are known for what they are, and a line that is not JSON is no
+	// record at all: nothing here is of a kind the adapter does not know
+	sourcetest.NothingUnread(t, s)
 	if s.Stats.Turns != 1 || s.Turn(t, 1).Ask != "a plain string content" || s.Turn(t, 1).Answer != "ok" {
 		t.Errorf("turns = %+v", s.Turns)
 	}
@@ -304,6 +338,7 @@ func TestAFileWithoutMetadata(t *testing.T) {
 	if len(all) != 2 {
 		t.Fatalf("sessions = %d", len(all))
 	}
+	sourcetest.NothingUnread(t, all...)
 	s := sourcetest.ByID(t, all, "session-2026-10-01T10-00-00-ab12")
 	if s.Turn(t, 1).Ask != "hello" || s.Session.Cwd != "proj" {
 		t.Errorf("session = %+v", s.Session)
@@ -441,6 +476,7 @@ func TestSessionIDNotOnTheFirstLine(t *testing.T) {
 		t.Fatalf("refs = %d: both files name session g-1, and are one conversation", len(refs))
 	}
 	s := sourcetest.One(t, src)
+	sourcetest.NothingUnread(t, s)
 	if s.Session.ID != "g-1" || len(s.Turns) != 2 || s.Turn(t, 2).Ask != "second question" {
 		t.Errorf("session %q with %d turns", s.Session.ID, len(s.Turns))
 	}
@@ -462,6 +498,7 @@ func TestAMessageWrittenAgainIsStillOneMessage(t *testing.T) {
 		`{"$set":{"lastUpdated":"2026-09-13T12:51:00Z","messages":[{"type":"user","id":"gu1","timestamp":"2026-09-13T12:50:42Z","content":[{"text":"read the config"}]},{"type":"gemini","id":"gg2","timestamp":"2026-09-13T12:50:50Z","model":"gemini-2.5","content":"The port is 8080.","tokens":{"input":150,"output":10}}]}}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	if len(s.Turns) != 1 {
 		t.Fatalf("turns = %d: the ask written again is the same ask", len(s.Turns))
 	}
@@ -477,5 +514,110 @@ func TestAMessageWrittenAgainIsStillOneMessage(t *testing.T) {
 	}
 	if want := time.Date(2026, 9, 13, 12, 51, 0, 0, time.UTC); !s.Session.UpdatedAt.Equal(want) {
 		t.Errorf("updated = %v, want the patch's own time %v", s.Session.UpdatedAt, want)
+	}
+}
+
+// The rows as Gemini CLI writes them now: the metadata names its project and kind, a patch
+// sets the workspace's directories, an attached image travels as an inlineData part, a
+// call's result comes back on a user row of its own, an image a tool read is acknowledged
+// by a synthetic thought and kept on an info row, a row rewritten from the model's history
+// holds its thinking and its calls as parts, and /rewind takes the conversation back. All
+// of it is a kind the adapter knows.
+func TestTheFormatAsGeminiCLIWritesIt(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "9f2c", "chats", "session-2026-11-01T09-00-0b5e1a7c.jsonl"),
+		`{"sessionId":"0b5e1a7c-3c1d","projectHash":"9f2c","startTime":"2026-11-01T09:00:00.000Z","lastUpdated":"2026-11-01T09:00:00.000Z","kind":"main"}`,
+		`{"$set":{"directories":["/work/assets"]}}`,
+		`{"id":"u1","timestamp":"2026-11-01T09:00:01.000Z","type":"user","content":[{"text":"what is in shot.png?"},{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}}],"displayContent":[{"text":"what is in @shot.png?"}]}`,
+		`{"$set":{"lastUpdated":"2026-11-01T09:00:01.000Z"}}`,
+		// rewritten from the model's history: the thought and the call are parts beside the
+		// thoughts and toolCalls fields that say the same
+		`{"id":"g1","timestamp":"2026-11-01T09:00:04.000Z","type":"gemini","content":[{"text":"**Reading the notes**\n\nThey may say what the image is for.","thought":true},{"functionCall":{"id":"read-1","name":"read_file","args":{"file_path":"diagram.png"}},"thoughtSignature":"c2ln"}],`+
+			`"thoughts":[{"subject":"Reading the notes","description":"They may say what the image is for.","timestamp":"2026-11-01T09:00:03.000Z"}],"model":"gemini-3-pro-preview","tokens":{"input":2000,"output":20,"cached":0,"thoughts":50,"tool":0,"total":2070},`+
+			`"toolCalls":[{"id":"read-1","name":"read_file","args":{"file_path":"diagram.png"},"result":[{"functionResponse":{"id":"read-1","name":"read_file","response":{"output":"Binary content provided (1 item(s))."}}}],"status":"success","timestamp":"2026-11-01T09:00:04.000Z","resultDisplay":"Read image file: diagram.png","displayName":"ReadFile","description":"diagram.png","renderOutputAsMarkdown":true}]}`,
+		`{"id":"u2","timestamp":"2026-11-01T09:00:04.100Z","type":"user","content":[{"functionResponse":{"id":"read-1","name":"read_file","response":{"output":"Binary content provided (1 item(s))."}}},{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}}]}`,
+		`{"id":"g2","timestamp":"2026-11-01T09:00:04.200Z","type":"gemini","content":[{"text":"Binary content received. Proceeding with analysis.","thought":true,"thoughtSignature":"skip_thought_signature_validator"}],"thoughts":[],"tokens":null}`,
+		`{"id":"i1","timestamp":"2026-11-01T09:00:04.300Z","type":"info","content":[{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}}]}`,
+		`{"id":"g3","timestamp":"2026-11-01T09:00:09.000Z","type":"gemini","content":"It is a login form.","thoughts":[{"subject":"Describing it","description":"Two fields and a button.","timestamp":"2026-11-01T09:00:08.000Z"}],"model":"gemini-3-pro-preview","tokens":{"input":2400,"output":8,"cached":2000,"thoughts":30,"tool":0,"total":2438}}`,
+		`{"id":"u3","timestamp":"2026-11-01T09:01:00.000Z","type":"user","content":[{"text":"make the button blue"}]}`,
+		`{"id":"g4","timestamp":"2026-11-01T09:01:05.000Z","type":"gemini","content":"Done: the button is blue.","thoughts":[],"model":"gemini-3-pro-preview","tokens":{"input":500,"output":9,"cached":2000,"thoughts":0,"tool":0,"total":2509}}`,
+		`{"$rewindTo":"u3"}`,
+		`{"id":"w1","timestamp":"2026-11-01T09:01:30.000Z","type":"warning","content":"Rewound the conversation."}`,
+		`{"id":"u4","timestamp":"2026-11-01T09:02:00.000Z","type":"user","content":[{"text":"make the button green"}]}`,
+		`{"id":"g5","timestamp":"2026-11-01T09:02:04.000Z","type":"gemini","content":"Done: the button is green.","thoughts":[],"model":"gemini-3-pro-preview","tokens":{"input":510,"output":9,"cached":2000,"thoughts":0,"tool":0,"total":2519}}`,
+		`{"id":"e1","timestamp":"2026-11-01T09:02:10.000Z","type":"error","content":"Quota exceeded."}`,
+		`{"$set":{"lastUpdated":"2026-11-01T09:02:10.000Z","summary":"Recolour the login button"}}`,
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+
+	// What was rewound was still said, done and paid for, and is read
+	if len(s.Turns) != 3 || s.Turn(t, 2).Answer != "Done: the button is blue." || s.Turn(t, 3).Ask != "make the button green" {
+		t.Fatalf("turns = %+v", s.Turns)
+	}
+	turn := s.Turn(t, 1)
+	if turn.Ask != "what is in shot.png?" || turn.Answer != "It is a login form." {
+		t.Errorf("ask %q answer %q", turn.Ask, turn.Answer)
+	}
+	// The thought part of a row with thoughts of its own is not read twice, the call part
+	// is the toolCalls entry, and the synthetic thought of a row without thoughts is
+	// thinking, not an answer
+	if got := sourcetest.Kinds(turn); got != "prompt thinking tool thinking thinking reply" {
+		t.Errorf("items = %s", got)
+	}
+	if got := turn.Items[3].Text; got != "Binary content received. Proceeding with analysis." {
+		t.Errorf("the synthetic thought = %q", got)
+	}
+	tools := sourcetest.Tools(turn)
+	if len(tools) != 1 || tools[0].CallID != "read-1" || tools[0].Status != model.StatusOK || !tools[0].Done {
+		t.Errorf("tools = %+v", tools)
+	}
+	if s.Stats.Calls != 5 || s.Stats.Usage.CacheRead != 6000 {
+		t.Errorf("%d calls, usage %+v", s.Stats.Calls, s.Stats.Usage)
+	}
+}
+
+// A record of a kind Gemini CLI had not written when the adapter was made — a row type, a
+// patch operator, a part — is counted under its name, and the rest of the session reads as
+// it would without it.
+func TestUnknownKindsAreCounted(t *testing.T) {
+	root := t.TempDir()
+	lines := []any{
+		`{"sessionId":"g-7","projectHash":"9f2c","startTime":"2026-11-02T10:00:00Z"}`,
+		`{"id":"u1","timestamp":"2026-11-02T10:00:01Z","type":"user","content":[{"text":"run the tests"}]}`,
+		`{"id":"g1","timestamp":"2026-11-02T10:00:05Z","type":"gemini","model":"gemini-3-pro-preview","content":[{"text":"all green"}],"tokens":{"input":10,"output":2}}`,
+	}
+	known := filepath.Join(root, "p", "chats", "session-2026-11-02T10-00-known.jsonl")
+	sourcetest.Write(t, known, lines...)
+	want := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, want)
+	if err := os.Remove(known); err != nil {
+		t.Fatal(err)
+	}
+
+	sourcetest.Write(t, filepath.Join(root, "p", "chats", "session-2026-11-02T10-00-new.jsonl"),
+		lines[0], lines[1],
+		`{"id":"c1","timestamp":"2026-11-02T10:00:02Z","type":"checkpoint","content":"saved"}`,
+		`{"$truncate":{"after":"u1"}}`,
+		`{"id":"x1","timestamp":"2026-11-02T10:00:03Z","content":"a message that does not say what it is"}`,
+		`{"$set":{"messages":[{"id":"x2","content":"nor does this one"}]}}`,
+		`{"id":"g1","timestamp":"2026-11-02T10:00:05Z","type":"gemini","model":"gemini-3-pro-preview","content":[{"text":"all green"},{"codeExecutionResult":{"outcome":"OUTCOME_OK","output":"1"}}],"tokens":{"input":10,"output":2}}`,
+		// a known kind whose fields say nothing is not an unknown kind
+		`{"$set":null}`,
+		`{}`,
+	)
+	got := sourcetest.One(t, Spec.Open(root))
+	wantUnread := map[string]int{"row:checkpoint": 1, "row:$truncate": 1, "row:(untyped)": 2, "part:codeExecutionResult": 1}
+	if len(got.Unread) != len(wantUnread) {
+		t.Errorf("unread = %v, want %v", got.Unread, wantUnread)
+	}
+	for kind, n := range wantUnread {
+		if got.Unread[kind] != n {
+			t.Errorf("unread[%s] = %d, want %d (all: %v)", kind, got.Unread[kind], n, got.Unread)
+		}
+	}
+	if len(got.Turns) != len(want.Turns) || sourcetest.Kinds(got.Turn(t, 1)) != sourcetest.Kinds(want.Turn(t, 1)) ||
+		got.Turn(t, 1).Ask != "run the tests" || got.Turn(t, 1).Answer != "all green" || got.Stats.Usage != want.Stats.Usage {
+		t.Errorf("the session read differently beside what it did not know: %+v, want %+v", got.Turns, want.Turns)
 	}
 }

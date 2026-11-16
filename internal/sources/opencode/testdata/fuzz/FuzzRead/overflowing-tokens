@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("user\t{\"text\":\"hi\"}\nassistant\t{\"tokens\":{\"input\":1e300,\"output\":9e18,\"reasoning\":9e18,\"cache\":{\"read\":1e19,\"write\":-1e300}},\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}\n")

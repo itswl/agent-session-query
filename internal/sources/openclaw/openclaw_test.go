@@ -69,6 +69,7 @@ func TestAgentDatabase(t *testing.T) {
 	if len(all) != 2 {
 		t.Fatalf("sessions = %d", len(all))
 	}
+	sourcetest.NothingUnread(t, all...)
 	chat := sourcetest.ByID(t, all, "ses_chat")
 	if chat.Session.Title != "部署排障记录" || chat.Session.Cwd != "" || chat.Session.Running {
 		t.Errorf("chat session = %+v", chat.Session)
@@ -160,6 +161,7 @@ func TestOlderLayout(t *testing.T) {
 		t.Fatal("the older layout is a store too")
 	}
 	s := sourcetest.One(t, src)
+	sourcetest.NothingUnread(t, s)
 	if s.Session.ID != "old-1" || s.Session.Cwd != "/w/old" || s.Session.Model != "deepseek-chat" || s.Session.UpdatedAt.UnixMilli() != 1789704262019 {
 		t.Errorf("session = %+v", s.Session)
 	}
@@ -239,6 +241,7 @@ func TestCompressedEventsAndNestedTools(t *testing.T) {
 	db.Close()
 
 	s := sourcetest.One(t, Spec.Open(state))
+	sourcetest.NothingUnread(t, s)
 	if s.Session.Cwd != "/w/proj" || s.Session.Model != "deepseek/deepseek-v4-pro" || len(s.Turns) != 1 {
 		t.Fatalf("session = %+v, %d turns", s.Session, len(s.Turns))
 	}
@@ -294,6 +297,7 @@ func TestErrorStopsToolSpendAndMessageTime(t *testing.T) {
 		`INSERT INTO transcript_events VALUES ('ses_x', 4, '{"type":"message","timestamp":"2026-09-18T04:09:00.000Z","message":{"role":"assistant","timestamp":1789704230000,"content":[],"stopReason":"error","errorMessage":"429 rate limit exceeded"}}', 0)`,
 	)
 	s := sourcetest.One(t, Spec.Open(state))
+	sourcetest.NothingUnread(t, s)
 	turn := s.Turn(t, 1)
 	if want := (model.Usage{Input: 1010, Output: 205}); s.Stats.Usage != want || s.Stats.CostUSD != 0.002 {
 		t.Errorf("usage = %+v, cost %v; want %+v: what a tool's own model call spent is on its result", s.Stats.Usage, s.Stats.CostUSD, want)
@@ -329,6 +333,7 @@ func TestEveryCounterOfAResponse(t *testing.T) {
 			"usage":{"input":200,"output":90,"cacheRead":14000,"cacheWrite":1200,"reasoningTokens":40,"totalTokens":15490,"cost":{"total":0.0005}}}}', 1794000008000)`,
 	)
 	s := sourcetest.One(t, Spec.Open(state))
+	sourcetest.NothingUnread(t, s)
 	calls := s.Turn(t, 1).Calls
 	if len(calls) != 2 {
 		t.Fatalf("calls = %d", len(calls))
@@ -343,5 +348,62 @@ func TestEveryCounterOfAResponse(t *testing.T) {
 	want := model.Usage{Input: 15454, Output: 409, CacheRead: 14000, CacheWrite: 1200, Reasoning: 356}
 	if s.Stats.Usage != want || s.Stats.Usage.Total() != 15573+15490 {
 		t.Errorf("the session = %+v (total %d), want %+v: what OpenClaw's own totalTokens add up to", s.Stats.Usage, s.Stats.Usage.Total(), want)
+	}
+}
+
+// The rows pi's format defines beside messages, as OpenClaw may write them, are the CLI's
+// own and are passed over knowingly. A row, a role or a block of a kind OpenClaw had not
+// written when this was made is counted under its name, and the rest of the session reads
+// as it would without it: a block's text, and a role's words, are still read.
+func TestUnknownKindsAreCounted(t *testing.T) {
+	state := t.TempDir()
+	agent(t, state, "main", schema,
+		`INSERT INTO session_windows VALUES ('ses_k', 'agent:main:main', 'done', 1789704223504, 1789704262019, 1789704262019, 1789704262019, 'deepseek', 'deepseek-chat', '')`,
+		`INSERT INTO transcript_events VALUES ('ses_k', 1, '{"type":"session","id":"ses_k","cwd":"/w/proj"}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_k', 2, '{"type":"thinking_level_change","thinkingLevel":"high"}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_k', 3, '{"type":"label","targetId":"x","label":"start"}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_k', 4, '{"type":"session_info","name":"a name"}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_k', 5, '{"type":"context_edit","targetId":"x","replacement":null}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_k', 6, '{"type":"message","timestamp":"2026-09-18T04:03:44.021Z","message":{"role":"user","content":[{"type":"text","text":"what is in notes.txt"},{"type":"image","data":"","mimeType":"image/png"}]}}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_k', 7, '{"type":"checkpoint","id":"k1"}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_k', 8, '{"type":"message","timestamp":"2026-09-18T04:03:45.000Z","message":{"role":"moderator","content":"a role from a later OpenClaw"}}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_k', 9, '{"type":"message","timestamp":"2026-09-18T04:03:46.000Z","message":{"role":"assistant","content":[{"type":"citation","text":"from notes.txt"},{"type":"text","text":"It says the deploy runs at noon."}],"stopReason":"stop"}}', 0)`,
+	)
+	s := sourcetest.One(t, Spec.Open(state))
+	want := map[string]int{"row:checkpoint": 1, "role:moderator": 1, "block:citation": 1}
+	if len(s.Unread) != len(want) {
+		t.Errorf("unread = %v, want %v", s.Unread, want)
+	}
+	for kind, n := range want {
+		if s.Unread[kind] != n {
+			t.Errorf("unread = %v, want %v", s.Unread, want)
+			break
+		}
+	}
+	turn := s.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt context reply reply" || turn.Ask != "what is in notes.txt" {
+		t.Errorf("items = %s, ask %q", got, turn.Ask)
+	}
+	if turn.Items[1].Text != "a role from a later OpenClaw" || turn.Items[2].Text != "from notes.txt" || !strings.HasSuffix(turn.Answer, "It says the deploy runs at noon.") {
+		t.Errorf("context %q, the unknown block %q, answer %q", turn.Items[1].Text, turn.Items[2].Text, turn.Answer)
+	}
+}
+
+// A counter below zero, or past anything a session could spend, is not a count: read as
+// one it would take a session's totals below zero, or, added to another as large, past
+// what an int64 holds. Such a counter, and a price below zero, are read as none.
+func TestCountsThatAreNotCounts(t *testing.T) {
+	state := t.TempDir()
+	agent(t, state, "main", schema,
+		`INSERT INTO session_windows VALUES ('ses_n', 'agent:main:main', 'done', 1789704223504, 1789704262019, 1789704262019, 1789704262019, 'deepseek', 'deepseek-chat', '')`,
+		`INSERT INTO transcript_events VALUES ('ses_n', 1, '{"type":"message","message":{"role":"user","content":"summarise the logs"}}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_n', 2, '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"summarize","arguments":{}}],"stopReason":"toolUse","usage":{"input":-5,"output":7,"cacheRead":9e18,"cost":{"total":-0.5}}}}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_n', 3, '{"type":"message","message":{"role":"toolResult","toolCallId":"c1","toolName":"summarize","content":"a summary","usage":{"input":10,"cacheRead":9e18,"cost":-1}}}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_n', 4, '{"type":"message","message":{"role":"assistant","content":"done","stopReason":"stop","usage":{"input":3,"output":1,"cost":{"total":0.25}}}}', 0)`,
+	)
+	s := sourcetest.One(t, Spec.Open(state))
+	sourcetest.Invariants(t, s)
+	if want := (model.Usage{Input: 13, Output: 8}); s.Stats.Usage != want || s.Stats.CostUSD != 0.25 {
+		t.Errorf("usage = %+v, cost %v; want %+v and 0.25", s.Stats.Usage, s.Stats.CostUSD, want)
 	}
 }

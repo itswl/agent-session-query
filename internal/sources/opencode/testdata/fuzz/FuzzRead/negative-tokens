@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("user\t{\"text\":\"hi\"}\nassistant\t{\"tokens\":{\"input\":-5,\"output\":-3,\"reasoning\":-2,\"cache\":{\"read\":-1,\"write\":-9}},\"cost\":-1,\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}\nmessage\t{\"role\":\"user\"}\npart\t{\"type\":\"text\",\"text\":\"hi\"}\nmessage\t{\"role\":\"assistant\",\"tokens\":{\"input\":-5,\"output\":-3}}\npart\t{\"type\":\"text\",\"text\":\"x\"}\n")

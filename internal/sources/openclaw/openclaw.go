@@ -175,8 +175,9 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	w.S.ID, w.S.Path = id, db
 	var msgs []transcript.Message
 	var sess model.Session
+	var unread []string // what the reader passed over not knowing it, told to w once the read is done
 	err := kit.ReadDB(ctx, db, func(conn *sql.DB) error {
-		msgs, sess = msgs[:0], w.S
+		msgs, sess, unread = msgs[:0], w.S, unread[:0]
 		var status, provider, mdl, name sql.NullString
 		var started, ended, updated sql.NullInt64
 		err := conn.QueryRowContext(ctx, `
@@ -206,7 +207,7 @@ FROM session_windows WHERE session_id = ?`, id).Scan(&status, &provider, &mdl, &
 			return err
 		}
 		defer rows.Close()
-		reader := &jsonmap.Reader{}
+		reader := &jsonmap.Reader{Unread: func(kind string) { unread = append(unread, kind) }}
 		for rows.Next() {
 			var text sql.NullString
 			var zst []byte
@@ -235,6 +236,9 @@ FROM session_windows WHERE session_id = ?`, id).Scan(&status, &provider, &mdl, &
 	w.S = sess
 	for _, m := range msgs {
 		w.Add(m)
+	}
+	for _, kind := range unread {
+		w.Unread(kind)
 	}
 	return nil
 }
@@ -266,7 +270,7 @@ func (s *Source) readFile(ctx context.Context, ref sources.Ref, w *transcript.Wr
 		w.S.UpdatedAt = entry.Updated()
 		w.S.Running = kit.Str(info["status"]) == "running"
 	}
-	reader := &jsonmap.Reader{Model: w.S.Model}
+	reader := &jsonmap.Reader{Model: w.S.Model, Unread: w.Unread}
 	if err := reader.ReadFile(ctx, ref.Key, w); err != nil {
 		return err
 	}

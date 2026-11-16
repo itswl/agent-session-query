@@ -153,7 +153,43 @@ type usage struct {
 }
 
 func (u *usage) canonical() *model.Usage {
-	return &model.Usage{Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, Reasoning: u.Reasoning}
+	return &model.Usage{Input: tokens(u.Input), Output: tokens(u.Output), CacheRead: tokens(u.CacheRead),
+		CacheWrite: tokens(u.CacheWrite), Reasoning: tokens(u.Reasoning)}
+}
+
+// costUSD is what the call cost, read as tokens are.
+func (u *usage) costUSD() float64 {
+	if !(u.Cost.Total >= 0) || u.Cost.Total > maxCostUSD {
+		return 0
+	}
+	return u.Cost.Total
+}
+
+// What one model call or tool run can count. A number below zero, or past anything one
+// has read, written, cost or lasted, is not a count but damage, and is read as none:
+// added into a session's totals, one would take them below zero and two near the top of
+// an int64 would wrap them there. A trillion tokens is a thousand times any model's
+// context.
+const (
+	maxTokens  = 1 << 40
+	maxCostUSD = 1e6
+	maxDurMs   = 1e10 // a hundred and fifteen days
+)
+
+// tokens is one of a call's token counters.
+func tokens(n int64) int64 {
+	if n < 0 || n > maxTokens {
+		return 0
+	}
+	return n
+}
+
+// millis is a duration in milliseconds, which pi writes as a number that need not be whole.
+func millis(ms float64) int64 {
+	if !(ms > 0) || ms > maxDurMs {
+		return 0
+	}
+	return int64(ms)
 }
 
 // part is one block of a message's content.
@@ -203,8 +239,8 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		if u == nil || inherited {
 			return
 		}
-		if c := u.canonical(); !c.IsZero() || u.Cost.Total > 0 {
-			add(transcript.Message{Role: transcript.Assistant, At: at, Usage: c, CostUSD: u.Cost.Total})
+		if c, cost := u.canonical(), u.costUSD(); !c.IsZero() || cost > 0 {
+			add(transcript.Message{Role: transcript.Assistant, At: at, Usage: c, CostUSD: cost})
 		}
 	}
 
@@ -263,16 +299,16 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			}
 			switch m.Role {
 			case "user":
-				if text := textOf(m.Content); text != "" {
+				if text := textOf(m.Content, w.Unread); text != "" {
 					add(transcript.Message{Role: transcript.User, At: at, Blocks: []transcript.Block{transcript.TextOf(text)}})
 				}
 			case "assistant":
 				// One message is one response, timed from its creation to its last token:
 				// the call ends that long after the message's time.
 				out := transcript.Message{Role: transcript.Assistant, At: at, Model: m.Model, Stop: m.StopReason,
-					DurMs: int64(m.DurationMs), Blocks: assistantBlocks(m)}
+					DurMs: millis(m.DurationMs), Blocks: assistantBlocks(m, w.Unread)}
 				if m.Usage != nil && !inherited {
-					out.Usage, out.CostUSD = m.Usage.canonical(), m.Usage.Cost.Total
+					out.Usage, out.CostUSD = m.Usage.canonical(), m.Usage.costUSD()
 				}
 				add(out)
 			case "toolResult":
@@ -280,9 +316,9 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				// whether it failed ride on the message, and the output is its content
 				// (measured over the newest 40 sessions: 554 results, 49 of them failures).
 				// Its time is when the tool finished, its duration how long the tool ran.
-				outcome := transcript.Outcome{Status: transcript.StatusOf(m.IsError), DurMs: int64(m.DurationMs)}
+				outcome := transcript.Outcome{Status: transcript.StatusOf(m.IsError), DurMs: millis(m.DurationMs)}
 				add(transcript.Message{Role: transcript.ToolRole, At: at, Blocks: []transcript.Block{
-					transcript.ResultOf(m.ToolCallID, m.ToolName, textOf(m.Content), outcome)}})
+					transcript.ResultOf(m.ToolCallID, m.ToolName, textOf(m.Content, w.Unread), outcome)}})
 				spend(at, m.Usage)
 			case "bashExecution":
 				// A command the person ran themselves ("!ls"): not a tool call of the
@@ -292,13 +328,24 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				// The prompt and tool loadout, and later patches to them: one at the head of
 				// every session, 7–11 KB of sections that are the same text in each. It is
 				// what pi rebuilds its state from, not something that was said.
+			case "custom", "hookMessage":
+				// What an extension put in front of the model, from files older than the
+				// custom_message row ("hookMessage" before the format's version 3)
+				injected(at, textOf(m.Content, w.Unread))
+			case "compactionSummary", "branchSummary":
+				// What pi makes of a compaction or branch_summary row when it builds the
+				// model's context. The row is what is read; a copy of it as a message
+				// would be the same event twice.
 			default:
-				// What an extension put in front of the model ("custom"; "hookMessage" in
-				// older files), and any role a host adds
-				injected(at, textOf(m.Content))
+				// A role pi had not written when this was made: a host's own, or one added
+				// since. What it is is not known, and it is counted so. The text it holds,
+				// if any, is read as context in the user's seat, which is where pi puts
+				// every role of its own beyond the two sides', the tools' and the prompt.
+				w.Unread(unknown("role", m.Role))
+				injected(at, textOf(m.Content, w.Unread))
 			}
 		case "custom_message":
-			injected(written, textOf(r.Content))
+			injected(written, textOf(r.Content, w.Unread))
 		case "compaction":
 			// The context the model sees was rewritten here: what came before is now this
 			// summary
@@ -317,10 +364,22 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			// pi's own totals. It is left out — a model call can only be entered as an
 			// assistant message, and that would stretch the turn before it to the moment
 			// of the refresh.
+		case "model_change":
+			// Every session opens with one, and each response names the model that
+			// answered it
+		case "thinking_level_change":
+			// A setting changed, not something said
+		case "label":
+			// A bookmark /tree put on an earlier entry
+		case "custom":
+			// An extension's own state, kept for it to rebuild from; it never reaches the
+			// model
+		case "context_edit":
+			// A later change to what an earlier entry puts in front of the model, or its
+			// removal from it: the entry as it was written is what was said
+		default:
+			w.Unread(unknown("row", r.Type))
 		}
-		// The rest is bookkeeping: model_change (every session opens with one, and each
-		// response names the model that answered it), thinking_level_change, label,
-		// custom (an extension's state), context_edit.
 		return true
 	})
 	if err != nil {
@@ -355,6 +414,16 @@ func decode(line []byte, v any) bool {
 	return err == nil || errors.As(err, &mismatch)
 }
 
+// unknown names a record of a kind the adapter does not know, for Writer.Unread. One that
+// does not say what it is — a line of JSON with no type, a message with no role — is such
+// a record too.
+func unknown(what, kind string) string {
+	if kind == "" {
+		kind = "(untyped)"
+	}
+	return what + ":" + kind
+}
+
 // parts decodes a message's content: a bare string is one text block.
 func parts(raw json.RawMessage) []part {
 	raw = bytes.TrimSpace(raw)
@@ -373,10 +442,19 @@ func parts(raw json.RawMessage) []part {
 	return list
 }
 
-// textOf is the text of a message's content, its blocks joined. An image block has none.
-func textOf(raw json.RawMessage) string {
+// textOf is the text of a message's content, its blocks joined. unread is told of every
+// block of a type pi does not put in such content.
+func textOf(raw json.RawMessage, unread func(kind string)) string {
 	var texts []string
 	for _, p := range parts(raw) {
+		switch p.Type {
+		case "text": // read below
+		case "image":
+			continue // a picture the person or a tool attached, which has no text
+		default:
+			// Its text, if it has any, is still what the block said
+			unread(unknown("block", p.Type))
+		}
 		if p.Text != "" {
 			texts = append(texts, p.Text)
 		}
@@ -384,18 +462,28 @@ func textOf(raw json.RawMessage) string {
 	return strings.Join(texts, "\n")
 }
 
-func assistantBlocks(m *message) []transcript.Block {
+// assistantBlocks is what a response said and did. unread is told of every block of a
+// type pi does not put in a response.
+func assistantBlocks(m *message, unread func(kind string)) []transcript.Block {
 	var out []transcript.Block
 	for _, p := range parts(m.Content) {
-		switch {
-		case p.Type == "thinking":
+		switch p.Type {
+		case "thinking":
 			if p.Thinking != "" { // a redacted block keeps only its signature
 				out = append(out, transcript.ThinkingOf(p.Thinking))
 			}
-		case p.Type == "toolCall":
+		case "toolCall":
 			out = append(out, transcript.CallOf(p.ID, p.Name, p.Arguments))
-		case p.Text != "":
-			out = append(out, transcript.TextOf(p.Text))
+		case "text":
+			if p.Text != "" {
+				out = append(out, transcript.TextOf(p.Text))
+			}
+		default:
+			// Its text, if it has any, is still what the response said
+			unread(unknown("block", p.Type))
+			if p.Text != "" {
+				out = append(out, transcript.TextOf(p.Text))
+			}
 		}
 	}
 	// How the response ended, where that is something that happened rather than something

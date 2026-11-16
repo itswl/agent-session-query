@@ -295,7 +295,18 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			}
 			return true
 		case "user/message", "assistant/message", "tool/result":
+		case "system/message":
+			return true // the system prompt: what the model is told, no part of a turn
+		case "tool/call":
+			// The harness running a call, which the assistant's message holds already as
+			// a tool-call part
+			return true
+		case "job/registered":
+			return true // a job beginning; how it ended is its job/settled
+		case "turn/start", "turn/end":
+			return true // the harness's own turn bounds; a turn opens at each prompt anyway
 		default:
+			w.Unread(unknown("row", r.Type))
 			return true
 		}
 		if r.replaces() {
@@ -305,13 +316,18 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		if !decode(r.Data, &d) {
 			return true
 		}
-		if m, ok := messageOf(&r, &d, jobs); ok {
-			// A repeated id is the same message written twice: the first stands, and so
-			// does its usage
+		// A repeated id is the same message written twice: the first stands, and so does its
+		// usage. It is passed over before its content is looked at, so that a part in it the
+		// adapter does not know is counted once, not once for every copy
+		id := d.Message.ID
+		if r.Type == "user/message" {
+			id = d.ID
+		}
+		if id != "" && seen[id] {
+			return true
+		}
+		if m, ok := messageOf(&r, &d, jobs, w.Unread); ok {
 			if m.ID != "" {
-				if seen[m.ID] {
-					return true
-				}
 				seen[m.ID] = true
 			}
 			w.Add(m)
@@ -339,12 +355,23 @@ func decode(line []byte, v any) bool {
 	return err == nil || errors.As(err, &typeErr)
 }
 
+// unknown names a record of a kind the adapter does not know, for Writer.Unread. One that
+// does not say what it is — a line of JSON with no type — is such a record too.
+func unknown(what, kind string) string {
+	if kind == "" {
+		kind = "(untyped)"
+	}
+	return what + ":" + kind
+}
+
 // messageOf turns an event into what the Writer takes; false for one with nothing to add.
-func messageOf(r *row, d *data, jobs map[string]ended) (transcript.Message, bool) {
+// unread is told of every part of the message's content it passed over not knowing what
+// it was.
+func messageOf(r *row, d *data, jobs map[string]ended, unread func(kind string)) (transcript.Message, bool) {
 	at := kit.Time(r.Time)
 	switch r.Type {
 	case "user/message":
-		m := transcript.Message{ID: d.ID, Role: transcript.User, At: at, Blocks: blocks(d.Content)}
+		m := transcript.Message{ID: d.ID, Role: transcript.User, At: at, Blocks: blocks(d.Content, unread)}
 		// A user row the harness wrote itself (context, a summary) is not something the
 		// person typed, so a turn does not start at it
 		if k := d.Source.Kind; k != "" && k != "user" {
@@ -353,7 +380,7 @@ func messageOf(r *row, d *data, jobs map[string]ended) (transcript.Message, bool
 		return m, len(m.Blocks) > 0
 	case "assistant/message":
 		m := d.Message
-		out := transcript.Message{ID: m.ID, Role: transcript.Assistant, At: at, Model: m.Source.Model, Blocks: blocks(m.Content)}
+		out := transcript.Message{ID: m.ID, Role: transcript.Assistant, At: at, Model: m.Source.Model, Blocks: blocks(m.Content, unread)}
 		if u := usageOf(d.Usage); !u.IsZero() {
 			out.Usage = &u
 		}
@@ -373,7 +400,7 @@ func messageOf(r *row, d *data, jobs map[string]ended) (transcript.Message, bool
 		}
 		outcome := transcript.Outcome{Status: transcript.StatusOf(failed), Exit: job.exit, DurMs: job.durMs}
 		return transcript.Message{ID: m.ID, Role: transcript.ToolRole, At: at, Blocks: []transcript.Block{
-			transcript.ResultOf(m.ToolCallID, "", resultText(m.Content), outcome),
+			transcript.ResultOf(m.ToolCallID, "", resultText(m.Content, unread), outcome),
 		}}, true
 	}
 	return transcript.Message{}, false
@@ -397,7 +424,9 @@ func parts(raw json.RawMessage) []part {
 	return list
 }
 
-func blocks(raw json.RawMessage) []transcript.Block {
+// blocks is a message's content as the Writer takes it; unread is told of every part it
+// passed over not knowing what it was.
+func blocks(raw json.RawMessage, unread func(kind string)) []transcript.Block {
 	var out []transcript.Block
 	for _, p := range parts(raw) {
 		switch p.Type {
@@ -411,6 +440,8 @@ func blocks(raw json.RawMessage) []transcript.Block {
 			}
 		case "tool-call":
 			out = append(out, transcript.CallOf(p.ID, p.Name, arguments(p.Arguments)))
+		default:
+			unread(unknown("part", p.Type))
 		}
 	}
 	return out
@@ -432,12 +463,17 @@ func arguments(raw json.RawMessage) any {
 	return raw
 }
 
-// resultText is a tool result's output: the text of its blocks, one per line.
-func resultText(raw json.RawMessage) string {
+// resultText is a tool result's output: the text of its blocks, one per line. A block of
+// any type gives the text it holds; one that holds none and is no text block at all — an
+// image, say — is passed over, and unread is told.
+func resultText(raw json.RawMessage, unread func(kind string)) string {
 	var texts []string
 	for _, p := range parts(raw) {
-		if p.Text != "" {
+		switch {
+		case p.Text != "":
 			texts = append(texts, p.Text)
+		case p.Type != "text":
+			unread(unknown("part", p.Type))
 		}
 	}
 	return strings.Join(texts, "\n")
@@ -452,16 +488,30 @@ func usageOf(raw map[string]any) (u model.Usage) {
 	for key, v := range raw {
 		switch strings.ReplaceAll(strings.ToLower(key), "_", "") {
 		case "inputtokens", "input", "prompttokens":
-			u.Input = kit.Int(v)
+			u.Input = count(v)
 		case "outputtokens", "output", "completiontokens":
-			u.Output = kit.Int(v)
+			u.Output = count(v)
 		case "cachereadtokens", "cacheread", "cachereadinputtokens":
-			u.CacheRead = kit.Int(v)
+			u.CacheRead = count(v)
 		case "cachewritetokens", "cachewrite", "cachecreationinputtokens":
-			u.CacheWrite = kit.Int(v)
+			u.CacheWrite = count(v)
 		case "reasoningtokens", "reasoning":
-			u.Reasoning = kit.Int(v)
+			u.Reasoning = count(v)
 		}
 	}
 	return u
+}
+
+// maxCount bounds a counter of one response. A trillion tokens is a thousand times any
+// context a model is given, so a number past it is no count — and with it kept out, the
+// counts of eight million responses add up to less than an int64 holds.
+const maxCount = 1 << 40
+
+// count reads a counter of tokens. A number below zero is none, and so is one past
+// maxCount: summed, either would take a session's total below zero.
+func count(v any) int64 {
+	if n := kit.Int(v); n >= 0 && n <= maxCount {
+		return n
+	}
+	return 0
 }

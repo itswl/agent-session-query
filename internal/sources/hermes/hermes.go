@@ -182,10 +182,11 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	if db, id, ok := strings.Cut(ref.Key, "#"); ok && db == s.db {
 		w.S.ID, w.S.Path = id, s.db
 		var msgs []transcript.Message
+		var unread []string
 		err := kit.ReadDB(ctx, s.db, func(db *sql.DB) error {
 			// A read that met a write in flight is run again: what the first try gathered
 			// is dropped, and nothing reaches the writer until one has finished
-			msgs = msgs[:0]
+			msgs, unread = msgs[:0], unread[:0]
 			found, err := sessionRow(ctx, db, id, &w.S)
 			if err != nil {
 				return err
@@ -193,7 +194,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			if !found {
 				return sql.ErrNoRows
 			}
-			msgs, err = messages(ctx, db, id, w.S.Model)
+			msgs, unread, err = messages(ctx, db, id, w.S.Model)
 			return err
 		})
 		if err != nil {
@@ -201,6 +202,9 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		}
 		for _, m := range msgs {
 			w.Add(m)
+		}
+		for _, kind := range unread {
+			w.Unread(kind)
 		}
 		return nil
 	}
@@ -218,9 +222,10 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		w.S.StartedAt, w.S.UpdatedAt = entry.Created(), entry.Updated()
 		// Hermes totals a session rather than its responses: the totals stand in for a sum
 		// nothing can compute
-		u := model.Usage{Input: kit.Int(info["input_tokens"]), Output: kit.Int(info["output_tokens"]),
-			CacheRead: kit.Int(info["cache_read_tokens"]), CacheWrite: kit.Int(info["cache_write_tokens"])}
+		u := model.Usage{Input: jsonmap.Count(info["input_tokens"]), Output: jsonmap.Count(info["output_tokens"]),
+			CacheRead: jsonmap.Count(info["cache_read_tokens"]), CacheWrite: jsonmap.Count(info["cache_write_tokens"])}
 		cost, _ := kit.Num(info["estimated_cost_usd"])
+		cost = max(cost, 0) // a price below zero is not one
 		if !u.IsZero() || cost > 0 {
 			w.S.Recorded = &model.Recorded{Usage: &u, CostUSD: cost}
 		}
@@ -231,7 +236,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			return err
 		})
 	}
-	reader := &jsonmap.Reader{Model: w.S.Model}
+	reader := &jsonmap.Reader{Model: w.S.Model, Unread: w.Unread}
 	if err := reader.ReadFile(ctx, ref.Key, w); err != nil {
 		return err
 	}
@@ -286,6 +291,7 @@ func sessionRow(ctx context.Context, db *sql.DB, id string, sess *model.Session)
 		}
 	}
 	num := func(name string) float64 { n, _ := kit.Num(row[name]); return n }
+	count := func(name string) int64 { return jsonmap.Count(row[name]) }
 
 	// Hermes writes a title for a session (title_source says who made it); display_name is
 	// the older field
@@ -309,12 +315,13 @@ func sessionRow(ctx context.Context, db *sql.DB, id string, sess *model.Session)
 	sess.Archived = num("archived") != 0 || num("hidden") != 0
 	// Hermes keeps its counters per session, already apart: the input leaves the cache
 	// out. They are the session's Recorded totals — no response carries any.
-	u := model.Usage{Input: int64(num("input_tokens")), Output: int64(num("output_tokens")),
-		CacheRead: int64(num("cache_read_tokens")), CacheWrite: int64(num("cache_write_tokens")),
-		Reasoning: int64(num("reasoning_tokens"))}
-	cost := num("actual_cost_usd")
+	u := model.Usage{Input: count("input_tokens"), Output: count("output_tokens"),
+		CacheRead: count("cache_read_tokens"), CacheWrite: count("cache_write_tokens"),
+		Reasoning: count("reasoning_tokens")}
+	// A price below zero is not one
+	cost := max(num("actual_cost_usd"), 0)
 	if cost == 0 {
-		cost = num("estimated_cost_usd")
+		cost = max(num("estimated_cost_usd"), 0)
 	}
 	if !u.IsZero() || cost > 0 {
 		sess.Recorded = &model.Recorded{Usage: &u, CostUSD: cost}
@@ -348,10 +355,13 @@ func shown(cols map[string]bool) string {
 // Compression re-inserts the protected head and tail of a conversation as live copies of
 // archived originals, so a row is one message whether the database holds it once or
 // twice: the first position is kept, and the most live copy is what is shown there.
-func messages(ctx context.Context, db *sql.DB, id, sessionModel string) ([]transcript.Message, error) {
+//
+// The second result names every row passed over for a role this does not know, for
+// transcript.Writer.Unread.
+func messages(ctx context.Context, db *sql.DB, id, sessionModel string) ([]transcript.Message, []string, error) {
 	cols, err := kit.Columns(db, "messages")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	col := func(name string) string {
 		if cols[name] {
@@ -367,9 +377,9 @@ func messages(ctx context.Context, db *sql.DB, id, sessionModel string) ([]trans
 SELECT rowid, id, role, content, `+reasoning+`, `+col("tool_calls")+`, `+col("tool_name")+`, `+col("tool_call_id")+`,
        `+col("active")+`, `+col("display_metadata")+`, `+col("display_kind")+`, `+col("_compressed_summary")+`,
        `+col("finish_reason")+`, timestamp
-FROM messages WHERE session_id = ?`+shown(cols)+` AND role IN ('user', 'assistant', 'tool') ORDER BY rowid`, id)
+FROM messages WHERE session_id = ?`+shown(cols)+` ORDER BY rowid`, id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 
@@ -379,6 +389,7 @@ FROM messages WHERE session_id = ?`+shown(cols)+` AND role IN ('user', 'assistan
 		id     int64
 	}
 	var order []rowOf
+	var unread []string
 	at := map[[sha256.Size]byte]int{}
 	for rows.Next() {
 		// The row's position is its rowid — the id column is an integer in current Hermes
@@ -387,7 +398,7 @@ FROM messages WHERE session_id = ?`+shown(cols)+` AND role IN ('user', 'assistan
 		var role, content, think, calls, tool, callID, meta, kind, finish sql.NullString
 		var mid, ts any
 		if err := rows.Scan(&rid, &mid, &role, &content, &think, &calls, &tool, &callID, &active, &meta, &kind, &summary, &finish, &ts); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// Rows the model reads but nobody typed, and the ones Hermes itself leaves out
 		if modelOnly(meta.String) || kind.String == "hidden" {
@@ -422,6 +433,12 @@ FROM messages WHERE session_id = ?`+shown(cols)+` AND role IN ('user', 'assistan
 			// succeeded, so the result carries no status.
 			m.Role = transcript.ToolRole
 			m.Blocks = []transcript.Block{jsonmap.Result(callID.String, tool.String, content.String)}
+		case "session_meta":
+			// Where Hermes notes what a session opened with; the session row says the same
+		case "system":
+			// The system prompt: what the model was told to be, not something said
+		default:
+			unread = append(unread, unknownRole(role.String))
 		}
 		if len(m.Blocks) == 0 {
 			continue
@@ -442,13 +459,22 @@ FROM messages WHERE session_id = ?`+shown(cols)+` AND role IN ('user', 'assistan
 		order = append(order, rowOf{m, live, rid.Int64})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := make([]transcript.Message, len(order))
 	for i, r := range order {
 		out[i] = r.msg
 	}
-	return out, nil
+	return out, unread, nil
+}
+
+// unknownRole names a message row of a role this does not know, for Writer.Unread. A row
+// with no role does not say what it is, and is such a row too.
+func unknownRole(role string) string {
+	if role == "" {
+		role = "(untyped)"
+	}
+	return "role:" + role
 }
 
 // timeKey renders a timestamp column for the identity: the same instant reads the same

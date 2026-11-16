@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/sources"
+	"github.com/itswl/agent-session-query/internal/sources/kit"
 	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
 )
 
@@ -37,16 +39,16 @@ CREATE TABLE session_message (
 	id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, seq INTEGER NOT NULL,
 	time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);`
 
-func build(t *testing.T, statements ...string) (sources.Source, string) {
+func build(t testing.TB, statements ...string) (sources.Source, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "opencode.db")
 	exec(t, path, statements...)
 	return Spec.Open(path), path
 }
 
-func exec(t *testing.T, path string, statements ...string) {
+func exec(t testing.TB, path string, statements ...string) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	db, err := sql.Open("sqlite", kit.FileURI(path))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +88,7 @@ func TestV1(t *testing.T) {
 	if len(all) != 2 {
 		t.Fatalf("sessions = %d", len(all))
 	}
+	sourcetest.NothingUnread(t, all...)
 	old, live := sourcetest.ByID(t, all, "ses_archived"), sourcetest.ByID(t, all, "ses_live")
 	if !old.Session.Archived || old.Session.Title != "old-slug" {
 		t.Errorf("archived session = %+v", old.Session)
@@ -163,6 +166,8 @@ var rowsV2 = []string{
 func TestV2(t *testing.T) {
 	src, _ := build(t, append([]string{schemaV2}, rowsV2...)...)
 	all := sourcetest.All(t, src)
+	// The row that will not parse is not counted: it is not of a kind, it is broken
+	sourcetest.NothingUnread(t, all...)
 	s := sourcetest.ByID(t, all, "ses_2")
 	if s.Session.Title != "Ship the fix" || s.Session.Cwd != "/w/two" || s.Session.Version != "2.3.1" {
 		t.Errorf("session = %+v", s.Session)
@@ -224,6 +229,7 @@ func TestMixedLayouts(t *testing.T) {
 	if len(all) != 4 {
 		t.Fatalf("sessions = %d, want ses_2, ses_child, ses_live once, ses_archived", len(all))
 	}
+	sourcetest.NothingUnread(t, all...)
 	if live := sourcetest.ByID(t, all, "ses_live"); live.Session.Cwd != "/w/migrated" || live.Turn(t, 1).Ask != "asked after the migration" {
 		t.Errorf("a migrated session reads through the layout it lives in: %+v", live.Session)
 	}
@@ -358,6 +364,7 @@ func stampOf(t *testing.T, src sources.Source, id string) string {
 func TestAForkCountsOnlyWhatItDidItself(t *testing.T) {
 	src, _ := forkStore(t)
 	all := sourcetest.All(t, src)
+	sourcetest.NothingUnread(t, all...)
 	fork, parent := sourcetest.ByID(t, all, "ses_fork"), sourcetest.ByID(t, all, "ses_parent")
 
 	if fork.Stats.Turns != 1 || fork.Stats.Calls != 1 || fork.Stats.Tools != 0 || fork.Stats.Failures != 0 {
@@ -508,5 +515,101 @@ func TestTheSessionRowsOwnTotals(t *testing.T) {
 	old, _ := build(t, append([]string{schemaV2}, rowsV2...)...)
 	if rec := sourcetest.ByID(t, sourcetest.All(t, old), "ses_2").Session.Recorded; rec != nil {
 		t.Errorf("recorded on a layout that keeps none: %+v", rec)
+	}
+}
+
+// What 2.x writes beside the conversation: a skill's instructions once it was activated are
+// context the model went on from, like the instructions OpenCode updates; a session moving
+// to another directory and a turn that ended as it should add nothing. All of it is known.
+func TestWhatV2WritesBesideTheConversation(t *testing.T) {
+	src, _ := build(t, schemaV2,
+		`INSERT INTO session_v2 VALUES ('ses_s', NULL, 's', '/w/s', 'Skills', '2.3.0', 'build', NULL, 1790000000000, 1790000000500, NULL)`,
+		`INSERT INTO session_message VALUES ('s1', 'ses_s', 'user', 1, 1790000001000, 1790000001000, '{"text":"use the release skill","files":[],"agents":[]}')`,
+		`INSERT INTO session_message VALUES ('s2', 'ses_s', 'skill', 2, 1790000001100, 1790000001100,
+			'{"skill":"release","name":"release","text":"Tag, then push the tag.","time":{"created":1790000001100}}')`,
+		`INSERT INTO session_message VALUES ('s3', 'ses_s', 'location-switched', 3, 1790000001200, 1790000001200,
+			'{"location":{"directory":"/w/s-worktree"},"previous":{"location":{"directory":"/w/s"}},"time":{"created":1790000001200}}')`,
+		`INSERT INTO session_message VALUES ('s4', 'ses_s', 'assistant', 4, 1790000001300, 1790000001900,
+			'{"finish":"stop","model":{"id":"m","providerID":"p"},"content":[{"type":"text","text":"Tagged."}],"time":{"created":1790000001300,"completed":1790000001900}}')`,
+		`INSERT INTO session_message VALUES ('s5', 'ses_s', 'idle', 5, 1790000002000, 1790000002000, '{"outcome":"succeeded"}')`,
+	)
+	s := sourcetest.One(t, src)
+	sourcetest.NothingUnread(t, s)
+	one := s.Turn(t, 1)
+	if got := sourcetest.Kinds(one); got != "prompt context reply" || one.Items[1].Text != "Tag, then push the tag." || one.Answer != "Tagged." {
+		t.Errorf("turn 1 = %s %+v", got, one.Items)
+	}
+}
+
+// A record of a kind OpenCode had not written when the adapter was made — a row type, a
+// part type, a tool's output item, a 1.x role — is passed over and counted under its kind,
+// once however many parts it carries, and the rest of the session reads as it did. What
+// 1.x wrote beside the content and is left aside on purpose is not counted.
+func TestWhatIsNotUnderstoodIsCounted(t *testing.T) {
+	same := func(t *testing.T, before, after sourcetest.Session) {
+		t.Helper()
+		if !reflect.DeepEqual(before.Turns, after.Turns) || before.Stats != after.Stats {
+			t.Errorf("the session read differently with records it does not know in it:\n%+v\n%+v", before.Stats, after.Stats)
+		}
+	}
+	t.Run("2.x", func(t *testing.T) {
+		src, path := build(t, append([]string{schemaV2}, rowsV2...)...)
+		before := sourcetest.ByID(t, sourcetest.All(t, src), "ses_2")
+		exec(t, path,
+			`INSERT INTO session_message VALUES ('x1', 'ses_2', 'hologram', 13, 1790000019000, 1790000019000, '{"text":"from a later OpenCode"}')`,
+			`UPDATE session_message SET data = json_insert(data, '$.content[#]', json('{"type":"hologram","text":"?"}'), '$.content[#]', json('{"text":"no type"}')) WHERE id = 'm3'`,
+			`UPDATE session_message SET data = json_insert(data, '$.content[1].state.content[#]', json('{"type":"hologram"}')) WHERE id = 'm3'`,
+		)
+		after := sourcetest.ByID(t, sourcetest.All(t, src), "ses_2")
+		want := map[string]int{"row:hologram": 1, "part:hologram": 1, "part:(untyped)": 1, "output:hologram": 1}
+		if !reflect.DeepEqual(after.Unread, want) {
+			t.Errorf("unread = %v, want %v", after.Unread, want)
+		}
+		same(t, before, after)
+	})
+	t.Run("1.x", func(t *testing.T) {
+		src, path := build(t, append([]string{schemaV1}, rowsV1...)...)
+		before := sourcetest.ByID(t, sourcetest.All(t, src), "ses_live")
+		exec(t, path,
+			`INSERT INTO message VALUES ('msg_x', 'ses_live', 1789697128710, 1789697128710, '{"role":"moderator","time":{"created":1789697128710}}')`,
+			`INSERT INTO part VALUES ('px1', 'msg_x', 'ses_live', 1, 1, '{"type":"text","text":"a word from the moderator"}')`,
+			`INSERT INTO part VALUES ('px2', 'msg_x', 'ses_live', 2, 2, '{"type":"text","text":"and another"}')`,
+			`INSERT INTO part VALUES ('p10', 'msg_a1', 'ses_live', 10, 10, '{"type":"hologram"}')`,
+			// What 1.x wrote beside the content
+			`INSERT INTO part VALUES ('pk1', 'msg_u1', 'ses_live', 11, 11, '{"type":"file","mime":"text/plain","filename":"notes.txt","url":"file:///w/proj/notes.txt"}')`,
+			`INSERT INTO part VALUES ('pk2', 'msg_u1', 'ses_live', 12, 12, '{"type":"agent","name":"explore"}')`,
+			`INSERT INTO part VALUES ('pk3', 'msg_u1', 'ses_live', 13, 13, '{"type":"subtask","prompt":"look","description":"look","agent":"explore"}')`,
+			`INSERT INTO part VALUES ('pk4', 'msg_u1', 'ses_live', 14, 14, '{"type":"compaction","auto":true}')`,
+			`INSERT INTO part VALUES ('pk5', 'msg_a1', 'ses_live', 15, 15, '{"type":"snapshot","snapshot":"abc"}')`,
+			`INSERT INTO part VALUES ('pk6', 'msg_a1', 'ses_live', 16, 16, '{"type":"patch","hash":"abc","files":["/w/proj/a"]}')`,
+			`INSERT INTO part VALUES ('pk7', 'msg_a1', 'ses_live', 17, 17, '{"type":"retry","attempt":1,"error":{"name":"APIError"}}')`,
+		)
+		after := sourcetest.ByID(t, sourcetest.All(t, src), "ses_live")
+		want := map[string]int{"role:moderator": 1, "part:hologram": 1}
+		if !reflect.DeepEqual(after.Unread, want) {
+			t.Errorf("unread = %v, want %v", after.Unread, want)
+		}
+		same(t, before, after)
+	})
+}
+
+// A counter OpenCode could not have written — below zero, or past any call's size — reads
+// as none, in a message and in the session row alike, and so does a cost below zero: the
+// session's totals are sums, and one such value would carry them below zero.
+func TestACounterNoCallCouldHaveReadsAsNone(t *testing.T) {
+	src, _ := build(t, schemaV2, schemaV23,
+		`INSERT INTO session_v2 (id, slug, directory, version, time_created, time_updated, cost, tokens_input, tokens_output, tokens_reasoning)
+			VALUES ('ses_n', 'n', '/w', '2.3.0', 1790000000000, 1790000000000, -1, -5, 7, 9000000000000000000)`,
+		`INSERT INTO session_message VALUES ('n1', 'ses_n', 'user', 1, 1790000001000, 1790000001000, '{"text":"count"}')`,
+		`INSERT INTO session_message VALUES ('n2', 'ses_n', 'assistant', 2, 1790000002000, 1790000002000,
+			'{"cost":-0.5,"tokens":{"input":-5,"output":3,"reasoning":9e18,"cache":{"read":1e300,"write":-1e300}},"content":[{"type":"text","text":"done"}]}')`,
+	)
+	s := sourcetest.One(t, src)
+	sourcetest.Invariants(t, s)
+	if call := s.Turn(t, 1).Calls[0]; call.Usage == nil || *call.Usage != (model.Usage{Output: 3}) || call.CostUSD != 0 {
+		t.Errorf("call = %+v usage %+v", call, call.Usage)
+	}
+	if rec := s.Session.Recorded; rec == nil || *rec.Usage != (model.Usage{Output: 7}) || rec.CostUSD != 0 {
+		t.Errorf("recorded = %+v", rec)
 	}
 }

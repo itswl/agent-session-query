@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -138,6 +139,20 @@ type row struct {
 	} `json:"attachment"`
 }
 
+// maxTokens is more than any one response could count, and little enough that adding up
+// every response a transcript could hold stays far from wrapping around.
+const maxTokens = 1 << 32
+
+// tokens is a token count as a row gives it, held to what a count can be: a damaged or
+// doctored row can say anything, and a figure below zero, or past maxTokens, counts
+// nothing.
+func tokens(n int64) int64 {
+	if n < 0 || n > maxTokens {
+		return 0
+	}
+	return n
+}
+
 // part is one block of a message's content.
 type part struct {
 	Type      string          `json:"type"`
@@ -245,6 +260,38 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				w.S.Recorded = &model.Recorded{CostUSD: r.TotalCostUSD}
 			}
 			return true
+
+		// The rows below are not conversation, and are passed over knowing what they are.
+		case "last-prompt", "queue-operation", "progress":
+			// What the conversation's own rows record again: the prompt typed last, the
+			// queue a prompt typed mid-turn waits in (the prompt is a queued_command
+			// attachment), a call or hook still running (its result says how it ended)
+			return true
+		case "api-request", "api-request-shape", "api-request-blob":
+			// The CLI's log of the requests it sent: each answer is read from its own rows
+			return true
+		case "file-history-snapshot", "file-history-delta", "attribution-snapshot", "content-replacement":
+			// Checkpoints of the files the session edited, kept for a rewind and for saying
+			// who wrote what, and what the CLI put in the model's context in place of a
+			// large output
+			return true
+		case "mode", "permission-mode", "repl-mode", "memory-mode", "session-owner", "isolation-latch",
+			"atis-latch", "dev-mods", "worktree-state", "bridge-session", "tools-used", "agent-name",
+			"agent-color", "agent-setting", "relocated", "history-suppression", "derived-from",
+			"data-flow-records", "data-flow-incomplete", "frame-link", "observer-ref", "resume-head-vouch",
+			"artifact-comment-monitor", "artifact-autoreact-ledger":
+			// The session's settings and state as the CLI keeps them for itself: its modes,
+			// its owner, its worktree, the tools it has used, how it is tied to other views
+			return true
+		case "summary", "tag", "pr-link", "continued-in", "ended-by-model":
+			// What the CLI notes about the session for its own lists: the title older
+			// versions gave it, a tag, the pull request it opened, the session it went on
+			// in, that the model ended it
+			return true
+		case "fork-context-ref":
+			// A fork's pointer to the conversation it starts from, which newer versions write
+			// in place of a copy: the parent's rows are read in the parent's transcript
+			return true
 		}
 		// A subagent's rows are not part of the main thread — except in its own transcript
 		if r.IsSidechain && !sub {
@@ -255,17 +302,32 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 
 		switch r.Type {
 		case "system":
-			if event, ok := systemEvent(&r); ok {
+			if event, ok := systemEvent(&r, w.Unread); ok {
 				release(false)
 				w.Add(transcript.Message{ID: r.UUID, Role: transcript.System, At: at, Inherited: inherited, Blocks: []transcript.Block{event}})
 			}
 		case "attachment":
 			// What the person typed while the agent was working reaches the model as an
 			// attachment, at the time it was typed, and for most such prompts nothing else
-			// records it. The same attachment type also carries background-task
-			// notifications and prompts the CLI wrote itself; neither is the person's.
+			// records it. Every other attachment is context the CLI gives the model.
 			a := r.Attachment
-			if a.Type != "queued_command" || a.CommandMode != "prompt" || a.IsMeta {
+			if a.Type != "queued_command" {
+				if a.Type != "" && !contextAttachment(a.Type) {
+					w.Unread("attachment:" + a.Type)
+				}
+				return true
+			}
+			switch a.CommandMode {
+			case "prompt":
+				if a.IsMeta {
+					return true // a prompt the CLI wrote itself, or a peer sent: not the person's
+				}
+			case "task-notification":
+				return true // a background task saying how it ended: the CLI's, not the person's
+			case "":
+				return true // one that names no mode: Claude Code does not take it for the person's either
+			default:
+				w.Unread("queued_command:" + a.CommandMode)
 				return true
 			}
 			if text := strings.TrimSpace(contentText(a.Prompt)); text != "" {
@@ -278,7 +340,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				// A row the CLI wrote in the user's seat: a skill's expansion, the summary a
 				// compaction leaves behind
 				Injected: r.IsMeta || r.IsCompact,
-				Blocks:   s.userBlocks(&r)}
+				Blocks:   s.userBlocks(&r, w.Unread)}
 			if len(m.Blocks) == 0 {
 				return true
 			}
@@ -301,11 +363,15 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			release(false)
 			m := transcript.Message{ID: r.UUID, Role: transcript.Assistant, At: at, Inherited: inherited,
 				Response: r.Message.ID, Model: r.Message.Model, Stop: r.Message.StopReason,
-				CostUSD: r.Message.CostUSD, Blocks: assistantBlocks(&r)}
+				CostUSD: max(r.Message.CostUSD, 0), Blocks: assistantBlocks(&r, w.Unread)}
 			if u := r.Message.Usage; u != nil && !inherited {
-				m.Usage = &model.Usage{Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite}
+				m.Usage = &model.Usage{Input: tokens(u.Input), Output: tokens(u.Output), CacheRead: tokens(u.CacheRead), CacheWrite: tokens(u.CacheWrite)}
 			}
 			w.Add(m)
+		case "":
+			// A line that does not say what it is: no row this CLI writes
+		default:
+			w.Unread("row:" + r.Type)
 		}
 		return true
 	})
@@ -405,10 +471,68 @@ func between(s, open, end string) string {
 	return strings.TrimSpace(inner)
 }
 
+// contextAttachment reports whether an attachment is of a kind Claude Code lays before the
+// model in the person's seat, or keeps for itself: files and selections, reminders,
+// listings, instructions, modes, what a hook printed. None of it is what either side said
+// — the person's words are in their own rows — and all of it is passed over. The kinds are
+// the CLI's own: those its code turns into context for the model, or drops.
+func contextAttachment(kind string) bool {
+	switch kind {
+	case "hook_success", "hook_blocking_error", "hook_non_blocking_error", "hook_error_during_execution",
+		"hook_cancelled", "hook_additional_context", "hook_stopped_continuation", "hook_system_message",
+		"hook_permission_decision", "hook_deferred_tool", "async_hook_response", "async_hook_response_batch":
+		// What a hook printed or decided; a Stop hook's failure is read from its system row
+	case "file", "directory", "edited_text_file", "edited_image_file", "compact_file_reference",
+		"pdf_reference", "already_read_file", "plan_file_reference", "mcp_resource", "diagnostics",
+		"inlined_image_paths", "selected_lines_in_ide", "selected_lines_in_diff", "opened_file_in_ide",
+		"at_mention_reference", "agent_mention", "skill_mention", "peer_mention", "unknown_command_fallback":
+		// Files, folders and selections laid before the model, and what a prompt mentioned:
+		// the prompt itself is read from its own row
+	case "nested_memory", "relevant_memories", "withheld_memory", "account_memory_recall",
+		"cowork_memory_context", "instruction_files_not_loaded", "project_doc_reads", "message_pdf_reads":
+		// Memory and instruction files, and which of them were read
+	case "total_tokens_reminder", "silent_turn_reminder", "elapsed_time_reminder", "batching_reminder",
+		"batching_reminder_sent", "secondary_reminder", "secondary_reminder_sent", "critical_system_reminder",
+		"todo_reminder", "task_reminder", "tool_search_usage_reminder", "bash_output_audience_note",
+		"read_truncation_notice", "output_limit_note", "dir_sync_notice", "claude_app_notice",
+		"tool_hosts_notice", "tool_hosts_correction", "linked_plugin_tools_note", "widget_context_hint",
+		"token_usage", "budget_usd", "output_token_usage", "attention_budget", "context_efficiency",
+		"max_turns_reached", "date", "date_change", "poll_events":
+		// Reminders and notices the CLI gives the model: of its budget, the time and the
+		// date, what the person sees, the events it was woken by
+	case "environment", "session_context", "model", "language", "instructions", "sandbox_instructions",
+		"output_style", "output_style_instructions", "command_permissions", "skill_listing", "dynamic_skill",
+		"invoked_skills", "agent_listing_delta", "deferred_tools_delta", "deferred_tools_record",
+		"mcp_instructions_delta", "mcp_dropped_tools_delta", "repl_mcp_needs_auth", "advisor_tool",
+		"context_sections", "coordinator_context", "prefix_delta", "thread_state", "fork_briefing",
+		"remote_session_change", "workflow_keyword_request", "workflow_size_guideline_change",
+		"artifact_opening_prefetch", "proactivity", "goals", "goal_status":
+		// What the model is told it has and how to work: its environment and instructions,
+		// the skills, agents and tools it can call
+	case "plan_mode", "plan_mode_reentry", "plan_mode_exit", "auto_mode", "auto_mode_exit",
+		"ultra_effort_enter", "ultra_effort_exit", "ultrathink_effort":
+		// A mode the session went into or out of
+	case "task_status", "team_context", "teammate_mailbox", "teammate_shutdown_batch", "structured_output":
+		// Background tasks and teammates as the model is told of them, and a structured
+		// answer, which the call that gave it holds already
+	case "prompt_snapshot", "prompt_render_point", "thinking_drop", "thinking_stripped", "advisor_stripped",
+		"tool_results_cut", "tool_host_result_lines", "credential_org", "session_cron_carry", "projects_thread_ask":
+		// The CLI's records of what it sent the model and what it held back
+	case "autocheckpointing", "background_task_status", "todo", "task_progress", "ultramemory",
+		"compaction_reminder", "current_session_memory", "thinking_reminder", "companion_intro",
+		"pen_mode_enter", "pen_mode_exit", "ultrawork_request", "echo_activities", "verify_plan_reminder",
+		"fold_nudge", "context_tip", "audio_transcript":
+		// Kinds earlier versions wrote that Claude Code itself now passes over
+	default:
+		return false
+	}
+	return true
+}
+
 // systemEvent turns the system rows worth a reader's attention into events: a compaction
 // boundary (the context the model sees was rewritten here) and a stop hook that failed.
-// The rest — turn_duration, informational, local_command — is bookkeeping.
-func systemEvent(r *row) (transcript.Block, bool) {
+// The rest is bookkeeping, and a subtype it has never heard of is told to unread.
+func systemEvent(r *row, unread func(kind string)) (transcript.Block, bool) {
 	switch r.Subtype {
 	case "compact_boundary":
 		text := contentText(r.Content)
@@ -427,6 +551,24 @@ func systemEvent(r *row) (transcript.Block, bool) {
 			return transcript.Block{}, false
 		}
 		return transcript.EventOf(model.EventHookError, strings.Join(errs, "\n")), true
+	case "turn_duration", "informational", "local_command":
+		// How long a turn took, a notice, a local command's output: the turn's own rows
+		// say when it ran and what it did
+	case "api_error":
+		// A request that failed and is about to be retried; an error that ends a turn is
+		// written in the assistant's place, and read there
+	case "away_summary":
+		// The recap the CLI writes for a person coming back: a summary of what is here
+	case "scheduled_task_fire":
+		// A scheduled task went off; the prompt it set off follows as a row of its own
+	case "memory_saved", "agents_killed", "permission_retry", "file_snapshot", "bridge_status", "cloud_session_status":
+		// Notices of the CLI's own doings: what it saved to memory, background agents
+		// stopped, commands retried with permission, a copy of the plan file kept with the
+		// session, where else the session can be continued
+	case "":
+		// A row that names no subtype names no kind to count
+	default:
+		unread("system:" + r.Subtype)
 	}
 	return transcript.Block{}, false
 }
@@ -439,6 +581,38 @@ func contentText(raw json.RawMessage) string {
 	var v any
 	if json.Unmarshal(raw, &v) != nil {
 		return ""
+	}
+	return kit.ContentText(v)
+}
+
+// resultText flattens a tool result's content as contentText does, and tells unread of
+// the blocks in it that are of a kind it has never heard of.
+func resultText(raw json.RawMessage, unread func(kind string)) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return ""
+	}
+	if list, ok := v.([]any); ok {
+		for _, item := range list {
+			b, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			switch kind := kit.Str(b["type"]); kind {
+			case "text":
+			case "image", "document":
+				// A screenshot, a page of a PDF: what the model saw, with no text to read
+			case "tool_reference":
+				// A tool a search loaded, named for the model: the call says what was sought
+			case "":
+				// A block that names no type names no kind to count
+			default:
+				unread("block:" + kind)
+			}
+		}
 	}
 	return kit.ContentText(v)
 }
@@ -461,7 +635,7 @@ func parts(raw json.RawMessage) []part {
 	return list
 }
 
-func assistantBlocks(r *row) []transcript.Block {
+func assistantBlocks(r *row, unread func(kind string)) []transcript.Block {
 	var out []transcript.Block
 	for _, p := range parts(r.Message.Content) {
 		switch p.Type {
@@ -475,12 +649,21 @@ func assistantBlocks(r *row) []transcript.Block {
 			}
 		case "tool_use":
 			out = append(out, transcript.CallOf(p.ID, p.Name, p.Input))
+		case "redacted_thinking":
+			// Thinking the API sent encrypted: there is no text in it to read
+		case "fallback":
+			// The CLI's mark that another model took over the answer: the row's own model
+			// says which one gave it
+		case "":
+			// A block that names no type names no kind to count
+		default:
+			unread("block:" + p.Type)
 		}
 	}
 	return out
 }
 
-func (s *Source) userBlocks(r *row) []transcript.Block {
+func (s *Source) userBlocks(r *row, unread func(kind string)) []transcript.Block {
 	list := parts(r.Message.Content)
 	results := 0
 	for _, p := range list {
@@ -507,7 +690,7 @@ func (s *Source) userBlocks(r *row) []transcript.Block {
 			}
 			out = append(out, transcript.TextOf(p.Text))
 		case "tool_result":
-			text := contentText(p.Content)
+			text := resultText(p.Content, unread)
 			// is_error is Claude's own verdict; the row-level record says when the user
 			// interrupted the command, and so does the placeholder a stopped call gets
 			outcome := transcript.Outcome{Status: transcript.StatusOf(p.IsError)}
@@ -515,7 +698,7 @@ func (s *Source) userBlocks(r *row) []transcript.Block {
 				outcome.Status = model.StatusInterrupted
 			}
 			// The row-level record speaks for the row's one result
-			if results == 1 && use.DurationMs > 0 {
+			if results == 1 && use.DurationMs > 0 && use.DurationMs < math.MaxInt64 {
 				outcome.DurMs = int64(use.DurationMs)
 			}
 			// An output too large for the transcript is saved beside it, and the row keeps
@@ -533,6 +716,12 @@ func (s *Source) userBlocks(r *row) []transcript.Block {
 				block.Run = use.RunID
 			}
 			out = append(out, block)
+		case "image", "document":
+			// A picture or a document the person attached: no words of theirs to read
+		case "":
+			// A block that names no type names no kind to count
+		default:
+			unread("block:" + p.Type)
 		}
 	}
 	return out

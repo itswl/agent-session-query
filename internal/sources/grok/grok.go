@@ -393,33 +393,75 @@ func readUpdates(ctx context.Context, path string, f *folder) error {
 		switch {
 		case u.Kind == "turn_completed":
 			f.complete(at, usageOf(u.Usage), u.StopReason)
-		case l.Method != "session/update":
-			// Grok's other events — hook runs, plan and mode changes — are not conversation
-		case u.Kind == "user_message_chunk":
-			// A prompt names the model it was sent to, which is the one that answers it;
-			// the summary only knows the model the session ended on
-			if u.Meta.ModelID != "" {
-				f.model = u.Meta.ModelID
+		case l.Method == "session/update":
+			f.update(u, at)
+		case l.Method == "_x.ai/session/update":
+			// Grok's own events, beside the turn_completed row read above
+			switch u.Kind {
+			case "hook_execution":
+				// A hook Grok ran at a point of the session, and what it returned: Grok's
+				// own plumbing, not conversation
+			default:
+				f.unread("event", u.Kind)
 			}
-			f.chunk(transcript.User, at, transcript.Text, kit.ContentText(u.Content))
-		case u.Kind == "agent_message_chunk":
-			f.chunk(transcript.Assistant, at, transcript.Text, kit.ContentText(u.Content))
-		case u.Kind == "agent_thought_chunk":
-			f.chunk(transcript.Assistant, at, transcript.Thinking, kit.ContentText(u.Content))
-		case u.Kind == "tool_call":
-			f.add(transcript.Assistant, at, transcript.CallOf(u.ToolCallID, toolName(u), u.RawInput))
-		case u.Kind == "tool_call_update":
-			// An update with no status is the call being re-titled while it runs. Only a
-			// finished one carries output, and which of the two ways it finished is the one
-			// thing Grok records about how it went.
-			switch u.Status {
-			case "completed", "failed":
-				outcome := transcript.Outcome{Status: transcript.StatusOf(u.Status == "failed")}
-				f.add(transcript.ToolRole, at, transcript.ResultOf(u.ToolCallID, "", resultText(u.Content), outcome))
-			}
+		default:
+			// A method beside the two the stream has been written with
+			f.unread("method", l.Method)
 		}
 		return true
 	})
+}
+
+// update reads one update of the Agent Client Protocol stream.
+func (f *folder) update(u *update, at time.Time) {
+	switch u.Kind {
+	case "user_message_chunk":
+		// A prompt names the model it was sent to, which is the one that answers it;
+		// the summary only knows the model the session ended on
+		if u.Meta.ModelID != "" {
+			f.model = u.Meta.ModelID
+		}
+		f.chunk(transcript.User, at, transcript.Text, kit.ContentText(u.Content))
+	case "agent_message_chunk":
+		f.chunk(transcript.Assistant, at, transcript.Text, kit.ContentText(u.Content))
+	case "agent_thought_chunk":
+		f.chunk(transcript.Assistant, at, transcript.Thinking, kit.ContentText(u.Content))
+	case "tool_call":
+		f.add(transcript.Assistant, at, transcript.CallOf(u.ToolCallID, toolName(u), u.RawInput))
+	case "tool_call_update":
+		// Only a finished call carries output, and which of the two ways it finished is
+		// the one thing Grok records about how it went.
+		switch u.Status {
+		case "completed", "failed":
+			outcome := transcript.Outcome{Status: transcript.StatusOf(u.Status == "failed")}
+			f.add(transcript.ToolRole, at, transcript.ResultOf(u.ToolCallID, "", resultText(u.Content), outcome))
+		case "", "pending", "in_progress":
+			// An update with no status is the call being re-titled while it runs, and one
+			// that has not finished has nothing to show yet
+		default:
+			f.unread("status", u.Status)
+		}
+	case "plan":
+		// The agent's list of steps, restated whole each time one changes: its working
+		// notes, which the calls and replies around it carry out
+	case "current_mode_update", "config_option_update":
+		// The session switched mode (plan, agent…) or changed a setting: a control the
+		// person moved, not something said
+	case "available_commands_update":
+		// The slash commands on offer, announced whenever they change
+	case "session_info_update":
+		// The session's title and times, which summary.json keeps
+	default:
+		f.unread("event", u.Kind)
+	}
+}
+
+// unread notes a record of a kind this adapter has never heard of, as what:kind. A line
+// that names no kind at all is not a record of a new kind, and is not counted.
+func (f *folder) unread(what, kind string) {
+	if kind != "" {
+		f.w.Unread(what + ":" + kind)
+	}
 }
 
 // toolName is the tool's own name. Grok keeps it in its _meta extension; the title starts
@@ -457,10 +499,13 @@ func resultText(content any) string {
 // read from cache, with its 10 reasoning tokens added nowhere. cachedReadTokens is Grok's
 // spelling; no counter for cache writes has been seen, and the names read beside Grok's
 // are the ones the same shape goes by elsewhere.
+//
+// A counter past maxTokens is not read: it is a number gone wrong, not a count, and two
+// of them added up would wrap a session's total below zero.
 func usageOf(raw map[string]any) *model.Usage {
 	count := func(names ...string) int64 {
 		for _, name := range names {
-			if n := kit.Int(raw[name]); n > 0 {
+			if n := kit.Int(raw[name]); n > 0 && n <= maxTokens {
 				return n
 			}
 		}
@@ -478,6 +523,11 @@ func usageOf(raw map[string]any) *model.Usage {
 	}
 	return &u
 }
+
+// maxTokens is more tokens than any session has spent, by a thousand times and more. A
+// float too large for an int64 converts to whatever the machine makes of it — on arm64
+// the largest int64 — so the bound is what keeps a sum of counters from overflowing.
+const maxTokens = 1 << 40
 
 // historyLine is one line of chat_history.jsonl: a whole message.
 type historyLine struct {
@@ -548,6 +598,10 @@ func readHistory(ctx context.Context, path string, f *folder) error {
 		case "tool_result":
 			// The log names no status, so the result carries no outcome
 			f.add(transcript.ToolRole, none, transcript.ResultOf(l.ToolCallID, "", kit.ContentText(l.Content), transcript.Outcome{}))
+		case "system":
+			// Grok's own prompt, the log's first line: not conversation
+		default:
+			f.unread("row", l.Type)
 		}
 		return true
 	})

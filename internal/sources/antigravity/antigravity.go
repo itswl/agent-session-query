@@ -335,10 +335,26 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			if text != "" {
 				m.Blocks = []transcript.Block{transcript.TextOf(text)}
 			}
+		case "RUN_COMMAND", "COMMAND_STATUS", "SEND_COMMAND_INPUT", "READ_TERMINAL",
+			"VIEW_FILE", "VIEW_FILE_OUTLINE", "VIEW_CODE_ITEM", "VIEW_CONTENT_CHUNK",
+			"LIST_DIRECTORY", "FIND", "GREP_SEARCH", "CODE_ACTION",
+			"READ_URL_CONTENT", "SEARCH_WEB", "MCP_TOOL", "LIST_RESOURCES", "READ_RESOURCE",
+			"BROWSER_SUBAGENT", "GENERATE_IMAGE",
+			"CHECKPOINT", "TASK_BOUNDARY", "NOTIFY_USER", "EPHEMERAL_MESSAGE", "ERROR_MESSAGE",
+			"CONVERSATION_HISTORY", "KNOWLEDGE_ARTIFACTS":
+			// The steps of agy's tools — a command and its status, input and terminal; a file
+			// viewed, listed, found, searched or edited; a page read, a web search; an MCP tool
+			// or resource; the browser subagent; an image made — and of agy itself: a
+			// checkpoint, a task's boundary and its notice to the person, a message or an error
+			// of its own, the history and knowledge it brings in. Each is shown under its type
+			// as what the step says, not taken apart into a call and its result
+			m.Role = transcript.System
+			m.Blocks = []transcript.Block{transcript.EventOf(st.Type, text)}
 		default:
-			// Tool steps, settings changes — agy keeps adding kinds. The step's own type is
-			// the only name this reader can give one: it stays visible as that, neither
-			// dropped nor passed off as the model's reply
+			// A step of a type agy had not written when this reader was made. It stays visible
+			// under that name, neither dropped nor passed off as the model's reply, and it is
+			// counted: a reply renamed would otherwise read as an event with nothing to say so
+			w.Unread("step:" + st.Type)
 			m.Role = transcript.System
 			m.Blocks = []transcript.Block{transcript.EventOf(st.Type, text)}
 		}
@@ -356,7 +372,8 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 // rather than guessed at.
 //
 // A step that is not DONE is the CLI's work in progress: its counters are provisional, and
-// the line that finishes the step carries the real ones.
+// the line that finishes the step carries the real ones. A counter past maxTokens is not a
+// count and is left out, as one never recorded.
 func (st *step) usage() *model.Usage {
 	if st.Status != "DONE" {
 		return nil
@@ -370,7 +387,7 @@ func (st *step) usage() *model.Usage {
 		{st.InputTokens, &u.Input}, {st.OutputTokens, &u.Output},
 		{st.CacheReadTokens, &u.CacheRead}, {st.CacheWriteTokens, &u.CacheWrite},
 	} {
-		if n, ok := kit.Num(c.v); ok {
+		if n, ok := kit.Num(c.v); ok && n <= maxTokens {
 			*c.to, found = max(int64(n), 0), true
 		}
 	}
@@ -379,6 +396,11 @@ func (st *step) usage() *model.Usage {
 	}
 	return &u
 }
+
+// maxTokens bounds one step's counter. A model's window is some millions of tokens; a number
+// a million times that is not what a step spent, and taken as one it would be summed into a
+// session's total until the total wrapped below zero.
+const maxTokens = 1 << 40
 
 // userRequest is what the person typed: agy wraps it in <USER_REQUEST> and appends context
 // blocks of its own (metadata, settings changes) after it.

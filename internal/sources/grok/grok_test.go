@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -23,7 +24,7 @@ const harness = "<runtime_info>In case you're asked: you run in T3 Code.</runtim
 // fixture is the shapes a real Grok CLI 1.0.41 session writes: a JSON-RPC envelope per
 // line carrying an epoch-seconds timestamp, with Grok's own events under
 // _x.ai/session/update sharing the file with the Agent Client Protocol stream.
-func fixture(t *testing.T) (root, dir string) {
+func fixture(t testing.TB) (root, dir string) {
 	t.Helper()
 	root = t.TempDir()
 	dir = filepath.Join(root, "%2Fprivate%2Ftmp%2Fgrok-probe", sessionID)
@@ -70,6 +71,8 @@ func at(sec int64) time.Time { return time.Unix(sec, 0).UTC() }
 func TestSession(t *testing.T) {
 	root, dir := fixture(t)
 	s := sourcetest.One(t, Spec.Open(root))
+	// The hook run is a kind Grok writes, passed over on purpose
+	sourcetest.NothingUnread(t, s)
 
 	// cwd is what groups sessions into projects, and Grok states it outright rather than
 	// only encoding it into the directory name
@@ -163,6 +166,7 @@ func TestUsagePerTurn(t *testing.T) {
 		turnCompleted(1790000201, nil),
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	if s.Stats.Turns != 3 {
 		t.Fatalf("turns = %d", s.Stats.Turns)
 	}
@@ -195,6 +199,20 @@ func TestUsagePerTurn(t *testing.T) {
 	}
 }
 
+// chatHistory is the whole-message log of the fixture's session while it still runs, in
+// the shapes of a real 1.0.52 session's chat_history.jsonl; sessionUsage is the usage.json
+// beside it.
+var chatHistory = []any{
+	`{"type":"system","content":"You are Grok released by xAI."}`,
+	`{"type":"user","content":[{"type":"text","text":"<user_query>\n运行 ls 列出当前目录的文件。\n</user_query>"}]}`,
+	`{"type":"reasoning","id":"","summary":[{"type":"summary_text","text":"The user wants a directory listing."}]}`,
+	`{"type":"assistant","tool_calls":[{"id":"call_1","name":"run_terminal_command","arguments":"{\"command\":\"ls -la\",\"description\":\"Run ls\"}"}],"model_id":"gemini-3.8-flash","content":""}`,
+	`{"type":"tool_result","tool_call_id":"call_1","content":"exit: 0\ntotal 4\nnote.txt"}`,
+	`{"type":"assistant","content":"共有 1 个文件：note.txt。","model_id":"gemini-3.8-flash"}`,
+}
+
+const sessionUsage = `{"sessionId":"s1","session":{"inputTokens":19219,"outputTokens":74,"cachedReadTokens":6832,"turnCount":1}}`
+
 // A session still running has no updates.jsonl — Grok flushes the stream when the session
 // ends — and carries chat_history.jsonl, one whole message per line. That log is read
 // instead. Measured against a real 1.0.52 session's chat_history.jsonl.
@@ -207,19 +225,13 @@ func TestRunningSessionReadsChatHistory(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, "updates.jsonl")); err != nil {
 		t.Fatal(err)
 	}
-	sourcetest.Write(t, filepath.Join(dir, "chat_history.jsonl"),
-		`{"type":"system","content":"You are Grok released by xAI."}`,
-		`{"type":"user","content":[{"type":"text","text":"<user_query>\n运行 ls 列出当前目录的文件。\n</user_query>"}]}`,
-		`{"type":"reasoning","id":"","summary":[{"type":"summary_text","text":"The user wants a directory listing."}]}`,
-		`{"type":"assistant","tool_calls":[{"id":"call_1","name":"run_terminal_command","arguments":"{\"command\":\"ls -la\",\"description\":\"Run ls\"}"}],"model_id":"gemini-3.8-flash","content":""}`,
-		`{"type":"tool_result","tool_call_id":"call_1","content":"exit: 0\ntotal 4\nnote.txt"}`,
-		`{"type":"assistant","content":"共有 1 个文件：note.txt。","model_id":"gemini-3.8-flash"}`,
-	)
-	sourcetest.Write(t, filepath.Join(dir, "usage.json"),
-		`{"sessionId":"s1","session":{"inputTokens":19219,"outputTokens":74,"cachedReadTokens":6832,"turnCount":1}}`)
+	sourcetest.Write(t, filepath.Join(dir, "chat_history.jsonl"), chatHistory...)
+	sourcetest.Write(t, filepath.Join(dir, "usage.json"), sessionUsage)
 
 	src := Spec.Open(root)
 	s := sourcetest.One(t, src)
+	// The system line is a kind Grok writes, passed over on purpose
+	sourcetest.NothingUnread(t, s)
 	if !s.Session.Running {
 		t.Error("a session with no stream yet is running, and says so")
 	}
@@ -270,6 +282,7 @@ func TestRunningSessionReadsChatHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := sourcetest.One(t, src)
+	sourcetest.NothingUnread(t, done)
 	if done.Session.Running || done.Session.Recorded != nil || done.Turn(t, 1).Ask != "read sample.txt" {
 		t.Errorf("ended session = %+v, ask %q", done.Session, done.Turn(t, 1).Ask)
 	}
@@ -292,6 +305,7 @@ func TestChatHistoryShapes(t *testing.T) {
 		`{"type":"reasoning","summary":[{"type":"summary_text","text":"Waiting on the deploy."}]}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	if s.Stats.Turns != 2 || !s.Session.Running {
 		t.Fatalf("turns = %d, running = %v", s.Stats.Turns, s.Session.Running)
 	}
@@ -334,6 +348,7 @@ func TestCwdFallbacks(t *testing.T) {
 	sourcetest.Write(t, filepath.Join(root, "some-long-project-a1b2c3", ".cwd"), "/Users/dev/some/very/long/path")
 
 	all := sourcetest.All(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, all...)
 	if len(all) != 2 {
 		t.Fatalf("sessions = %d: the .cwd file is not one", len(all))
 	}
@@ -355,6 +370,7 @@ func TestSessionWithoutTranscript(t *testing.T) {
 	sourcetest.Write(t, filepath.Join(root, "%2Ftmp%2Fempty", "stray", "updates.jsonl"), chunk(1790000000, "user_message_chunk", "hello"))
 
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	if s.Session.ID != "sid-new" || s.Session.Cwd != "/tmp/empty" || s.Session.Model != "grok-4.6" || s.Session.Running {
 		t.Errorf("session = %+v", s.Session)
 	}
@@ -380,6 +396,7 @@ func TestTitleJoinsChunkedPrompt(t *testing.T) {
 		`{"timestamp":1790128009,"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"on it"}}}}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
 	if s.Session.Title != "refactor the parser to handle OSC" || s.Turn(t, 1).Ask != "refactor the parser to handle OSC" {
 		t.Errorf("title = %q, ask = %q, want the whole prompt", s.Session.Title, s.Turn(t, 1).Ask)
 	}
@@ -412,7 +429,9 @@ func TestChunksFoldIntoBlocks(t *testing.T) {
 	}
 	sourcetest.Write(t, filepath.Join(dir, "updates.jsonl"), lines...)
 
-	turn := sourcetest.One(t, Spec.Open(root)).Turn(t, 1)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	turn := s.Turn(t, 1)
 	if got := sourcetest.Kinds(turn); got != "prompt thinking reply thinking tool reply" {
 		t.Fatalf("items = %s", got)
 	}
@@ -451,6 +470,7 @@ func TestStoredTitle(t *testing.T) {
 		sourcetest.Write(t, filepath.Join(dir, "updates.jsonl"),
 			chunk(1790000000, "user_message_chunk", prompt), chunk(1790000001, "agent_message_chunk", "deployed"))
 		s := sourcetest.One(t, Spec.Open(root))
+		sourcetest.NothingUnread(t, s)
 		if s.Session.Title != c.want {
 			t.Errorf("%s: title = %q, want %q", c.name, s.Session.Title, c.want)
 		}
@@ -486,6 +506,7 @@ func TestArchivedSessionsAndFailedTool(t *testing.T) {
 
 	// a trailing separator on the root does not hide the archive beside it
 	all := sourcetest.All(t, Spec.Open(root+string(filepath.Separator)))
+	sourcetest.NothingUnread(t, all...)
 	if len(all) != 2 {
 		t.Fatalf("sessions = %d, want the live and the archived one", len(all))
 	}
@@ -535,6 +556,9 @@ func TestLinesThatAreNotUpdates(t *testing.T) {
 		`{"timestamp":1790000003,"method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"completed"}}}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
+	// A line that is not JSON, or names no kind, is not a record of a new kind; a mode
+	// change and a call still in progress are kinds Grok writes, passed over on purpose
+	sourcetest.NothingUnread(t, s)
 	turn := s.Turn(t, 1)
 	if got := sourcetest.Kinds(turn); got != "prompt tool" || turn.Ask != "read it" {
 		t.Fatalf("items = %s, ask = %q", got, turn.Ask)
@@ -545,6 +569,90 @@ func TestLinesThatAreNotUpdates(t *testing.T) {
 	}
 	if !turn.Items[1].At.Equal(at(1790000002)) || !s.Session.StartedAt.Equal(at(1790000000)) {
 		t.Errorf("call at %v, session started %v", turn.Items[1].At, s.Session.StartedAt)
+	}
+}
+
+// A record of a kind no Grok had written when this adapter was made is passed over and
+// counted under its kind — that is how asq doctor learns the format moved — and the rest
+// of the session reads as it would without it.
+func TestUnknownKindsAreCounted(t *testing.T) {
+	root, dir := fixture(t)
+	want := sourcetest.One(t, Spec.Open(root))
+
+	stream, err := os.ReadFile(filepath.Join(dir, "updates.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(stream)), "\n")
+	unknown := []string{
+		`{"timestamp":1790128663,"method":"session/update","params":{"update":{"sessionUpdate":"agent_video_chunk","content":{"type":"text","text":"frames"}}}}`,
+		`{"timestamp":1790128663,"method":"_x.ai/session/update","params":{"update":{"sessionUpdate":"memory_written","note":"remember this"}}}`,
+		`{"timestamp":1790128663,"method":"_x.ai/session/compacted","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"a summary"}}}}`,
+		`{"timestamp":1790128664,"method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"call_1","status":"cancelled","content":[{"type":"content","content":{"type":"text","text":"stopped"}}]}}}`,
+	}
+	// Between a call and its result, between the two chunks of the reply — which still
+	// join into one block — and before the row that closes the turn
+	var mixed []string
+	mixed = append(mixed, lines[:3]...) // the hook run, the prompt, the call
+	mixed = append(mixed, unknown[3])
+	mixed = append(mixed, lines[3:7]...) // the call's re-titling and result, the thought, the reply's first chunk
+	mixed = append(mixed, unknown[:3]...)
+	mixed = append(mixed, lines[7], unknown[0], lines[8])
+	if err := os.WriteFile(filepath.Join(dir, "updates.jsonl"), []byte(strings.Join(mixed, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := sourcetest.One(t, Spec.Open(root))
+	wantUnread := map[string]int{
+		"event:agent_video_chunk":        2,
+		"event:memory_written":           1,
+		"method:_x.ai/session/compacted": 1,
+		"status:cancelled":               1,
+	}
+	if !reflect.DeepEqual(got.Unread, wantUnread) {
+		t.Errorf("unread = %v, want %v", got.Unread, wantUnread)
+	}
+	if !reflect.DeepEqual(got.Turns, want.Turns) || got.Stats != want.Stats {
+		t.Errorf("with records it does not know, the session reads otherwise:\n%+v\n%+v", got.Turns, want.Turns)
+	}
+
+	// The whole-message log of a session still running, likewise
+	root, dir = fixture(t)
+	if err := os.Remove(filepath.Join(dir, "updates.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	sourcetest.Write(t, filepath.Join(dir, "usage.json"), sessionUsage)
+	sourcetest.Write(t, filepath.Join(dir, "chat_history.jsonl"), chatHistory...)
+	want = sourcetest.One(t, Spec.Open(root))
+	history := append([]any{}, chatHistory[:3]...)
+	history = append(history, `{"type":"handoff","to":"another agent","content":"carry on"}`)
+	history = append(history, chatHistory[3:]...)
+	sourcetest.Write(t, filepath.Join(dir, "chat_history.jsonl"), history...)
+	got = sourcetest.One(t, Spec.Open(root))
+	if !reflect.DeepEqual(got.Unread, map[string]int{"row:handoff": 1}) {
+		t.Errorf("unread = %v", got.Unread)
+	}
+	if !reflect.DeepEqual(got.Turns, want.Turns) || got.Stats != want.Stats {
+		t.Errorf("with a row it does not know, the log reads otherwise:\n%+v\n%+v", got.Turns, want.Turns)
+	}
+}
+
+// A counter no turn could reach is not a count. On arm64 a float past the int64 range
+// converts to the largest int64, and two such turns added up wrapped the session's input
+// below zero.
+func TestCountersPastAnyTurnAreNotRead(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "%2Fw", "sid-huge")
+	sourcetest.Write(t, filepath.Join(dir, "summary.json"), `{"info":{"id":"sid-huge"}}`)
+	sourcetest.Write(t, filepath.Join(dir, "updates.jsonl"),
+		chunk(1790000000, "user_message_chunk", "one"),
+		turnCompleted(1790000001, M{"inputTokens": 1e19, "outputTokens": 5}),
+		chunk(1790000002, "user_message_chunk", "two"),
+		turnCompleted(1790000003, M{"inputTokens": 1e19, "outputTokens": 7, "cachedReadTokens": -3}),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.Invariants(t, s)
+	if s.Stats.Usage != (model.Usage{Output: 12}) {
+		t.Errorf("usage = %+v, want the counters that are counts", s.Stats.Usage)
 	}
 }
 

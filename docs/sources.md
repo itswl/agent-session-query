@@ -68,12 +68,22 @@ in it. Slash commands, hook output, task notifications and compaction summaries 
 events, not asks. The session's own cost, when Claude Code recorded one, is used as it is.
 
 **Codex** — one rollout file per session, `.zst` included. Token usage is recorded per response
-and read that way; cached tokens are taken out of the input they were counted in. A forked
-thread's copied turns are inherited. A thread that is a subagent hangs beneath its parent.
+and read that way; cached tokens are taken out of the input they were counted in. A rollout
+with no such records — an older Codex, or a host that embeds it — is read from the running
+snapshots Codex writes instead: one model call per snapshot, by what that request used. A
+snapshot written twice is one call; one that only repeats the total after a compaction is none;
+and the compaction's own request, which no snapshot includes, is the one thing this path cannot
+see. A forked thread's copied turns are inherited. A thread that is a subagent hangs beneath
+its parent.
 
 **OpenCode** — one SQLite database, both the 1.x and 2.x schemas. A tool part that finished with
 a non-zero exit is a failure whatever its status says. Reasoning is reported beside the output
-it is not part of, and is added to it.
+it is not part of, and is added to it. OpenCode's own totals for a session (2.3 and later) are
+the session's usage: they include the call that gave the session its title, which leaves no
+message. A fork is made by copying the parent's messages into a new session; the copies are
+inherited — each response is counted once, by the oldest session that still holds it — and
+since deleting a session in OpenCode leaves its forks behind, a fork whose parent is gone keeps
+the whole conversation as its own.
 
 **Hermes** — `state.db`, read in the order rows were written; sessions it hides are archived.
 Hermes keeps token counts per session, not per response: those totals are used as recorded, on
@@ -81,7 +91,9 @@ the session's last turn. It records no outcome for a tool call, so a Hermes tool
 status — which is not the same as success.
 
 **OpenClaw** — per-agent SQLite databases, and the older `sessions.json` layout. A large event
-is stored compressed and read all the same. OpenClaw's agents call one tool, `exec`, with a
+is stored compressed and read all the same. Every counter a response carries is read as what it
+is: the cache written as well as the cache read, and `reasoningTokens` as the part of the output
+that was thinking (OpenClaw's output already includes it). OpenClaw's agents call one tool, `exec`, with a
 program, and the program calls the real tools; what was actually read and run — the file, the
 command, its exit code and duration — is recorded in rows of its own, and each is read as the
 tool call it was. So a command that failed inside a program that "succeeded" still shows in

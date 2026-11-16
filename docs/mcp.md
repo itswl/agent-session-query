@@ -40,7 +40,7 @@ All ten only read. Each takes the selection arguments that make sense for it —
 | `read` | A session at the depth asked for: its outline; some turns step by step; one step whole | `ref`, `turns`, `seq`, `full` |
 | `brief` | A handoff brief of a session: asked, changed, failed, concluded | `ref`, `turn`, `since` |
 | `pack` | Several sessions as one document, oldest first | `turns` |
-| `usage` | Tokens, cache hit rate and cost | `by` |
+| `usage` | Tokens in and out, how many were reasoning, and the cache hit rate | `by` |
 | `failures` | The tool calls that failed, with the command and the end of the output | `tool` (exact, or `prefix*`) |
 | `digest` | What a stretch of work added up to, per project | |
 | `files` | Which turns read or changed a file, and what was asked there | `path`, `changed` |

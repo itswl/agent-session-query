@@ -88,8 +88,9 @@ match's `seq` is the step to open (`/items/{seq}`).
 | `GET /api/pack?turns=1` | `{"pack", "sessions"}` — Markdown |
 
 All take the list's filters. A usage row is
-`{"key", "sessions", "calls", "usage": {"input", "output", "cacheRead", "cacheWrite", "reasoning"}, "total", "cacheHit", "costUsd"}`
-(a subagent's calls count toward the session it ran in);
+`{"key", "sessions", "calls", "usage": {"input", "output", "cacheRead", "cacheWrite", "reasoning"}, "total", "cacheHit"}`
+(a subagent's calls count toward the session it ran in). It carries no cost — a cost is a
+session's own, in its `stats.costUsd` where the CLI recorded one, and [is not summed](cli.md#measuring);
 `total` beside the rows is the whole they are parts of, which a list cut to its largest groups
 does not add up to.
 

@@ -68,8 +68,11 @@ the button at the bottom takes you back to the newest turn, or turns following o
 
 **Usage** — tokens over rolling windows, the last thirty days as stacked bars (cache reads,
 cache writes, input, output; *Without cache reads* rescales to what is left, since cache reads
-are usually most of it), then tables by model, store and project. Every rounded figure carries
-its exact value on hover, and the chart can be read as a table.
+are usually most of it), then tables by model, store and project — with how much of the output
+was reasoning, where the provider said, and the share of the prompt that came from cache. Every
+rounded figure carries its exact value on hover, and the chart can be read as a table. The
+reports are in tokens: a session's own cost, where its CLI recorded one, is on the session's
+page and [is not summed](cli.md#measuring).
 
 ![Usage](screenshots/usage.png)
 

@@ -54,7 +54,7 @@ Two ways to ask, the same answers either way:
 | "Who changed this file, and why?" | `files(path="auth.go", changed=true)` — then `read` the turn |
 | "What keeps failing?" | `failures(since="7d")`, with `tool="Bash"` to narrow |
 | "What did this week add up to?" | `digest(since="7d")` — per project: sessions, turns, failures, tokens, files changed |
-| "What did it cost?" / "Which model is eating the tokens?" | `usage()`, or `usage(by="model"\|"day"\|"project"\|"session")` |
+| "Where did the tokens go?" / "Which model is eating them?" | `usage()`, or `usage(by="model"\|"day"\|"project"\|"session")` |
 | "Which repos have I used agents on?" | `projects()` |
 | "What did the subagents do?" | `read(ref="…")` lists them; each has a ref of its own to `read`. A search hit inside one says "subagent of …" |
 

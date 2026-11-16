@@ -27,7 +27,7 @@ Session ─┬─ Turn 0   what came before the first ask: injected context, a f
 | `startedAt`, `updatedAt` | first and last row |
 | `archived` | put away by its CLI |
 | `parent` | set on a subagent's transcript: the session it ran in, the tool call that started it, what kind of agent it is |
-| `stats` | turns, items, tool calls, failures, model calls, usage, cost |
+| `stats` | turns, items, tool calls, failures, model calls, usage, and the cost its CLI worked out, where it did |
 
 **Turn** — one exchange. A turn starts when *a person* asks and at no other time: text a
 harness injected in the user's place (a slash command's expansion, a notification, a hook's
@@ -43,7 +43,7 @@ output, a compaction summary) is not an ask and opens nothing.
 | `tools`, `failures`, `toolKinds` | tool calls, how many failed, and what they were for (`exec` `write` `read` `search` `net` `agent` `other`) |
 | `files` | every file a tool named, and whether it was changed — a write counts only if it did not fail |
 | `calls` | the model responses, in order, each with its usage |
-| `usage`, `costUsd` | their sum |
+| `usage`, `costUsd` | their sum; a cost only where the CLI priced its own responses |
 
 **Item** — one thing that happened in a turn, in order. `seq` is its position in the session,
 stable while the transcript only grows; it is the `[12]` beside a step, and what `--seq 12`
@@ -65,7 +65,9 @@ not record how it ended, which is not the same as success**. A non-zero `exit` w
 an error.
 
 An item with `inherited: true` is a fork's copy of its parent's row. It is shown, dimmed, and
-counted nowhere: its tokens were the parent's.
+counted nowhere: its tokens were the parent's. That holds for as long as the row it copies is
+there to be counted. With the parent deleted, the copy is the only record left of what was
+spent, and it is read as the fork's own.
 
 ## Usage: one shape
 
@@ -85,8 +87,20 @@ that was billed, and cache hit is `cacheRead / (input + cacheRead + cacheWrite)`
 to cache count against it, because they were sent in full.
 
 A model call is one *response*: a CLI that writes a response as several rows, each repeating a
-running count (Claude Code), is folded to one call at its final figures. A CLI that keeps
-counters only per session (Hermes) contributes those totals as recorded.
+running count (Claude Code), is folded to one call at its final figures.
+
+Some CLIs also keep totals for the session. Where those are all there is — Hermes keeps no
+counters per response — they are the session's usage as recorded. Where a CLI keeps both and
+the totals hold more — OpenCode names a session with a model call that leaves no message — the
+totals are the session's usage, and what no response accounts for is entered once, under the
+session's model, so the reports sum to the same figure. Totals that hold *less* than the
+responses do are describing something else, and the responses stand.
+
+**Cost is not usage.** A dollar figure exists only where a CLI worked one out, by prices `asq`
+does not know and does not keep. It is recorded where it was said — on a response, a turn, a
+session — and shown there. The reports do not sum it: over sessions most of which have none,
+the sum would be read as the cost of all the tokens beside it. They carry the cache hit rate
+instead, which every CLI records.
 
 ## Subagents
 

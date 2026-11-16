@@ -11,7 +11,7 @@ places. `asq` reads them all into one model and answers the questions you actual
 - *How did I fix this last time?* — full-text search over every turn of every session
 - *What was that agent doing?* — read any session as a list of turns, then step by step
 - *Pick this up from where it stopped* — a handoff brief another agent can start from
-- *What did this week cost?* — tokens, cache hit rate and cost, by model, day and project
+- *Where did the tokens go?* — input, output, reasoning and cache hit rate, by model, day and project
 - *What keeps failing?* — every failed tool call, with the command and the end of its output
 
 It is one static binary. It only ever reads. Nothing leaves your machine unless you tell it to.

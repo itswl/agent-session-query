@@ -109,10 +109,16 @@ nothing in it claims to be what is true now.
 ## Measuring
 
 **`asq usage`** — rolling windows (24h, 3d, 7d, 30d, all), then model, source and project
-breakdowns: calls, input, output, total tokens, cache hit rate, and cost where the CLI recorded
-one. `--by model|day|source|project|session` prints one breakdown, `--since` bounds it. Token
-counts are in [one shape](model.md#usage-one-shape) across CLIs. A cost is only ever one a CLI
-computed itself; `asq` holds no price list.
+breakdowns: calls, the prompt (`in`), the output, how much of the output was reasoning, total
+tokens and cache hit rate. `--by model|day|source|project|session` prints one breakdown,
+`--since` bounds it. Token counts are in [one shape](model.md#usage-one-shape) across CLIs. A
+dash under `reasoning` means the provider did not say, which is not the same as none.
+
+The report is in tokens, not money. `asq` holds no price list, and the costs some CLIs work out
+for themselves do not add up to one: summed over sessions most of which recorded none, the
+figure would read as the cost of tokens it is not the cost of. What every CLI does record, and
+what moves a bill most, is the last column — how much of the prompt was served from cache. A
+session's own cost, where its CLI recorded one, is shown with the session (`asq show`).
 
 **`asq failures`** — tool calls that failed or were interrupted in the last 7 days (`--since`),
 newest first, with the count per tool on top. `--tool Bash` narrows to one tool, named exactly —

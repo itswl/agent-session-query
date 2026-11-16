@@ -98,7 +98,10 @@ const (
 	watchBusy = 2 * time.Second
 	watchIdle = 30 * time.Second
 	lookedFor = 90 * time.Second // how long after the last request someone still counts as looking
-	maxAge    = 2 * time.Second
+	// An answer may be this far behind the stores. It is a little more than the close
+	// pace, so that while the watcher keeps that pace no question waits for it: see
+	// App.Fresh.
+	maxAge    = watchBusy + time.Second
 	waitFresh = 4 * time.Second
 	maxStream = 64
 )
@@ -402,27 +405,41 @@ func (s *Server) Run(ctx context.Context, ready func(addr string)) error {
 	return nil
 }
 
-// watch keeps the index in step: closely while someone is looking, loosely otherwise.
+// watch keeps the index in step: closely while someone is looking, loosely otherwise. It
+// wakes at the close pace either way, so that when somebody asks after a quiet spell the
+// stores are followed from then on, and not from half a minute later.
 func (s *Server) watch(ctx context.Context) {
+	var looked time.Time
 	for {
-		if _, err := s.app.Sync(ctx, index.SyncOptions{}); err != nil && ctx.Err() == nil {
-			s.logf("keeping the index in step: %v", err)
-		}
-		pause := watchIdle
-		if s.streams.Load() > 0 || time.Since(time.Unix(0, s.asked.Load())) < lookedFor {
-			pause = watchBusy
+		if s.due(looked) {
+			if _, err := s.app.Sync(ctx, index.SyncOptions{}); err != nil && ctx.Err() == nil {
+				s.logf("keeping the index in step: %v", err)
+			}
+			looked = time.Now()
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(pause):
+		case <-time.After(watchBusy):
 		}
 	}
 }
 
-// fresh brings the index up to date before a question is answered, waiting a bounded
-// time: past it the answer comes from what has been read so far, and the page shows the
-// reading in progress.
+// due reports whether the stores are to be read now, having last been read at looked:
+// every time while someone is looking, and otherwise when the loose pace says so.
+func (s *Server) due(looked time.Time) bool {
+	return s.looking() || time.Since(looked) >= watchIdle
+}
+
+// looking reports whether anyone is: an open stream, or a question not long ago.
+func (s *Server) looking() bool {
+	return s.streams.Load() > 0 || time.Since(time.Unix(0, s.asked.Load())) < lookedFor
+}
+
+// fresh brings the index up to date before a question is answered, when nobody has for
+// a while, and waits a bounded time for that: past it the answer comes from what has
+// been read so far, and the stream says how far that is. While the watcher is keeping
+// pace the question is answered at once (see App.Fresh).
 func (s *Server) fresh(r *http.Request) {
 	s.app.Fresh(r.Context(), maxAge, waitFresh)
 }

@@ -2,7 +2,10 @@ package index
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"fmt"
 	"runtime"
 	"sort"
 	"sync"
@@ -25,6 +28,12 @@ type SyncState struct {
 	Done    int       `json:"done,omitempty"`  // of which read
 	At      time.Time `json:"at,omitzero"`     // when the last sync finished
 	Took    int64     `json:"tookMs,omitempty"`
+	// Stores names the condition the stores were last found in — which are there, which
+	// could not be read — in a few characters that change when it does. A reader that
+	// keeps a health report asks for a new one when this moves, and not otherwise.
+	Stores string `json:"stores,omitempty"`
+	// Began is when the sync in flight started.
+	Began time.Time `json:"-"`
 }
 
 // Change names a session a sync wrote.
@@ -137,12 +146,14 @@ func (ix *Index) Sync(ctx context.Context, stores []Store, opts SyncOptions) (Sy
 	}
 	wg.Wait()
 	now := time.Now()
+	condition := sha256.New()
 	for i, st := range stores {
 		sc := &scans[i]
 		errText := ""
 		if sc.err != nil {
 			errText = sc.err.Error()
 		}
+		fmt.Fprintf(condition, "%s\x00%s\n", st.Name, errText)
 		if _, err := ix.rw.ExecContext(ctx, `
 INSERT INTO source_state (source, location, error, scanned_at) VALUES (?,?,?,?)
 ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.error, scanned_at=excluded.scanned_at`,
@@ -199,7 +210,10 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 
 	// Newest first: the sessions someone is most likely to ask about are there first
 	sort.SliceStable(jobs, func(i, j int) bool { return jobs[i].ref.ModTime.After(jobs[j].ref.ModTime) })
-	ix.setState(func(s *SyncState) { s.Running, s.Total, s.Done = true, len(jobs), 0 })
+	found := hex.EncodeToString(condition.Sum(nil)[:5])
+	ix.setState(func(s *SyncState) {
+		s.Running, s.Total, s.Done, s.Began, s.Stores = true, len(jobs), 0, start, found
+	})
 
 	var firstErr error
 	if len(jobs) > 0 {

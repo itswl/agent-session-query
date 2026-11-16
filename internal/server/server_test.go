@@ -915,6 +915,9 @@ func TestEventsSayWhatChanged(t *testing.T) {
 	}
 	for {
 		event, data := next()
+		if event == "sync" && strings.Contains(data, `"running":true`) {
+			t.Errorf("one transcript read again, and the stream announces a sync: %s", data)
+		}
 		if event != "changes" {
 			continue
 		}
@@ -939,6 +942,86 @@ func TestEventsSayWhatChanged(t *testing.T) {
 	}
 	if n := s.streams.Load(); n != 0 {
 		t.Errorf("a reader that left still holds a stream (%d)", n)
+	}
+}
+
+// The stores are read closely while someone is looking and loosely otherwise — and the
+// watcher finds out which every couple of seconds, so that the first question after a
+// quiet spell is followed at once.
+func TestTheWatchersPace(t *testing.T) {
+	s, _, _ := build(t, Options{})
+	justNow, longAgo := time.Now(), time.Now().Add(-2*watchIdle)
+	if !s.due(time.Time{}) {
+		t.Error("a server that has never read its stores is not about to")
+	}
+	if s.due(justNow) {
+		t.Error("nobody is looking, the stores were read a moment ago, and they are read again")
+	}
+	if !s.due(longAgo) {
+		t.Error("nobody is looking, and the loose pace has stopped altogether")
+	}
+	s.asked.Store(time.Now().UnixNano())
+	if !s.due(justNow) {
+		t.Error("someone just asked, and the stores are not followed closely")
+	}
+	s.asked.Store(time.Now().Add(-2 * lookedFor).UnixNano())
+	if s.due(justNow) {
+		t.Error("the last question was long ago, and the stores are still followed closely")
+	}
+	s.streams.Add(1)
+	if !s.due(justNow) {
+		t.Error("a stream is open, and the stores are not followed closely")
+	}
+	s.streams.Add(-1)
+	// While the watcher keeps the close pace, a question finds the index followed: the
+	// answer may be older than the pause between two reads, and is not waited for
+	if maxAge <= watchBusy {
+		t.Errorf("an answer may be %v old and the stores are read every %v: every question would wait", maxAge, watchBusy)
+	}
+}
+
+// The stream speaks of a sync when there is one to wait for. A transcript that grows is
+// read again every few seconds on a machine where an agent is at work, and a status that
+// said so each time would never hold still.
+func TestTheStreamSpeaksOfCatchUps(t *testing.T) {
+	now := time.Now()
+	before := now.Add(-time.Minute) // when the stores were last read
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	for name, tc := range map[string]struct {
+		st     index.SyncState
+		saying bool
+		want   index.SyncState
+	}{
+		"nothing under way": {
+			st:   index.SyncState{At: before, Total: 3, Done: 3},
+			want: index.SyncState{At: before}},
+		"one transcript read again as it grows, however long it takes": {
+			st:   index.SyncState{Running: true, Total: 1, At: before, Began: ago(30 * time.Second)},
+			want: index.SyncState{At: before, Began: ago(30 * time.Second)}},
+		"a handful of sessions being written at once": {
+			st:   index.SyncState{Running: true, Total: catchUp - 1, At: before, Began: ago(10 * time.Second)},
+			want: index.SyncState{At: before, Began: ago(10 * time.Second)}},
+		"many, and over before anyone could wait for them": {
+			st:   index.SyncState{Running: true, Total: 300, Done: 20, At: before, Began: ago(feltAfter / 2)},
+			want: index.SyncState{At: before, Began: ago(feltAfter / 2)}},
+		"many, and going on": {
+			st:   index.SyncState{Running: true, Total: 300, Done: 20, At: before, Began: ago(feltAfter)},
+			want: index.SyncState{Running: true, Total: 300, Done: 20, At: before, Began: ago(feltAfter)}},
+		"the first read, from its first moment and whatever its size": {
+			st:   index.SyncState{Running: true, Total: 2, Began: now},
+			want: index.SyncState{Running: true, Total: 2, Began: now}},
+		"a catch-up that was announced, down to its last transcript": {
+			st:     index.SyncState{Running: true, Total: 300, Done: 299, At: before, Began: ago(time.Minute)},
+			saying: true,
+			want:   index.SyncState{Running: true, Total: 300, Done: 299, At: before, Began: ago(time.Minute)}},
+		"announced, and over": {
+			st:     index.SyncState{Total: 300, Done: 300, At: now},
+			saying: true,
+			want:   index.SyncState{At: now}},
+	} {
+		if got := tell(tc.st, tc.saying, now); got != tc.want {
+			t.Errorf("%s: told %+v, want %+v", name, got, tc.want)
+		}
 	}
 }
 

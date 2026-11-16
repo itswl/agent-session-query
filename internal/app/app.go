@@ -34,6 +34,7 @@ type App struct {
 
 	mu      sync.Mutex
 	running chan struct{} // closed when the sync in flight ends; nil when none is
+	began   time.Time     // when the sync in flight began
 	last    time.Time     // when the last sync ended
 	lastErr error
 }
@@ -77,7 +78,7 @@ func (a *App) Sync(ctx context.Context, opts index.SyncOptions) (index.SyncResul
 		a.mu.Lock()
 	}
 	done := make(chan struct{})
-	a.running = done
+	a.running, a.began = done, time.Now()
 	a.mu.Unlock()
 
 	res, err := a.Index.Sync(ctx, a.Set.Present(), opts)
@@ -89,32 +90,56 @@ func (a *App) Sync(ctx context.Context, opts index.SyncOptions) (index.SyncResul
 	return res, err
 }
 
-// Fresh makes sure the index was brought up to date no longer ago than maxAge, and waits
-// at most wait for that. It reports whether the index is fresh on return: a first read of
-// a large history takes longer than any one question should wait, and the question is
-// then answered from what has been read so far.
+// Fresh makes sure the index is as near to the stores as a question needs, and reports
+// whether it is. That is one of three things:
+//
+//   - The stores were read no longer ago than maxAge. Nothing to do.
+//   - They are being read now, and that read began while the one before it was still
+//     fresh: the index is being followed, by a watcher or by a caller that came just
+//     before. What it holds is what the stores held a moment ago, and the question is
+//     answered from that. It is not held up for a read somebody else is already doing —
+//     a transcript of fifty megabytes takes seconds to read again, an agent at work
+//     makes it due again every few of them, and nobody asking for a list of sessions is
+//     waiting for that.
+//   - Nobody has read them for a while. They are read now, and the question waits for
+//     that, at most wait: a first read of a large history takes longer than any one
+//     question should, and the question is then answered from what has been read so far.
+//     If a read is already under way, it is the one waited for; a second is not queued
+//     behind it.
 func (a *App) Fresh(ctx context.Context, maxAge, wait time.Duration) bool {
 	a.mu.Lock()
-	fresh := a.running == nil && !a.last.IsZero() && time.Since(a.last) <= maxAge
+	running, began, last := a.running, a.began, a.last
 	a.mu.Unlock()
-	if fresh {
+	switch {
+	case last.IsZero():
+		// never read: this is the first, and it is waited for
+	case running == nil && time.Since(last) <= maxAge:
+		return true
+	case running != nil && began.Sub(last) <= maxAge:
 		return true
 	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		// The sync outlives the question that started it: a first read is not thrown
-		// away because one caller stopped waiting
-		_, _ = a.Sync(context.WithoutCancel(ctx), index.SyncOptions{})
-	}()
+	if running == nil {
+		done := make(chan struct{})
+		running = done
+		go func() {
+			defer close(done)
+			// The sync outlives the question that started it: a first read is not thrown
+			// away because one caller stopped waiting
+			_, _ = a.Sync(context.WithoutCancel(ctx), index.SyncOptions{})
+		}()
+	}
 	if wait <= 0 {
-		<-done
-		return true
+		select {
+		case <-running:
+			return true
+		case <-ctx.Done():
+			return false
+		}
 	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
-	case <-done:
+	case <-running:
 		return true
 	case <-timer.C:
 		return false

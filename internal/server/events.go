@@ -58,8 +58,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	changes, stop := s.app.Index.Subscribe()
 	defer stop()
 
-	state := s.app.Index.State()
-	if !send("hello", map[string]any{"version": app.Version, "sync": state}) {
+	told := tell(s.app.Index.State(), false, time.Now())
+	if !send("hello", map[string]any{"version": app.Version, "sync": told}) {
 		return
 	}
 
@@ -99,18 +99,54 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-progress.C:
-			now := s.app.Index.State()
-			if now.Running != state.Running || now.Done != state.Done || now.Total != state.Total {
-				state = now
-				if !send("sync", state) {
+			now := tell(s.app.Index.State(), told.Running, time.Now())
+			if now.Running != told.Running || now.Done != told.Done || now.Total != told.Total || now.Stores != told.Stores {
+				told = now
+				if !send("sync", told) {
 					return
 				}
 			}
 		case <-beat.C:
+			// When the stores were last read is worth knowing and not worth an event of
+			// its own: it rides on the line that keeps the stream open
+			if now := tell(s.app.Index.State(), told.Running, time.Now()); !now.Running && !told.Running && !now.At.Equal(told.At) {
+				told = now
+				if !send("sync", told) {
+					return
+				}
+				continue
+			}
 			_ = rc.SetWriteDeadline(time.Now().Add(writeGrace))
 			if _, err := fmt.Fprint(w, ": still here\n\n"); err != nil || rc.Flush() != nil {
 				return
 			}
 		}
 	}
+}
+
+// A sync is said aloud when it is a catch-up: this many transcripts still to read, and
+// going on for this long.
+const (
+	catchUp   = 8
+	feltAfter = 2 * time.Second
+)
+
+// tell is what the stream says of where a sync stands.
+//
+// Not all of it. On a machine with an agent at work a transcript grows every few
+// seconds and is read again, and that read is the ordinary state of things: what it
+// found arrives as "changes", and a status that announced each one would blink for as
+// long as anything ran. What is said is a read somebody may be waiting on — the first
+// one, or a catch-up of many transcripts that has gone on long enough to be felt. Once
+// said, it is followed to its end, however few are left.
+func tell(st index.SyncState, saying bool, now time.Time) index.SyncState {
+	if st.Running && !saying {
+		first := st.At.IsZero()
+		long := st.Total-st.Done >= catchUp && now.Sub(st.Began) >= feltAfter
+		st.Running = first || long
+	}
+	if !st.Running {
+		st.Total, st.Done = 0, 0
+	}
+	return st
 }

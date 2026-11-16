@@ -625,12 +625,20 @@ func TestAPartialScanDeletesNothing(t *testing.T) {
 func TestAnUnreadableStoreIsSaidSoAndLosesNothing(t *testing.T) {
 	a, h := fixture.Open(t)
 	ctx := context.Background()
+	sound := a.Index.State().Stores
+	if sound == "" {
+		t.Fatal("a sync leaves no word on the condition of the stores")
+	}
 	for _, dir := range []string{filepath.Join(h.Dir, "-work-beta"), h.Dir} {
 		restore := sourcetest.Unreadable(t, dir)
 		res, err := a.Sync(ctx, index.SyncOptions{})
 		restore()
 		if err != nil {
 			t.Fatal(err)
+		}
+		// Whoever keeps a health report learns from this that it is out of date
+		if a.Index.State().Stores == sound {
+			t.Errorf("%s unreadable, and the stores' condition reads as before", filepath.Base(dir))
 		}
 		if res.Removed != 0 {
 			t.Errorf("%s unreadable: %d sessions removed", filepath.Base(dir), res.Removed)
@@ -648,5 +656,8 @@ func TestAnUnreadableStoreIsSaidSoAndLosesNothing(t *testing.T) {
 	}
 	if warnings, _ := a.Index.Warnings(ctx, a.Stores()); len(warnings) != 0 {
 		t.Errorf("readable again, and still warned about: %+v", warnings)
+	}
+	if got := a.Index.State().Stores; got != sound {
+		t.Errorf("readable again, and the stores' condition is %q, not the %q it was", got, sound)
 	}
 }

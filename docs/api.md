@@ -110,19 +110,31 @@ event: changes
 data: {"sessions": [{"source": "claude", "id": "3f2a…"}]}
 
 event: sync
-data: {"running": true, "total": 1276, "done": 412}
+data: {"running": true, "total": 1276, "done": 412, "stores": "5f0c1a9e2b"}
 ```
 
 `changes` names the sessions a sync wrote (`"gone": true` for one that was deleted), or says
-`{"all": true}` when more changed than is worth naming. `sync` reports a long read of the stores
-as it goes. The stream carries no content: a client that hears a session changed asks for what
-it wants of it. A comment line every 20 seconds keeps proxies from closing a quiet stream.
+`{"all": true}` when more changed than is worth naming. The stream carries no content: a client
+that hears a session changed asks for what it wants of it. A comment line every 20 seconds keeps
+proxies from closing a quiet stream.
 
-How fresh the answers are: every request first brings the index up to date, waiting at most a
-few seconds; while a first read of a large history is still running, answers come from what has
-been read so far and `sync` says how far that is. While someone is looking — an open stream, or
-a request in the last minute and a half — the stores are checked every two seconds; an idle
-server checks every thirty.
+`sync` speaks of a read worth waiting for: the first one, or a catch-up — eight or more
+transcripts still to read, two seconds in — which it then follows to its end, `done` moving
+toward `total`. The read that follows a session as it is written is not announced. On a machine
+with an agent at work that happens every few seconds, its result is the `changes` event, and a
+status that said so each time would never hold still. A quiet stream still says when the stores
+were last read (`at`, `tookMs`), about every twenty seconds. `stores` is a few characters that
+change when the condition of the stores does — one appeared, one could not be read — which is
+when `/api/health` has something new to say.
+
+How fresh the answers are. While someone is looking — an open stream, or a request in the last
+minute and a half — the stores are checked every two seconds, and a request is answered at once
+from what the index holds: a few seconds behind at most, and never held up for a transcript that
+is being read again. A server nobody has asked for a while checks every thirty seconds; the
+first request then has the stores read at once and waits for that, four seconds at most. While
+a first read of a large history is still running, answers come from what has been read so far
+and `sync` says how far that is. A transcript that is being written is itself
+[not chased](model.md#the-index): a very large one may be most of a minute behind.
 
 ## Status
 

@@ -215,3 +215,60 @@ func TestBriefNamesWhatFailed(t *testing.T) {
 		t.Error("a delta with nothing in it is an empty brief instead of an error")
 	}
 }
+
+// A usage report is tokens: what went in, what came out, how much of that was reasoning,
+// and how much of the prompt the cache served. It carries no cost — a sum of dollars over
+// sessions most of which recorded none is not the cost of the tokens beside it — while a
+// session's own cost, where its CLI worked one out, stays with the session.
+func TestUsageIsTokensAndASessionKeepsItsCost(t *testing.T) {
+	rows := []index.UsageRow{
+		{Key: "deepseek/deepseek-reasoner", Sessions: 2, Calls: 9, Usage: model.Usage{Input: 15254, Output: 319, CacheRead: 9000, CacheWrite: 1200, Reasoning: 316}},
+		{Key: "claude-opus-5", Sessions: 1, Calls: 3, Usage: model.Usage{Input: 100, Output: 40, CacheRead: 900}},
+	}
+	total := index.UsageRow{Key: "total", Sessions: 3, Calls: 12, Usage: model.Usage{Input: 15354, Output: 359, CacheRead: 9900, CacheWrite: 1200, Reasoning: 316}}
+	var out bytes.Buffer
+	Usage(&out, "By model", rows, &total, Style{})
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != 5 || strings.Join(strings.Fields(lines[1]), " ") != "calls in out reasoning total cache" {
+		t.Fatalf("usage table:\n%s", out.String())
+	}
+	// in is the whole prompt, cached or not; the cache column is the share of it that was read from cache
+	if got := strings.Join(strings.Fields(lines[2]), " "); got != "deepseek/deepseek-reasoner 9 25.5k 319 316 25.8k 35%" {
+		t.Errorf("a row that recorded reasoning and cache writes = %q", got)
+	}
+	if got := strings.Join(strings.Fields(lines[3]), " "); got != "claude-opus-5 3 1.0k 40 — 1.0k 90%" {
+		t.Errorf("a row whose provider said nothing of reasoning = %q", got)
+	}
+	if strings.Contains(out.String(), "$") || strings.Contains(strings.ToLower(out.String()), "cost") {
+		t.Errorf("a usage table shows money:\n%s", out.String())
+	}
+	for name, v := range map[string]any{"usage row": rows[0], "digest": index.Digest{}} {
+		raw, _ := json.Marshal(v)
+		if strings.Contains(strings.ToLower(string(raw)), "cost") {
+			t.Errorf("a %s carries a cost: %s", name, raw)
+		}
+	}
+	raw, _ := json.Marshal(rows[0])
+	for _, key := range []string{`"cacheWrite":1200`, `"reasoning":316`, `"cacheHit"`} {
+		if !strings.Contains(string(raw), key) {
+			t.Errorf("a usage row has no %s: %s", key, raw)
+		}
+	}
+
+	// The session's own figure is the session's
+	s, turns := hostile()
+	for usd, want := range map[float64]string{1.836: "$1.84", 0.0000551: "<$0.01"} {
+		s.Stats.CostUSD = usd
+		var outline bytes.Buffer
+		Outline(&outline, s, turns, nil, Style{})
+		if !strings.Contains(outline.String(), " · "+want+" · ") {
+			t.Errorf("a session that cost $%v reads:\n%s", usd, strings.SplitN(outline.String(), "\n", 4)[2])
+		}
+	}
+	s.Stats.CostUSD = 0
+	var outline bytes.Buffer
+	Outline(&outline, s, turns, nil, Style{})
+	if strings.Contains(outline.String(), "$") {
+		t.Errorf("a session with no cost recorded shows one:\n%s", outline.String())
+	}
+}

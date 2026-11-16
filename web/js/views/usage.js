@@ -31,8 +31,7 @@ export function mount(main, route, ctx) {
         h('dt', null, w.key, h('span', { class: 'sr' }, ' — ' + WINDOWS[w.key])),
         h('dd', { class: 'big', title: f.num(w.total) + ' tokens' }, f.tokens(w.total)),
         h('dd', { class: 'dots dim' }, h('span', { title: f.num(w.calls) + ' model calls' }, f.plural(w.calls, 'call')),
-          w.total > 0 && h('span', null, f.pct(w.cacheHit) + ' cached'),
-          w.costUsd > 0 && h('span', null, f.cost(w.costUsd)))))),
+          w.total > 0 && h('span', null, f.pct(w.cacheHit) + ' cached'))))),
       chart(r.byDay),
       section('By model', table(r.byModel, r.total, 'Model', (k) => k || '(not recorded)')),
       section('By store', table(r.bySource, r.total, 'Store', (k) => h('span', { class: 'store' }, mark(k), k))),
@@ -103,16 +102,18 @@ function niceMax(v) {
 const section = (title, content) => h('section', null, h('header', { class: 'section-head' }, h('h2', null, title)), content);
 
 function table(rows, total, keyLabel, keyCell) {
-  const withCost = total.costUsd > 0 || rows.some((r) => r.costUsd > 0);
   const n = (v) => h('td', { class: 'n', title: f.num(v) }, f.tokens(v));
+  // Reasoning is the part of the output that was thinking, where the provider said so:
+  // nothing recorded is a dash, not a zero
+  const reasoning = (v) => (v > 0 ? n(v) : h('td', { class: 'n dim', title: 'Not recorded' }, '—'));
   const row = (r, head) => h('tr', null, head,
     h('td', { class: 'n' }, f.num(r.sessions)), h('td', { class: 'n' }, f.num(r.calls)),
-    n(r.usage?.input), n(r.usage?.output), n(r.usage?.cacheRead), n(r.usage?.cacheWrite), n(r.total),
-    h('td', { class: 'n' }, f.pct(r.cacheHit)),
-    withCost && h('td', { class: 'n' }, f.cost(r.costUsd)));
+    n(r.usage?.input), n(r.usage?.output), reasoning(r.usage?.reasoning), n(r.usage?.cacheRead), n(r.usage?.cacheWrite), n(r.total),
+    h('td', { class: 'n' }, f.pct(r.cacheHit)));
   return h('div', { class: 'table-wrap' }, h('table', null,
-    h('thead', null, h('tr', null, [keyLabel, 'Sessions', 'Calls', 'Input', 'Output', 'Cache read', 'Cache write', 'Total', 'Cache hit', withCost && 'Cost']
-      .filter(Boolean).map((c, i) => h('th', { scope: 'col', class: i ? 'n' : null }, c)))),
+    h('thead', null, h('tr', null, [keyLabel, 'Sessions', 'Calls', 'Input', 'Output', 'Reasoning', 'Cache read', 'Cache write', 'Total', 'Cache hit']
+      .map((c, i) => h('th', { scope: 'col', class: i ? 'n' : null,
+        title: c === 'Reasoning' ? 'The part of the output that was reasoning' : null }, c)))),
     h('tbody', null, rows.map((r) => row(r, h('th', { scope: 'row' }, keyCell(r.key))))),
     h('tfoot', null, row(total, h('th', { scope: 'row' }, 'Total', rows.length >= 12 && h('span', { class: 'dim' }, ' · with those not listed'))))));
 }

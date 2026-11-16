@@ -310,3 +310,38 @@ func TestErrorStopsToolSpendAndMessageTime(t *testing.T) {
 		t.Errorf("the tool ended at %d", tool.EndAt.UnixMilli())
 	}
 }
+
+// Every counter a response carries is read, each as what it is. The first usage object is
+// one OpenClaw 2026.11 wrote, whole: its output already holds the reasoning (319 = 3
+// shown + 316 reasoning, and input + output = totalTokens), so reasoningTokens is the
+// part of the output that was thinking and is not added to it; and what contextUsage
+// says is how full the context was, which is not something spent. The second writes to
+// the cache as well.
+func TestEveryCounterOfAResponse(t *testing.T) {
+	state := t.TempDir()
+	agent(t, state, "main", schema,
+		`INSERT INTO session_windows VALUES ('ses_u', 'agent:main:main', 'done', 1794000000000, 1794000009000, 1794000009000, 1794000009000, 'deepseek', 'deepseek-reasoner', '')`,
+		`INSERT INTO transcript_events VALUES ('ses_u', 1, '{"type":"message","timestamp":"2026-11-07T04:00:00.000Z","message":{"role":"user","content":"what is in notes.txt"}}', 1794000000000)`,
+		`INSERT INTO transcript_events VALUES ('ses_u', 2, '{"type":"message","timestamp":"2026-11-07T04:00:03.000Z","message":{"role":"assistant","model":"deepseek-reasoner","content":[{"type":"toolCall","id":"c1","name":"read","arguments":{"path":"notes.txt"}}],"stopReason":"toolUse",
+			"usage":{"input":15254,"output":319,"cacheRead":0,"cacheWrite":0,"reasoningTokens":316,"contextUsage":{"promptTokens":15254,"totalTokens":15573},"totalTokens":15573,"cost":{"input":0.0021,"output":0.0001,"total":0.0022},"usageReport":{"promptTokens":15254}}}}', 1794000003000)`,
+		`INSERT INTO transcript_events VALUES ('ses_u', 3, '{"type":"message","timestamp":"2026-11-07T04:00:04.000Z","message":{"role":"toolResult","toolCallId":"c1","toolName":"read","isError":false,"content":[{"type":"text","text":"the deploy runs at noon"}]}}', 1794000004000)`,
+		`INSERT INTO transcript_events VALUES ('ses_u', 4, '{"type":"message","timestamp":"2026-11-07T04:00:08.000Z","message":{"role":"assistant","model":"deepseek-reasoner","content":[{"type":"text","text":"It says the deploy runs at noon."}],"stopReason":"stop",
+			"usage":{"input":200,"output":90,"cacheRead":14000,"cacheWrite":1200,"reasoningTokens":40,"totalTokens":15490,"cost":{"total":0.0005}}}}', 1794000008000)`,
+	)
+	s := sourcetest.One(t, Spec.Open(state))
+	calls := s.Turn(t, 1).Calls
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d", len(calls))
+	}
+	if want := (model.Usage{Input: 15254, Output: 319, Reasoning: 316}); *calls[0].Usage != want || calls[0].CostUSD != 0.0022 {
+		t.Errorf("the first response = %+v ($%v), want %+v", *calls[0].Usage, calls[0].CostUSD, want)
+	}
+	if want := (model.Usage{Input: 200, Output: 90, CacheRead: 14000, CacheWrite: 1200, Reasoning: 40}); *calls[1].Usage != want {
+		t.Errorf("the second response = %+v, want %+v", *calls[1].Usage, want)
+	}
+	// And they add up as they are: nothing dropped on the way to the session's total
+	want := model.Usage{Input: 15454, Output: 409, CacheRead: 14000, CacheWrite: 1200, Reasoning: 356}
+	if s.Stats.Usage != want || s.Stats.Usage.Total() != 15573+15490 {
+		t.Errorf("the session = %+v (total %d), want %+v: what OpenClaw's own totalTokens add up to", s.Stats.Usage, s.Stats.Usage.Total(), want)
+	}
+}

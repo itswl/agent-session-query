@@ -119,6 +119,9 @@ CREATE TABLE IF NOT EXISTS bodies (
 CREATE INDEX IF NOT EXISTS bodies_turn ON bodies (sid, idx);
 
 -- What each turn's model calls consumed, by model: the rows every usage figure sums.
+-- Tokens only. A cost is a fact about the session whose CLI worked one out, and stays
+-- with it: summed across sessions most of which have none, it would read as the cost of
+-- usage it is not the cost of.
 CREATE TABLE IF NOT EXISTS usage (
   sid       INTEGER NOT NULL,
   idx       INTEGER NOT NULL,
@@ -130,7 +133,6 @@ CREATE TABLE IF NOT EXISTS usage (
   tok_cr    INTEGER NOT NULL DEFAULT 0,
   tok_cw    INTEGER NOT NULL DEFAULT 0,
   tok_think INTEGER NOT NULL DEFAULT 0,
-  cost      REAL    NOT NULL DEFAULT 0,
   PRIMARY KEY (sid, idx, model)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS usage_at ON usage (at);

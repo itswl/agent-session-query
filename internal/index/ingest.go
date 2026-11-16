@@ -79,7 +79,6 @@ type usageRow struct {
 	at    int64
 	calls int
 	u     model.Usage
-	cost  float64
 }
 
 type failureRow struct {
@@ -261,7 +260,6 @@ func (ix *Index) turnRow(rd *reading, t *model.Turn) turnRow {
 		if c.Usage != nil {
 			row.usage[j].u.Add(*c.Usage)
 		}
-		row.usage[j].cost += c.CostUSD
 	}
 
 	body, _ := json.Marshal(turnBody{Items: t.Items, Calls: t.Calls})
@@ -501,9 +499,9 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 	}
 	for _, u := range t.usage {
 		if _, err := tx.ExecContext(ctx, `
-INSERT OR REPLACE INTO usage (sid, idx, model, at, calls, tok_in, tok_out, tok_cr, tok_cw, tok_think, cost)
-VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-			sid, t.idx, u.model, u.at, u.calls, u.u.Input, u.u.Output, u.u.CacheRead, u.u.CacheWrite, u.u.Reasoning, u.cost); err != nil {
+INSERT OR REPLACE INTO usage (sid, idx, model, at, calls, tok_in, tok_out, tok_cr, tok_cw, tok_think)
+VALUES (?,?,?,?,?,?,?,?,?,?)`,
+			sid, t.idx, u.model, u.at, u.calls, u.u.Input, u.u.Output, u.u.CacheRead, u.u.CacheWrite, u.u.Reasoning); err != nil {
 			return err
 		}
 	}

@@ -229,7 +229,7 @@ func Outline(w io.Writer, s *index.Session, turns []model.Turn, children []index
 		sums = append(sums, line)
 	}
 	if s.Stats.CostUSD > 0 {
-		sums = append(sums, fmt.Sprintf("$%.2f", s.Stats.CostUSD))
+		sums = append(sums, Cost(s.Stats.CostUSD))
 	}
 	if !s.StartedAt.IsZero() {
 		sums = append(sums, s.StartedAt.Local().Format("2006-01-02 15:04")+" → "+s.UpdatedAt.Local().Format("01-02 15:04"))
@@ -523,10 +523,16 @@ func Usage(w io.Writer, title string, rows []index.UsageRow, total *index.UsageR
 		width = max(width, len([]rune(st.Path(r.Key))))
 	}
 	width = min(width, 48)
-	fmt.Fprintln(w, st.dim(fmt.Sprintf("  %-*s %8s %9s %9s %9s %6s %9s", width, "", "calls", "in", "out", "total", "cache", "cost")))
+	// reasoning is the part of out that was thinking, where the provider said: a dash is
+	// "not said", which is not "none"
+	fmt.Fprintln(w, st.dim(fmt.Sprintf("  %-*s %8s %9s %9s %9s %9s %6s", width, "", "calls", "in", "out", "reasoning", "total", "cache")))
 	line := func(key string, r index.UsageRow) string {
-		return fmt.Sprintf("  %-*s %8d %9s %9s %9s %5.0f%% %9s", width+len(key)-len([]rune(key)), key, r.Calls,
-			txt.Tokens(r.Usage.Prompt()), txt.Tokens(r.Usage.Output), txt.Tokens(r.Usage.Total()), 100*r.Usage.CacheHit(), cost(r.CostUSD))
+		reasoning := "—"
+		if r.Usage.Reasoning > 0 {
+			reasoning = txt.Tokens(r.Usage.Reasoning)
+		}
+		return fmt.Sprintf("  %-*s %8d %9s %9s %9s %9s %5.0f%%", width+len(key)-len([]rune(key)), key, r.Calls,
+			txt.Tokens(r.Usage.Prompt()), txt.Tokens(r.Usage.Output), reasoning, txt.Tokens(r.Usage.Total()), 100*r.Usage.CacheHit())
 	}
 	for _, r := range rows {
 		key := txt.Truncate(st.Path(r.Key), width, "…")
@@ -554,9 +560,11 @@ func UsageReport(w io.Writer, rep index.UsageReport, rolling bool, st Style) {
 	Usage(w, "By project", rep.ByProject, &rep.Total, st)
 }
 
-func cost(usd float64) string {
-	if usd <= 0 {
-		return "—"
+// Cost is a session's own cost as its CLI worked it out: "$1.84", and "<$0.01" for one
+// that would otherwise read as nothing.
+func Cost(usd float64) string {
+	if usd < 0.01 {
+		return "<$0.01"
 	}
 	return fmt.Sprintf("$%.2f", usd)
 }
@@ -616,9 +624,6 @@ func Digest(w io.Writer, rep index.DigestReport, st Style) {
 		}
 		if t := TokenLine(d.Usage); t != "" {
 			parts = append(parts, t)
-		}
-		if d.CostUSD > 0 {
-			parts = append(parts, cost(d.CostUSD))
 		}
 		return strings.Join(parts, " · ")
 	}

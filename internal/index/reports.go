@@ -46,7 +46,11 @@ func reportFilter(f Filter) Filter {
 	return f
 }
 
-// UsageRow is what one group of model calls consumed.
+// UsageRow is what one group of model calls consumed, in tokens. It carries no cost: a
+// dollar figure summed over sessions is only the cost of that usage when every one of
+// them recorded one, and a reader of other programs' records keeps no price list to
+// fill in the rest. What it carries instead is the share of the prompt served from
+// cache, which every CLI records and which says what a price would.
 type UsageRow struct {
 	Key string `json:"key"` // the model, the day, the store or the directory
 	// Sessions the calls were made in; a subagent's count toward the session it ran in
@@ -55,7 +59,6 @@ type UsageRow struct {
 	Usage    model.Usage `json:"usage"`
 	Total    int64       `json:"total"`
 	CacheHit float64     `json:"cacheHit"`
-	CostUSD  float64     `json:"costUsd,omitempty"`
 }
 
 // Usage dimensions.
@@ -90,7 +93,7 @@ func (ix *Index) Usage(ctx context.Context, f Filter, w Window, by string, limit
 		order = "1"
 	}
 	// A subagent's calls are its session's: the sessions counted are the ones people had
-	q := `SELECT ` + key + ` AS k, count(DISTINCT CASE WHEN s.root_sid > 0 THEN s.root_sid ELSE s.sid END), sum(u.calls), sum(u.tok_in), sum(u.tok_out), sum(u.tok_cr), sum(u.tok_cw), sum(u.tok_think), sum(u.cost)
+	q := `SELECT ` + key + ` AS k, count(DISTINCT CASE WHEN s.root_sid > 0 THEN s.root_sid ELSE s.sid END), sum(u.calls), sum(u.tok_in), sum(u.tok_out), sum(u.tok_cr), sum(u.tok_cw), sum(u.tok_think)
 FROM usage u JOIN sessions s ON s.sid = u.sid WHERE ` + where + ` AND ` + when + ` GROUP BY k ORDER BY ` + order
 	args = append(args, whenArgs...)
 	if limit > 0 {
@@ -105,7 +108,7 @@ FROM usage u JOIN sessions s ON s.sid = u.sid WHERE ` + where + ` AND ` + when +
 	out := []UsageRow{}
 	for rows.Next() {
 		var r UsageRow
-		if err := rows.Scan(&r.Key, &r.Sessions, &r.Calls, &r.Usage.Input, &r.Usage.Output, &r.Usage.CacheRead, &r.Usage.CacheWrite, &r.Usage.Reasoning, &r.CostUSD); err != nil {
+		if err := rows.Scan(&r.Key, &r.Sessions, &r.Calls, &r.Usage.Input, &r.Usage.Output, &r.Usage.CacheRead, &r.Usage.CacheWrite, &r.Usage.Reasoning); err != nil {
 			return nil, err
 		}
 		r.Total, r.CacheHit = r.Usage.Total(), r.Usage.CacheHit()
@@ -274,7 +277,6 @@ type Digest struct {
 	LastAt   time.Time      `json:"lastAt,omitzero"`
 	Usage    model.Usage    `json:"usage"`
 	CacheHit float64        `json:"cacheHit"`
-	CostUSD  float64        `json:"costUsd,omitempty"`
 	Changed  map[string]int `json:"changed"` // files changed, counted as code / test / docs / config
 	Models   map[string]int `json:"models"`  // model calls by model
 	Sources  map[string]int `json:"sources"` // sessions by store
@@ -346,7 +348,7 @@ FROM turns t JOIN sessions s ON s.sid = t.sid WHERE t.idx > 0 AND `+where+` AND 
 
 	when, whenArgs = w.where("u.at")
 	rows, err = ix.ro.QueryContext(ctx, `
-SELECT s.cwd, u.model, sum(u.calls), sum(u.tok_in), sum(u.tok_out), sum(u.tok_cr), sum(u.tok_cw), sum(u.tok_think), sum(u.cost)
+SELECT s.cwd, u.model, sum(u.calls), sum(u.tok_in), sum(u.tok_out), sum(u.tok_cr), sum(u.tok_cw), sum(u.tok_think)
 FROM usage u JOIN sessions s ON s.sid = u.sid WHERE `+where+` AND `+when+` GROUP BY s.cwd, u.model`,
 		append(append([]any{}, args...), whenArgs...)...)
 	if err != nil {
@@ -356,14 +358,12 @@ FROM usage u JOIN sessions s ON s.sid = u.sid WHERE `+where+` AND `+when+` GROUP
 		var cwd, name string
 		var calls int
 		var u model.Usage
-		var cost float64
-		if err := rows.Scan(&cwd, &name, &calls, &u.Input, &u.Output, &u.CacheRead, &u.CacheWrite, &u.Reasoning, &cost); err != nil {
+		if err := rows.Scan(&cwd, &name, &calls, &u.Input, &u.Output, &u.CacheRead, &u.CacheWrite, &u.Reasoning); err != nil {
 			rows.Close()
 			return rep, err
 		}
 		for _, d := range []*Digest{get(cwd), &rep.Total} {
 			d.Usage.Add(u)
-			d.CostUSD += cost
 			if name != "" {
 				d.Models[name] += calls
 			}

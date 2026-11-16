@@ -1,92 +1,65 @@
-# One-line installer for agent-session-query on Windows
-# https://github.com/itswl/agent-session-query
-
+# Installs asq on Windows: downloads the release for this machine, checks it against the
+# release's published checksums, and puts the binary on the user's PATH.
+#
+#   irm https://raw.githubusercontent.com/itswl/agent-session-query/main/install.ps1 | iex
+#
+#   $env:VERSION = 'v1.2.0'      a particular release instead of the latest
+#   $env:INSTALL_DIR = 'D:\bin'  somewhere else than %LOCALAPPDATA%\Programs\asq
+#   $env:ASQ_REPO = 'you/fork'   releases of a fork
 $ErrorActionPreference = 'Stop'
 
-$Repo = "itswl/agent-session-query"
-$BinaryName = "agent-session-query.exe"
+$repo = if ($env:ASQ_REPO) { $env:ASQ_REPO } else { 'itswl/agent-session-query' }
+$installDir = if ($env:INSTALL_DIR) { $env:INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\asq' }
 
-# 1. Detect Architecture
-$Arch = "amd64"
-if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq "ARM64") {
-    $Arch = "arm64"
+$arch = switch ($env:PROCESSOR_ARCHITECTURE) {
+    'AMD64' { 'amd64' }
+    'ARM64' { 'arm64' }
+    default { throw "no release for $($env:PROCESSOR_ARCHITECTURE) (there are amd64 and arm64)" }
 }
 
-# 2. Resolve Version (default to latest release)
-$Version = $env:VERSION
-if (-not $Version) {
-    try {
-        $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ "User-Agent" = "PowerShell" } -UseBasicParsing
-        $Version = $Release.tag_name
-    } catch {
-        Write-Error "Failed to determine the latest release version: $_"
-        exit 1
-    }
+$version = $env:VERSION
+if (-not $version) {
+    $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers @{ 'User-Agent' = 'asq-install' }
+    $version = $latest.tag_name
 }
+if (-not $version) { throw "could not find the latest release; name one: `$env:VERSION = 'v1.2.0'" }
 
-$ZipName = "agent-session-query-windows-$Arch.zip"
-$DownloadUrl = "https://github.com/$Repo/releases/download/$Version/$ZipName"
-
-$InstallDir = if ($env:INSTALL_DIR) { $env:INSTALL_DIR } else { "$env:LOCALAPPDATA\Programs\agent-session-query" }
-if (-not (Test-Path $InstallDir)) {
-    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-}
-
-$TempDir = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), [System.Guid]::NewGuid().ToString())
-New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
-$ZipPath = Join-Path $TempDir $ZipName
-
+$archive = "asq-windows-$arch.zip"
+$base = "https://github.com/$repo/releases/download/$version"
+$tmp = Join-Path ([IO.Path]::GetTempPath()) ("asq-" + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
-    Write-Host "Downloading agent-session-query $Version for windows-$Arch..."
-    Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath -UseBasicParsing
-
-    # Verify against the release's SHA256SUMS (published since v0.25.0). Releases older
-    # than that have no sums asset and install with a warning; a mismatch is always fatal.
-    $SumsUrl = "https://github.com/$Repo/releases/download/$Version/SHA256SUMS"
-    $SumsPath = Join-Path $TempDir "SHA256SUMS"
+    Write-Host "asq $version for windows/$arch"
     try {
-        Invoke-WebRequest -Uri $SumsUrl -OutFile $SumsPath -UseBasicParsing
+        Invoke-WebRequest -Uri "$base/$archive" -OutFile (Join-Path $tmp $archive) -UseBasicParsing
     } catch {
-        Write-Warning "no SHA256SUMS published for $Version; installing without verification"
+        throw "release $version of $repo has no ${archive}: name another with `$env:VERSION"
     }
-    if (Test-Path $SumsPath) {
-        $Entry = Select-String -Path $SumsPath -Pattern ("\s" + [regex]::Escape($ZipName) + "$") | Select-Object -First 1
-        if (-not $Entry) { throw "SHA256SUMS has no entry for $ZipName" }
-        $Expected = ($Entry.Line -split '\s+')[0]
-        $Actual = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash
-        if ($Actual -ne $Expected) { throw "checksum mismatch for $ZipName (expected $Expected, got $Actual)" }
-        Write-Host "Checksum verified."
-    }
+    Invoke-WebRequest -Uri "$base/SHA256SUMS" -OutFile (Join-Path $tmp 'SHA256SUMS') -UseBasicParsing
 
-    Expand-Archive -Path $ZipPath -DestinationPath $TempDir -Force
-    $SourceExe = Join-Path $TempDir $BinaryName
-    if (-not (Test-Path $SourceExe)) {
-        throw "Archive did not contain $BinaryName"
+    # What was downloaded is about to be run: it is checked first
+    $expected = (Get-Content (Join-Path $tmp 'SHA256SUMS') | Where-Object { ($_ -split '\s+')[1] -eq $archive } | ForEach-Object { ($_ -split '\s+')[0] }) | Select-Object -First 1
+    $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp $archive)).Hash.ToLower()
+    if (-not $expected -or $expected.ToLower() -ne $actual) {
+        throw "checksum mismatch for ${archive}: published '$expected', got '$actual'"
     }
 
-    $TargetExe = Join-Path $InstallDir $BinaryName
-    Copy-Item -Path $SourceExe -Destination $TargetExe -Force
-
-    # Crucial: Unblock the file to remove Zone.Identifier and bypass Windows SmartScreen
-    Unblock-File -Path $TargetExe -ErrorAction SilentlyContinue
-
-    Write-Host "Successfully installed $BinaryName ($Version) to $InstallDir" -ForegroundColor Green
-
-    # 3. Add to User PATH if not already present
-    $UserPath = [System.Environment]::GetEnvironmentVariable("Path", [System.EnvironmentVariableTarget]::User)
-    $PathEntries = $UserPath -split ';' | Where-Object { $_ -ne "" }
-    if ($PathEntries -notcontains $InstallDir) {
-        $NewUserPath = "$UserPath;$InstallDir".Trim(';')
-        [System.Environment]::SetEnvironmentVariable("Path", $NewUserPath, [System.EnvironmentVariableTarget]::User)
-        $env:Path = "$env:Path;$InstallDir"
-        Write-Host "[INFO] Added $InstallDir to user PATH." -ForegroundColor Cyan
-    }
-
-    Write-Host ""
-    Write-Host "To get started, open a new terminal and run:"
-    Write-Host "  agent-session-query --port 8080" -ForegroundColor Yellow
-} finally {
-    if (Test-Path $TempDir) {
-        Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
-    }
+    Expand-Archive -Path (Join-Path $tmp $archive) -DestinationPath $tmp -Force
+    New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+    Move-Item -Path (Join-Path $tmp 'asq.exe') -Destination (Join-Path $installDir 'asq.exe') -Force
 }
+finally {
+    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+}
+
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (($userPath -split ';') -notcontains $installDir) {
+    [Environment]::SetEnvironmentVariable('Path', ($userPath.TrimEnd(';') + ';' + $installDir), 'User')
+    Write-Host "added $installDir to your PATH (open a new terminal for it to take effect)"
+}
+
+Write-Host "installed $(Join-Path $installDir 'asq.exe')"
+Write-Host ''
+Write-Host '  asq ls          recent sessions'
+Write-Host '  asq serve       the page, at http://127.0.0.1:7717'
+Write-Host '  asq             everything else'

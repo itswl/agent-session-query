@@ -1,63 +1,63 @@
-# Local agent session query API (read-only; no cgo, the only external dependency is a
-# pure-Go SQLite driver)
+# asq, built from source: for a change of your own, or behind a registry mirror. The
+# image a release publishes is Dockerfile.release — the released binaries copied in, the
+# same bytes as the archives, no compiler involved.
 #
-# Two-stage build: compile a static binary, and the runtime image holds nothing but it and
-# the liveness probe — no shell, no package manager.
+# Two stages: compile a static binary, and a runtime image that holds it, the root
+# certificates and nothing else — no shell, no package manager.
 #
-# The build stage always runs on the build machine's own platform and cross-compiles for
-# the target: Go does that natively, so a multi-arch build (release.yml publishes
-# linux/amd64 + linux/arm64) never runs a compiler under QEMU emulation, which is several
-# times slower.
-#
-# This is the from-source build, for a change of your own or a registry mirror. The image
-# release.yml publishes is Dockerfile.release: the binaries the release build produced,
-# copied in — the same bytes as the released archives, no compiler involved.
-# The base image and module proxy can be overridden, for example:
-#   docker build \
-#     --build-arg GO_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/golang:1.24-alpine \
-#     --build-arg GOPROXY=https://goproxy.cn,direct \
-#     -t agent-session-query .
-ARG GO_IMAGE=golang:1.24-alpine
+# The build stage runs on the build machine's own platform and cross-compiles for the
+# target, which Go does natively: a multi-arch build never runs a compiler under
+# emulation. The base image and the module proxy can be swapped:
+#   docker build --build-arg GO_IMAGE=<mirror>/golang:1.26-alpine \
+#                --build-arg GOPROXY=https://goproxy.cn,direct -t asq .
+ARG GO_IMAGE=golang:1.26-alpine
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
 
 # buildx fills these in per target platform. Under a plain docker build they are empty,
-# and an empty GOOS / GOARCH means the host — so a single-platform build needs no flags.
+# and an empty GOOS / GOARCH means the host.
 ARG TARGETOS TARGETARCH
-
 ARG VERSION=dev
 ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY}
 
 WORKDIR /src
-# Copy only the dependency manifests first so source changes do not invalidate this layer
+# The dependency manifests first, so a change to the source does not fetch them again
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY internal ./internal
 COPY cmd ./cmd
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X github.com/itswl/agent-session-query/internal/app.buildVersion=${VERSION}" -o /out/agent-session-query ./cmd/agent-session-query \
- && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/healthcheck ./cmd/healthcheck
+COPY internal ./internal
+COPY web ./web
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w -X github.com/itswl/agent-session-query/internal/app.Version=${VERSION}" -o /out/asq ./cmd/asq
 
 FROM scratch
 
-COPY --from=build /out/agent-session-query /agent-session-query
-COPY --from=build /out/healthcheck /healthcheck
+COPY --from=build /out/asq /asq
+# For the one thing here that calls out: `asq otel` to an https collector
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
-# Session data is mounted in; the image creates no directories in advance (an empty
-# directory would otherwise look like an existing data source).
-# No USER directive on purpose: the process reads session files that are 0600 on a Linux
-# host, and root is the one uid that can read any owner's. To drop the privilege at run
-# time, pass --user $(id -u):$(id -g) — a fixed uid baked in here would read nothing.
-# Source paths derive from $HOME, pinned to /root here to match the mount examples below.
-ENV HOME=/root
+# The stores are mounted in, read-only, where each CLI keeps its own under $HOME; the
+# image creates none of them in advance (an empty directory would look like a store).
+#
+# No USER on purpose: transcripts are 0600 on a Linux host, and root is the one uid that
+# reads any owner's. To drop the privilege, run with --user $(id -u):$(id -g) — a uid
+# fixed here would read nothing.
+ENV HOME=/root \
+    ASQ_HOST=0.0.0.0 \
+    ASQ_PORT=7717 \
+    ASQ_INDEX=/data/index.db \
+    ASQ_STATE=/data
 
-EXPOSE 8080
+# The index is a cache of the mounted stores: a volume keeps it across restarts, so a
+# restart reads only what changed instead of the whole history.
+VOLUME ["/data"]
+EXPOSE 7717
 
-# scratch has no curl and no shell, so the liveness probe is the bundled static binary
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 CMD ["/healthcheck"]
+# scratch has no curl and no shell: the binary asks itself
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 CMD ["/asq", "ping"]
 
-# Usage: the defaults are below and can be overridden or extended at runtime, e.g.
-#   docker run -p 8080:8080 -v ~/.claude/projects:/root/.claude/projects:ro \
-#     agent-session-query --mode claude --hook_token xxx
-ENTRYPOINT ["/agent-session-query"]
-CMD ["--host", "0.0.0.0", "--port", "8080"]
+# It listens on every interface of the container, so it refuses to start without a
+# token: docker run -e ASQ_TOKEN=… -p 127.0.0.1:7717:7717 -v ~/.claude/projects:/root/.claude/projects:ro asq
+ENTRYPOINT ["/asq"]
+CMD ["serve"]

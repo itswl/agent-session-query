@@ -1,79 +1,68 @@
-# The compose file is for the case the one-line docker run in docs/deploy.md cannot hold:
-# mounting every source directory, reading sessions that live outside the default home
-# (mount the directory and add --path to command below), or building locally.
+# asq in a container: the page, the API and the MCP endpoint over the session stores of
+# the host, mounted read-only.
+#
+#   ASQ_TOKEN=$(openssl rand -hex 24) docker compose up -d
+#
+# This builds the image from the source beside this file, so it is always the asq of
+# this checkout. To run a published image instead — every release pushes one, for
+# linux/amd64 and linux/arm64 — replace the build block with
+#   image: ghcr.io/itswl/agent-session-query:<version>
 services:
-  agent-session-query:
-    # Published on every release tag, linux/amd64 + linux/arm64. Pin a version instead of
-    # latest if you want upgrades to be deliberate.
-    image: ghcr.io/itswl/agent-session-query:latest
-    # To build locally instead — your own change, or a registry mirror — replace the image
-    # line with this block. The base image can be swapped, for example
-    #   GO_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/golang:1.24-alpine
-    # build:
-    #   context: .
-    #   args:
-    #     GO_IMAGE: ${GO_IMAGE:-golang:1.24-alpine}
-    container_name: agent-session-query
+  asq:
+    build:
+      context: .
+      # args:
+      #   GO_IMAGE: <mirror>/golang:1.26-alpine
+      #   GOPROXY: https://goproxy.cn,direct
+    container_name: asq
     ports:
-      # Published to host loopback only: this service can read complete session content, so
-      # do not expose it to the whole local network by default.
-      # To share it, change this to "8080:8080" — and set HOOK_TOKEN.
-      - "127.0.0.1:8080:8080"
+      # Published on the host's loopback only: what this serves is every prompt typed
+      # and every file an agent printed. To share it, publish "7717:7717" — the token
+      # is then all that stands in front of it, so put TLS in front as well.
+      - "127.0.0.1:7717:7717"
+    environment:
+      # Required: a container listens on all of its interfaces, and asq refuses to do
+      # that without a token. It travels in the environment rather than on the command
+      # line, which a process listing shows. The page signs in with the same token.
+      ASQ_TOKEN: "${ASQ_TOKEN:?set ASQ_TOKEN, e.g. ASQ_TOKEN=$(openssl rand -hex 24)}"
+      # The zone a report's days are counted in; the binary carries the zone database
+      TZ: "${TZ:-UTC}"
+      # Read only some of the stores: ASQ_ONLY: "claude,codex"
     volumes:
-      # Mount whichever source directories the host has; a source with nothing mounted is
-      # skipped. Inside the container HOME is /root, so a directory mounts to the same place
-      # under /root/...
-      # Note: a directory that does not exist on the host is created by Docker as an empty
-      # one owned by root.
-      # Mount the whole of ~/.hermes: newer sessions live entirely in state.db (its -wal/-shm
-      # companions have to come along, and mounting just sessions/ reads nothing). That
-      # directory also holds Hermes config and credentials — keep the mount read-only and
-      # keep the service off the public internet.
-      - ~/.hermes:/root/.hermes:ro
-      # 2026.9 OpenClaw keeps its SQLite databases under agents/<id>/agent/; older installs
-      # keep sessions.json under agents/default/sessions/. Mount agents/ whole: both
-      # layouts are covered, and an empty one is harmless.
-      - ~/.openclaw/agents:/root/.openclaw/agents:ro
-      - ~/.pi/agent/sessions:/root/.pi/agent/sessions:ro
+      # The index: a cache of the stores below, kept so a restart reads only what changed
+      - asq-index:/data
+      # Mount the stores the host has; one with nothing mounted is skipped. HOME is
+      # /root inside, so each mounts where its CLI keeps it under the home directory.
+      # A directory missing on the host is created by Docker, empty and owned by root:
+      # delete the lines for the CLIs you do not use.
       - ~/.claude/projects:/root/.claude/projects:ro
+      # Only the sessions of each CLI, never its whole directory: beside them sit the
+      # CLI's credentials, which this has no business being able to read.
       - ~/.codex/sessions:/root/.codex/sessions:ro
+      - ~/.codex/archived_sessions:/root/.codex/archived_sessions:ro
       - ~/.gemini/tmp:/root/.gemini/tmp:ro
-      # Antigravity: the agy CLI and the IDE each keep their own brain beside the
-      # summaries database they list from
+      # Antigravity: the agy CLI and the IDE each keep a brain of their own
       - ~/.gemini/antigravity-cli:/root/.gemini/antigravity-cli:ro
       - ~/.gemini/antigravity:/root/.gemini/antigravity:ro
-      # DeepSeek Harness sessions (DSH_HOME defaults to ~/.dsh); sessions only, not the
-      # harness's config and credentials
-      - ~/.dsh/sessions:/root/.dsh/sessions:ro
-      - ~/.grok/sessions:/root/.grok/sessions:ro
-      # opencode keeps one database in its XDG data directory (~/.local/share/opencode on
-      # every Unix-like, macOS included)
       - ~/.local/share/opencode:/root/.local/share/opencode:ro
-      # Sessions outside the default home: mount the directory anywhere and name it with
-      # --path in command below, e.g.
-      #   - /srv/agents/box2/.claude/projects:/mnt/box2:ro
-      # together with "--path" and "claude:box2=/mnt/box2" appended to command
-    # The token travels in the environment, not on the command line — arguments show up in
-    # ps. (docker inspect can read a container's environment too, but anyone who can run
-    # docker can already read the mounted sessions; the rule is about argv and process
-    # listings, not about the daemon.) The same token also logs a browser in: POST /login
-    # answers with an app_session cookie the page uses instead of the header.
-    environment:
-      HOOK_TOKEN: "${HOOK_TOKEN:-}"
-    # The remaining arguments pass straight through; inside a container it has to bind
-    # 0.0.0.0 or the port mapping cannot reach it. A non-loopback bind without a token
-    # refuses to start, so `docker compose up` without HOOK_TOKEN now fails fast with that
-    # message instead of serving the mounted sessions to the network.
-    command:
-      - "--host"
-      - "0.0.0.0"
-      - "--port"
-      - "8080"
-      - "--mode"
-      - "${SESSION_MODE:-auto}"
-    # The process runs as root on purpose (docs/deploy.md says why): the mounted
-    # transcripts are 0600, so a fixed non-root uid baked into the image would read
-    # nothing. To run it as yourself anyway, set the ids explicitly — compose does not
-    # expand $(id -u):
+      - ~/.grok/sessions:/root/.grok/sessions:ro
+      - ~/.grok/archived_sessions:/root/.grok/archived_sessions:ro
+      - ~/.pi/agent/sessions:/root/.pi/agent/sessions:ro
+      - ~/.dsh/sessions:/root/.dsh/sessions:ro
+      # Hermes is the exception: everything is in state.db with its -wal and -shm beside
+      # it, so the whole directory has to come along — configuration and credentials
+      # included. One more reason this stays read-only and off the network.
+      - ~/.hermes:/root/.hermes:ro
+      - ~/.openclaw/agents:/root/.openclaw/agents:ro
+      # A store somewhere else — another machine's home, a backup: mount it anywhere
+      # and name it, and its sessions appear as "claude@box2".
+      #   - /srv/box2/.claude/projects:/mnt/box2:ro
+      # with, under environment:  ASQ_PATH: "claude@box2=/mnt/box2"
+    # Runs as root on purpose: the mounted transcripts are 0600, and a fixed non-root
+    # uid would read nothing. To run as yourself, name the ids (compose does not expand
+    # $(id -u)) and make the index volume writable by them:
     #   user: "1000:1000"
     restart: unless-stopped
+
+volumes:
+  asq-index:

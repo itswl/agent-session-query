@@ -1,143 +1,93 @@
 #!/bin/sh
-set -e
+# Installs asq: downloads the release for this machine, checks it against the release's
+# published checksums, and puts the binary on the PATH.
+#
+#   curl -fsSL https://raw.githubusercontent.com/itswl/agent-session-query/main/install.sh | sh
+#
+#   VERSION=v1.2.0 sh install.sh        a particular release instead of the latest
+#   INSTALL_DIR=~/bin sh install.sh     somewhere else than /usr/local/bin
+#   ASQ_REPO=you/fork sh install.sh     releases of a fork
+set -eu
 
-# One-line installer for agent-session-query
-# https://github.com/itswl/agent-session-query
-
-REPO="itswl/agent-session-query"
-BINARY_NAME="agent-session-query"
-
-# Target installation directory: /usr/local/bin (or ~/.local/bin if /usr/local/bin is unwritable and no sudo)
+REPO="${ASQ_REPO:-itswl/agent-session-query}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
-# 1. Detect OS
-OS="$(uname -s)"
-case "$OS" in
-  Darwin)
-    GOOS="darwin"
-    ;;
-  Linux)
-    GOOS="linux"
-    ;;
-  *)
-    echo "[ERROR] Unsupported OS: $OS (only macOS and Linux are supported by this shell script)." >&2
-    echo "For Windows, download the zip release from https://github.com/$REPO/releases" >&2
-    exit 1
-    ;;
+case "$(uname -s)" in
+  Darwin) os=darwin ;;
+  Linux)  os=linux ;;
+  *) echo "install.sh: this script installs on macOS and Linux; on Windows use install.ps1" >&2; exit 1 ;;
+esac
+case "$(uname -m)" in
+  x86_64|amd64)  arch=amd64 ;;
+  arm64|aarch64) arch=arm64 ;;
+  *) echo "install.sh: no release for $(uname -m) (there are amd64 and arm64)" >&2; exit 1 ;;
 esac
 
-# 2. Detect Architecture
-ARCH="$(uname -m)"
-case "$ARCH" in
-  x86_64|amd64)
-    GOARCH="amd64"
-    ;;
-  arm64|aarch64)
-    GOARCH="arm64"
-    ;;
-  *)
-    echo "[ERROR] Unsupported architecture: $ARCH (supported: amd64, arm64)." >&2
-    exit 1
-    ;;
-esac
-
-# 3. Resolve version (default to latest release)
-VERSION="${VERSION:-}"
-if [ -z "$VERSION" ]; then
-  # Try resolving the latest release tag via GitHub redirect
-  LATEST_URL="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" 2>/dev/null || true)"
-  VERSION="${LATEST_URL##*/}"
+version="${VERSION:-}"
+if [ -z "$version" ]; then
+  # The latest release redirects to its tag; the API is the fallback
+  latest="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" 2>/dev/null || true)"
+  version="${latest##*/}"
 fi
-
-if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
-  # Fallback to GitHub API if redirect failed
-  VERSION="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+if [ -z "$version" ] || [ "$version" = latest ]; then
+  version="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1 || true)"
 fi
-
-if [ -z "$VERSION" ]; then
-  echo "[ERROR] Failed to determine the latest release version." >&2
-  echo "You can specify a version explicitly: VERSION=v0.23.0 sh -c '\$(curl -fsSL ...)'" >&2
+if [ -z "$version" ]; then
+  echo "install.sh: could not find the latest release; name one: VERSION=v1.2.0 sh install.sh" >&2
   exit 1
 fi
 
-TARBALL="agent-session-query-${GOOS}-${GOARCH}.tar.gz"
-DOWNLOAD_URL="https://github.com/$REPO/releases/download/$VERSION/$TARBALL"
+archive="asq-$os-$arch.tar.gz"
+base="https://github.com/$REPO/releases/download/$version"
+tmp="$(mktemp -d 2>/dev/null || mktemp -d -t asq)"
+trap 'rm -rf "$tmp"' EXIT INT TERM
 
-echo "Downloading $BINARY_NAME $VERSION for ${GOOS}-${GOARCH}..."
-TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t 'asq')"
-cleanup() {
-  rm -rf "$TMP_DIR"
-}
-trap cleanup EXIT INT TERM
+echo "asq $version for $os/$arch"
+if ! curl -fsSL "$base/$archive" -o "$tmp/$archive"; then
+  echo "install.sh: release $version of $REPO has no $archive — name another with VERSION=…" >&2
+  exit 1
+fi
 
-curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/$TARBALL"
-
-# Verify against the release's SHA256SUMS (published since v0.25.0). Releases older than
-# that have no sums asset and install with a warning; a mismatch is always fatal.
-SUMS_URL="https://github.com/$REPO/releases/download/$VERSION/SHA256SUMS"
-if curl -fsSL "$SUMS_URL" -o "$TMP_DIR/SHA256SUMS" 2>/dev/null; then
-  EXPECTED="$(awk -v name="$TARBALL" '$2 == name { print $1 }' "$TMP_DIR/SHA256SUMS")"
-  if [ -z "$EXPECTED" ]; then
-    echo "[ERROR] SHA256SUMS has no entry for $TARBALL" >&2
-    exit 1
-  fi
-  if command -v sha256sum >/dev/null 2>&1; then
-    ACTUAL="$(sha256sum "$TMP_DIR/$TARBALL" | awk '{print $1}')"
-  else
-    ACTUAL="$(shasum -a 256 "$TMP_DIR/$TARBALL" | awk '{print $1}')"
-  fi
-  if [ "$EXPECTED" != "$ACTUAL" ]; then
-    echo "[ERROR] checksum mismatch for $TARBALL" >&2
-    echo "  expected $EXPECTED" >&2
-    echo "  got      $ACTUAL" >&2
-    exit 1
-  fi
-  echo "Checksum verified."
+# What was downloaded is about to be run: it is checked first, and a release without
+# checksums is not installed.
+curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
+expected="$(awk -v name="$archive" '$2 == name { print $1 }' "$tmp/SHA256SUMS")"
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "$tmp/$archive" | awk '{print $1}')"
 else
-  echo "[WARN] no SHA256SUMS published for $VERSION; installing without verification" >&2
+  actual="$(shasum -a 256 "$tmp/$archive" | awk '{print $1}')"
 fi
-
-# Unpack
-tar -xzf "$TMP_DIR/$TARBALL" -C "$TMP_DIR"
-
-if [ ! -f "$TMP_DIR/$BINARY_NAME" ]; then
-  echo "[ERROR] Archive did not contain $BINARY_NAME" >&2
+if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+  echo "install.sh: checksum mismatch for $archive" >&2
+  echo "  published ${expected:-(none)}" >&2
+  echo "  got       $actual" >&2
   exit 1
 fi
 
-chmod +x "$TMP_DIR/$BINARY_NAME"
+tar -xzf "$tmp/$archive" -C "$tmp"
+chmod +x "$tmp/asq"
 
-# Determine target directory and permissions
-TARGET="$INSTALL_DIR/$BINARY_NAME"
 if [ ! -d "$INSTALL_DIR" ]; then
-  if [ -w "$(dirname "$INSTALL_DIR")" ]; then
-    mkdir -p "$INSTALL_DIR"
-  elif command -v sudo >/dev/null 2>&1; then
-    sudo mkdir -p "$INSTALL_DIR"
-  fi
+  mkdir -p "$INSTALL_DIR" 2>/dev/null || true
 fi
-
-if [ -w "$INSTALL_DIR" ]; then
-  mv "$TMP_DIR/$BINARY_NAME" "$TARGET"
+if [ -d "$INSTALL_DIR" ] && [ -w "$INSTALL_DIR" ]; then
+  mv "$tmp/asq" "$INSTALL_DIR/asq"
+elif command -v sudo >/dev/null 2>&1 && [ -z "${NO_SUDO:-}" ]; then
+  echo "installing to $INSTALL_DIR needs sudo"
+  sudo mkdir -p "$INSTALL_DIR"
+  sudo mv "$tmp/asq" "$INSTALL_DIR/asq"
 else
-  if command -v sudo >/dev/null 2>&1; then
-    echo "Installing to $INSTALL_DIR (requires sudo)..."
-    sudo mv "$TMP_DIR/$BINARY_NAME" "$TARGET"
-  else
-    # Fallback to ~/.local/bin
-    ALT_DIR="$HOME/.local/bin"
-    mkdir -p "$ALT_DIR"
-    TARGET="$ALT_DIR/$BINARY_NAME"
-    mv "$TMP_DIR/$BINARY_NAME" "$TARGET"
-    echo "[INFO] $INSTALL_DIR is not writable; installed to $ALT_DIR instead."
-    case ":$PATH:" in
-      *":$ALT_DIR:"*) ;;
-      *) echo "[NOTICE] Make sure $ALT_DIR is in your PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
-    esac
-  fi
+  INSTALL_DIR="$HOME/.local/bin"
+  mkdir -p "$INSTALL_DIR"
+  mv "$tmp/asq" "$INSTALL_DIR/asq"
+  case ":$PATH:" in
+    *":$INSTALL_DIR:"*) ;;
+    *) echo "add it to your PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+  esac
 fi
 
-echo "Successfully installed $BINARY_NAME ($VERSION) to $TARGET"
+echo "installed $INSTALL_DIR/asq"
 echo
-echo "To get started:"
-echo "  $BINARY_NAME --port 8080"
+echo "  asq ls          recent sessions"
+echo "  asq serve       the page, at http://127.0.0.1:7717"
+echo "  asq             everything else"

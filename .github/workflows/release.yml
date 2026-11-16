@@ -1,6 +1,6 @@
-# Pushing a v* tag cross-compiles six platforms and attaches the artifacts to a GitHub
-# Release. The only dependency is a pure-Go SQLite driver, so with CGO off cross-compilation
-# needs no C toolchain at all.
+# Pushing a v* tag cross-compiles six platforms, publishes a container image built from
+# the same binaries, and attaches everything to a GitHub Release. The only dependency
+# is a pure-Go SQLite driver, so with cgo off cross-compilation needs no C toolchain.
 name: release
 
 on:
@@ -12,8 +12,8 @@ permissions:
 
 jobs:
   # Tests have to run on real machines: a cross-compiled test binary cannot execute on
-  # another platform. Shipping a Windows artifact means a Windows runner has to verify it,
-  # or the release is going out blind.
+  # another platform, and shipping a Windows artifact nothing ran on Windows is shipping
+  # it blind.
   test:
     strategy:
       fail-fast: false
@@ -60,37 +60,31 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          binary="agent-session-query${{ matrix.ext }}"
-          go build -trimpath \
-            -ldflags "-s -w -X github.com/itswl/agent-session-query/internal/app.buildVersion=${GITHUB_REF_NAME}" \
-            -o "$binary" ./cmd/agent-session-query
-          # Unpacking tar.gz on Windows is awkward, so ship a zip there
+          binary="asq${{ matrix.ext }}"
+          go build -trimpath -ldflags "-s -w -X github.com/itswl/agent-session-query/internal/app.Version=${GITHUB_REF_NAME}" -o "$binary" ./cmd/asq
+          # Unpacking a tar.gz on Windows is awkward, so it gets a zip
           if [ "$GOOS" = windows ]; then
-            zip -q "agent-session-query-$GOOS-$GOARCH.zip" "$binary"
+            zip -q "asq-$GOOS-$GOARCH.zip" "$binary"
           else
-            tar czf "agent-session-query-$GOOS-$GOARCH.tar.gz" "$binary"
+            tar czf "asq-$GOOS-$GOARCH.tar.gz" "$binary"
           fi
-          # The container image is these same bytes, not a second compile: the linux builds
-          # also hand over the raw binary plus the liveness probe (scratch has no shell, so
-          # the probe is a binary too) for the image job to copy in
+          # The container image is these same bytes, not a second compile: the linux
+          # builds also hand over the bare binary for the image job to copy in
           if [ "$GOOS" = linux ]; then
             mkdir -p "image/$GOOS/$GOARCH"
-            cp "$binary" "image/$GOOS/$GOARCH/agent-session-query"
-            go build -trimpath -ldflags "-s -w" -o "image/$GOOS/$GOARCH/healthcheck" ./cmd/healthcheck
+            cp "$binary" "image/$GOOS/$GOARCH/asq"
           fi
-      # Each job uploads its own archive; a single publish job collects them all below.
-      # Publishing from every build job meant six of them racing to create one release,
-      # and gh release create is not atomic: on v0.10.1 two jobs passed the "does it
-      # exist" check in the same second and two releases appeared, each holding part of
-      # the artifacts. One publisher removes the race rather than narrowing it.
+
+      # Each job uploads its own archive and one job publishes them all. Publishing from
+      # every build job is six of them racing to create one release, and creating a
+      # release is not atomic: two jobs that both see none each make one.
       - uses: actions/upload-artifact@v7
         with:
-          name: agent-session-query-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: agent-session-query-${{ matrix.goos }}-${{ matrix.goarch }}.*
+          name: asq-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: asq-${{ matrix.goos }}-${{ matrix.goarch }}.*
           if-no-files-found: error
 
-      # Named outside agent-session-query-*: the publish job downloads by that pattern and
-      # must not see these
+      # Named outside asq-*: the publish job downloads by that pattern and must not see these
       - if: matrix.goos == 'linux'
         uses: actions/upload-artifact@v7
         with:
@@ -99,9 +93,8 @@ jobs:
           if-no-files-found: error
 
   image:
-    # The image is the linux binaries the build matrix just produced, copied into scratch
-    # by Dockerfile.release: no compiler in this job, and byte-identical to the released
-    # archives. Dockerfile (from source) stays for local builds.
+    # The linux binaries the build matrix just produced, copied into an empty image by
+    # Dockerfile.release: no compiler in this job, and byte-identical to the archives.
     needs: build
     if: ${{ github.event.created }}
     runs-on: ubuntu-latest
@@ -117,8 +110,9 @@ jobs:
           path: dist-image
           merge-multiple: true
 
-      # Multi-platform needs buildx. QEMU does not come into it: nothing runs during this
-      # build, it is COPY and metadata only.
+      # Multi-platform needs buildx; emulation is only for the stage that fetches the
+      # root certificates, which runs one package install
+      - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
 
       - uses: docker/login-action@v4
@@ -139,8 +133,8 @@ jobs:
 
       - uses: docker/build-push-action@v7
         env:
-          # The build record is an artifact nobody reads here, and an extra artifact is one
-          # more thing the publish job's download could trip over
+          # The build record is an artifact nobody reads, and one more thing the publish
+          # job's download could trip over
           DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
@@ -151,14 +145,12 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
   publish:
-    # Waits for the image so the notes can say whether it exists, but needs only the
-    # binaries: an image job failure must not cost the Release (v0.15.0's was lost to
-    # exactly that). !cancelled() is what lets a job run after one of its needs failed.
+    # Waits for the image so the notes can say whether there is one, but needs only the
+    # binaries: an image that failed to push must not cost the Release.
     needs: [build, image]
     runs-on: ubuntu-latest
-    # A forced tag update (retagging to fix a note) fires this workflow again;
-    # github.event.created is true only for a newly created tag, which is the only case
-    # worth publishing.
+    # A tag moved by force fires this workflow again; created is true only for a tag
+    # that is new, which is the only case worth publishing.
     if: ${{ !cancelled() && github.event.created && needs.build.result == 'success' }}
     permissions:
       contents: write
@@ -167,39 +159,47 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          # Only the build matrix's artifacts. Without a pattern this fetched every artifact of
-          # the run — including the image job's build record — and one failed download of
-          # that blocked the whole release (v0.15.0, first run of the image job).
-          pattern: agent-session-query-*
+          # Only the build matrix's artifacts: without a pattern this fetches every
+          # artifact of the run, and one failed download blocks the release
+          pattern: asq-*
           path: dist
           merge-multiple: true
 
-      # action-gh-release does not pick up the tag annotation as release notes on its own
-      # (no body means an empty body), so read it out explicitly. Remember --cleanup=verbatim
-      # when tagging, or git strips Markdown ## headings as comment lines.
-      - name: Use the tag annotation as release notes
+      # The tag's annotation is the release notes. Tag with --cleanup=verbatim, or git
+      # strips Markdown headings as comment lines.
+      - name: Release notes
         run: |
           git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > release-notes.md
           if [ ! -s release-notes.md ]; then
             echo "$GITHUB_REF_NAME" > release-notes.md
           fi
-          # Only when the image job pushed one: the notes must not advertise an image that
-          # is not there
-          if [ "${{ needs.image.result }}" = success ]; then
-            version="${GITHUB_REF_NAME#v}"
-            {
+          {
+            echo
+            echo "Install this release — the script fetches the archive for the machine and checks it against \`SHA256SUMS\`:"
+            echo
+            echo '```sh'
+            echo "curl -fsSL ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/install.sh | VERSION=${GITHUB_REF_NAME} sh"
+            echo '```'
+            echo
+            echo "On Windows, run \`install.ps1\` from below with \`\$env:VERSION = '${GITHUB_REF_NAME}'\`. With Go: \`go install ${GITHUB_SERVER_URL#https://}/${GITHUB_REPOSITORY}/cmd/asq@${GITHUB_REF_NAME}\`."
+            # Only when the image job pushed one: the notes do not advertise what is not there
+            if [ "${{ needs.image.result }}" = success ]; then
               echo
-              echo "Container image: ghcr.io/${GITHUB_REPOSITORY}:$version (linux/amd64 + linux/arm64)."
-            } >> release-notes.md
-          fi
+              echo "Container image: \`ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF_NAME#v}\` (linux/amd64, linux/arm64)."
+            fi
+          } >> release-notes.md
 
-      # The one-line installers download and execute; a published digest is the one
-      # thing that lets them verify what they got. Names are relative to dist/, where
-      # the archives sit, so the check runs from that directory.
+      # The installers download and run; the published digests are what lets them check
+      # what they got. Names are relative to dist/, where the archives sit.
       - name: Checksums
         run: |
           cd dist
-          sha256sum agent-session-query-*.tar.gz agent-session-query-*.zip > SHA256SUMS
+          sha256sum asq-*.tar.gz asq-*.zip > SHA256SUMS
+
+      # The installers travel with the release they were written for: the copy on the
+      # main branch may one day expect archives this release does not have
+      - name: Installers
+        run: cp install.sh install.ps1 dist/
 
       - name: Publish
         env:
@@ -208,4 +208,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --notes-file release-notes.md \
-            dist/agent-session-query-*.tar.gz dist/agent-session-query-*.zip dist/SHA256SUMS
+            dist/asq-*.tar.gz dist/asq-*.zip dist/SHA256SUMS dist/install.sh dist/install.ps1

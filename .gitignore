@@ -1,9 +1,9 @@
 # Build artifacts
-/agent-session-query
-/healthcheck
+/asq
+/asq.exe
+/dist/
+# The release workflow downloads the build matrix's linux binaries here for Dockerfile.release
+/dist-image/
 
-# Leftovers from the old Python version (the repo is Go-only now)
-__pycache__/
-*.pyc
-# release.yml downloads the build matrix's linux binaries here for Dockerfile.release
-dist-image/
+# What browser tooling leaves behind while the page is worked on
+/.playwright-mcp/

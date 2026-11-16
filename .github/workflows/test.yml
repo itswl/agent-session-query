@@ -1,14 +1,11 @@
-# Runs on every push and PR: tests plus format / vet / cross-compile checks.
-# release.yml only fires on a tag, so relying on it alone would surface problems on
-# release day.
+# Runs on every push and pull request: tests, plus the format, vet and cross-compile
+# checks. The release workflow only fires on a tag, and release day is the wrong day to
+# find out.
 #
-# Which platforms depends on where the push lands. A push to any other branch
-# tests on Linux only; a pull request and a push to main test on all three. The
-# macOS runner is billed at ten Linux minutes per minute and the Windows one at
-# two, and this workflow ran the full matrix on 107 branch pushes in September
-# 2026 — two thirds of the account's Actions bill, on a Free plan that includes
-# 2,000 Linux minutes. The three-platform answer still arrives before anything
-# merges, which is the moment it is read.
+# Which platforms depends on where the push lands. A push to any other branch tests on
+# Linux only; a pull request and a push to main test on all three. The macOS runner is
+# billed at ten Linux minutes a minute and the Windows one at two, and the three-platform
+# answer still arrives before anything merges, which is the moment it is read.
 name: test
 
 on:
@@ -31,9 +28,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # The race detector needs cgo and a C compiler. Both are ready on the Linux and macOS
-      # runners; the Windows runner's toolchain is not always on PATH, so a plain test run
-      # is enough there.
+      # The race detector needs cgo and a C compiler. Both are ready on the Linux and
+      # macOS runners; the Windows runner's toolchain is not always on PATH, so a plain
+      # run is enough there.
       - name: Test
         shell: bash
         run: |
@@ -62,22 +59,22 @@ jobs:
             exit 1
           fi
 
-      # app.js is hand-written with no build step. The Go tests only grep the assets for
-      # forbidden sinks, so a syntax error in app.js shipped with every test green
-      # (verified by appending one) — this step is the parse they cannot do.
+      # The page is hand-written with no build step, so nothing compiles it: a syntax
+      # error would ship with every Go test green. This is the parse they cannot do.
       - name: JavaScript syntax
         run: |
-          node --check internal/app/ui/app.js
-          node --check internal/app/ui/theme.js
+          find web -name '*.js' -print0 | xargs -0 -n 1 node --check
+
+      - name: Installer syntax
+        run: sh -n install.sh
 
       - name: go vet
         env:
           CGO_ENABLED: '0'
         run: go vet ./...
 
-      # Cross-compile check: all six released platforms must build, including their
-      # platform-specific files such as console_windows.go
-      - name: Cross-compile check
+      # All six released platforms must build, platform-specific files included
+      - name: Cross-compile
         env:
           CGO_ENABLED: '0'
         run: |

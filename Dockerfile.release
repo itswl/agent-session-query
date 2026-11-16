@@ -1,29 +1,29 @@
-# The published image. release.yml builds it from the binaries the release build matrix
+# The published image. The release workflow builds it from the binaries its build matrix
 # already produced — downloaded into dist-image/<os>/<arch>/ — so the container carries
 # the same bytes as the released archives and this file never runs a compiler.
 #
 # To build from source instead (a change of your own, a mirror), use Dockerfile.
-#
-# --chmod: artifact upload and download do not keep file modes, so the executable bit
-# is set here rather than trusted from the download.
+FROM alpine:3 AS certs
+RUN apk add --no-cache ca-certificates
+
 FROM scratch
 
 ARG TARGETOS TARGETARCH
-COPY --chmod=755 dist-image/${TARGETOS}/${TARGETARCH}/agent-session-query /agent-session-query
-COPY --chmod=755 dist-image/${TARGETOS}/${TARGETARCH}/healthcheck /healthcheck
+# --chmod: artifact upload and download do not keep file modes
+COPY --chmod=755 dist-image/${TARGETOS}/${TARGETARCH}/asq /asq
+COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
-# Session data is mounted in; the image creates no directories in advance (an empty
-# directory would otherwise look like an existing data source).
-# No USER directive on purpose: the process reads session files that are 0600 on a Linux
-# host, and root is the one uid that can read any owner's. To drop the privilege at run
-# time, pass --user $(id -u):$(id -g) — a fixed uid baked in here would read nothing.
-# Source paths derive from $HOME, pinned to /root to match the mount examples in the docs.
-ENV HOME=/root
+# See Dockerfile for why there is no USER, and what each of these is for
+ENV HOME=/root \
+    ASQ_HOST=0.0.0.0 \
+    ASQ_PORT=7717 \
+    ASQ_INDEX=/data/index.db \
+    ASQ_STATE=/data
 
-EXPOSE 8080
+VOLUME ["/data"]
+EXPOSE 7717
 
-# scratch has no curl and no shell, so the liveness probe is the bundled static binary
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 CMD ["/healthcheck"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 CMD ["/asq", "ping"]
 
-ENTRYPOINT ["/agent-session-query"]
-CMD ["--host", "0.0.0.0", "--port", "8080"]
+ENTRYPOINT ["/asq"]
+CMD ["serve"]

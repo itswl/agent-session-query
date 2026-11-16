@@ -198,19 +198,6 @@ home 目录、一份备份——按名字加进来：`asq ls --path claude@box2=
 
 （文档正文为英文。）
 
-## 从 agent-session-query 迁移
-
-`asq` 是对 `agent-session-query` 的一次从零重新设计，而不是它的新版本。二进制名、参数、HTTP 路由、MCP 工具名、
-网页全都不同，没有为兼容保留任何东西。对你来说的变化：
-
-- 二进制叫 `asq`。`agent-session-query --port 8080` 现在是 `asq serve`（端口 7717）；`--mcp` 是 `asq mcp`；
-  `--otel-export` 是 `asq otel`。
-- 为旧 server 配置的 MCP 客户端需要把命令改成 `asq mcp`。工具更少、名字也变了（`search_sessions` → `search`，
-  `get_messages` → `read`，`list_rounds` → 不带轮次的 `read`，`session_brief` → `brief`……）。
-- 原来的 *round* 现在叫 *turn*，而且它是所有地方的基本单位，包括搜索结果。
-- `HOOK_TOKEN` 改为 `ASQ_TOKEN`。所有接口里会话都以 `source/id` 命名。
-- 不读取旧的 OpenTelemetry 游标：对某个 collector 第一次执行 `asq otel` 会把时间窗内的内容用新的 span id 重发一遍。
-
 ## 许可证
 
 [MIT](LICENSE)

@@ -215,22 +215,6 @@ A store somewhere else — another machine's home directory, a backup — is add
 [HTTP API](docs/api.md) · [MCP](docs/mcp.md) · [Telemetry](docs/telemetry.md) ·
 [Sources](docs/sources.md) · [Deploying](docs/deploy.md) · [Development](docs/development.md)
 
-## Coming from agent-session-query
-
-`asq` is a ground-up redesign of `agent-session-query`, not a new version of it. The binary, the
-flags, the HTTP routes, the MCP tool names and the page are all different; nothing is kept for
-compatibility. What changes for you:
-
-- The binary is `asq`. `agent-session-query --port 8080` is now `asq serve` (port 7717);
-  `--mcp` is `asq mcp`; `--otel-export` is `asq otel`.
-- An MCP client configured for the old server needs its command changed to `asq mcp`. The tools
-  are fewer and differently named (`search_sessions` → `search`, `get_messages` → `read`,
-  `list_rounds` → `read` without a turn, `session_brief` → `brief`, …).
-- A *round* is now a *turn*, and it is the unit everywhere, including search results.
-- `HOOK_TOKEN` is `ASQ_TOKEN`. Sessions are named `source/id` in every interface.
-- The old OpenTelemetry cursor is not read: the first `asq otel` to a collector sends its window
-  again, under new span ids.
-
 ## License
 
 [MIT](LICENSE)

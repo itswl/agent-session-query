@@ -1,0 +1,329 @@
+package index
+
+import (
+	"context"
+	"database/sql"
+	"runtime"
+	"sort"
+	"sync"
+	"time"
+
+	"github.com/itswl/agent-session-query/internal/sources"
+)
+
+// Store is one session store the index is kept in step with.
+type Store struct {
+	Name   string // "claude", or a labeled instance: "claude@box2"
+	Spec   sources.Spec
+	Source sources.Source
+}
+
+// SyncState is where a sync stands, for whoever is waiting on one.
+type SyncState struct {
+	Running bool      `json:"running"`
+	Total   int       `json:"total,omitempty"` // transcripts this sync has to read
+	Done    int       `json:"done,omitempty"`  // of which read
+	At      time.Time `json:"at,omitzero"`     // when the last sync finished
+	Took    int64     `json:"tookMs,omitempty"`
+}
+
+// Change names a session a sync wrote.
+type Change struct {
+	Source string `json:"source"`
+	ID     string `json:"id"`
+	Gone   bool   `json:"gone,omitempty"`
+}
+
+// SyncResult is what one sync did.
+type SyncResult struct {
+	Scanned int      // transcripts the stores hold
+	Read    int      // of which read, because new or changed
+	Removed int      // transcripts the stores no longer hold
+	Changes []Change // the sessions whose record changed
+}
+
+// SyncOptions tune one sync.
+type SyncOptions struct {
+	// Force reads a changed transcript even when it was read a moment ago.
+	Force bool
+	// Rebuild reads everything again, whatever the fingerprints say.
+	Rebuild bool
+}
+
+// patience bounds how often a transcript that keeps changing is read again: no sooner
+// than this many times what its last read cost, and never later than maxPatience. A
+// small session is followed as it is written; a hundred-megabyte one, which costs
+// seconds to read, is not read on every append.
+const (
+	patience    = 8
+	maxPatience = 45 * time.Second
+)
+
+// State is where the index stands.
+func (ix *Index) State() SyncState {
+	ix.stateMu.Lock()
+	defer ix.stateMu.Unlock()
+	return ix.state
+}
+
+// Subscribe returns a channel of the sessions each sync writes, and a function that
+// ends the subscription. A subscriber that falls behind misses changes rather than
+// holding the sync back.
+func (ix *Index) Subscribe() (<-chan Change, func()) {
+	ch := make(chan Change, 256)
+	ix.stateMu.Lock()
+	ix.subs[ch] = struct{}{}
+	ix.stateMu.Unlock()
+	return ch, func() {
+		ix.stateMu.Lock()
+		delete(ix.subs, ch)
+		ix.stateMu.Unlock()
+	}
+}
+
+func (ix *Index) publish(changes []Change) {
+	ix.stateMu.Lock()
+	defer ix.stateMu.Unlock()
+	for ch := range ix.subs {
+		for _, c := range changes {
+			select {
+			case ch <- c:
+			default:
+			}
+		}
+	}
+}
+
+type known struct {
+	sid    int64
+	stamp  string
+	id     string
+	readMs int64
+	readAt int64
+}
+
+type job struct {
+	store Store
+	ref   sources.Ref
+}
+
+// Sync brings the index in step with the stores: every transcript that is new or whose
+// fingerprint moved is read again, newest first, and every one a store no longer holds
+// is removed. Only one sync runs at a time; a second caller waits for the first and then
+// runs its own, which finds little left to do.
+func (ix *Index) Sync(ctx context.Context, stores []Store, opts SyncOptions) (SyncResult, error) {
+	ix.syncMu.Lock()
+	defer ix.syncMu.Unlock()
+	start := time.Now()
+	var res SyncResult
+
+	// What the stores hold now, against what was read before
+	var jobs []job
+	var gone []known
+	type scanned struct {
+		refs []sources.Ref
+		err  error
+	}
+	scans := make([]scanned, len(stores))
+	var wg sync.WaitGroup
+	for i, st := range stores {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if st.Source.Exists() {
+				scans[i].refs, scans[i].err = st.Source.Scan(ctx)
+			}
+		}()
+	}
+	wg.Wait()
+	now := time.Now()
+	for i, st := range stores {
+		sc := &scans[i]
+		errText := ""
+		if sc.err != nil {
+			errText = sc.err.Error()
+		}
+		if _, err := ix.rw.ExecContext(ctx, `
+INSERT INTO source_state (source, location, error, scanned_at) VALUES (?,?,?,?)
+ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.error, scanned_at=excluded.scanned_at`,
+			st.Name, st.Source.Location(), errText, now.UnixMilli()); err != nil {
+			return res, err
+		}
+		// A store that could not be read is not an empty one: what is known of it is kept.
+		// One that was read in part still gives what it listed, and loses nothing.
+		partial := sc.err != nil
+		if partial && len(sc.refs) == 0 {
+			continue
+		}
+		have, err := ix.known(ctx, st.Name)
+		if err != nil {
+			return res, err
+		}
+		res.Scanned += len(sc.refs)
+		seen := make(map[string]bool, len(sc.refs))
+		for _, ref := range sc.refs {
+			seen[ref.Key] = true
+			k, ok := have[ref.Key]
+			switch {
+			case !ok, opts.Rebuild:
+				jobs = append(jobs, job{st, ref})
+			case k.stamp != ref.Stamp:
+				wait := min(time.Duration(k.readMs*patience)*time.Millisecond, maxPatience)
+				if opts.Force || now.Sub(time.UnixMilli(k.readAt)) >= wait {
+					jobs = append(jobs, job{st, ref})
+				}
+			}
+		}
+		for key, k := range have {
+			if !seen[key] && !partial {
+				gone = append(gone, k)
+				res.Changes = append(res.Changes, Change{Source: st.Name, ID: k.id, Gone: true})
+			}
+		}
+	}
+
+	if len(gone) > 0 {
+		err := ix.tx(ctx, func(tx *sql.Tx) error {
+			for _, k := range gone {
+				if err := deleteSession(ctx, tx, k.sid); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return res, err
+		}
+		res.Removed = len(gone)
+	}
+
+	// Newest first: the sessions someone is most likely to ask about are there first
+	sort.SliceStable(jobs, func(i, j int) bool { return jobs[i].ref.ModTime.After(jobs[j].ref.ModTime) })
+	ix.setState(func(s *SyncState) { s.Running, s.Total, s.Done = true, len(jobs), 0 })
+
+	var firstErr error
+	if len(jobs) > 0 {
+		readings := make(chan *reading, 8)
+		queue := make(chan job)
+		workers := min(max(runtime.GOMAXPROCS(0)-1, 1), 8, len(jobs))
+		var readers sync.WaitGroup
+		for range workers {
+			readers.Add(1)
+			go func() {
+				defer readers.Done()
+				for j := range queue {
+					readings <- ix.read(ctx, j.store, j.ref)
+				}
+			}()
+		}
+		go func() {
+			defer close(queue)
+			for _, j := range jobs {
+				select {
+				case queue <- j:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+		go func() {
+			readers.Wait()
+			close(readings)
+		}()
+		for rd := range readings {
+			if ctx.Err() != nil {
+				continue // drain: the readers are stopping
+			}
+			_, changed, err := ix.write(ctx, rd)
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+			res.Read++
+			if changed {
+				res.Changes = append(res.Changes, Change{Source: rd.source, ID: rd.sess.ID})
+			}
+			ix.setState(func(s *SyncState) { s.Done++ })
+		}
+	}
+
+	if (res.Read > 0 || res.Removed > 0) && ctx.Err() == nil {
+		if err := ix.link(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	ix.setState(func(s *SyncState) {
+		s.Running, s.At, s.Took = false, time.Now(), time.Since(start).Milliseconds()
+	})
+	if len(res.Changes) > 0 {
+		ix.publish(res.Changes)
+	}
+	if firstErr == nil {
+		firstErr = ctx.Err()
+	}
+	return res, firstErr
+}
+
+func (ix *Index) setState(fn func(*SyncState)) {
+	ix.stateMu.Lock()
+	fn(&ix.state)
+	ix.stateMu.Unlock()
+}
+
+// known is what the index holds of one store: each transcript's fingerprint.
+func (ix *Index) known(ctx context.Context, source string) (map[string]known, error) {
+	rows, err := ix.rw.QueryContext(ctx, `SELECT sid, key, stamp, id, read_ms, read_at FROM sessions WHERE source = ?`, source)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]known{}
+	for rows.Next() {
+		var k known
+		var key string
+		if err := rows.Scan(&k.sid, &key, &k.stamp, &k.id, &k.readMs, &k.readAt); err != nil {
+			return nil, err
+		}
+		out[key] = k
+	}
+	return out, rows.Err()
+}
+
+// Forget removes every session of the stores that are not among keep. A store that was
+// configured once and is not anymore would otherwise stay in the index for good.
+func (ix *Index) Forget(ctx context.Context, keep []Store) (int, error) {
+	names := make([]any, len(keep))
+	for i, st := range keep {
+		names[i] = st.Name
+	}
+	where := "1 = 1"
+	if len(names) > 0 {
+		where = "source NOT IN (" + placeholders(len(names)) + ")"
+	}
+	var sids []int64
+	rows, err := ix.rw.QueryContext(ctx, `SELECT sid FROM sessions WHERE `+where, names...)
+	if err != nil {
+		return 0, err
+	}
+	for rows.Next() {
+		var sid int64
+		if err := rows.Scan(&sid); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		sids = append(sids, sid)
+	}
+	rows.Close()
+	if len(sids) == 0 {
+		return 0, rows.Err()
+	}
+	err = ix.tx(ctx, func(tx *sql.Tx) error {
+		for _, sid := range sids {
+			if err := deleteSession(ctx, tx, sid); err != nil {
+				return err
+			}
+		}
+		_, err := tx.ExecContext(ctx, `DELETE FROM source_state WHERE `+where, names...)
+		return err
+	})
+	return len(sids), err
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -608,9 +609,17 @@ func TestScanTellsUnreadableFromEmpty(t *testing.T) {
 	if refs, err := Spec.Open(filepath.Join(home, "sessions")).Scan(context.Background()); err != nil || len(refs) != 0 {
 		t.Errorf("a missing store: %v, %v", refs, err)
 	}
+	// A path that runs through a file cannot be read, and on Unix that is an error of its
+	// own ("not a directory"), not "nothing there". Windows reports the same path as not
+	// found — which is what a missing store is, and it reads as one
 	notDir := filepath.Join(home, "file", "sessions")
 	sourcetest.Write(t, filepath.Join(home, "file"), "not a directory")
-	if _, err := Spec.Open(notDir).Scan(context.Background()); err == nil {
+	refs, err := Spec.Open(notDir).Scan(context.Background())
+	if runtime.GOOS == "windows" {
+		if err != nil || len(refs) != 0 {
+			t.Errorf("a path Windows does not find: %v, %v", refs, err)
+		}
+	} else if err == nil {
 		t.Error("a store that cannot be read must not scan as empty")
 	}
 	// A file among the group directories is not a group

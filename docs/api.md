@@ -10,6 +10,10 @@ signing in and the MCP endpoint. The page is a client of this API and uses nothi
   `401` no token, `403` refused by a guard, `404` no such session, `429` too many wrong tokens.
 - Replies are `gzip`-compressed when the caller accepts it, and `Cache-Control: no-store`: the
   record is private and changes under the reader.
+- In JSON, `<`, `>` and `&` are written `\u003c`, `\u003e` and `\u0026`. A JSON parser reads
+  them back as the characters; a reader that took a reply for a page would find no tag in it.
+  A reply carries other people's text and quotes what the caller sent, so this holds for all of
+  it, beside the content type and `nosniff`.
 - Who may call is in [Deploying](deploy.md#who-may-ask). In short: no token, loopback only; with
   a token, `Authorization: Bearer <token>`.
 

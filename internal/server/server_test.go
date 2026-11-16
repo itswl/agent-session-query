@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -231,6 +232,106 @@ func TestExportIsAlwaysADownload(t *testing.T) {
 			t.Errorf("%s: the export does not hold the session", format)
 		}
 	}
+}
+
+// A reply quotes the caller — the path that matched nothing, the origin that was
+// refused — and carries transcripts, which hold whatever a model fetched or a person
+// pasted. Whichever it is, the JSON has no <, > or & in it: a reader that took the reply
+// for a page would find no tag there.
+func TestNoReplyCanBeTakenForAPage(t *testing.T) {
+	s, a, h := build(t, Options{})
+	const markup = `<img src=x onerror=alert(1)>&<script>alert(2)</script>`
+	const gamma = "cccc3333-0000-4000-8000-000000000003"
+
+	var rows []byte
+	for _, row := range []map[string]any{
+		{"type": "user", "uuid": "g-u1", "timestamp": h.Now.Add(-10 * time.Minute).Format(time.RFC3339), "sessionId": gamma, "cwd": "/work/gamma",
+			"message": map[string]any{"role": "user", "content": "what does " + markup + " do"}},
+		{"type": "assistant", "uuid": "g-a1", "timestamp": h.Now.Add(-9 * time.Minute).Format(time.RFC3339), "sessionId": gamma,
+			"message": map[string]any{"id": "msg_g1", "role": "assistant", "model": "claude-opus-5", "stop_reason": "end_turn",
+				"usage": map[string]any{"input_tokens": 10, "output_tokens": 5}, "content": []map[string]any{{"type": "text", "text": "it is " + markup}}}},
+	} {
+		line, err := json.Marshal(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows = append(append(rows, line...), '\n')
+	}
+	path := filepath.Join(h.Dir, "-work-gamma", gamma+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, rows, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Sync(t.Context(), index.SyncOptions{Force: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	session := "/api/sessions/claude/" + gamma
+	for name, c := range map[string]struct {
+		call
+		status int
+		whole  bool // the reply holds the text entire, not a cut of it
+	}{
+		"a path that is no endpoint":    {call{path: "/api/" + url.PathEscape(markup)}, http.StatusNotFound, true},
+		"a session that does not exist": {call{path: "/api/sessions/claude/" + url.PathEscape(markup)}, http.StatusNotFound, false},
+		"an origin that is refused":     {call{path: "/api/sessions", header: map[string]string{"Origin": "https://attacker.example/" + markup}}, http.StatusForbidden, true},
+		"a grouping that is not one":    {call{path: "/api/usage?by=" + url.QueryEscape(markup)}, http.StatusBadRequest, false},
+		"a number that is not one":      {call{path: "/api/sessions?limit=" + url.QueryEscape(markup)}, http.StatusBadRequest, false},
+		"an MCP method that is not one": {call{method: http.MethodPost, path: "/mcp", body: `{"jsonrpc":"2.0","id":1,"method":"` + markup + `"}`}, http.StatusOK, true},
+		"the list":                      {call{path: "/api/sessions?project=gamma"}, http.StatusOK, false},
+		"a session's outline":           {call{path: session}, http.StatusOK, true},
+		"its turns":                     {call{path: session + "/turns?turns=all"}, http.StatusOK, true},
+		"its brief":                     {call{path: session + "/brief"}, http.StatusOK, true},
+		"its export as JSON":            {call{path: session + "/export?format=json"}, http.StatusOK, true},
+		"a search that finds it":        {call{path: "/api/search?q=onerror"}, http.StatusOK, false},
+		"the same over MCP": {call{method: http.MethodPost, path: "/mcp",
+			body: `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read","arguments":{"ref":"claude/` + gamma + `","turns":"1"}}}`}, http.StatusOK, true},
+	} {
+		rec := c.do(s)
+		body := rec.Body.String()
+		if rec.Code != c.status {
+			t.Errorf("%s = %d, want %d: %s", name, rec.Code, c.status, body)
+			continue
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") || rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("%s: sent as %q, nosniff %q", name, ct, rec.Header().Get("X-Content-Type-Options"))
+		}
+		if strings.ContainsAny(body, "<>&") {
+			t.Errorf("%s: markup in the reply: %s", name, body)
+		}
+		// Nothing is lost by it: decoded, the text is what was sent or what the transcript holds
+		var v any
+		if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
+			t.Errorf("%s: %v in %s", name, err, body)
+			continue
+		}
+		if c.whole && !holds(v, markup) {
+			t.Errorf("%s: the text did not come through whole: %s", name, body)
+		}
+	}
+}
+
+// holds reports whether any string in a decoded JSON value contains s.
+func holds(v any, s string) bool {
+	switch v := v.(type) {
+	case string:
+		return strings.Contains(v, s)
+	case []any:
+		for _, e := range v {
+			if holds(e, s) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, e := range v {
+			if holds(e, s) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestOnlyThisMachineWithoutAToken(t *testing.T) {

@@ -133,6 +133,8 @@ By hand, and that is a decision rather than an economy.
 - **A policy that enforces it.** The page is served with a Content-Security-Policy that allows
   scripts and styles from its own files only — no inline script, no inline style, no other
   origin, no framing. If the rule above were ever broken, the injected text still could not run.
+- **Replies that are not pages.** What the API sends is JSON with no `<`, `>` or `&` in it —
+  they travel as `\u003c`-style escapes — so a reply opened where a page was expected is text.
 - **Tested for what a bundler would have caught.** `web/web_test.go` checks that every module a
   module imports exists, that everything the page points at is embedded, that no script uses a
   sink that turns text into markup, and that the HTML needs nothing inline.

@@ -47,17 +47,20 @@ func writeBody(w http.ResponseWriter, r *http.Request, status int, body []byte) 
 	}
 }
 
+// writeJSON sends a reply as JSON that nothing can take for markup. A reply carries
+// transcripts, which are other people's text, and quotes what the caller sent — a path
+// that matched nothing, an Origin that is not accepted. json.Marshal writes <, > and &
+// as \u003c, \u003e and \u0026, so there is no tag in the body whatever reads it: the
+// content type and nosniff say it is not a page, and this makes it not one.
 func writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		status, buf = http.StatusInternalServerError, *bytes.NewBufferString(`{"error":"the reply could not be encoded"}` + "\n")
+	body, err := json.Marshal(v)
+	if err != nil {
+		status, body = http.StatusInternalServerError, []byte(`{"error":"the reply could not be encoded"}`)
 	}
 	h := w.Header()
 	h.Set("Content-Type", "application/json; charset=utf-8")
 	h.Set("Cache-Control", "no-store") // the record is private and changes under the reader
-	writeBody(w, r, status, buf.Bytes())
+	writeBody(w, r, status, append(body, '\n'))
 }
 
 func writeError(w http.ResponseWriter, r *http.Request, status int, message string) {

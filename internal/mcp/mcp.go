@@ -301,11 +301,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// writeJSON sends a reply the way the stdio transport does: <, > and & leave as
+// \u003c, \u003e and \u0026. A tool's answer is transcript text, and over HTTP it must
+// not be something a browser could take for a page.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/sources"
 	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
+	"github.com/itswl/agent-session-query/internal/transcript"
 )
 
 func filter(a *app.App) index.Filter { return index.Filter{Stores: a.Stores()} }
@@ -441,6 +442,107 @@ func TestRebuildReadsTheSame(t *testing.T) {
 	}
 	if len(res.Changes) != 0 {
 		t.Errorf("a rebuild that found nothing new announced %d changes", len(res.Changes))
+	}
+}
+
+// totalled is a store whose CLI also keeps totals of its own for a session.
+type totalled struct {
+	sources.Source
+	recorded map[string]*model.Recorded // by session id
+}
+
+func (s *totalled) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer) error {
+	if err := s.Source.Read(ctx, ref, w); err != nil {
+		return err
+	}
+	if r, ok := s.recorded[w.S.ID]; ok {
+		w.S.Recorded = r
+	}
+	return nil
+}
+
+// What a CLI totalled for a session beyond what its responses add up to is spending too —
+// OpenCode names a session with a model call that leaves no message. It is in the
+// session's own figures and, once, in everything summed from the usage table; and a
+// total that holds less than the responses do is not a total of them.
+func TestWhatASessionRecordedBeyondItsResponses(t *testing.T) {
+	a, _ := fixture.Open(t)
+	ctx := context.Background()
+	stores := a.Set.Present()
+	inner := stores[0].Source
+	sync := func(recorded map[string]*model.Recorded) {
+		t.Helper()
+		stores[0].Source = &totalled{Source: inner, recorded: recorded}
+		if _, err := a.Index.Sync(ctx, stores, index.SyncOptions{Rebuild: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bySession := func() map[string]index.UsageRow {
+		t.Helper()
+		rows, err := a.Index.Usage(ctx, filter(a), index.Window{}, index.BySession, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]index.UsageRow{}
+		for _, r := range rows {
+			out[strings.TrimPrefix(r.Key, "claude/")] = r
+		}
+		return out
+	}
+
+	// Beta's two responses add up to 110 in and 25 out; alpha's to 170, 175, 5500 read
+	// from cache and 50 written to it
+	alphaSum := model.Usage{Input: 170, Output: 175, CacheRead: 5500, CacheWrite: 50}
+	betaTotal := model.Usage{Input: 160, Output: 32, CacheRead: 400, Reasoning: 3}
+	sync(map[string]*model.Recorded{
+		fixture.Beta:  {Usage: &betaTotal, CostUSD: 0.5},
+		fixture.Alpha: {Usage: &model.Usage{Input: 900, Output: 900, CacheRead: 5499, CacheWrite: 900}},
+	})
+
+	beta, err := a.Index.Resolve(ctx, fixture.Beta, a.Stores())
+	if err != nil || beta.Stats.Usage != betaTotal || beta.Stats.CostUSD != 0.5 || beta.Stats.Calls != 2 {
+		t.Errorf("beta = %+v, %v; want the recorded total over its two calls", beta.Stats, err)
+	}
+	rows := bySession()
+	if got := rows[fixture.Beta]; got.Usage != betaTotal || got.Calls != 2 {
+		t.Errorf("beta in the usage table = %+v, want %+v: what no response accounts for is entered once", got, betaTotal)
+	}
+	// The turn's own calls say what they said: the rest belongs to no one of them
+	turns, err := a.Index.Outline(ctx, &beta)
+	if err != nil || len(turns) != 1 {
+		t.Fatalf("turns = %d, %v", len(turns), err)
+	}
+	if last := turns[0]; last.Usage != (model.Usage{Input: 110, Output: 25}) {
+		t.Errorf("beta's turn = %+v, want what its own responses carried", last.Usage)
+	}
+	// One counter short of covering alpha's responses: the responses stand
+	alpha, _ := a.Index.Resolve(ctx, fixture.Alpha, a.Stores())
+	if alpha.Stats.Usage != alphaSum || rows[fixture.Alpha].Usage != alphaSum {
+		t.Errorf("alpha = %+v, in the table %+v; want %+v", alpha.Stats.Usage, rows[fixture.Alpha].Usage, alphaSum)
+	}
+	total, _ := a.Index.UsageTotal(ctx, filter(a), index.Window{})
+	want := alphaSum
+	want.Add(betaTotal)
+	want.Add(model.Usage{Input: 5, Output: 7}) // alpha's subagent
+	if total.Usage != want {
+		t.Errorf("total = %+v, want %+v", total.Usage, want)
+	}
+
+	// The same total read again changes nothing, and one that moved is followed
+	sync(map[string]*model.Recorded{fixture.Beta: {Usage: &betaTotal}})
+	if got := bySession()[fixture.Beta]; got.Usage != betaTotal {
+		t.Errorf("read again, beta = %+v", got.Usage)
+	}
+	more := betaTotal
+	more.Input += 40
+	sync(map[string]*model.Recorded{fixture.Beta: {Usage: &more}})
+	if got := bySession()[fixture.Beta]; got.Usage != more {
+		t.Errorf("after the total moved, beta = %+v, want %+v", got.Usage, more)
+	}
+	// And with none recorded any more, the responses are all there is
+	sync(nil)
+	if got := bySession()[fixture.Beta]; got.Usage != (model.Usage{Input: 110, Output: 25}) {
+		t.Errorf("with nothing recorded, beta = %+v", got.Usage)
 	}
 }
 

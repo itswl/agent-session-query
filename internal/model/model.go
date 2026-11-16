@@ -44,8 +44,10 @@ type Session struct {
 
 	Parent *Parent `json:"parent,omitempty"`
 
-	// Recorded is what the CLI kept at session level when it keeps no counters per
-	// response (Hermes): the session's totals stand in for the sum nothing can compute.
+	// Recorded is what the CLI itself keeps at session level. Where it keeps no counters
+	// per response (Hermes) these totals are all there is. Where it keeps both, the
+	// totals can hold more than the responses add up to — OpenCode names a session with a
+	// model call that leaves no message — and the difference is spending too.
 	Recorded *Recorded `json:"recorded,omitempty"`
 }
 
@@ -98,6 +100,19 @@ func (u *Usage) Raise(o Usage) {
 	u.CacheRead = max(u.CacheRead, o.CacheRead)
 	u.CacheWrite = max(u.CacheWrite, o.CacheWrite)
 	u.Reasoning = max(u.Reasoning, o.Reasoning)
+}
+
+// Covers reports whether every counter of u is at least o's: whether u can be a total
+// that o is part of.
+func (u Usage) Covers(o Usage) bool {
+	return u.Input >= o.Input && u.Output >= o.Output && u.CacheRead >= o.CacheRead &&
+		u.CacheWrite >= o.CacheWrite && u.Reasoning >= o.Reasoning
+}
+
+// Minus is u without o, counter by counter.
+func (u Usage) Minus(o Usage) Usage {
+	return Usage{Input: u.Input - o.Input, Output: u.Output - o.Output, CacheRead: u.CacheRead - o.CacheRead,
+		CacheWrite: u.CacheWrite - o.CacheWrite, Reasoning: u.Reasoning - o.Reasoning}
 }
 
 // Total is every token that went in or came out.

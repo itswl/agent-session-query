@@ -131,26 +131,31 @@ func (ix *Index) read(ctx context.Context, st Store, ref sources.Ref) *reading {
 	if rd.sess.StartedAt.IsZero() {
 		rd.sess.StartedAt = rd.sess.UpdatedAt
 	}
-	// A CLI that keeps its counters per session has no response to hang them on: they
-	// are entered against the session's last turn, at the session's own time, so every
-	// figure summed from the usage table includes them
-	if r := rd.sess.Recorded; r != nil && r.Usage != nil && !r.Usage.IsZero() && sumUsage(rd.turns).IsZero() {
-		if len(rd.turns) == 0 {
-			rd.turns = append(rd.turns, ix.turnRow(rd, &model.Turn{Index: 0}))
-		}
-		last := &rd.turns[len(rd.turns)-1]
-		merged := false
-		for i := range last.usage {
-			if last.usage[i].model == rd.sess.Model { // the turn's own calls, which carry no counters
-				last.usage[i].u, last.usage[i].cost, merged = *r.Usage, r.CostUSD, true
+	// What the CLI recorded for the session beyond what its responses add up to — all of
+	// it, for a CLI that keeps no counters per response — has no response to hang on. It
+	// is entered against the session's last turn, under the session's model, so every
+	// figure summed from the usage table includes it.
+	if r := rd.sess.Recorded; r != nil && r.Usage != nil {
+		if rest := r.Usage.Minus(sumUsage(rd.turns)); r.Usage.Covers(sumUsage(rd.turns)) && !rest.IsZero() {
+			if len(rd.turns) == 0 {
+				rd.turns = append(rd.turns, ix.turnRow(rd, &model.Turn{Index: 0}))
 			}
+			last := &rd.turns[len(rd.turns)-1]
+			merged := false
+			for i := range last.usage {
+				if last.usage[i].model == rd.sess.Model {
+					last.usage[i].u.Add(rest)
+					merged = true
+					break
+				}
+			}
+			if !merged {
+				last.usage = append(last.usage, usageRow{model: rd.sess.Model, at: ms(rd.sess.UpdatedAt), u: rest})
+			}
+			// The turn's rows changed, though its content did not: the totals are part
+			// of what names it
+			last.hash = append(last.hash, []byte(strconv.FormatInt(r.Usage.Total(), 36))...)
 		}
-		if !merged {
-			last.usage = append(last.usage, usageRow{model: rd.sess.Model, at: ms(rd.sess.UpdatedAt), u: *r.Usage, cost: r.CostUSD})
-		}
-		// The turn's rows changed, though its content did not: the totals are part of what
-		// names it
-		last.hash = append(last.hash, []byte(strconv.FormatInt(r.Usage.Total(), 36))...)
 	}
 	rd.readMs = time.Since(start).Milliseconds()
 	return rd

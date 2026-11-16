@@ -3,7 +3,8 @@
 // Everything lives in one SQLite database, and its layout has changed once:
 //
 //	2.x   session_v2        one row per session: directory, title, model, version, times,
-//	                        parent_id for a session another one spawned
+//	                        parent_id for a session another one spawned, and for a
+//	                        fork the session it was made from
 //	      session_message   one row per message, ordered by seq, its parts inline in data
 //	1.x   session, message, part
 //	                        the same, with a message's parts as rows of their own
@@ -94,10 +95,18 @@ func (s *Source) Scan(ctx context.Context) ([]sources.Ref, error) {
 			if v2 {
 				// time_updated on the session is not always moved by a new message; the
 				// messages' own times are
+				// A fork's copied rows are another session's for as long as that session
+				// holds them: how many are belongs to what a fork was read at
+				copies := "0"
+				if cols, err := kit.Columns(db, "session_v2"); err == nil && cols["fork_session_id"] {
+					copies = `CASE WHEN COALESCE(s.fork_session_id, '') = '' THEN 0 ELSE
+       (SELECT COUNT(*) FROM session_message m WHERE m.session_id = s.id AND ` + copied + `) END`
+				}
 				if err := s.scan(ctx, db, &refs, `
 SELECT s.id, s.time_updated, s.time_created,
        (SELECT COUNT(*) FROM session_message m WHERE m.session_id = s.id),
-       (SELECT MAX(m.time_updated) FROM session_message m WHERE m.session_id = s.id)
+       (SELECT MAX(m.time_updated) FROM session_message m WHERE m.session_id = s.id),
+       `+copies+`
 FROM session_v2 s`); err != nil {
 					return err
 				}
@@ -111,7 +120,8 @@ FROM session_v2 s`); err != nil {
 				return s.scan(ctx, db, &refs, `
 SELECT s.id, s.time_updated, s.time_created,
        (SELECT COUNT(*) FROM part p WHERE p.session_id = s.id),
-       (SELECT MAX(m.time_updated) FROM message m WHERE m.session_id = s.id)
+       (SELECT MAX(m.time_updated) FROM message m WHERE m.session_id = s.id),
+       0
 FROM session s`+unmigrated)
 			}
 			if !v2 {
@@ -131,19 +141,19 @@ func (s *Source) scan(ctx context.Context, db *sql.DB, refs *[]sources.Ref, quer
 	defer rows.Close()
 	for rows.Next() {
 		var id sql.NullString
-		var updated, created, count, last sql.NullInt64
-		if err := rows.Scan(&id, &updated, &created, &count, &last); err != nil {
+		var updated, created, count, last, copies sql.NullInt64
+		if err := rows.Scan(&id, &updated, &created, &count, &last, &copies); err != nil {
 			return err
 		}
 		if id.String == "" {
 			continue
 		}
 		at := max(updated.Int64, last.Int64, created.Int64)
-		*refs = append(*refs, sources.Ref{
-			Key:     s.db + "#" + id.String,
-			Stamp:   strconv.FormatInt(updated.Int64, 36) + "." + strconv.FormatInt(last.Int64, 36) + "." + strconv.FormatInt(count.Int64, 36),
-			ModTime: time.UnixMilli(at),
-		})
+		stamp := strconv.FormatInt(updated.Int64, 36) + "." + strconv.FormatInt(last.Int64, 36) + "." + strconv.FormatInt(count.Int64, 36)
+		if copies.Int64 > 0 {
+			stamp += ".copied" + strconv.FormatInt(copies.Int64, 36)
+		}
+		*refs = append(*refs, sources.Ref{Key: s.db + "#" + id.String, Stamp: stamp, ModTime: time.UnixMilli(at)})
 	}
 	return rows.Err()
 }
@@ -230,6 +240,23 @@ func sessionOf(row map[string]any, sess *model.Session) {
 	// A session another one spawned — a task handed to a subagent — names its parent
 	if parent := kit.Str(row["parent_id"]); parent != "" {
 		sess.Parent = &model.Parent{Session: parent, Type: kit.Str(row["agent"])}
+	}
+	// OpenCode's own totals for the session. They are the session's alone — measured on
+	// 2.3: not its subagents', and for a fork not the rows it copied — and they hold what
+	// no message does: the call that gave the session its title.
+	if _, kept := kit.Num(row["tokens_input"]); kept {
+		reasoning := kit.Int(row["tokens_reasoning"])
+		u := model.Usage{
+			Input:      kit.Int(row["tokens_input"]),
+			Output:     kit.Int(row["tokens_output"]) + reasoning,
+			CacheRead:  kit.Int(row["tokens_cache_read"]),
+			CacheWrite: kit.Int(row["tokens_cache_write"]),
+			Reasoning:  reasoning,
+		}
+		cost, _ := kit.Num(row["cost"])
+		if !u.IsZero() || cost > 0 {
+			sess.Recorded = &model.Recorded{Usage: &u, CostUSD: cost}
+		}
 	}
 }
 
@@ -442,7 +469,13 @@ func readV2(ctx context.Context, db *sql.DB, id string, sess *model.Session, msg
 	}
 	sessionOf(row, sess)
 
-	rows, err := db.QueryContext(ctx, `SELECT id, type, time_created, data FROM session_message WHERE session_id = ? ORDER BY seq, rowid`, id)
+	// A fork's rows are read each with whether it is a copy of a row counted elsewhere
+	query := `SELECT m.id, m.type, m.time_created, m.data, 0 FROM session_message m WHERE m.session_id = ? ORDER BY m.seq, m.rowid`
+	if kit.Str(row["fork_session_id"]) != "" {
+		query = `SELECT m.id, m.type, m.time_created, m.data, ` + copied + `
+FROM session_message m JOIN session_v2 s ON s.id = m.session_id WHERE m.session_id = ? ORDER BY m.seq, m.rowid`
+	}
+	rows, err := db.QueryContext(ctx, query, id)
 	if err != nil {
 		return true, err
 	}
@@ -451,7 +484,8 @@ func readV2(ctx context.Context, db *sql.DB, id string, sess *model.Session, msg
 	for rows.Next() {
 		var mid, kind, raw string
 		var created sql.NullInt64
-		if err := rows.Scan(&mid, &kind, &created, &raw); err != nil {
+		var inherited bool
+		if err := rows.Scan(&mid, &kind, &created, &raw, &inherited); err != nil {
 			return true, err
 		}
 		var data map[string]any
@@ -464,7 +498,7 @@ func readV2(ctx context.Context, db *sql.DB, id string, sess *model.Session, msg
 		}
 		add := func(role transcript.Role, blocks ...transcript.Block) {
 			if len(blocks) > 0 {
-				*msgs = append(*msgs, transcript.Message{ID: mid, Role: role, At: at, Blocks: blocks})
+				*msgs = append(*msgs, transcript.Message{ID: mid, Role: role, At: at, Inherited: inherited, Blocks: blocks})
 			}
 		}
 		event := func(kind, text string) { add(transcript.System, transcript.EventOf(kind, text)) }
@@ -488,7 +522,7 @@ func readV2(ctx context.Context, db *sql.DB, id string, sess *model.Session, msg
 			if text, ok := data["content"].(string); ok && text != "" {
 				blocks = append(blocks, transcript.TextOf(text))
 			}
-			m := transcript.Message{ID: mid, Role: transcript.Assistant, At: at, Blocks: blocks}
+			m := transcript.Message{ID: mid, Role: transcript.Assistant, At: at, Inherited: inherited, Blocks: blocks}
 			assistant(&m, data, parts)
 			// A response that ended in an error says which: the user stopping it, or the
 			// provider refusing it
@@ -565,6 +599,27 @@ func readV2(ctx context.Context, db *sql.DB, id string, sess *model.Session, msg
 	}
 	return true, rows.Err()
 }
+
+// copied is the condition under which m, a row of the fork s, is a copy of a row that is
+// counted where it was first written.
+//
+// OpenCode forks a session by copying its messages into a new session, each under a new
+// id and otherwise as it was: its seq, its time, and the tokens an assistant row says it
+// cost (measured on OpenCode 2.3, which records on the fork which session that was, in
+// fork_session_id). Read as the fork's own, every one of those responses is counted a
+// second time, and a third in a fork of the fork.
+//
+// A row older than the fork it is in was not written by it; and it is somebody else's for
+// as long as an older session holds the same row — the session forked from, or with that
+// one deleted (which leaves its forks behind) the fork made before this one. So every
+// response is counted once, by the oldest session that still holds it, and where none
+// does — the original deleted, or undone to before the row — the copy is the only record
+// left of what was spent and is read as the fork's own. The fork's own rows are never
+// taken for copies: they are newer than it is.
+const copied = `(m.time_created < s.time_created AND EXISTS (
+        SELECT 1 FROM session_message p JOIN session_v2 o ON o.id = p.session_id
+        WHERE p.time_created = m.time_created AND p.seq = m.seq AND p.type = m.type AND p.session_id <> s.id
+          AND (o.time_created < s.time_created OR (o.time_created = s.time_created AND o.id < s.id))))`
 
 // readV1 reads a 1.x session: messages and their parts joined in display order.
 //

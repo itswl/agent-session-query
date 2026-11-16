@@ -129,6 +129,48 @@ func TestOneCallPerResponse(t *testing.T) {
 	}
 }
 
+// What a CLI totalled for the session is the session's total where it can be: where it
+// holds at least what the responses add up to.
+func TestRecordedTotals(t *testing.T) {
+	read := func(rec *model.Recorded, responses ...*model.Usage) model.Stats {
+		t.Helper()
+		c := &Collector{}
+		w := New(c)
+		w.S.Recorded = rec
+		w.Add(user(0, "go"))
+		for i, u := range responses {
+			w.Add(Message{Role: Assistant, At: at(i + 1), Model: "m", Usage: u, CostUSD: 0.25, Blocks: []Block{TextOf("ok")}})
+		}
+		stats, err := w.Finish()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return stats
+	}
+	total := &model.Usage{Input: 100, Output: 30, CacheRead: 900, Reasoning: 4}
+
+	// Hermes: no response says what it cost, the session does
+	if got := read(&model.Recorded{Usage: total, CostUSD: 2}, nil, nil); got.Usage != *total || got.CostUSD != 2 || got.Calls != 2 {
+		t.Errorf("no counters per response: %+v", got)
+	}
+	// OpenCode: the session's total holds a call no response accounts for
+	if got := read(&model.Recorded{Usage: total, CostUSD: 2}, &model.Usage{Input: 60, Output: 20, CacheRead: 900, Reasoning: 4}); got.Usage != *total || got.CostUSD != 2 {
+		t.Errorf("a total that covers the responses: %+v", got)
+	}
+	// A total that holds less than was read in any one counter is not the total of this
+	sum := model.Usage{Input: 60, Output: 31, CacheRead: 900}
+	if got := read(&model.Recorded{Usage: total, CostUSD: 2}, &model.Usage{Input: 30, Output: 20, CacheRead: 900}, &model.Usage{Input: 30, Output: 11}); got.Usage != sum || got.CostUSD != 0.5 {
+		t.Errorf("a total that does not cover the responses replaced them: %+v", got)
+	}
+	// Claude Code: a cost and no counters; the responses' own are the usage
+	if got := read(&model.Recorded{CostUSD: 2}, &model.Usage{Input: 60, Output: 20}); got.Usage != (model.Usage{Input: 60, Output: 20}) || got.CostUSD != 2 {
+		t.Errorf("a recorded cost alone: %+v", got)
+	}
+	if got := read(nil, &model.Usage{Input: 60, Output: 20}); got.Usage != (model.Usage{Input: 60, Output: 20}) || got.CostUSD != 0.25 {
+		t.Errorf("nothing recorded: %+v", got)
+	}
+}
+
 func TestInheritedRowsBelongToTheParent(t *testing.T) {
 	got := collect(t,
 		Message{Role: User, At: at(0), Inherited: true, Blocks: []Block{TextOf("the parent's ask")}},

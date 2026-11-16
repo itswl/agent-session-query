@@ -278,3 +278,235 @@ func TestLocateAndOpen(t *testing.T) {
 		t.Errorf("open: %s / %s", a, b)
 	}
 }
+
+// What 2.3 added to a session row: the session a fork was made from, and OpenCode's own
+// totals for the session.
+const schemaV23 = `
+ALTER TABLE session_v2 ADD COLUMN fork_session_id TEXT;
+ALTER TABLE session_v2 ADD COLUMN fork_boundary TEXT;
+ALTER TABLE session_v2 ADD COLUMN cost REAL DEFAULT 0 NOT NULL;
+ALTER TABLE session_v2 ADD COLUMN tokens_input INTEGER DEFAULT 0 NOT NULL;
+ALTER TABLE session_v2 ADD COLUMN tokens_output INTEGER DEFAULT 0 NOT NULL;
+ALTER TABLE session_v2 ADD COLUMN tokens_reasoning INTEGER DEFAULT 0 NOT NULL;
+ALTER TABLE session_v2 ADD COLUMN tokens_cache_read INTEGER DEFAULT 0 NOT NULL;
+ALTER TABLE session_v2 ADD COLUMN tokens_cache_write INTEGER DEFAULT 0 NOT NULL;
+CREATE UNIQUE INDEX session_message_session_seq_idx ON session_message (session_id, seq);
+CREATE INDEX session_message_time_created_idx ON session_message (time_created);`
+
+// A session and a fork of it, as OpenCode 2.3 writes them: the fork holds the parent's rows
+// under new ids with their seq, their time and their tokens as they were, then a notice,
+// then what was asked of the fork. Each session row counts that session's own spending —
+// the parent's with the call that named it, which left no message.
+var rowsFork = []string{
+	`INSERT INTO session_v2 (id, slug, directory, title, version, model, time_created, time_updated, cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read)
+		VALUES ('ses_parent', 'p', '/w/notes', 'Read the notes', '2.3.0', '{"id":"deepseek-flash","providerID":"deepseek"}', 1794794145110, 1794794149413, 0.004, 350, 31, 6, 3000)`,
+	`INSERT INTO session_message VALUES ('p_u1', 'ses_parent', 'user', 4, 1794794145200, 1794794145200, '{"text":"read notes.txt","files":[]}')`,
+	`INSERT INTO session_message VALUES ('p_a1', 'ses_parent', 'assistant', 5, 1794794145214, 1794794146066,
+		'{"agent":"build","finish":"stop","cost":0.001,"model":{"id":"deepseek-flash","providerID":"deepseek"},
+		  "time":{"created":1794794145214,"completed":1794794146066},
+		  "tokens":{"input":100,"output":10,"reasoning":0,"cache":{"read":1000,"write":0}},
+		  "content":[{"type":"text","text":"It says the deploy runs at noon."}]}')`,
+	`INSERT INTO session_message VALUES ('p_i1', 'ses_parent', 'idle', 21, 1794794146900, 1794794146900, '{"outcome":"succeeded"}')`,
+	`INSERT INTO session_message VALUES ('p_u2', 'ses_parent', 'user', 24, 1794794147384, 1794794147384, '{"text":"now list /nowhere","files":[]}')`,
+	`INSERT INTO session_message VALUES ('p_a2', 'ses_parent', 'assistant', 25, 1794794147389, 1794794148547,
+		'{"agent":"build","finish":"stop","cost":0.002,"model":{"id":"deepseek-flash","providerID":"deepseek"},
+		  "time":{"created":1794794147389,"completed":1794794148547},
+		  "tokens":{"input":200,"output":14,"reasoning":6,"cache":{"read":2000,"write":0}},
+		  "content":[
+		    {"type":"tool","id":"call_ls","name":"shell","time":{"created":1794794147900,"ran":1794794147900,"completed":1794794148100},
+		     "state":{"status":"completed","input":{"command":"ls /nowhere"},"content":[{"type":"text","text":"ls: /nowhere: No such file or directory"}],"metadata":{"exit":1}}},
+		    {"type":"text","text":"There is no such directory."}]}')`,
+	`INSERT INTO session_message VALUES ('p_i2', 'ses_parent', 'idle', 39, 1794794149416, 1794794149416, '{"outcome":"succeeded"}')`,
+
+	`INSERT INTO session_v2 (id, fork_session_id, fork_boundary, slug, directory, title, version, model, time_created, time_updated, cost, tokens_input, tokens_output, tokens_cache_read)
+		VALUES ('ses_fork', 'ses_parent', '{"type":"through","messageID":"p_i2"}', 'f', '/w/notes', 'Read the notes (fork #1)', '2.3.0',
+		        '{"id":"deepseek-flash","providerID":"deepseek"}', 1794794149645, 1794794150752, 0.0005, 40, 3, 500)`,
+	`INSERT INTO session_message SELECT 'copy_' || seq, 'ses_fork', type, seq, time_created, time_updated, data FROM session_message WHERE session_id = 'ses_parent'`,
+	`INSERT INTO session_message VALUES ('msg_fork_notice_ses_fork', 'ses_fork', 'synthetic', 43, 1794794149913, 1794794149913,
+		'{"text":"<fork-notice>\nThis conversation is a fork of another conversation.\n</fork-notice>"}')`,
+	`INSERT INTO session_message VALUES ('f_u1', 'ses_fork', 'user', 44, 1794794149913, 1794794149913, '{"text":"say only: forked","files":[]}')`,
+	`INSERT INTO session_message VALUES ('f_a1', 'ses_fork', 'assistant', 45, 1794794149919, 1794794150752,
+		'{"agent":"build","finish":"stop","cost":0.0005,"model":{"id":"deepseek-flash","providerID":"deepseek"},
+		  "time":{"created":1794794149919,"completed":1794794150752},
+		  "tokens":{"input":40,"output":3,"reasoning":0,"cache":{"read":500,"write":0}},
+		  "content":[{"type":"text","text":"forked"}]}')`,
+	`INSERT INTO session_message VALUES ('f_i1', 'ses_fork', 'idle', 51, 1794794150755, 1794794150755, '{"outcome":"succeeded"}')`,
+}
+
+func forkStore(t *testing.T, more ...string) (sources.Source, string) {
+	t.Helper()
+	return build(t, append(append([]string{schemaV2, schemaV23}, rowsFork...), more...)...)
+}
+
+func stampOf(t *testing.T, src sources.Source, id string) string {
+	t.Helper()
+	refs, err := src.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range refs {
+		if strings.HasSuffix(ref.Key, "#"+id) {
+			return ref.Stamp
+		}
+	}
+	t.Fatalf("no session %s among %d", id, len(refs))
+	return ""
+}
+
+// The rows a fork copied are its parent's: they are shown, and counted nowhere — not as
+// turns of the fork, not as its failures, not as its spending.
+func TestAForkCountsOnlyWhatItDidItself(t *testing.T) {
+	src, _ := forkStore(t)
+	all := sourcetest.All(t, src)
+	fork, parent := sourcetest.ByID(t, all, "ses_fork"), sourcetest.ByID(t, all, "ses_parent")
+
+	if fork.Stats.Turns != 1 || fork.Stats.Calls != 1 || fork.Stats.Tools != 0 || fork.Stats.Failures != 0 {
+		t.Errorf("the fork's own work is one turn of one call: %+v", fork.Stats)
+	}
+	if want := (model.Usage{Input: 40, Output: 3, CacheRead: 500}); fork.Stats.Usage != want || fork.Stats.CostUSD != 0.0005 {
+		t.Errorf("the fork spent %+v ($%v), want %+v", fork.Stats.Usage, fork.Stats.CostUSD, want)
+	}
+	if one := fork.Turn(t, 1); one.Ask != "say only: forked" || one.Answer != "forked" {
+		t.Errorf("the fork's turn = %q → %q", one.Ask, one.Answer)
+	}
+	// What it copied is there to read, before its first ask, marked as the parent's
+	before := fork.Turn(t, 0)
+	copies, own := 0, 0
+	for _, it := range before.Items {
+		if it.Inherited {
+			copies++
+		} else {
+			own++
+		}
+	}
+	if copies != 5 || own != 1 || !strings.Contains(before.Items[len(before.Items)-1].Text, "fork-notice") {
+		t.Errorf("before the fork's first ask: %d copied items and %d of its own (%s)", copies, own, sourcetest.Kinds(before))
+	}
+	if fork.Session.Title != "Read the notes (fork #1)" {
+		t.Errorf("title = %q", fork.Session.Title)
+	}
+
+	// The parent is untouched by having been forked, and its totals are OpenCode's own:
+	// the two responses and the call that named the session
+	if parent.Stats.Turns != 2 || parent.Stats.Calls != 2 || parent.Stats.Failures != 1 {
+		t.Errorf("parent = %+v", parent.Stats)
+	}
+	if want := (model.Usage{Input: 350, Output: 37, CacheRead: 3000, Reasoning: 6}); parent.Stats.Usage != want || parent.Stats.CostUSD != 0.004 {
+		t.Errorf("the parent spent %+v ($%v), want %+v", parent.Stats.Usage, parent.Stats.CostUSD, want)
+	}
+	// Across the store every response is counted once
+	total := parent.Stats.Usage
+	total.Add(fork.Stats.Usage)
+	if want := (model.Usage{Input: 390, Output: 40, CacheRead: 3500, Reasoning: 6}); total != want {
+		t.Errorf("both sessions spent %+v, want %+v", total, want)
+	}
+}
+
+// A copy is somebody else's only while somebody else holds the row. Undone in the parent,
+// or with the parent deleted — which OpenCode does without deleting its forks — the
+// fork's row is the only record left of what was spent, and the fork is read again.
+func TestACopyWhoseOriginalIsGoneIsTheForksOwn(t *testing.T) {
+	src, path := forkStore(t)
+	whole := stampOf(t, src, "ses_fork")
+	if plain := stampOf(t, src, "ses_parent"); strings.Contains(plain, "copied") || !strings.Contains(whole, "copied") {
+		t.Fatalf("stamps: fork %q, parent %q", whole, plain)
+	}
+
+	// The parent is undone to before its second ask
+	exec(t, path, `DELETE FROM session_message WHERE session_id = 'ses_parent' AND seq >= 24`)
+	undone := stampOf(t, src, "ses_fork")
+	if undone == whole {
+		t.Fatal("the fork's stamp did not move when its parent lost the rows it copied")
+	}
+	fork := sourcetest.ByID(t, sourcetest.All(t, src), "ses_fork")
+	if fork.Stats.Turns != 2 || fork.Stats.Calls != 2 || fork.Stats.Failures != 1 || fork.Turn(t, 1).Ask != "now list /nowhere" || fork.Turn(t, 2).Ask != "say only: forked" {
+		t.Errorf("with the second exchange undone in the parent, the fork = %+v", fork.Stats)
+	}
+	// OpenCode's total for the fork no longer covers what the fork is the record of
+	if want := (model.Usage{Input: 240, Output: 23, CacheRead: 2500, Reasoning: 6}); fork.Stats.Usage != want {
+		t.Errorf("the fork spent %+v, want %+v", fork.Stats.Usage, want)
+	}
+
+	// The parent is deleted
+	exec(t, path, `DELETE FROM session_message WHERE session_id = 'ses_parent'`, `DELETE FROM session_v2 WHERE id = 'ses_parent'`)
+	if gone := stampOf(t, src, "ses_fork"); gone == undone || strings.Contains(gone, "copied") {
+		t.Fatalf("the fork's stamp with its parent deleted = %q", gone)
+	}
+	fork = sourcetest.One(t, src)
+	if fork.Stats.Turns != 3 || fork.Stats.Calls != 3 || fork.Turn(t, 1).Ask != "read notes.txt" {
+		t.Errorf("with the parent deleted, the fork = %+v", fork.Stats)
+	}
+	if want := (model.Usage{Input: 340, Output: 33, CacheRead: 3500, Reasoning: 6}); fork.Stats.Usage != want {
+		t.Errorf("the fork spent %+v, want %+v", fork.Stats.Usage, want)
+	}
+	for _, it := range fork.Turn(t, 1).Items {
+		if it.Inherited {
+			t.Errorf("a row nobody else holds is still marked as copied: %+v", it)
+		}
+	}
+}
+
+// A fork of a fork copies the copies. Each response is still counted once — by the oldest
+// session that holds it — whichever of the three is deleted.
+func TestAForkOfAForkAndWhatIsLeftOfItsFamily(t *testing.T) {
+	second := []string{
+		`INSERT INTO session_v2 (id, fork_session_id, slug, directory, title, version, time_created, time_updated, tokens_input, tokens_output)
+			VALUES ('ses_fork2', 'ses_fork', 'g', '/w/notes', 'Read the notes (fork #2)', '2.3.0', 1794794160000, 1794794161000, 7, 1)`,
+		`INSERT INTO session_message SELECT 'again_' || seq, 'ses_fork2', type, seq, time_created, time_updated, data FROM session_message WHERE session_id = 'ses_fork'`,
+		`INSERT INTO session_message VALUES ('g_u1', 'ses_fork2', 'user', 60, 1794794160100, 1794794160100, '{"text":"and again","files":[]}')`,
+		`INSERT INTO session_message VALUES ('g_a1', 'ses_fork2', 'assistant', 61, 1794794160200, 1794794160900,
+			'{"finish":"stop","model":{"id":"deepseek-flash","providerID":"deepseek"},"tokens":{"input":7,"output":1,"reasoning":0,"cache":{"read":0,"write":0}},
+			  "content":[{"type":"text","text":"again"}]}')`,
+	}
+	spent := func(t *testing.T, src sources.Source) (map[string]int64, int64) {
+		t.Helper()
+		by, total := map[string]int64{}, int64(0)
+		for _, s := range sourcetest.All(t, src) {
+			by[s.Session.ID] = s.Stats.Usage.Input
+			total += s.Stats.Usage.Input
+		}
+		return by, total
+	}
+	// Every response's input, once: 100 + 200 in the parent, the 50 of the call that named
+	// it, 40 in the first fork, 7 in the second
+	const responses = 100 + 200 + 40 + 7
+
+	src, path := forkStore(t, second...)
+	if by, total := spent(t, src); by["ses_parent"] != 350 || by["ses_fork"] != 40 || by["ses_fork2"] != 7 || total != responses+50 {
+		t.Errorf("all three present: %v", by)
+	}
+	// The middle one deleted: its own response is now the second fork's to account for,
+	// and the parent's rows are still the parent's
+	exec(t, path, `DELETE FROM session_message WHERE session_id = 'ses_fork'`, `DELETE FROM session_v2 WHERE id = 'ses_fork'`)
+	if by, total := spent(t, src); by["ses_parent"] != 350 || by["ses_fork2"] != 47 || total != responses+50 {
+		t.Errorf("the first fork deleted: %v", by)
+	}
+
+	// The parent deleted instead: the first fork is the oldest holder of its rows, and the
+	// second still copies them
+	src, path = forkStore(t, second...)
+	exec(t, path, `DELETE FROM session_message WHERE session_id = 'ses_parent'`, `DELETE FROM session_v2 WHERE id = 'ses_parent'`)
+	if by, total := spent(t, src); by["ses_fork"] != 340 || by["ses_fork2"] != 7 || total != responses {
+		t.Errorf("the parent deleted: %v", by)
+	}
+}
+
+// OpenCode's own totals for a session are read from its row; a session whose row holds
+// none — an older 2.x, a session that never called a model — has none recorded.
+func TestTheSessionRowsOwnTotals(t *testing.T) {
+	src, _ := forkStore(t,
+		`INSERT INTO session_v2 (id, slug, directory, version, time_created, time_updated) VALUES ('ses_quiet', 'q', '/w/notes', '2.3.0', 1794794170000, 1794794170000)`)
+	all := sourcetest.All(t, src)
+	rec := sourcetest.ByID(t, all, "ses_parent").Session.Recorded
+	if rec == nil || rec.Usage == nil || *rec.Usage != (model.Usage{Input: 350, Output: 37, CacheRead: 3000, Reasoning: 6}) || rec.CostUSD != 0.004 {
+		t.Errorf("recorded = %+v", rec)
+	}
+	if rec := sourcetest.ByID(t, all, "ses_quiet").Session.Recorded; rec != nil {
+		t.Errorf("a session that spent nothing has totals recorded: %+v", rec)
+	}
+	// Before 2.3 the row has no such columns
+	old, _ := build(t, append([]string{schemaV2}, rowsV2...)...)
+	if rec := sourcetest.ByID(t, sourcetest.All(t, old), "ses_2").Session.Recorded; rec != nil {
+		t.Errorf("recorded on a layout that keeps none: %+v", rec)
+	}
+}

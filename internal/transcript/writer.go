@@ -524,12 +524,17 @@ func (w *Writer) Finish() (model.Stats, error) {
 	if s.Title == "" {
 		s.Title = TitleOf(w.anyPrompt)
 	}
-	// What the CLI kept at session level stands in where no response carried counters
-	if r := s.Recorded; r != nil {
-		if r.Usage != nil && w.stats.Usage.IsZero() {
+	// What the CLI kept at session level is the session's total when it holds at least
+	// what the responses add up to: all of it where no response carried counters, and
+	// the calls that left no response where they did. Totals that hold less describe
+	// something else — a fork's own spending, beside copies read as its own because
+	// their originals are gone; a counter that was reset — and the responses stand,
+	// their cost with them.
+	if r := s.Recorded; r != nil && (r.Usage == nil || r.Usage.Covers(w.stats.Usage)) {
+		if r.Usage != nil {
 			w.stats.Usage = *r.Usage
 		}
-		// The CLI's own total is the authoritative one: the responses only know what
+		// The CLI's own figure is the authoritative one: the responses only know what
 		// their own rows cost
 		if r.CostUSD > 0 {
 			w.stats.CostUSD = r.CostUSD

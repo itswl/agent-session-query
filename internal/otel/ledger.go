@@ -7,12 +7,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 
+	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/sources/kit"
 )
 
@@ -30,28 +30,10 @@ type ledger struct {
 	dest string
 }
 
-// LedgerPath is where the ledger lives unless told otherwise: ASQ_STATE, else the
-// platform's place for a program's state.
+// LedgerPath is where the ledger lives unless told otherwise: in the directory asq
+// keeps its state in.
 func LedgerPath() string {
-	dir := os.Getenv("ASQ_STATE")
-	if dir == "" {
-		switch {
-		case os.Getenv("XDG_STATE_HOME") != "":
-			dir = filepath.Join(os.Getenv("XDG_STATE_HOME"), "asq")
-		case runtime.GOOS == "linux":
-			if home, err := os.UserHomeDir(); err == nil {
-				dir = filepath.Join(home, ".local", "state", "asq")
-			}
-		}
-	}
-	if dir == "" {
-		base, err := os.UserConfigDir()
-		if err != nil || base == "" {
-			base = os.TempDir()
-		}
-		dir = filepath.Join(base, "asq")
-	}
-	return filepath.Join(dir, "otel-ledger.db")
+	return filepath.Join(app.StateDir(), "otel-ledger.db")
 }
 
 // destOf names a collector in the ledger: its address without the credentials or the

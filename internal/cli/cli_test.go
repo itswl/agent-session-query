@@ -35,6 +35,8 @@ func setup(t *testing.T) (fixture.History, string) {
 	t.Setenv("ASQ_ONLY", "")
 	t.Setenv("ASQ_PATH", "")
 	t.Setenv("ASQ_INDEX", "")
+	t.Setenv("ASQ_PROXY_HEADER", "")
+	t.Setenv("ASQ_STATE", t.TempDir()) // nothing a test does is kept beside the real thing
 	h := fixture.Write(t)
 	return h, h.Config(t).IndexPath
 }
@@ -155,6 +157,7 @@ func TestWhatGoesWrong(t *testing.T) {
 		{[]string{"otel"}, 2, "where to?"},
 		{[]string{"otel", "--dry-run", "--content", "everything"}, 2, "none, asks or all"},
 		{[]string{"serve", "--host", "0.0.0.0"}, 2, "set a token"},
+		{[]string{"serve", "--proxy-header", "X-Real-IP: 10.0.0.1"}, 2, "takes the name of a header"},
 	} {
 		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")

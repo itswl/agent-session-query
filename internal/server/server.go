@@ -56,6 +56,14 @@ type Options struct {
 	// Live reads the page's files again on every request instead of once: for working on
 	// the page from a directory, without restarting.
 	Live bool
+	// State is the directory the server keeps its cookie secret in, so that a sign-in
+	// outlives a restart. Empty keeps nothing: each start makes a new secret, and the
+	// cookies of the run before stop working.
+	State string
+	// ProxyHeader names the header in which a proxy in front states who is calling:
+	// CF-Connecting-IP, X-Real-IP, X-Forwarded-For. Wrong tokens are then counted per
+	// caller rather than per proxy (see caller).
+	ProxyHeader string
 	// Log receives one line per request that failed, and what the server has to say.
 	Log io.Writer
 }
@@ -112,9 +120,12 @@ func New(a *app.App, opts Options) (*Server, error) {
 	} else if len(opts.Token) < 16 {
 		return nil, errors.New("the token is the only thing between the network and every session: make it at least 16 characters (openssl rand -hex 24)")
 	}
+	if !headerName(opts.ProxyHeader) {
+		return nil, fmt.Errorf("--proxy-header takes the name of a header (CF-Connecting-IP, X-Real-IP, X-Forwarded-For), not %q", opts.ProxyHeader)
+	}
 	s := &Server{app: a, opts: opts, mcp: mcp.New(a, opts.Log), assets: map[string]asset{}}
 	if opts.Token != "" {
-		s.key = signKey(opts.Token)
+		s.key = signKey(s.cookieSecret(), opts.Token)
 	}
 	if opts.Page != nil {
 		var err error
@@ -124,6 +135,16 @@ func New(a *app.App, opts Options) (*Server, error) {
 	}
 	s.routes()
 	return s, nil
+}
+
+// headerName reports whether s could name a header, or names none.
+func headerName(s string) bool {
+	for _, c := range s {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) logf(format string, args ...any) {

@@ -14,21 +14,32 @@ package server
 // With a token, every request to the API proves it holds the token: an Authorization
 // header for programs, a cookie for the page. A browser cannot keep a secret that script
 // can read, so the page trades the token once (POST /api/login) for a cookie script
-// never sees: HttpOnly, SameSite=Strict, good for 180 days. The cookie is stateless —
-// an expiry and its HMAC under a key derived from the token — so nobody can mint or
-// extend one, and changing the token retires them all.
+// never sees: HttpOnly, SameSite=Strict, good for 180 days. The cookie is an expiry and
+// its HMAC, and nothing about it is kept on this side, so nobody can mint or extend one.
+// The key it is signed with is made from the token and from a secret only this server
+// holds: changing the token retires every cookie, and a forged cookie is refused
+// whatever token its forger had in mind (see signKey).
+//
+// A wrong token is counted against whoever offered it, and ten in a minute shut that
+// caller out for the rest of the minute. Who "that caller" is takes more saying than it
+// seems to: see caller.
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,20 +51,99 @@ const (
 	cookieLifetime = 180 * 24 * time.Hour
 	maxLoginBody   = 4 << 10
 
-	// attemptsMax wrong tokens per client address per attemptsWindow, by any route: the
-	// login form or an Authorization header. Past it the answer is 429 until the window
-	// rolls over, which turns guessing a human-chosen token from a matter of minutes
-	// into one of geological time.
+	// attemptsMax wrong tokens per caller per attemptsWindow, by either route a token is
+	// offered on: the login form or an Authorization header. Past it the answer is 429
+	// until the window rolls over, which turns guessing a human-chosen token from a
+	// matter of minutes into one of geological time.
 	attemptsMax    = 10
 	attemptsWindow = time.Minute
+	// attemptsKept callers are remembered at once; past it the rest share one allowance.
+	// A flood of addresses costs the server a table of this size and no more.
+	attemptsKept = 4096
+
+	secretFile = "session.key"
+	secretSize = 32
 )
 
-// signKey derives the cookie-signing key from the token, so that the two uses of the
-// token — compared as a header, signing cookies — never share key material.
-func signKey(token string) []byte {
-	mac := hmac.New(sha256.New, []byte(token))
-	mac.Write([]byte("asq session cookie v1"))
+// signKey makes the key cookies are signed with, from the token and a secret only this
+// server holds.
+//
+// The secret is what keeps a cookie from being a question about the token. Were the key
+// made from the token alone, a cookie signed under a guess would be accepted exactly when
+// the guess is right: an Authorization header by another name, and one that no allowance
+// counts. With the secret in the key, a forged cookie is refused whatever was guessed.
+// The token is in it too, so that changing the token still retires every cookie.
+func signKey(secret []byte, token string) []byte {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte("asq session cookie v2\x00"))
+	mac.Write([]byte(token))
 	return mac.Sum(nil)
+}
+
+// loadSecret reads the secret kept in dir, making it the first time: 32 random bytes in
+// a file only its owner reads. Servers that start together end up holding the same one,
+// whichever was written first.
+func loadSecret(dir string) ([]byte, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, secretFile)
+	for try := 0; try < 40; try++ {
+		have, err := os.ReadFile(path)
+		switch {
+		case err == nil && len(have) == secretSize:
+			return have, nil
+		case err == nil && try < 10:
+			// Not whole: another server is writing it this instant
+			time.Sleep(20 * time.Millisecond)
+			continue
+		case err == nil:
+			// Not whole and nobody is finishing it: it is no secret, and is replaced
+			if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return nil, err
+			}
+		case !errors.Is(err, fs.ErrNotExist):
+			return nil, err
+		}
+		secret := make([]byte, secretSize)
+		if _, err := rand.Read(secret); err != nil {
+			return nil, err
+		}
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, fs.ErrExist) {
+			continue // another server made it first: theirs is the one
+		}
+		if err != nil {
+			return nil, err
+		}
+		_, err = f.Write(secret)
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			os.Remove(path)
+			return nil, err
+		}
+		return secret, nil
+	}
+	return nil, fmt.Errorf("%s is neither whole nor left alone", path)
+}
+
+// cookieSecret is the secret this server signs with: the one kept in its state
+// directory, or — with no directory, or one that cannot be used — one made for this run.
+func (s *Server) cookieSecret() []byte {
+	if dir := s.opts.State; dir != "" {
+		secret, err := loadSecret(dir)
+		if err == nil {
+			return secret
+		}
+		s.logf("sign-ins will not outlive this run: the secret that signs them could not be kept in %s: %v", dir, err)
+	}
+	secret := make([]byte, secretSize)
+	if _, err := rand.Read(secret); err != nil {
+		panic(err) // no randomness, no server
+	}
+	return secret
 }
 
 // sign builds a cookie value: the expiry in Unix seconds, a dot, and its HMAC.
@@ -80,12 +170,13 @@ func signed(key []byte, value string, now time.Time) bool {
 	return hmac.Equal([]byte(want), []byte(sig))
 }
 
-// limiter counts wrong tokens per client address in a fixed window. It holds one entry
-// per address seen in the last window and drops the rest as it goes, so it stays bounded
-// without a goroutine of its own.
+// limiter counts wrong tokens per caller in a fixed window. It needs no goroutine of its
+// own: an entry that has outlived its window counts for nothing wherever it is read, and
+// the table is swept once a window, as attempts come in.
 type limiter struct {
-	mu   sync.Mutex
-	hits map[string]hit
+	mu    sync.Mutex
+	hits  map[string]hit
+	swept time.Time
 }
 
 type hit struct {
@@ -93,47 +184,124 @@ type hit struct {
 	count   int
 }
 
-// blocked reports whether addr has used up its attempts, and for how long.
-func (l *limiter) blocked(addr string, now time.Time) (bool, time.Duration) {
+// everyoneElse is who an attempt is charged to once the table is full.
+const everyoneElse = "everyone else"
+
+// slot is the entry a caller's attempts are kept under: its own, while there is room.
+func (l *limiter) slot(who string) string {
+	if _, ok := l.hits[who]; ok || len(l.hits) < attemptsKept {
+		return who
+	}
+	return everyoneElse
+}
+
+// blocked reports whether a caller has used up its attempts, and for how long.
+func (l *limiter) blocked(who string, now time.Time) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	h, ok := l.hits[addr]
+	h, ok := l.hits[l.slot(who)]
 	if !ok || now.Sub(h.started) >= attemptsWindow || h.count < attemptsMax {
 		return false, 0
 	}
 	return true, h.started.Add(attemptsWindow).Sub(now)
 }
 
-// failed records one wrong token from addr.
-func (l *limiter) failed(addr string, now time.Time) {
+// failed records one wrong token from a caller.
+func (l *limiter) failed(who string, now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.hits == nil {
 		l.hits = map[string]hit{}
 	}
-	for key, h := range l.hits {
-		if now.Sub(h.started) >= attemptsWindow {
-			delete(l.hits, key)
+	if now.Sub(l.swept) >= attemptsWindow {
+		for key, h := range l.hits {
+			if now.Sub(h.started) >= attemptsWindow {
+				delete(l.hits, key)
+			}
 		}
+		l.swept = now
 	}
-	h := l.hits[addr]
-	if h.count == 0 {
-		h.started = now
+	who = l.slot(who)
+	h := l.hits[who]
+	if h.count == 0 || now.Sub(h.started) >= attemptsWindow {
+		h = hit{started: now}
 	}
 	h.count++
-	l.hits[addr] = h
+	l.hits[who] = h
 }
 
-// clientAddr is the address an attempt is charged to: the connection's own, port
-// stripped. X-Forwarded-For is not read — it is whatever the client says it is, and
-// trusting it would hand every guess a fresh address. Behind a proxy all callers then
-// share one allowance, which is the conservative way for that to fail.
-func clientAddr(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
+// relayHeaders are what a proxy adds to a request it passes on.
+var relayHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-Ip", "Via", "Cf-Connecting-Ip"}
+
+// caller names who a wrong token is charged to.
+//
+// It is the address the connection came from, and that is the whole answer until there
+// is a proxy in front. Then every connection comes from the proxy, and the plain rule
+// gets three things wrong:
+//
+//   - What the proxy relays and what programs on this machine send would share one
+//     allowance: anyone on the network could spend the ten guesses of the agents that
+//     call this server from the machine itself, and keep them out for as long as they
+//     cared to. So a request that carries a forwarding header is counted apart from one
+//     that does not. Only the header's presence is used — a client can write anything
+//     into one, but cannot take away the one its proxy adds.
+//   - Telling the callers behind the proxy apart takes the proxy's word for who they
+//     are, and that word is worth something only when it is the proxy speaking. So it
+//     is asked for (Options.ProxyHeader names the header); it is the last address in the
+//     header that counts, the one the nearest proxy wrote; and it is read only on a
+//     connection from this machine or a private network, which is where a proxy of the
+//     owner's connects from. From anywhere else that header is a caller describing
+//     itself.
+//   - An IPv6 caller holds a /64, not an address, and could offer every guess from a new
+//     one. Its attempts are charged to the /64.
+func (s *Server) caller(r *http.Request) string {
+	peer, ok := addrOf(r.RemoteAddr)
+	if !ok {
 		return r.RemoteAddr
 	}
-	return host
+	header := s.opts.ProxyHeader
+	if header != "" && (peer.IsLoopback() || peer.IsPrivate() || peer.IsLinkLocalUnicast()) {
+		if said, ok := lastAddr(r.Header.Values(header)); ok {
+			return network(said)
+		}
+	}
+	relayed := header != "" && len(r.Header.Values(header)) > 0
+	for _, name := range relayHeaders {
+		relayed = relayed || len(r.Header.Values(name)) > 0
+	}
+	if relayed {
+		return network(peer) + " relayed"
+	}
+	return network(peer)
+}
+
+// addrOf reads an address that may carry a port: a connection's, or an entry of a
+// forwarding header.
+func addrOf(s string) (netip.Addr, bool) {
+	if ap, err := netip.ParseAddrPort(s); err == nil {
+		return ap.Addr().Unmap().WithZone(""), true
+	}
+	a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(s, "["), "]"))
+	return a.Unmap().WithZone(""), err == nil
+}
+
+// lastAddr is the last address of a header that lists them, as X-Forwarded-For does; a
+// header that holds one address holds its last.
+func lastAddr(values []string) (netip.Addr, bool) {
+	if len(values) == 0 {
+		return netip.Addr{}, false
+	}
+	list := strings.Split(values[len(values)-1], ",")
+	return addrOf(strings.TrimSpace(list[len(list)-1]))
+}
+
+// network is what an address is counted as: itself, or for IPv6 the /64 it is in.
+func network(a netip.Addr) string {
+	if a.Is4() {
+		return a.String()
+	}
+	p, _ := a.Prefix(64)
+	return p.String()
 }
 
 // bearer is the token a request presents in its Authorization header.
@@ -166,14 +334,14 @@ func (s *Server) authorize(r *http.Request) (verdict, time.Duration) {
 	if !ok {
 		return unauthorized, 0
 	}
-	addr := clientAddr(r)
-	if blocked, wait := s.attempts.blocked(addr, now); blocked {
+	who := s.caller(r)
+	if blocked, wait := s.attempts.blocked(who, now); blocked {
 		return throttled, wait
 	}
 	if subtle.ConstantTimeCompare([]byte(given), []byte(s.opts.Token)) == 1 {
 		return allowed, 0
 	}
-	s.attempts.failed(addr, now)
+	s.attempts.failed(who, now)
 	return unauthorized, 0
 }
 
@@ -271,8 +439,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusConflict, "this server has no token: there is nothing to sign in to")
 		return
 	}
-	addr, now := clientAddr(r), time.Now()
-	if blocked, wait := s.attempts.blocked(addr, now); blocked {
+	who, now := s.caller(r), time.Now()
+	if blocked, wait := s.attempts.blocked(who, now); blocked {
 		tooMany(w, r, wait)
 		return
 	}
@@ -289,7 +457,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(body.Token), []byte(s.opts.Token)) != 1 {
-		s.attempts.failed(addr, now)
+		s.attempts.failed(who, now)
 		writeError(w, r, http.StatusUnauthorized, "that is not the token")
 		return
 	}

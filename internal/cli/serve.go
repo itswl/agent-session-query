@@ -28,6 +28,7 @@ func cmdServe(ctx context.Context, args []string, io *streams) error {
 	token := c.fs.String("token", "", "what every caller must hold (ASQ_TOKEN; prefer the variable: a flag shows in the process list)")
 	var origins multi
 	c.fs.Var(&origins, "cors-origin", "another origin whose pages may call the API (repeatable; ASQ_CORS_ORIGIN, comma-separated)")
+	proxyHeader := c.fs.String("proxy-header", os.Getenv("ASQ_PROXY_HEADER"), "the header in which a proxy in front names the caller, so that wrong tokens are counted per caller (ASQ_PROXY_HEADER): CF-Connecting-IP, X-Real-IP, X-Forwarded-For")
 	open := c.fs.Bool("open", false, "open the page in the browser once it is up")
 	pageDir := c.fs.String("page-dir", "", "serve the page from this directory, read afresh on every request (for working on it)")
 	if _, err := c.parse(args); err != nil {
@@ -51,7 +52,8 @@ func cmdServe(ctx context.Context, args []string, io *streams) error {
 	}
 	defer a.Close()
 
-	opts := server.Options{Host: *host, Port: *port, Token: *token, Origins: origins, Page: web.Files, Log: io.err}
+	opts := server.Options{Host: *host, Port: *port, Token: *token, Origins: origins, Page: web.Files, Log: io.err,
+		State: app.StateDir(), ProxyHeader: *proxyHeader}
 	if *pageDir != "" {
 		opts.Page, opts.Live = os.DirFS(*pageDir), true
 	}
@@ -64,6 +66,9 @@ func cmdServe(ctx context.Context, args []string, io *streams) error {
 		guard := "this machine only"
 		if *token != "" {
 			guard = "token required"
+			if *proxyHeader != "" {
+				guard += ", callers named by " + *proxyHeader
+			}
 		}
 		fmt.Fprintf(io.err, "asq %s · %s · %s\n", app.Version, url, guard)
 		fmt.Fprintf(io.err, "  page %s/   api %s/api/   mcp %s/mcp\n", url, url, url)

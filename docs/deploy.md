@@ -26,11 +26,37 @@ refused with `403` before anything is read.
 - programs send `Authorization: Bearer <token>`;
 - the page trades the token once, at `POST /api/login`, for a cookie script never sees —
   `HttpOnly`, `SameSite=Strict`, good for 180 days. The cookie holds no secret: it is an expiry
-  and its signature under a key derived from the token, so nobody can mint or extend one, and
-  changing the token retires every cookie at once.
+  and its signature, and the server keeps nothing about it. The key it is signed with is made
+  from the token and from 32 random bytes the server keeps in its state directory
+  (`session.key`, readable by its owner). So nobody can mint or extend a cookie; changing the
+  token retires every one at once, and so does deleting that file; and a cookie forged from a
+  guess at the token is refused whether or not the guess was right — it is not a way to try
+  tokens. Where there is no directory to keep the secret in, the server makes one for the run
+  and says that sign-ins will end with it.
 
-Ten wrong tokens from one address in a minute, by either route, and that address is answered
-`429` until the minute rolls over — without the token even being compared.
+Ten wrong tokens from one caller in a minute, by either route, and that caller is answered `429`
+until the minute rolls over — without the token even being compared. A caller is the address a
+connection comes from; an IPv6 caller is its `/64`, since that is what it holds.
+
+**Behind a proxy** every connection comes from the proxy, so "the address it comes from" would
+name everyone at once — and ten wrong tokens from anywhere would shut out every caller, the
+agents on the machine itself included. Two things prevent that:
+
+- What a proxy relayed is counted apart from what reached the port directly. A request with a
+  forwarding header (`Forwarded`, `X-Forwarded-*`, `X-Real-IP`, `Via`, `CF-Connecting-IP`) is
+  one of the relayed; nothing that arrives through the proxy can spend the allowance of the
+  programs that call `asq` on its own machine. This needs no setting.
+- To count the callers behind the proxy one by one, say which header names them:
+  `--proxy-header CF-Connecting-IP` behind Cloudflare, `X-Real-IP` behind the nginx below,
+  `X-Forwarded-For` behind anything that appends to it (the last address in it is used — the
+  one your proxy wrote). Without it they share one allowance, and one of them guessing shuts
+  out the rest of them for the minute.
+
+The header is believed only on a connection from the machine itself or a private network, which
+is where a proxy of yours connects from. Name one your proxy *sets*: a header it merely passes
+on is the caller's own word, and a caller who may choose its address has no limit at all. A
+tunnel that passes bytes through unchanged (`ssh -R`, a TCP forward) marks nothing, and what
+comes through it cannot be told from this machine's own.
 
 Keep the token in the environment, not in `--token`: a flag shows in the process list.
 
@@ -40,9 +66,10 @@ sent in the clear is a token shared with the network:
 
 ```nginx
 location / {
-    proxy_pass http://127.0.0.1:7717;
+    proxy_pass http://127.0.0.1:7717;             # asq serve --proxy-header X-Real-IP
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;   # lets the cookie be marked Secure
+    proxy_set_header X-Real-IP $remote_addr;      # who is calling: wrong tokens are counted per caller
     proxy_buffering off;                           # the live stream is sent as it happens
     proxy_read_timeout 1h;
 }
@@ -161,8 +188,9 @@ docker run -d --name asq -p 127.0.0.1:7717:7717 \
   each store mounts where its CLI keeps it under the home directory. Mount `~/.codex/sessions`,
   not `~/.codex`: beside the sessions sit the CLI's credentials. Hermes is the exception — its
   `state.db` needs its `-wal` and `-shm` beside it, so the whole of `~/.hermes` comes along.
-- **`/data` is the index and the export ledger.** A volume there means a restart reads only what
-  changed; without one the history is read again on every start.
+- **`/data` is the index, the export ledger and the secret sign-ins are signed with.** A volume
+  there means a restart reads only what changed and nobody has to sign in again; without one the
+  history is read again on every start, and every start signs everyone out.
 - **`TZ`** names the zone a report's days are counted in. The binary carries the zone database,
   so it works in an image that has none.
 - **It runs as root, on purpose.** Mounted transcripts keep their owner and their `0600` mode,

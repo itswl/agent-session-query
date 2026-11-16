@@ -137,6 +137,7 @@ failures, tokens, files changed by kind (code / test / docs / config), models an
 | `--host`, `--port` | where to listen (`ASQ_HOST`, `ASQ_PORT`). Anything but loopback requires a token |
 | `--token` | what every caller must hold. Prefer `ASQ_TOKEN`: a flag shows in the process list |
 | `--cors-origin URL` | another origin whose pages may call the API (repeatable; `ASQ_CORS_ORIGIN`) |
+| `--proxy-header NAME` | behind a proxy: the header in which it names the caller, so that wrong tokens are counted per caller (`ASQ_PROXY_HEADER`). See [Deploying](deploy.md#who-may-ask) |
 | `--open` | open the page in the browser |
 | `--page-dir DIR` | serve the page from a directory, re-read on every request — for working on it |
 
@@ -165,8 +166,8 @@ it).
 | `ASQ_INDEX` | the index file |
 | `ASQ_ONLY` | read only these CLIs, comma-separated |
 | `ASQ_PATH` | stores outside their default place: `name[@label]=dir`, comma-separated |
-| `ASQ_HOST`, `ASQ_PORT`, `ASQ_TOKEN`, `ASQ_CORS_ORIGIN` | for `asq serve` |
-| `ASQ_STATE` | where the export ledger is kept |
+| `ASQ_HOST`, `ASQ_PORT`, `ASQ_TOKEN`, `ASQ_CORS_ORIGIN`, `ASQ_PROXY_HEADER` | for `asq serve` |
+| `ASQ_STATE` | the directory for what must outlive the index: the export ledger, and the secret a server signs its cookies with |
 | `NO_COLOR` | plain text |
 
 Setting `ASQ_ONLY` and `ASQ_PATH` in the environment rather than as flags is what keeps a page

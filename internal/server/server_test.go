@@ -2,8 +2,11 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -46,6 +50,7 @@ func build(t *testing.T, opts Options) (*Server, *app.App, fixture.History) {
 type call struct {
 	method, path, body string
 	header             map[string]string
+	remote             string // the address the connection comes from; httptest's own when empty
 }
 
 func (c call) do(s *Server) *httptest.ResponseRecorder {
@@ -64,6 +69,9 @@ func (c call) do(s *Server) *httptest.ResponseRecorder {
 			continue
 		}
 		req.Header.Set(k, v)
+	}
+	if c.remote != "" {
+		req.RemoteAddr = c.remote
 	}
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
@@ -435,13 +443,18 @@ func TestToken(t *testing.T) {
 		t.Error("the page is not told it is signed in")
 	}
 
-	// Nobody can mint or extend one
+	// Nobody can mint or extend one. Least of all from the token: a cookie signed under
+	// a key made of the token alone would be a way to ask whether a guess is right, and
+	// one that nothing counts
 	exp, _, _ := strings.Cut(c.Value, ".")
+	fromTokenAlone := hmac.New(sha256.New, []byte(token))
+	fromTokenAlone.Write([]byte("asq session cookie v1"))
 	for name, value := range map[string]string{
-		"a later expiry, same signature": "99999999999." + c.Value[len(exp)+1:],
-		"signed with another token":      sign(signKey("another-token-entirely-0000"), time.Now().Add(time.Hour)),
-		"expired":                        sign(s.key, time.Now().Add(-time.Minute)),
-		"garbage":                        "garbage",
+		"a later expiry, same signature":        "99999999999." + c.Value[len(exp)+1:],
+		"signed with the token and no secret":   sign(fromTokenAlone.Sum(nil), time.Now().Add(time.Hour)),
+		"signed by a server with other secrets": sign(signKey(make([]byte, secretSize), token), time.Now().Add(time.Hour)),
+		"expired":                               sign(s.key, time.Now().Add(-time.Minute)),
+		"garbage":                               "garbage",
 	} {
 		if rec := (call{path: "/api/sessions", header: map[string]string{"Cookie": cookieName + "=" + value}}).do(s); rec.Code != http.StatusUnauthorized {
 			t.Errorf("a cookie %s = %d", name, rec.Code)
@@ -474,7 +487,21 @@ func TestGuessingIsThrottled(t *testing.T) {
 	if rec := (call{method: http.MethodPost, path: "/api/login", body: `{"token":"` + token + `"}`}).do(s); rec.Code != http.StatusTooManyRequests {
 		t.Errorf("login while throttled = %d", rec.Code)
 	}
-	// The window rolls over
+	// The login form is the same door: ten wrong tokens there are the ten
+	s, _, _ = build(t, Options{Host: "0.0.0.0", Token: token})
+	for i := range attemptsMax {
+		if rec := (call{method: http.MethodPost, path: "/api/login", body: `{"token":"not-it"}`}).do(s); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("wrong login %d = %d", i+1, rec.Code)
+		}
+	}
+	if rec := (call{method: http.MethodPost, path: "/api/login", body: `{"token":"` + token + `"}`}).do(s); rec.Code != http.StatusTooManyRequests || len(rec.Result().Cookies()) != 0 {
+		t.Errorf("the right token at login, after ten wrong ones = %d", rec.Code)
+	}
+	if rec := (call{path: "/api/sessions", header: map[string]string{"Authorization": "Bearer " + token}}).do(s); rec.Code != http.StatusTooManyRequests {
+		t.Errorf("the header, after ten wrong logins = %d", rec.Code)
+	}
+
+	// The window rolls over, with or without a sweep having come by
 	var l limiter
 	now := time.Now()
 	for range attemptsMax {
@@ -488,6 +515,295 @@ func TestGuessingIsThrottled(t *testing.T) {
 	}
 	if blocked, _ := l.blocked("10.0.0.1", now.Add(attemptsWindow)); blocked {
 		t.Error("still blocked when the window has passed")
+	}
+	// An entry that outlived its window starts over where it lies: the next minute's
+	// guesses are the next minute's, counted from one, sweep or no sweep
+	later := now.Add(attemptsWindow)
+	l.swept = later // no sweep is due: the old entry is still in the table
+	l.failed("10.0.0.1", later)
+	if blocked, _ := l.blocked("10.0.0.1", later); blocked {
+		t.Error("a guess in a new window was added to the old window's ten")
+	}
+	for range attemptsMax - 1 {
+		l.failed("10.0.0.1", later)
+	}
+	if blocked, wait := l.blocked("10.0.0.1", later.Add(time.Second)); !blocked || wait != attemptsWindow-time.Second {
+		t.Errorf("ten guesses in the new window: blocked %v, for %v", blocked, wait)
+	}
+}
+
+// Who a wrong token is charged to, once there is a proxy in front: every connection then
+// comes from the proxy, and "the address it came from" names everybody at once.
+func TestGuessesAreChargedToWhoMadeThem(t *testing.T) {
+	const local = "127.0.0.1:50000" // where a proxy on this machine, and this machine's own programs, connect from
+	wrong, right := "Bearer not-it", "Bearer "+token
+	ask := func(s *Server, remote, auth string, header map[string]string) int {
+		h := map[string]string{"Authorization": auth}
+		for k, v := range header {
+			h[k] = v
+		}
+		return call{path: "/api/sessions", header: h, remote: remote}.do(s).Code
+	}
+	spend := func(t *testing.T, s *Server, remote string, header func(i int) map[string]string) {
+		t.Helper()
+		for i := range attemptsMax {
+			if code := ask(s, remote, wrong, header(i)); code != http.StatusUnauthorized {
+				t.Fatalf("guess %d = %d", i+1, code)
+			}
+		}
+	}
+	same := func(h map[string]string) func(int) map[string]string {
+		return func(int) map[string]string { return h }
+	}
+
+	t.Run("what a proxy relays does not spend this machine's allowance", func(t *testing.T) {
+		s, _, _ := build(t, Options{Token: token})
+		relayed := map[string]string{"Host": "sessions.example.com", "X-Forwarded-For": "203.0.113.9", "X-Forwarded-Proto": "https"}
+		spend(t, s, local, same(relayed))
+		if code := ask(s, local, right, relayed); code != http.StatusTooManyRequests {
+			t.Errorf("through the proxy, after its ten = %d", code)
+		}
+		if code := ask(s, local, right, nil); code != http.StatusOK {
+			t.Errorf("an agent on this machine, with the token = %d: somebody outside spent its guesses", code)
+		}
+		if rec := (call{method: http.MethodPost, path: "/api/login", body: `{"token":"` + token + `"}`, remote: local}).do(s); rec.Code != http.StatusOK {
+			t.Errorf("signing in on this machine = %d", rec.Code)
+		}
+		// Each mark a proxy leaves is one: with it a request is among the relayed, which
+		// are shut out, and without it among this machine's own, which are not
+		for _, name := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "Via", "CF-Connecting-IP"} {
+			if code := ask(s, local, right, map[string]string{name: "x"}); code != http.StatusTooManyRequests {
+				t.Errorf("%s does not mark a request as relayed (%d)", name, code)
+			}
+		}
+		if code := ask(s, local, right, map[string]string{"X-Request-Id": "x"}); code != http.StatusOK {
+			t.Errorf("a header no proxy means anything by = %d", code)
+		}
+		// The other way round as well: a program here that has the token wrong is shut
+		// out by its own ten, and what comes through the proxy next minute is not
+		spend(t, s, local, same(nil))
+		if code := ask(s, local, right, nil); code != http.StatusTooManyRequests {
+			t.Errorf("this machine, after its own ten = %d", code)
+		}
+	})
+
+	t.Run("a proxy that says who is calling", func(t *testing.T) {
+		s, _, _ := build(t, Options{Token: token, ProxyHeader: "cf-connecting-ip"})
+		from := func(addr string) map[string]string {
+			return map[string]string{"Host": "sessions.example.com", "CF-Connecting-IP": addr, "X-Forwarded-For": addr}
+		}
+		spend(t, s, local, same(from("203.0.113.9")))
+		if code := ask(s, local, right, from("203.0.113.9")); code != http.StatusTooManyRequests {
+			t.Errorf("the caller that guessed = %d", code)
+		}
+		if code := ask(s, local, right, from("203.0.113.10")); code != http.StatusOK {
+			t.Errorf("another caller behind the same proxy = %d: it was charged for the first one's guesses", code)
+		}
+		if code := ask(s, local, right, nil); code != http.StatusOK {
+			t.Errorf("this machine = %d", code)
+		}
+		// A value that is no address names nobody: the request is one of the relayed
+		spend(t, s, local, same(from("unknown")))
+		if code := ask(s, local, right, from("_hidden")); code != http.StatusTooManyRequests {
+			t.Errorf("callers the proxy did not name share an allowance; got %d", code)
+		}
+
+		// The same when the header is one only this proxy uses, and is all it adds
+		s, _, _ = build(t, Options{Token: token, ProxyHeader: "True-Client-IP"})
+		spend(t, s, local, same(map[string]string{"True-Client-IP": "unknown"}))
+		if code := ask(s, local, right, map[string]string{"True-Client-IP": "_hidden"}); code != http.StatusTooManyRequests {
+			t.Errorf("unnamed callers through the proxy = %d", code)
+		}
+		if code := ask(s, local, right, nil); code != http.StatusOK {
+			t.Errorf("this machine = %d: charged for what the proxy relayed", code)
+		}
+	})
+
+	t.Run("the last address of a list is the proxy's own word", func(t *testing.T) {
+		s, _, _ := build(t, Options{Token: token, ProxyHeader: "X-Forwarded-For"})
+		// What the caller wrote into the header comes first; the proxy appends who it saw
+		spend(t, s, local, func(i int) map[string]string {
+			return map[string]string{"X-Forwarded-For": fmt.Sprintf("198.18.0.%d, 203.0.113.9", i)}
+		})
+		if code := ask(s, local, wrong, map[string]string{"X-Forwarded-For": "198.18.0.99, 203.0.113.9"}); code != http.StatusTooManyRequests {
+			t.Errorf("a caller that writes itself a new address each time = %d", code)
+		}
+		if code := ask(s, local, right, map[string]string{"X-Forwarded-For": "203.0.113.9, 203.0.113.10:4711"}); code != http.StatusOK {
+			t.Errorf("another caller, port and all = %d", code)
+		}
+	})
+
+	t.Run("from the network at large the header is a caller describing itself", func(t *testing.T) {
+		s, _, _ := build(t, Options{Host: "0.0.0.0", Token: token, ProxyHeader: "X-Real-IP"})
+		const outside = "198.51.100.7:40000"
+		spend(t, s, outside, func(i int) map[string]string { return map[string]string{"X-Real-IP": fmt.Sprintf("203.0.113.%d", i)} })
+		if code := ask(s, outside, wrong, map[string]string{"X-Real-IP": "203.0.113.200"}); code != http.StatusTooManyRequests {
+			t.Errorf("a new claimed address bought a new allowance (%d)", code)
+		}
+		// A proxy on a private network is the owner's, and is believed
+		const proxy = "10.1.2.3:40000"
+		if code := ask(s, proxy, right, map[string]string{"X-Real-IP": "203.0.113.77"}); code != http.StatusOK {
+			t.Errorf("through a proxy on the private network = %d", code)
+		}
+	})
+
+	t.Run("an IPv6 caller is its /64", func(t *testing.T) {
+		s, _, _ := build(t, Options{Host: "::", Token: token})
+		for i := range attemptsMax {
+			if code := ask(s, fmt.Sprintf("[2001:db8:1:2::%x]:40000", i+1), wrong, nil); code != http.StatusUnauthorized {
+				t.Fatalf("guess %d = %d", i+1, code)
+			}
+		}
+		if code := ask(s, "[2001:db8:1:2:aaaa:bbbb:cccc:dddd]:40000", right, nil); code != http.StatusTooManyRequests {
+			t.Errorf("a new address in the same /64 = %d", code)
+		}
+		if code := ask(s, "[2001:db8:1:3::1]:40000", right, nil); code != http.StatusOK {
+			t.Errorf("the /64 next door = %d", code)
+		}
+		if code := ask(s, "[::ffff:192.0.2.9]:40000", right, nil); code != http.StatusOK {
+			t.Errorf("an IPv4 caller on an IPv6 socket = %d", code)
+		}
+	})
+
+	t.Run("the table is bounded", func(t *testing.T) {
+		var l limiter
+		now := time.Now()
+		for i := range attemptsKept {
+			l.failed(fmt.Sprintf("caller %d", i), now)
+		}
+		for i := range attemptsMax {
+			l.failed(fmt.Sprintf("latecomer %d", i), now)
+		}
+		if len(l.hits) > attemptsKept+1 {
+			t.Errorf("the table holds %d entries", len(l.hits))
+		}
+		if blocked, _ := l.blocked("someone new", now); !blocked {
+			t.Error("past the table's size every new address is a new allowance")
+		}
+		if blocked, _ := l.blocked("caller 7", now); blocked {
+			t.Error("a caller the table knows was charged for the flood")
+		}
+		// And it empties again
+		l.failed("after", now.Add(attemptsWindow))
+		if len(l.hits) != 1 {
+			t.Errorf("after the window the table holds %d entries", len(l.hits))
+		}
+	})
+
+	if _, err := New(nil, Options{Token: token, ProxyHeader: "X-Real-IP: 1.2.3.4"}); err == nil {
+		t.Error("a proxy header that is no header name was accepted")
+	}
+}
+
+// A sign-in is good for 180 days, and a restart is not the end of it: the secret the
+// cookies are signed with is kept. What retires them is changing the token, or removing
+// the secret.
+func TestSignInsOutliveARestart(t *testing.T) {
+	a, _ := fixture.Open(t)
+	dir := filepath.Join(t.TempDir(), "state", "asq")
+	var said bytes.Buffer
+	start := func(opts Options) *Server {
+		t.Helper()
+		opts.Page, opts.Log = page, &said
+		if opts.Token != "" {
+			opts.Host = "0.0.0.0"
+		}
+		s, err := New(a, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	signIn := func(s *Server, tok string) string {
+		t.Helper()
+		rec := call{method: http.MethodPost, path: "/api/login", body: `{"token":"` + tok + `"}`}.do(s)
+		if rec.Code != http.StatusOK || len(rec.Result().Cookies()) != 1 {
+			t.Fatalf("login = %d %s", rec.Code, rec.Body)
+		}
+		c := rec.Result().Cookies()[0]
+		return c.Name + "=" + c.Value
+	}
+	takes := func(s *Server, cookie string) bool {
+		return call{path: "/api/sessions", header: map[string]string{"Cookie": cookie}}.do(s).Code == http.StatusOK
+	}
+
+	cookie := signIn(start(Options{Token: token, State: dir}), token)
+	if !takes(start(Options{Token: token, State: dir}), cookie) {
+		t.Error("the server was restarted and the sign-in is gone")
+	}
+	path := filepath.Join(dir, secretFile)
+	info, err := os.Stat(path)
+	if err != nil || info.Size() != secretSize {
+		t.Fatalf("the secret: %v, %v", info, err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Errorf("the secret is readable by more than its owner: %v", info.Mode().Perm())
+	}
+	const other = "another-token-entirely-0000"
+	if takes(start(Options{Token: other, State: dir}), cookie) {
+		t.Error("the token was changed and the old cookie still works")
+	}
+	if takes(start(Options{Token: token}), cookie) || takes(start(Options{Token: token, State: t.TempDir()}), cookie) {
+		t.Error("a server with another secret took the cookie")
+	}
+
+	// A secret that is not whole is no secret: it is replaced, and the server says nothing
+	if err := os.WriteFile(path, []byte("short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := start(Options{Token: token, State: dir})
+	if takes(s, cookie) {
+		t.Error("the secret was lost and the old cookie still works")
+	}
+	if info, err := os.Stat(path); err != nil || info.Size() != secretSize {
+		t.Errorf("the damaged secret was not replaced: %v, %v", info, err)
+	}
+	if !takes(start(Options{Token: token, State: dir}), signIn(s, token)) {
+		t.Error("the replaced secret was not kept")
+	}
+
+	// Nowhere to keep it: the server runs, sign-ins last as long as it does, and it says so
+	if said.Len() != 0 {
+		t.Errorf("said, with a directory that works: %s", &said)
+	}
+	blocker := filepath.Join(t.TempDir(), "a-file")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s = start(Options{Token: token, State: filepath.Join(blocker, "asq")})
+	if !takes(s, signIn(s, token)) {
+		t.Error("without a place for the secret nobody can sign in")
+	}
+	if !strings.Contains(said.String(), "will not outlive this run") {
+		t.Errorf("a secret that could not be kept was not mentioned: %q", &said)
+	}
+	// Servers that start in the same instant hold one secret, not one each
+	together := filepath.Join(t.TempDir(), "asq")
+	secrets := make([][]byte, 16)
+	var wg sync.WaitGroup
+	for i := range secrets {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			secret, err := loadSecret(together)
+			if err != nil {
+				t.Error(err)
+			}
+			secrets[i] = secret
+		}()
+	}
+	wg.Wait()
+	for _, secret := range secrets {
+		if len(secret) != secretSize || !bytes.Equal(secret, secrets[0]) {
+			t.Fatal("servers that started together hold different secrets")
+		}
+	}
+
+	// Without a token there is nothing to sign, and nothing is written
+	none := filepath.Join(t.TempDir(), "unused")
+	start(Options{State: none})
+	if _, err := os.Stat(none); err == nil {
+		t.Error("a server without a token made itself a secret")
 	}
 }
 

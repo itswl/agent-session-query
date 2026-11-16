@@ -1,6 +1,8 @@
+# What neither image is built from. dist-image/ is not listed, though it looks like it
+# belongs here: it is where the release workflow puts the binaries Dockerfile.release
+# copies in, and ignoring it leaves that image with nothing to copy.
 .git
 .github
 docs
 *.md
 dist
-dist-image

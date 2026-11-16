@@ -154,5 +154,5 @@ under, and why, are in [The page](ui.md).
 Tag `vX.Y.Z` with an annotated tag whose message is the release notes (`git tag -a
 --cleanup=verbatim`, or git strips Markdown headings as comments) and push it. The release
 workflow tests on three platforms, cross-compiles six, publishes the container image from the
-same linux binaries, writes `SHA256SUMS`, attaches the installers with the repository filled in,
-and creates the release. The version is set at link time: `-X github.com/itswl/agent-session-query/internal/app.Version=…`.
+same linux binaries, writes `SHA256SUMS`, attaches the installers, and creates the release. Both
+images are also built and run on every push, so a tag is not where a broken one is found. The version is set at link time: `-X github.com/itswl/agent-session-query/internal/app.Version=…`.

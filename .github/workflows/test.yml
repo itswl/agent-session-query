@@ -1,6 +1,6 @@
-# Runs on every push and pull request: tests, plus the format, vet and cross-compile
-# checks. The release workflow only fires on a tag, and release day is the wrong day to
-# find out.
+# Runs on every push and pull request: tests, the format, vet and cross-compile checks,
+# and both container images built and run. The release workflow only fires on a tag, and
+# release day is the wrong day to find out.
 #
 # Which platforms depends on where the push lands. A push to any other branch tests on
 # Linux only; a pull request and a push to main test on all three. The macOS runner is
@@ -83,3 +83,50 @@ jobs:
             GOOS=${target%/*} GOARCH=${target#*/} go build ./... || exit 1
             GOOS=${target%/*} GOARCH=${target#*/} go vet ./... || exit 1
           done
+
+  # The two images. Nothing else builds them before a tag does, and the published one is
+  # put together there from files only that workflow has: a COPY that finds nothing, or
+  # an ignore file that hides what it needs, would first show on release day. So the
+  # release image is assembled here the way release.yml assembles it, and then run.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Release image
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p dist-image/linux/amd64
+          go build -trimpath -ldflags "-s -w -X github.com/itswl/agent-session-query/internal/app.Version=ci" -o dist-image/linux/amd64/asq ./cmd/asq
+          docker build -f Dockerfile.release -t asq:release .
+          docker run --rm asq:release --version
+
+      - name: Image from source
+        run: |
+          docker build --build-arg VERSION=ci -t asq:source .
+          docker run --rm asq:source --version
+
+      # What the image is for: it refuses to serve without a token, serves with one, and
+      # answers the health check it declares
+      - name: Run it
+        run: |
+          set +e
+          timeout 30 docker run --rm asq:release
+          status=$?
+          set -e
+          if [ "$status" = 0 ] || [ "$status" = 124 ]; then
+            echo "the image served without a token (exit $status)"
+            exit 1
+          fi
+          docker run -d --name asq -e ASQ_TOKEN=0123456789abcdef0123456789abcdef asq:release
+          for attempt in $(seq 1 40); do
+            docker exec asq /asq ping > /dev/null 2>&1 && break
+            sleep 0.5
+          done
+          docker exec asq /asq ping

@@ -1,0 +1,312 @@
+package openclaw
+
+import (
+	"context"
+	"database/sql"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/klauspost/compress/zstd"
+	_ "modernc.org/sqlite"
+
+	"github.com/itswl/agent-session-query/internal/model"
+	"github.com/itswl/agent-session-query/internal/sources"
+	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
+)
+
+const schema = `
+CREATE TABLE session_windows (
+	session_id TEXT PRIMARY KEY, session_key TEXT NOT NULL,
+	status TEXT, started_at INTEGER, ended_at INTEGER,
+	updated_at INTEGER NOT NULL, transcript_updated_at INTEGER,
+	model_provider TEXT, model TEXT, display_name TEXT);
+CREATE TABLE transcript_events (
+	session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+	event_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+	PRIMARY KEY (session_id, seq));`
+
+// Rows copied from a real 2026.9 install: the event shapes, the call and its result as
+// two messages, the unix-millisecond times.
+var rows = []string{
+	`INSERT INTO session_windows VALUES ('ses_chat', 'agent:main:main', 'done', 1789704223504, 1789704262019, 1789704262019, 1789704262019, 'deepseek', 'deepseek-chat', '部署排障记录')`,
+	`INSERT INTO session_windows VALUES ('ses_cli', 'agent:main:main', 'running', 1789704223504, NULL, 1789704227713, 1789704227688, 'deepseek', 'deepseek-chat', '')`,
+	`INSERT INTO transcript_events VALUES ('ses_cli', 1, '{"type":"session","id":"ses_cli","cwd":"/w/proj"}', 1789704223504)`,
+	`INSERT INTO transcript_events VALUES ('ses_cli', 2, '{"type":"message","timestamp":"2026-09-18T04:03:44.021Z","message":{"role":"user","content":"set up an Nginx reverse proxy"}}', 1789704224021)`,
+	`INSERT INTO transcript_events VALUES ('ses_cli', 3, '{"type":"message","timestamp":"2026-09-18T04:03:45.831Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"look first"},{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"ls -la"}}],"stopReason":"toolUse"}}', 1789704225831)`,
+	`INSERT INTO transcript_events VALUES ('ses_cli', 4, '{"type":"message","timestamp":"2026-09-18T04:03:45.867Z","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash","isError":true,"content":[{"type":"text","text":"ls: cannot access"}]}}', 1789704225867)`,
+	`INSERT INTO transcript_events VALUES ('ses_cli', 5, '{"type":"model_change","timestamp":"2026-09-18T04:03:46.000Z","provider":"glm","modelId":"glm-5.3"}', 1789704226000)`,
+	`INSERT INTO transcript_events VALUES ('ses_cli', 6, '{"type":"message","timestamp":"2026-09-18T04:03:47.000Z","message":{"role":"assistant","content":[{"type":"text","text":"proxy_pass goes like this"}],"stopReason":"stop","model":"glm-5.3","usage":{"input":481,"output":161,"cacheRead":37248,"cacheWrite":0,"totalTokens":37890,"cost":{"total":0.0021}}}}', 1789704227000)`,
+	`INSERT INTO transcript_events VALUES ('ses_cli', 7, 'not json at all', 1789704228000)`,
+}
+
+func agent(t *testing.T, state, name string, statements ...string) string {
+	t.Helper()
+	path := filepath.Join(state, "agents", name, "agent", "openclaw-agent.sqlite")
+	sourcetest.Write(t, filepath.Join(filepath.Dir(path), ".keep"), "")
+	exec(t, path, statements...)
+	return path
+}
+
+func exec(t *testing.T, path string, statements ...string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, stmt := range statements {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+}
+
+func TestAgentDatabase(t *testing.T) {
+	state := t.TempDir()
+	path := agent(t, state, "main", append([]string{schema}, rows...)...)
+	all := sourcetest.All(t, Spec.Open(state))
+	if len(all) != 2 {
+		t.Fatalf("sessions = %d", len(all))
+	}
+	chat := sourcetest.ByID(t, all, "ses_chat")
+	if chat.Session.Title != "部署排障记录" || chat.Session.Cwd != "" || chat.Session.Running {
+		t.Errorf("chat session = %+v", chat.Session)
+	}
+	cli := sourcetest.ByID(t, all, "ses_cli")
+	s := cli.Session
+	// With no display_name the first ask is the title; the cwd is the session row's
+	if s.Title != "set up an Nginx reverse proxy" || s.Cwd != "/w/proj" || s.Model != "deepseek/deepseek-chat" || !s.Running || s.Path != path {
+		t.Errorf("cli session = %+v", s)
+	}
+	if s.StartedAt.UnixMilli() != 1789704223504 || s.UpdatedAt.UnixMilli() != 1789704227688 {
+		t.Errorf("times = %v / %v", s.StartedAt, s.UpdatedAt)
+	}
+	turn := cli.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt thinking tool event reply" {
+		t.Errorf("items = %s", got)
+	}
+	tool := sourcetest.Tools(turn)[0]
+	if tool.Name != "bash" || tool.Command != "ls -la" || tool.Status != model.StatusError || tool.Output != "ls: cannot access" {
+		t.Errorf("tool = %+v", tool)
+	}
+	if turn.Items[3].Event != model.EventModelChange || turn.Items[3].Text != "glm/glm-5.3" {
+		t.Errorf("model change = %+v", turn.Items[3])
+	}
+	// The pi-ai shape: the cache is beside the input already
+	last := turn.Calls[len(turn.Calls)-1]
+	if *last.Usage != (model.Usage{Input: 481, Output: 161, CacheRead: 37248}) || last.CostUSD != 0.0021 || last.Model != "glm-5.3" || last.Stop != "stop" {
+		t.Errorf("call = %+v usage %+v", last, last.Usage)
+	}
+}
+
+func TestEveryAgentIsListedAndStampsAreItsOwn(t *testing.T) {
+	state := t.TempDir()
+	main := agent(t, state, "main", append([]string{schema}, rows...)...)
+	other := agent(t, state, "ops", schema,
+		`INSERT INTO session_windows VALUES ('ses_ops', 'k', 'done', 1, 2, 2, 2, NULL, 'm', 'Ops')`,
+		`INSERT INTO transcript_events VALUES ('ses_ops', 1, '{"type":"message","message":{"role":"user","content":"hello"}}', 1)`)
+	src := Spec.Open(state)
+	stamps := func() map[string]string {
+		refs, err := src.Scan(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, ref := range refs {
+			out[ref.Key] = ref.Stamp
+		}
+		return out
+	}
+	before := stamps()
+	if len(before) != 3 || before[other+"#ses_ops"] == "" {
+		t.Fatalf("refs = %v", before)
+	}
+	exec(t, main, `INSERT INTO transcript_events VALUES ('ses_chat', 1, '{"type":"message","message":{"role":"user","content":"more"}}', 9)`)
+	after := stamps()
+	if before[main+"#ses_cli"] != after[main+"#ses_cli"] || before[other+"#ses_ops"] != after[other+"#ses_ops"] {
+		t.Error("an event in one session moved another session's stamp")
+	}
+	if before[main+"#ses_chat"] == after[main+"#ses_chat"] {
+		t.Error("a new event did not move its session's stamp")
+	}
+}
+
+func TestUnreadableDatabaseIsAnError(t *testing.T) {
+	state := t.TempDir()
+	agent(t, state, "main", `CREATE TABLE something_else (id TEXT)`)
+	if _, err := Spec.Open(state).Scan(context.Background()); err == nil {
+		t.Error("a database with neither table listed nothing and said nothing")
+	}
+}
+
+// Before 2026.9: an index and a transcript per session, read when no agent database is there.
+func TestOlderLayout(t *testing.T) {
+	state := t.TempDir()
+	dir := filepath.Join(state, "agents", "default", "sessions")
+	sourcetest.Write(t, filepath.Join(dir, "sessions.json"), map[string]any{
+		"agent:default:hook:alert": map[string]any{"sessionId": "old-1", "status": "done", "model": "deepseek-chat", "updatedAt": 1789704262019},
+		"agent:default:none":       map[string]any{"sessionId": "no-file"},
+	})
+	sourcetest.Write(t, filepath.Join(dir, "old-1.jsonl"),
+		map[string]any{"type": "session", "id": "old-1", "cwd": "/w/old"},
+		map[string]any{"type": "message", "timestamp": "2026-09-18T04:03:44.021Z", "message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "check the alert"}}}},
+		map[string]any{"type": "message", "timestamp": "2026-09-18T04:03:45.000Z", "message": map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "toolCall", "id": "c1", "name": "bash", "arguments": map[string]any{"command": "uptime"}},
+			map[string]any{"type": "toolResult", "toolCallId": "c1", "toolName": "bash", "content": []any{map[string]any{"type": "text", "text": "up 3 days"}}},
+			map[string]any{"type": "text", "text": "The host is fine."}}, "stopReason": "stop"}})
+	var src sources.Source = Spec.Open(state)
+	if !src.Exists() {
+		t.Fatal("the older layout is a store too")
+	}
+	s := sourcetest.One(t, src)
+	if s.Session.ID != "old-1" || s.Session.Cwd != "/w/old" || s.Session.Model != "deepseek-chat" || s.Session.UpdatedAt.UnixMilli() != 1789704262019 {
+		t.Errorf("session = %+v", s.Session)
+	}
+	turn := s.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt tool reply" || sourcetest.Tools(turn)[0].Output != "up 3 days" || turn.Answer != "The host is fine." {
+		t.Errorf("turn = %s", got)
+	}
+	// A result written as a block says nothing of how the call ended
+	if tool := sourcetest.Tools(turn)[0]; tool.Status != "" {
+		t.Errorf("status = %q, want not recorded", tool.Status)
+	}
+}
+
+func TestLocate(t *testing.T) {
+	if got := Spec.Locate(sourcetest.Env("/home/u")); got != filepath.Join("/home/u", ".openclaw") {
+		t.Errorf("default = %s", got)
+	}
+	if got := Spec.Locate(sourcetest.Env("/home/u", "OPENCLAW_STATE_DIR", "/data/oc")); got != "/data/oc" {
+		t.Errorf("relocated = %s", got)
+	}
+	if Spec.Open(t.TempDir()).Exists() || Spec.Resume != "" {
+		t.Error("an empty state directory is no store, and OpenClaw has no by-id resume worth offering")
+	}
+}
+
+// The 2026.11 layout, as a real install wrote it: an event past a few kilobytes is stored
+// compressed (event_json NULL, event_zstd the frame), and the tools an agent's `exec`
+// program runs are recorded as messages of their own kind — the only place the transcript
+// says what was really read and run.
+const schema2611 = `
+CREATE TABLE session_windows (
+	session_id TEXT PRIMARY KEY, session_key TEXT NOT NULL,
+	status TEXT, started_at INTEGER, ended_at INTEGER,
+	updated_at INTEGER NOT NULL, transcript_updated_at INTEGER,
+	model_provider TEXT, model TEXT, display_name TEXT);
+CREATE TABLE transcript_events (
+	session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+	event_json TEXT, created_at INTEGER NOT NULL,
+	event_zstd BLOB, event_utf8_bytes INTEGER,
+	PRIMARY KEY (session_id, seq));`
+
+func TestCompressedEventsAndNestedTools(t *testing.T) {
+	state := t.TempDir()
+	path := agent(t, state, "main", schema2611,
+		`INSERT INTO session_windows VALUES ('ses_new', 'agent:main:explicit:ses_new', NULL, NULL, NULL, 1794568037232, NULL, 'deepseek', 'deepseek-v4-pro', NULL)`)
+	enc, _ := zstd.NewWriter(nil)
+	defer enc.Close()
+	events := []struct {
+		text   string
+		packed bool
+	}{
+		{`{"type":"session","id":"ses_new","cwd":"/w/proj"}`, false},
+		{`{"type":"custom","customType":"model-snapshot","data":{}}`, false},
+		{`{"type":"message","timestamp":"2026-11-13T11:06:51.000Z","message":{"role":"user","content":[{"type":"text","text":"read the notes, then list the missing directory"}]}}`, false},
+		{`{"type":"custom_message","customType":"openclaw.runtime-context","content":"runtime context the person never saw"}`, false},
+		{`{"type":"message","timestamp":"2026-11-13T11:07:07.000Z","message":{"role":"assistant","model":"deepseek-v4-pro","content":[{"type":"toolCall","id":"call_outer","name":"exec","arguments":{"code":"return await read({path:'/w/proj/notes.txt'})"}}],"stopReason":"toolUse","usage":{"input":1000,"output":200,"cacheRead":4000,"cacheWrite":0,"reasoningTokens":150,"totalTokens":5200,"cost":{"total":0.004}}}}`, false},
+		{`{"type":"message","timestamp":"2026-11-13T11:07:08.108Z","message":{"role":"custom","customType":"openclaw.nested-tool.v1","display":true,"excludeFromContext":true,"content":"","details":{"parentToolCallId":"call_outer","toolCallId":"nested_1","toolName":"read","input":{"path":"/w/proj/notes.txt"},"result":{"content":[{"type":"text","text":"the deploy runs at noon"}],"details":{"kind":"text"}},"isError":false,"startedAt":1794568028080,"timestamp":1794568028106}}}`, false},
+		// The outer call's result is long, and so it is the one that arrives compressed
+		{`{"type":"message","timestamp":"2026-11-13T11:07:08.200Z","message":{"role":"toolResult","toolCallId":"call_outer","toolName":"exec","isError":false,"content":[{"type":"text","text":"` + strings.Repeat("the deploy runs at noon. ", 400) + `"}]}}`, true},
+		{`{"type":"message","timestamp":"2026-11-13T11:07:15.399Z","message":{"role":"custom","customType":"openclaw.nested-tool.v1","content":"","details":{"toolCallId":"nested_2","toolName":"exec","input":{"command":"ls /missing"},"result":{"content":[{"type":"text","text":"ls: /missing: No such file or directory"}],"details":{"status":"completed","exitCode":1,"durationMs":467}},"isError":false,"startedAt":1794568034704,"timestamp":1794568035399}}}`, false},
+		{`{"type":"message","timestamp":"2026-11-13T11:07:17.000Z","message":{"role":"assistant","model":"deepseek-v4-pro","content":[{"type":"text","text":"The notes say the deploy runs at noon; the directory is not there."}],"stopReason":"stop","usage":{"input":300,"output":40,"cacheRead":5000,"totalTokens":5340,"cost":{"total":0.001}}}}`, false},
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, e := range events {
+		if e.packed {
+			_, err = db.Exec(`INSERT INTO transcript_events (session_id, seq, event_zstd, event_utf8_bytes, created_at) VALUES ('ses_new', ?, ?, ?, 0)`, i, enc.EncodeAll([]byte(e.text), nil), len(e.text))
+		} else {
+			_, err = db.Exec(`INSERT INTO transcript_events (session_id, seq, event_json, created_at) VALUES ('ses_new', ?, ?, 0)`, i, e.text)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	s := sourcetest.One(t, Spec.Open(state))
+	if s.Session.Cwd != "/w/proj" || s.Session.Model != "deepseek/deepseek-v4-pro" || len(s.Turns) != 1 {
+		t.Fatalf("session = %+v, %d turns", s.Session, len(s.Turns))
+	}
+	turn := s.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt tool tool tool reply" {
+		t.Errorf("items = %s: the runtime context and the snapshot are the CLI's own, and each nested run is a call", got)
+	}
+	tools := sourcetest.Tools(turn)
+	outer, read, ls := tools[0], tools[1], tools[2]
+	if outer.Name != "exec" || !outer.Done || outer.Status != model.StatusOK || !strings.HasPrefix(outer.Output, "the deploy runs at noon. ") || len(outer.Output) < 9000 {
+		t.Errorf("the outer call's result was stored compressed, and is read all the same: done=%v status=%q, %d bytes", outer.Done, outer.Status, len(outer.Output))
+	}
+	if read.Name != "read" || read.Status != model.StatusOK || read.Output != "the deploy runs at noon" || read.DurMs != 26 || len(read.Files) != 1 || read.Files[0] != "/w/proj/notes.txt" {
+		t.Errorf("nested read = %+v", read)
+	}
+	// Nothing flagged it — isError is false — but a command that exits 1 failed
+	if ls.Name != "exec" || ls.Command != "ls /missing" || ls.Status != model.StatusError || ls.Exit == nil || *ls.Exit != 1 || ls.DurMs != 467 {
+		t.Errorf("nested command = %+v", ls)
+	}
+	if turn.Tools != 3 || turn.Failures != 1 || !strings.HasPrefix(turn.Answer, "The notes say") {
+		t.Errorf("turn = %d tools, %d failed, answer %q", turn.Tools, turn.Failures, turn.Answer)
+	}
+	// A nested run is not a model response: two responses, their tokens as recorded
+	want := model.Usage{Input: 1300, Output: 240, CacheRead: 9000, Reasoning: 150}
+	if s.Stats.Calls != 2 || s.Stats.Usage != want || s.Stats.CostUSD != 0.005 {
+		t.Errorf("usage = %+v in %d calls, cost %v; want %+v in 2", s.Stats.Usage, s.Stats.Calls, s.Stats.CostUSD, want)
+	}
+}
+
+// One agent's database that cannot be read is not every agent's.
+func TestOneUnreadableAgentDatabase(t *testing.T) {
+	state := t.TempDir()
+	agent(t, state, "main", append([]string{schema}, rows...)...)
+	agent(t, state, "zzz", `CREATE TABLE something_else (x)`) // a database, but not one this reads
+	refs, err := Spec.Open(state).Scan(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "zzz") {
+		t.Errorf("the agent that could not be read went unnamed: %v", err)
+	}
+	if len(refs) != 2 {
+		t.Errorf("refs = %d, want the two sessions of the agent that can be read", len(refs))
+	}
+}
+
+// What the row shape says beyond words and calls: a response that failed at the provider,
+// what a tool's own model call cost, and which of a row's two times is when it happened.
+func TestErrorStopsToolSpendAndMessageTime(t *testing.T) {
+	state := t.TempDir()
+	agent(t, state, "main", schema,
+		`INSERT INTO session_windows VALUES ('ses_x', 'agent:main:main', 'done', 1789704223504, 1789704262019, 1789704262019, 1789704262019, 'deepseek', 'deepseek-chat', '')`,
+		`INSERT INTO transcript_events VALUES ('ses_x', 1, '{"type":"message","timestamp":"2026-09-18T04:09:00.000Z","message":{"role":"user","timestamp":1789704224000,"content":"summarise the logs"}}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_x', 2, '{"type":"message","timestamp":"2026-09-18T04:09:00.000Z","message":{"role":"assistant","timestamp":1789704225000,"content":[{"type":"toolCall","id":"c1","name":"summarize","arguments":{}}],"stopReason":"toolUse","usage":{"input":10,"output":5,"totalTokens":15}}}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_x', 3, '{"type":"message","timestamp":"2026-09-18T04:09:00.000Z","message":{"role":"toolResult","timestamp":1789704229000,"toolCallId":"c1","toolName":"summarize","isError":false,"content":[{"type":"text","text":"a summary"}],"usage":{"input":1000,"output":200,"totalTokens":1200,"cost":{"total":0.002}}}}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_x', 4, '{"type":"message","timestamp":"2026-09-18T04:09:00.000Z","message":{"role":"assistant","timestamp":1789704230000,"content":[],"stopReason":"error","errorMessage":"429 rate limit exceeded"}}', 0)`,
+	)
+	s := sourcetest.One(t, Spec.Open(state))
+	turn := s.Turn(t, 1)
+	if want := (model.Usage{Input: 1010, Output: 205}); s.Stats.Usage != want || s.Stats.CostUSD != 0.002 {
+		t.Errorf("usage = %+v, cost %v; want %+v: what a tool's own model call spent is on its result", s.Stats.Usage, s.Stats.CostUSD, want)
+	}
+	last := turn.Items[len(turn.Items)-1]
+	if last.Kind != model.Event || last.Event != "error" || last.Text != "429 rate limit exceeded" {
+		t.Errorf("a response that failed at the provider left %+v", last)
+	}
+	// All four rows were appended in the same instant; the messages say when each happened
+	if got := turn.StartedAt.UnixMilli(); got != 1789704224000 {
+		t.Errorf("the turn started at %d: the row's time is when it was flushed, the message's when it happened", got)
+	}
+	if tool := sourcetest.Tools(turn)[0]; tool.EndAt.UnixMilli() != 1789704229000 {
+		t.Errorf("the tool ended at %d", tool.EndAt.UnixMilli())
+	}
+}

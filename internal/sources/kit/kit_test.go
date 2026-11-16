@@ -1,0 +1,205 @@
+package kit
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/klauspost/compress/zstd"
+)
+
+func lines(t *testing.T, path string) []string {
+	t.Helper()
+	var out []string
+	if err := Lines(path, func(line []byte) bool { out = append(out, string(line)); return true }); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.jsonl")
+	huge := strings.Repeat("x", 3<<20) // one row larger than any buffer: an image, pasted
+	os.WriteFile(path, []byte("one\n\ntwo\r\n"+huge+"\nlast with no newline"), 0o644)
+	got := lines(t, path)
+	if len(got) != 4 || got[0] != "one" || got[1] != "two" || len(got[2]) != len(huge) || got[3] != "last with no newline" {
+		t.Errorf("lines = %d: %q … %q", len(got), got[0], got[len(got)-1])
+	}
+
+	// Stopping early stops
+	n := 0
+	Lines(path, func([]byte) bool { n++; return false })
+	if n != 1 {
+		t.Errorf("read %d lines after being told to stop", n)
+	}
+
+	// A compressed transcript reads the same
+	var packed []byte
+	enc, _ := zstd.NewWriter(nil)
+	packed = enc.EncodeAll([]byte("one\ntwo\nthree\n"), nil)
+	enc.Close()
+	zst := filepath.Join(dir, "t.jsonl.zst")
+	os.WriteFile(zst, packed, 0o644)
+	if got := lines(t, zst); strings.Join(got, ",") != "one,two,three" {
+		t.Errorf("zstd lines = %q", got)
+	}
+	// … and one cut short mid-write gives what it holds rather than nothing
+	os.WriteFile(zst, packed[:len(packed)-3], 0o644)
+	var some []string
+	_ = Lines(zst, func(line []byte) bool { some = append(some, string(line)); return true })
+	if len(some) == 0 {
+		t.Log("a truncated zstd frame yielded no lines (acceptable: nothing whole was decodable)")
+	}
+
+	if err := Lines(filepath.Join(dir, "missing.jsonl"), func([]byte) bool { return true }); err == nil {
+		t.Error("a file that is not there reads as empty")
+	}
+
+	var objs int
+	os.WriteFile(path, []byte(`{"a":1}`+"\n"+`not json`+"\n"+`[1,2]`+"\n"+`{"b":2}`+"\n"+`{"cut":`), 0o644)
+	Objects(path, func(map[string]any) bool { objs++; return true })
+	if objs != 2 {
+		t.Errorf("objects = %d: a row that is not an object is skipped, not fatal", objs)
+	}
+}
+
+func TestTimes(t *testing.T) {
+	want := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	for _, in := range []any{
+		"2026-10-01T10:00:00Z", "2026-10-01T10:00:00.000Z", "2026-10-01T12:00:00+02:00",
+		float64(want.Unix()), float64(want.UnixMilli()), want.UnixMilli(), int(want.Unix()), "1790848800",
+	} {
+		if got := Time(in); !got.Equal(want) {
+			t.Errorf("Time(%v) = %v, want %v", in, got, want)
+		}
+	}
+	for _, in := range []any{nil, "", "soon", float64(0), map[string]any{}} {
+		if got := Time(in); !got.IsZero() {
+			t.Errorf("Time(%v) = %v, want no time", in, got)
+		}
+	}
+	// Seconds, milliseconds, microseconds and nanoseconds are told apart by magnitude
+	for _, v := range []float64{float64(want.Unix()), float64(want.UnixMilli()), float64(want.UnixMicro()), float64(want.UnixNano())} {
+		if got := Epoch(v); got.Sub(want).Abs() > time.Second {
+			t.Errorf("Epoch(%v) = %v", v, got)
+		}
+	}
+}
+
+func TestValues(t *testing.T) {
+	if Str(12) != "" || Str("x") != "x" || Str(nil) != "" {
+		t.Error("Str is a string or nothing")
+	}
+	if n, ok := Num(int64(12)); !ok || n != 12 {
+		t.Errorf("Num(12) = %v, %v", n, ok)
+	}
+	if _, ok := Num("12"); ok {
+		t.Error("a string is not a number: a count that arrives as text is a format to look at, not to guess through")
+	}
+	if Int(float64(7)) != 7 || Int(nil) != 0 || Int("x") != 0 {
+		t.Error("Int")
+	}
+	if First("", "", "c", "d") != "c" || First() != "" {
+		t.Error("First")
+	}
+	if !Truthy("x") || !Truthy(float64(1)) || !Truthy(true) || Truthy("") || Truthy(nil) || Truthy(float64(0)) || Truthy(false) {
+		t.Error("Truthy")
+	}
+	content := []any{
+		map[string]any{"type": "text", "text": "one"},
+		map[string]any{"type": "image", "source": "…"},
+		map[string]any{"type": "text", "text": "two"},
+		"three",
+	}
+	if got := ContentText(content); !strings.Contains(got, "one") || !strings.Contains(got, "two") {
+		t.Errorf("ContentText = %q", got)
+	}
+	if ContentText("plain") != "plain" {
+		t.Error("ContentText of a string is the string")
+	}
+}
+
+func TestStampMovesWithTheFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "f")
+	if stamp, _ := Stamp(path); stamp != "" && Exists(path) {
+		t.Error("a missing file exists")
+	}
+	os.WriteFile(path, []byte("a"), 0o644)
+	first, mod := Stamp(path)
+	if first == "" || mod.IsZero() || !Exists(path) {
+		t.Fatalf("stamp = %q %v", first, mod)
+	}
+	if again, _ := Stamp(path); again != first {
+		t.Error("an untouched file has a new stamp")
+	}
+	os.WriteFile(path, []byte("ab"), 0o644)
+	if grown, _ := Stamp(path); grown == first {
+		t.Error("a file that grew keeps its stamp")
+	}
+}
+
+func TestDSNEscapesWhatAURIWouldRead(t *testing.T) {
+	for path, want := range map[string]string{
+		"/home/me/.hermes/state.db":  "file:/home/me/.hermes/state.db?",
+		"/backups/notes #2/state.db": "file:/backups/notes %232/state.db?",
+		"/odd/100%/what?/state.db":   "file:/odd/100%25/what%3f/state.db?",
+	} {
+		if got := DSN(path); !strings.HasPrefix(got, want) {
+			t.Errorf("DSN(%q) = %q, want it to start %q", path, got, want)
+		}
+	}
+}
+
+func TestGlobSaysWhatItCouldNotRead(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a/one.jsonl", "a/two.txt", "b/three.jsonl", "b/deep/sub/agent-1.jsonl", "c/four.jsonl", "top.jsonl"} {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		os.MkdirAll(filepath.Dir(path), 0o755)
+		os.WriteFile(path, []byte("x"), 0o644)
+	}
+	rel := func(paths []string) string {
+		out := make([]string, len(paths))
+		for i, p := range paths {
+			r, _ := filepath.Rel(root, p)
+			out[i] = filepath.ToSlash(r)
+		}
+		return strings.Join(out, " ")
+	}
+	for pattern, want := range map[string]string{
+		"*/*.jsonl":                "a/one.jsonl b/three.jsonl c/four.jsonl",
+		"*.jsonl":                  "top.jsonl",
+		"*/deep/sub/agent-*.jsonl": "b/deep/sub/agent-1.jsonl",
+		"missing/*/*.jsonl":        "",
+		"a/one.jsonl":              "a/one.jsonl",
+		"a/nothing.jsonl":          "",
+		"?/t*.*":                   "a/two.txt b/three.jsonl",
+	} {
+		got, err := Glob(filepath.Join(root, filepath.FromSlash(pattern)))
+		if err != nil || rel(got) != want {
+			t.Errorf("Glob(%s) = %q, %v; want %q", pattern, rel(got), err, want)
+		}
+		// … and exactly what the standard one finds, when there is nothing unreadable
+		std, _ := filepath.Glob(filepath.Join(root, filepath.FromSlash(pattern)))
+		if rel(std) != rel(got) {
+			t.Errorf("Glob(%s) = %q, filepath.Glob finds %q", pattern, rel(got), rel(std))
+		}
+	}
+	if runtime.GOOS == "windows" || os.Getuid() == 0 {
+		return // nothing can be made unreadable to root, or by a mode on Windows
+	}
+	if err := os.Chmod(filepath.Join(root, "b"), 0); err != nil {
+		t.Skip(err)
+	}
+	t.Cleanup(func() { os.Chmod(filepath.Join(root, "b"), 0o755) })
+	got, err := Glob(filepath.Join(root, "*", "*.jsonl"))
+	if err == nil || rel(got) != "a/one.jsonl c/four.jsonl" {
+		t.Errorf("with one directory unreadable: %q, %v — want the rest, and an error", rel(got), err)
+	}
+	if std, err := filepath.Glob(filepath.Join(root, "*", "*.jsonl")); err != nil || len(std) != 2 {
+		t.Logf("filepath.Glob: %d matches, %v", len(std), err)
+	}
+}

@@ -1,0 +1,292 @@
+// Package model is the one record every agent CLI's transcript converges on.
+//
+// Ten CLIs write ten shapes. What they all describe is the same thing: a person asked,
+// an agent worked, the agent answered. That exchange is the unit here — a Turn — and a
+// Session is its turns in order. Everything the program offers (the list, search, briefs,
+// usage, failures, traces) is a projection of this record and of nothing else.
+//
+//	Session ─┬─ Turn 0   what came before the first ask: injected context, a fork's copy
+//	         ├─ Turn 1   Ask → Items (reply, thinking, tool, event …) → Answer
+//	         └─ Turn n
+//
+// A tool call and its result are one Item: they are paired when the transcript is read,
+// once, so no reader has to pair them again.
+package model
+
+import (
+	"encoding/json"
+	"time"
+)
+
+// Session is one conversation with an agent CLI.
+type Session struct {
+	// Source is the store the session was read from: "claude", or a labeled instance such
+	// as "claude@box2". Agent is the CLI that wrote it ("claude"), which is what decides
+	// how it resumes.
+	Source string `json:"source"`
+	Agent  string `json:"agent"`
+	// ID is the CLI's own id for the session; Source and ID together name it.
+	ID   string `json:"id"`
+	Path string `json:"path,omitempty"` // where it lives: a file, a directory, a database
+
+	Title    string `json:"title,omitempty"`
+	Cwd      string `json:"cwd,omitempty"`
+	Branch   string `json:"branch,omitempty"` // the branch it opened on, as recorded then
+	Model    string `json:"model,omitempty"`
+	Version  string `json:"version,omitempty"`  // the CLI's version
+	Platform string `json:"platform,omitempty"` // the channel a chat-borne session came through
+
+	StartedAt time.Time `json:"startedAt,omitzero"`
+	UpdatedAt time.Time `json:"updatedAt,omitzero"`
+
+	Archived bool `json:"archived,omitempty"` // put away by its CLI
+	Running  bool `json:"running,omitempty"`  // the CLI itself says a turn is in flight
+
+	Parent *Parent `json:"parent,omitempty"`
+
+	// Recorded is what the CLI kept at session level when it keeps no counters per
+	// response (Hermes): the session's totals stand in for the sum nothing can compute.
+	Recorded *Recorded `json:"recorded,omitempty"`
+}
+
+// Parent ties a subagent's transcript to the session it ran in.
+type Parent struct {
+	Session string `json:"session"`         // the session it ran in
+	Agent   string `json:"agent,omitempty"` // the agent that spawned it, when not the main thread
+	Call    string `json:"call,omitempty"`  // the tool call that started it
+	Run     string `json:"run,omitempty"`   // the workflow run it belongs to
+	Type    string `json:"type,omitempty"`  // what kind of agent it is
+	Depth   int    `json:"depth,omitempty"` // 1 for one the session spawned
+	Fork    bool   `json:"fork,omitempty"`  // it opened with a copy of its parent's conversation
+}
+
+// Recorded holds session-level figures a CLI wrote down itself.
+type Recorded struct {
+	Usage   *Usage  `json:"usage,omitempty"`
+	CostUSD float64 `json:"costUsd,omitempty"`
+}
+
+// Usage is token counts in one shape, whatever the provider called them.
+//
+// The parts never overlap: Input is the prompt tokens that were not served from or
+// written to cache, and CacheRead and CacheWrite are those that were. Output is everything
+// the model produced, reasoning included; Reasoning is the part of Output that was
+// thinking, where the provider says. An adapter converts its CLI's counters to this
+// shape, so a sum across CLIs adds like with like.
+type Usage struct {
+	Input      int64 `json:"input,omitempty"`
+	Output     int64 `json:"output,omitempty"`
+	CacheRead  int64 `json:"cacheRead,omitempty"`
+	CacheWrite int64 `json:"cacheWrite,omitempty"`
+	Reasoning  int64 `json:"reasoning,omitempty"`
+}
+
+// Add sums o into u.
+func (u *Usage) Add(o Usage) {
+	u.Input += o.Input
+	u.Output += o.Output
+	u.CacheRead += o.CacheRead
+	u.CacheWrite += o.CacheWrite
+	u.Reasoning += o.Reasoning
+}
+
+// Raise lifts each counter to o's where o's is larger: the rows of one response report
+// running figures, never less than a row before them.
+func (u *Usage) Raise(o Usage) {
+	u.Input = max(u.Input, o.Input)
+	u.Output = max(u.Output, o.Output)
+	u.CacheRead = max(u.CacheRead, o.CacheRead)
+	u.CacheWrite = max(u.CacheWrite, o.CacheWrite)
+	u.Reasoning = max(u.Reasoning, o.Reasoning)
+}
+
+// Total is every token that went in or came out.
+func (u Usage) Total() int64 { return u.Input + u.Output + u.CacheRead + u.CacheWrite }
+
+// Prompt is every token the model was shown.
+func (u Usage) Prompt() int64 { return u.Input + u.CacheRead + u.CacheWrite }
+
+// IsZero reports whether no counter is set.
+func (u Usage) IsZero() bool { return u == Usage{} }
+
+// CacheHit is the share of the prompt that was served from cache. What was written to
+// cache counts against it: those tokens were sent in full.
+func (u Usage) CacheHit() float64 {
+	if d := u.Prompt(); d > 0 {
+		return float64(u.CacheRead) / float64(d)
+	}
+	return 0
+}
+
+// Turn is one exchange: an ask, the work it set off, and how it ended.
+//
+// Index 0 is not an exchange: it holds whatever precedes the first ask.
+type Turn struct {
+	Index int `json:"index"`
+
+	// StartedAt is the ask. EndedAt is the last thing the agent did — the end of the work,
+	// not of the rows: a notification the CLI drops in hours later belongs to whichever
+	// turn was last and must not stretch it. LastAt is that final row, kept because a
+	// moment inside it still has to resolve to this turn.
+	StartedAt time.Time `json:"startedAt,omitzero"`
+	EndedAt   time.Time `json:"endedAt,omitzero"`
+	LastAt    time.Time `json:"lastAt,omitzero"`
+
+	Ask    string `json:"ask,omitempty"`    // the person's words, without what a harness added
+	Answer string `json:"answer,omitempty"` // the last thing the agent said
+
+	Interrupted bool `json:"interrupted,omitempty"`
+
+	Tools     int            `json:"tools,omitempty"`     // tool calls
+	Failures  int            `json:"failures,omitempty"`  // of which failed or were interrupted
+	ToolKinds map[string]int `json:"toolKinds,omitempty"` // calls by what they were for
+
+	Files []File `json:"files,omitempty"` // every file a tool named, and whether it was changed
+
+	Calls   []ModelCall `json:"calls,omitempty"` // the model responses, in order
+	Usage   Usage       `json:"usage,omitzero"`
+	CostUSD float64     `json:"costUsd,omitempty"`
+
+	// Steps is how many items the turn holds, for a turn read without them: an outline
+	// can say "31 steps" before any is fetched.
+	Steps int `json:"steps,omitempty"`
+
+	Items []Item `json:"items,omitempty"`
+}
+
+// File is a file a turn's tools named.
+type File struct {
+	Path    string `json:"path"`
+	Changed bool   `json:"changed,omitempty"` // a write that did not fail
+}
+
+// ModelCall is one response from a model: what a trace calls a generation.
+type ModelCall struct {
+	ID      string    `json:"id,omitempty"` // the provider's response id, when the CLI kept it
+	Model   string    `json:"model,omitempty"`
+	At      time.Time `json:"at,omitzero"`    // when its first row was written
+	EndAt   time.Time `json:"endAt,omitzero"` // when its last was
+	Usage   *Usage    `json:"usage,omitempty"`
+	CostUSD float64   `json:"costUsd,omitempty"`
+	// DurMs and TTFTMs are the call's own measured time and time to first token, for the
+	// CLIs that measure them; zero means not recorded, never "instant".
+	DurMs  int64  `json:"durMs,omitempty"`
+	TTFTMs int64  `json:"ttftMs,omitempty"`
+	Stop   string `json:"stop,omitempty"`
+}
+
+// Kind says what an Item is.
+type Kind string
+
+const (
+	// Prompt is what the person typed. The one that opens a turn is its ask; one typed
+	// while the agent worked is Queued and opens nothing.
+	Prompt Kind = "prompt"
+	// Context is text that reached the model in the user's place but was not typed by a
+	// person: injected instructions, command plumbing, a notification.
+	Context Kind = "context"
+	// Reply is the agent's words; Thinking its reasoning, where the CLI kept it.
+	Reply    Kind = "reply"
+	Thinking Kind = "thinking"
+	// ToolUse is a tool call together with its result.
+	ToolUse Kind = "tool"
+	// Event is something that happened between the words: a compaction, an interruption.
+	Event Kind = "event"
+)
+
+// Item is one thing that happened in a turn, in the order it happened.
+type Item struct {
+	Seq  int       `json:"seq"` // position in the session, stable while the transcript only grows
+	Kind Kind      `json:"kind"`
+	At   time.Time `json:"at,omitzero"`
+	ID   string    `json:"id,omitempty"` // the CLI's own id for the row
+
+	Text string `json:"text,omitempty"`
+	// Bytes is the size of the whole text when Text holds only a preview of it.
+	Bytes int `json:"bytes,omitempty"`
+
+	Queued    bool `json:"queued,omitempty"`    // typed while the agent was working
+	Inherited bool `json:"inherited,omitempty"` // a fork's copy of its parent's row
+
+	// Call is the 1-based index into the turn's Calls of the response this item is part
+	// of; zero when no model produced it.
+	Call int `json:"call,omitempty"`
+
+	Tool  *Tool  `json:"tool,omitempty"`
+	Event string `json:"event,omitempty"` // the event's kind
+}
+
+// Tool outcomes. An empty Status is a result whose writer did not record how it ended,
+// which is not the same as success.
+const (
+	StatusOK          = "ok"
+	StatusError       = "error"
+	StatusInterrupted = "interrupted"
+)
+
+// Event kinds every adapter shares; any other name is the CLI's own.
+const (
+	EventCompaction  = "compaction"
+	EventInterrupted = "interrupted"
+	EventHookError   = "hook_error"
+	EventModelChange = "model_change"
+)
+
+// Tool kinds: what a call was for.
+const (
+	ToolExec   = "exec"
+	ToolWrite  = "write"
+	ToolRead   = "read"
+	ToolSearch = "search"
+	ToolNet    = "net"
+	ToolAgent  = "agent"
+	ToolOther  = "other"
+)
+
+// Tool is a call and the result that answered it.
+type Tool struct {
+	CallID string `json:"callId,omitempty"`
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+
+	Input json.RawMessage `json:"input,omitempty"`
+	// InBytes is the size of the whole input when Input had its long strings cut.
+	InBytes int `json:"inBytes,omitempty"`
+
+	Command string   `json:"command,omitempty"` // the command line, for a call that ran one
+	Files   []string `json:"files,omitempty"`   // the files the call names
+
+	// Done says a result arrived. Output is that result; OutBytes its whole size when
+	// Output holds only a preview.
+	Done     bool   `json:"done,omitempty"`
+	Output   string `json:"output,omitempty"`
+	OutBytes int    `json:"outBytes,omitempty"`
+
+	Status string    `json:"status,omitempty"`
+	Exit   *int      `json:"exit,omitempty"`
+	DurMs  int64     `json:"durMs,omitempty"`
+	EndAt  time.Time `json:"endAt,omitzero"`
+
+	// Run is the workflow run a call started, which is how its agents find their way back.
+	Run string `json:"run,omitempty"`
+}
+
+// Failed reports whether the call ended in an error or was interrupted.
+func (t *Tool) Failed() bool {
+	return t != nil && (t.Status == StatusError || t.Status == StatusInterrupted)
+}
+
+// Stats is what a session adds up to.
+type Stats struct {
+	Turns    int     `json:"turns"`
+	Items    int     `json:"items"`
+	Tools    int     `json:"tools"`
+	Failures int     `json:"failures"`
+	Calls    int     `json:"calls"`
+	Usage    Usage   `json:"usage,omitzero"`
+	CostUSD  float64 `json:"costUsd,omitempty"`
+}
+
+// Ref names a session the way a person or an agent passes it around: "claude/3f2a9c1e-…".
+// A turn of it is that with "#4" appended.
+func (s *Session) Ref() string { return s.Source + "/" + s.ID }

@@ -1,0 +1,638 @@
+// Package claude reads Claude Code's sessions.
+//
+//	<root>/<project>/<session>.jsonl                          a session
+//	<root>/<project>/<session>/subagents/agent-<id>.jsonl     a subagent's transcript,
+//	<root>/<project>/<session>/subagents/agent-<id>.meta.json   and what it was
+//	<root>/<project>/<session>/subagents/workflows/<run>/…    a workflow's agents
+//	<root>/<project>/<session>/tool-results/<file>            outputs too large for a row
+//
+// A transcript is one JSON object per line. Most lines are not conversation: of the rows
+// on one machine, attachments (hook output, reminders) outnumbered user and assistant
+// rows, beside titles, modes, snapshots and queue operations. What is read here is what
+// a person would recognise as the session: the two sides' rows, the system rows that
+// mark an event, a prompt typed while the agent was busy, and the session's titles.
+package claude
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+
+	"github.com/itswl/agent-session-query/internal/model"
+	"github.com/itswl/agent-session-query/internal/sources"
+	"github.com/itswl/agent-session-query/internal/sources/kit"
+	"github.com/itswl/agent-session-query/internal/transcript"
+)
+
+// Spec describes Claude Code.
+var Spec = sources.Spec{
+	Name:  "claude",
+	Title: "Claude Code",
+	Locate: func(env sources.Env) string {
+		// CLAUDE_CONFIG_DIR moves the whole configuration directory off ~/.claude
+		if d := env.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
+			return filepath.Join(d, "projects")
+		}
+		return filepath.Join(env.Home, ".claude", "projects")
+	},
+	Open:    func(location string) sources.Source { return &Source{root: location} },
+	Movable: true,
+	Resume:  "claude --resume",
+	Store:   "~/.claude/projects/<project>/<session>.jsonl",
+}
+
+// Source is a Claude Code projects directory.
+type Source struct{ root string }
+
+func (s *Source) Location() string { return s.root }
+func (s *Source) Exists() bool     { return kit.Exists(s.root) }
+
+// Scan lists every transcript: sessions, and the subagents that ran inside them.
+func (s *Source) Scan(ctx context.Context) ([]sources.Ref, error) {
+	var refs []sources.Ref
+	var unread error
+	for _, pattern := range []string{
+		filepath.Join(s.root, "*", "*.jsonl"),
+		filepath.Join(s.root, "*", "*", "subagents", "agent-*.jsonl"),
+		filepath.Join(s.root, "*", "*", "subagents", "workflows", "*", "agent-*.jsonl"),
+	} {
+		// A directory that could not be read is reported beside what was found: its
+		// sessions are missing from this list, not from the store
+		matches, err := kit.Glob(pattern)
+		unread = errors.Join(unread, err)
+		for _, path := range matches {
+			paths := []string{path}
+			if isSubagent(path) {
+				paths = append(paths, metaPath(path)) // the meta file can be written after
+			}
+			stamp, mod := kit.Stamp(paths...)
+			refs = append(refs, sources.Ref{Key: path, Stamp: stamp, ModTime: mod})
+		}
+	}
+	return refs, unread
+}
+
+// isSubagent reports whether a transcript is a subagent's: agent-<id>.jsonl somewhere
+// under a session's subagents directory. Every row of one is marked isSidechain, which in
+// a session's own transcript means "not this thread" and is skipped; here it is the thread.
+func isSubagent(path string) bool {
+	return strings.HasPrefix(filepath.Base(path), "agent-") &&
+		strings.Contains(filepath.ToSlash(path), "/subagents/")
+}
+
+func metaPath(path string) string { return strings.TrimSuffix(path, ".jsonl") + ".meta.json" }
+
+// row is the part of a transcript line that decides what it is. The rest — the content —
+// is decoded only for the rows that are read.
+type row struct {
+	Type        string          `json:"type"`
+	Subtype     string          `json:"subtype"`
+	UUID        string          `json:"uuid"`
+	Timestamp   string          `json:"timestamp"`
+	SessionID   string          `json:"sessionId"`
+	AgentID     string          `json:"agentId"`
+	Cwd         string          `json:"cwd"`
+	GitBranch   string          `json:"gitBranch"`
+	Version     string          `json:"version"`
+	IsSidechain bool            `json:"isSidechain"`
+	IsMeta      bool            `json:"isMeta"`
+	IsCompact   bool            `json:"isCompactSummary"`
+	Content     json.RawMessage `json:"content"` // a system row's text
+
+	AITitle     string `json:"aiTitle"`
+	CustomTitle string `json:"customTitle"`
+
+	TotalCostUSD float64 `json:"totalCostUSD"`
+
+	HookErrors []json.RawMessage `json:"hookErrors"`
+
+	Message struct {
+		ID         string          `json:"id"`
+		Role       string          `json:"role"`
+		Model      string          `json:"model"`
+		Content    json.RawMessage `json:"content"`
+		StopReason string          `json:"stop_reason"`
+		CostUSD    float64         `json:"costUSD"`
+		Usage      *struct {
+			Input      int64 `json:"input_tokens"`
+			Output     int64 `json:"output_tokens"`
+			CacheRead  int64 `json:"cache_read_input_tokens"`
+			CacheWrite int64 `json:"cache_creation_input_tokens"`
+		} `json:"usage"`
+	} `json:"message"`
+
+	ToolUseResult json.RawMessage `json:"toolUseResult"`
+
+	Attachment struct {
+		Type        string          `json:"type"`
+		CommandMode string          `json:"commandMode"`
+		IsMeta      bool            `json:"isMeta"`
+		Prompt      json.RawMessage `json:"prompt"`
+	} `json:"attachment"`
+}
+
+// part is one block of a message's content.
+type part struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	Thinking  string          `json:"thinking"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+	ToolUseID string          `json:"tool_use_id"`
+	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error"`
+}
+
+// useResult is the row-level record of how a tool call went.
+type useResult struct {
+	Interrupted         bool    `json:"interrupted"`
+	RunID               string  `json:"runId"`
+	DurationMs          float64 `json:"durationMs"`
+	PersistedOutputPath string  `json:"persistedOutputPath"`
+}
+
+// interruptedPrefix opens the text Claude Code writes when the user stops a turn:
+// "[Request interrupted by user]" as a user text block, and "[Request interrupted by user
+// for tool use]" as the content of the tool_result the stopped call never produced.
+const interruptedPrefix = "[Request interrupted by user"
+
+// Read parses one transcript.
+func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer) error {
+	path := ref.Key
+	stem := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+	sub := isSubagent(path)
+
+	w.S.Path = path
+	var meta map[string]any
+	forkStart := ""
+	if sub {
+		meta = kit.Map(kit.ReadJSON(metaPath(path)))
+		// A fork opens with a copy of its parent's conversation — the parent's rows as they
+		// were, up to the call that started the fork — and then the row that hands it its
+		// directive. The copy is the parent's work, read in the parent's transcript: here
+		// its rows are inherited and carry no usage, so a fork's turns and counters are its
+		// own.
+		if kit.Str(meta["agentType"]) == "fork" {
+			forkStart = forkStartOf(path, kit.Str(meta["toolUseId"]))
+		}
+	}
+
+	var sessionID, agentID, aiTitle, customTitle string
+	var held *transcript.Message // a slash command waiting to learn what it set off
+	release := func(asAsk bool) {
+		if held == nil {
+			return
+		}
+		m := *held
+		held = nil
+		if asAsk {
+			if text := commandAsk(m.Blocks[0].Text); text != "" {
+				m.Blocks = []transcript.Block{transcript.TextOf(text)}
+			}
+		}
+		w.Add(m)
+	}
+
+	n := 0
+	err := kit.Lines(path, func(line []byte) bool {
+		if n++; n&1023 == 0 && ctx.Err() != nil {
+			return false
+		}
+		var r row
+		if json.Unmarshal(line, &r) != nil {
+			return true
+		}
+		if sessionID == "" {
+			sessionID = r.SessionID
+		}
+		if agentID == "" {
+			agentID = r.AgentID
+		}
+		if w.S.Cwd == "" {
+			w.S.Cwd = r.Cwd
+		}
+		// The branch the session opened on, as written then: the checkout has moved on
+		// since, and resolving it live would answer a question nobody asked
+		if w.S.Branch == "" {
+			w.S.Branch = r.GitBranch
+		}
+		if r.Version != "" {
+			w.S.Version = r.Version
+		}
+		if forkStart != "" && r.UUID == forkStart {
+			forkStart = "" // the fork's own rows from here
+		}
+
+		switch r.Type {
+		case "ai-title":
+			aiTitle = r.AITitle
+			return true
+		case "custom-title":
+			customTitle = r.CustomTitle
+			return true
+		case "cost-state":
+			// The closing row carries the session's own cost total, which no assistant row
+			// knows; it is the authoritative number when it is there
+			if r.TotalCostUSD > 0 {
+				w.S.Recorded = &model.Recorded{CostUSD: r.TotalCostUSD}
+			}
+			return true
+		}
+		// A subagent's rows are not part of the main thread — except in its own transcript
+		if r.IsSidechain && !sub {
+			return true
+		}
+		at := kit.Time(r.Timestamp)
+		inherited := forkStart != ""
+
+		switch r.Type {
+		case "system":
+			if event, ok := systemEvent(&r); ok {
+				release(false)
+				w.Add(transcript.Message{ID: r.UUID, Role: transcript.System, At: at, Inherited: inherited, Blocks: []transcript.Block{event}})
+			}
+		case "attachment":
+			// What the person typed while the agent was working reaches the model as an
+			// attachment, at the time it was typed, and for most such prompts nothing else
+			// records it. The same attachment type also carries background-task
+			// notifications and prompts the CLI wrote itself; neither is the person's.
+			a := r.Attachment
+			if a.Type != "queued_command" || a.CommandMode != "prompt" || a.IsMeta {
+				return true
+			}
+			if text := strings.TrimSpace(contentText(a.Prompt)); text != "" {
+				release(false)
+				w.Add(transcript.Message{ID: r.UUID, Role: transcript.User, At: at, Queued: true, Inherited: inherited,
+					Blocks: []transcript.Block{transcript.TextOf(text)}})
+			}
+		case "user":
+			m := transcript.Message{ID: r.UUID, Role: transcript.User, At: at, Inherited: inherited,
+				// A row the CLI wrote in the user's seat: a skill's expansion, the summary a
+				// compaction leaves behind
+				Injected: r.IsMeta || r.IsCompact,
+				Blocks:   s.userBlocks(&r)}
+			if len(m.Blocks) == 0 {
+				return true
+			}
+			text := ""
+			if m.Blocks[0].Type == transcript.Text {
+				text = strings.TrimSpace(m.Blocks[0].Text)
+			}
+			// A slash command is plumbing when the CLI answers it itself (/model, /compact:
+			// local output follows) and the person's ask when it sets a skill off (the
+			// skill's expansion follows, written by the CLI). Which, the next row says.
+			if held != nil {
+				release(r.IsMeta && !strings.HasPrefix(text, "<local-command-"))
+			}
+			if !m.Injected && !inherited && strings.HasPrefix(text, "<command-") && len(m.Blocks) == 1 {
+				held = &m
+				return true
+			}
+			w.Add(m)
+		case "assistant":
+			release(false)
+			m := transcript.Message{ID: r.UUID, Role: transcript.Assistant, At: at, Inherited: inherited,
+				Response: r.Message.ID, Model: r.Message.Model, Stop: r.Message.StopReason,
+				CostUSD: r.Message.CostUSD, Blocks: assistantBlocks(&r)}
+			if u := r.Message.Usage; u != nil && !inherited {
+				m.Usage = &model.Usage{Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite}
+			}
+			w.Add(m)
+		}
+		return true
+	})
+	release(false)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	w.S.Title = kit.First(customTitle, aiTitle)
+	if !sub {
+		w.S.ID = kit.First(sessionID, stem)
+		return nil
+	}
+	// A subagent's rows carry the parent's sessionId; its own id is the agent id, which is
+	// also how the parent's records name it. The meta file says what kind of agent it was,
+	// what it was asked to do (the title — the prompt itself is often pages long), which
+	// agent spawned it, and the call that did.
+	w.S.ID = kit.First(agentID, strings.TrimPrefix(stem, "agent-"))
+	parent, run := parentOf(path)
+	w.S.Parent = &model.Parent{
+		Session: kit.First(sessionID, parent),
+		Agent:   kit.Str(meta["parentAgentId"]),
+		Call:    kit.Str(meta["toolUseId"]),
+		Run:     run,
+		Type:    kit.Str(meta["agentType"]),
+		Fork:    kit.Str(meta["agentType"]) == "fork",
+	}
+	w.S.Title = kit.First(kit.Str(meta["description"]), kit.Str(meta["name"]), w.S.Title)
+	return nil
+}
+
+// parentOf reads a subagent's place off its path: the session directory above
+// subagents/, and for a workflow's agent the run directory it sits in — which is what
+// ties it to the call that started it, since its meta file names none.
+func parentOf(path string) (session, run string) {
+	for dir := filepath.Dir(path); dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+		if filepath.Base(dir) != "subagents" {
+			continue
+		}
+		session = filepath.Base(filepath.Dir(dir))
+		if rel, err := filepath.Rel(dir, filepath.Dir(path)); err == nil {
+			if first, rest, ok := strings.Cut(filepath.ToSlash(rel), "/"); ok && first == "workflows" && rest != "" && !strings.Contains(rest, "/") {
+				run = rest
+			}
+		}
+		return session, run
+	}
+	return "", ""
+}
+
+// forkStartOf is the uuid of the row that hands a fork its directive: the result of the
+// call that started it beside Claude Code's <fork-boilerplate>. Everything before it is
+// the parent's. Empty when the transcript has no such row, and then nothing is inherited.
+func forkStartOf(path, callID string) string {
+	start := ""
+	_ = kit.Lines(path, func(line []byte) bool {
+		if !bytes.Contains(line, []byte("<fork-boilerplate>")) || (callID != "" && !bytes.Contains(line, []byte(callID))) {
+			return true
+		}
+		var r row
+		if json.Unmarshal(line, &r) != nil || r.Type != "user" {
+			return true
+		}
+		start = r.UUID
+		return start == ""
+	})
+	return start
+}
+
+// commandAsk renders a slash command row as what the person typed: "/review the diff".
+func commandAsk(text string) string {
+	name := between(text, "<command-name>", "</command-name>")
+	if name == "" {
+		return ""
+	}
+	if !strings.HasPrefix(name, "/") {
+		name = "/" + name
+	}
+	if args := strings.TrimSpace(between(text, "<command-args>", "</command-args>")); args != "" {
+		return name + " " + args
+	}
+	return name
+}
+
+func between(s, open, end string) string {
+	_, rest, ok := strings.Cut(s, open)
+	if !ok {
+		return ""
+	}
+	inner, _, ok := strings.Cut(rest, end)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(inner)
+}
+
+// systemEvent turns the system rows worth a reader's attention into events: a compaction
+// boundary (the context the model sees was rewritten here) and a stop hook that failed.
+// The rest — turn_duration, informational, local_command — is bookkeeping.
+func systemEvent(r *row) (transcript.Block, bool) {
+	switch r.Subtype {
+	case "compact_boundary":
+		text := contentText(r.Content)
+		if text == "" {
+			text = "Context compacted"
+		}
+		return transcript.EventOf(model.EventCompaction, text), true
+	case "stop_hook_summary":
+		var errs []string
+		for _, raw := range r.HookErrors {
+			if text := contentText(raw); text != "" {
+				errs = append(errs, text)
+			}
+		}
+		if len(errs) == 0 {
+			return transcript.Block{}, false
+		}
+		return transcript.EventOf(model.EventHookError, strings.Join(errs, "\n")), true
+	}
+	return transcript.Block{}, false
+}
+
+// contentText flattens content that is a string or an array of blocks.
+func contentText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return ""
+	}
+	return kit.ContentText(v)
+}
+
+// parts decodes a message's content: a bare string is one text block.
+func parts(raw json.RawMessage) []part {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil
+	}
+	if raw[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) != nil || s == "" {
+			return nil
+		}
+		return []part{{Type: "text", Text: s}}
+	}
+	var list []part
+	_ = json.Unmarshal(raw, &list)
+	return list
+}
+
+func assistantBlocks(r *row) []transcript.Block {
+	var out []transcript.Block
+	for _, p := range parts(r.Message.Content) {
+		switch p.Type {
+		case "text":
+			if p.Text != "" {
+				out = append(out, transcript.TextOf(p.Text))
+			}
+		case "thinking":
+			if p.Thinking != "" {
+				out = append(out, transcript.ThinkingOf(p.Thinking))
+			}
+		case "tool_use":
+			out = append(out, transcript.CallOf(p.ID, p.Name, p.Input))
+		}
+	}
+	return out
+}
+
+func (s *Source) userBlocks(r *row) []transcript.Block {
+	list := parts(r.Message.Content)
+	results := 0
+	for _, p := range list {
+		if p.Type == "tool_result" {
+			results++
+		}
+	}
+	var use useResult
+	if len(r.ToolUseResult) > 0 && bytes.TrimSpace(r.ToolUseResult)[0] == '{' {
+		_ = json.Unmarshal(r.ToolUseResult, &use)
+	}
+	var out []transcript.Block
+	for _, p := range list {
+		switch p.Type {
+		case "text":
+			if p.Text == "" {
+				continue
+			}
+			// The interruption notice is not something the person said, it is something
+			// that happened
+			if strings.HasPrefix(strings.TrimSpace(p.Text), interruptedPrefix) {
+				out = append(out, transcript.EventOf(model.EventInterrupted, strings.TrimSpace(p.Text)))
+				continue
+			}
+			out = append(out, transcript.TextOf(p.Text))
+		case "tool_result":
+			text := contentText(p.Content)
+			// is_error is Claude's own verdict; the row-level record says when the user
+			// interrupted the command, and so does the placeholder a stopped call gets
+			outcome := transcript.Outcome{Status: transcript.StatusOf(p.IsError)}
+			if use.Interrupted || strings.HasPrefix(strings.TrimSpace(text), interruptedPrefix) {
+				outcome.Status = model.StatusInterrupted
+			}
+			// The row-level record speaks for the row's one result
+			if results == 1 && use.DurationMs > 0 {
+				outcome.DurMs = int64(use.DurationMs)
+			}
+			// An output too large for the transcript is saved beside it, and the row keeps
+			// a stub: a line naming the file and a 2 KB preview. The output is what the
+			// file holds — the end of a build log is exactly what the preview drops.
+			if saved := s.savedOutput(text, use.PersistedOutputPath); saved != "" {
+				if whole, ok := readSaved(saved); ok {
+					text = whole
+				}
+			}
+			block := transcript.ResultOf(p.ToolUseID, "", text, outcome)
+			// A Workflow call's result names the run it started; the run's agents are
+			// transcripts of their own, and this is the call they hang from
+			if results == 1 {
+				block.Run = use.RunID
+			}
+			out = append(out, block)
+		}
+	}
+	return out
+}
+
+// stubPath is the path a stub names on its first line, or "" when the result is not a
+// stub. Claude Code writes two: a command's output inside <persisted-output>, "Output too
+// large (30.5KB). Full output saved to: <path>", and an MCP tool's result over the token
+// limit, "Error: result (56,846 characters) exceeds maximum allowed tokens. Output has
+// been saved to <path>." Both are recognised by how they open, not by a path somewhere in
+// the text: a command whose output merely mentions a saved file is not a stub.
+func stubPath(text string) string {
+	body := text
+	if rest, ok := strings.CutPrefix(text, "<persisted-output>"); ok {
+		body = strings.TrimLeft(rest, "\r\n")
+	} else if !strings.HasPrefix(text, "Error: result (") {
+		return ""
+	}
+	first, _, _ := strings.Cut(body, "\n")
+	_, path, ok := strings.Cut(first, "saved to")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(path, ":"))
+}
+
+var savedOutputPath = regexp.MustCompile(`([^/\s]+)/([^/\s]+)/tool-results/([^/\s]+)$`)
+
+// savedOutput is where a stub's output is on this machine, or "" when the result is not a
+// stub or its file is not there.
+//
+// Only the last parts of the recorded path are used — project, session, file — and they
+// are looked up under this source's own root. The recorded path is whatever the
+// transcript says: for a directory copied from another machine it names a path there,
+// and in a doctored transcript it could name any file on this one.
+func (s *Source) savedOutput(text, rowPath string) string {
+	if s.root == "" {
+		return ""
+	}
+	recorded := stubPath(text)
+	if recorded == "" && strings.HasPrefix(text, "<persisted-output>") {
+		recorded = rowPath // the row says the same, should the stub's wording move
+	}
+	if recorded == "" {
+		return ""
+	}
+	m := savedOutputPath.FindStringSubmatch(strings.ReplaceAll(recorded, "\\", "/"))
+	if m == nil {
+		return ""
+	}
+	project, session, file := m[1], m[2], strings.TrimSuffix(m[3], ".")
+	for _, p := range []string{project, session, file} {
+		if p == "." || p == ".." || p == "" {
+			return ""
+		}
+	}
+	path := filepath.Join(s.root, project, session, "tool-results", file)
+	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	return path
+}
+
+// savedLimit caps what is read of one saved output, and savedHead is how much of it comes
+// from the start; the rest is the end, where a build log says how it failed. Most saved
+// outputs are tens of kilobytes; the cap is for the one of 52 MB.
+var (
+	savedLimit int64 = 8 << 20
+	savedHead  int64 = 1 << 20
+)
+
+func readSaved(path string) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	size := info.Size()
+	if size <= savedLimit {
+		data, err := io.ReadAll(io.LimitReader(f, savedLimit))
+		if err != nil {
+			return "", false
+		}
+		return string(data), true
+	}
+	head := make([]byte, savedHead)
+	if _, err := io.ReadFull(f, head); err != nil {
+		return "", false
+	}
+	tail := make([]byte, savedLimit-savedHead)
+	if _, err := f.ReadAt(tail, size-int64(len(tail))); err != nil {
+		return "", false
+	}
+	gap := size - int64(len(head)) - int64(len(tail))
+	// A cut can land inside a character; the bytes of half a character are dropped
+	return strings.ToValidUTF8(string(head), "") +
+		fmt.Sprintf("\n\n… %d bytes of the middle left out; the whole output is %s …\n\n", gap, filepath.Base(path)) +
+		strings.ToValidUTF8(string(tail), ""), true
+}

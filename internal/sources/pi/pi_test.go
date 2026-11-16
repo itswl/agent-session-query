@@ -1,0 +1,442 @@
+package pi
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/itswl/agent-session-query/internal/model"
+	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
+)
+
+type M = map[string]any
+
+func header(id, cwd string) M {
+	return M{"type": "session", "version": 3, "id": id, "timestamp": "2026-10-06T18:39:00.000Z", "cwd": cwd}
+}
+
+// msgRow is a message row: written at rowTime, holding a message that carries its own time.
+func msgRow(id, rowTime string, msg M) M {
+	return M{"type": "message", "id": id, "parentId": nil, "timestamp": rowTime, "message": msg}
+}
+
+func text(s string) []M { return []M{{"type": "text", "text": s}} }
+
+// ms is a message's own time, as pi writes it: epoch milliseconds
+func ms(offset time.Duration) int64 {
+	return time.Date(2026, 10, 6, 18, 40, 0, 0, time.UTC).Add(offset).UnixMilli()
+}
+
+func TestSession(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "proj", "2026-09-13T13-04-12-594Z_aaaa.jsonl"),
+		header("pi-1", "/home/u/proj"),
+		M{"type": "model_change", "id": "mc1", "parentId": "x", "timestamp": "2026-10-06T18:39:01.000Z", "provider": "p", "modelId": "gemini-3.8-flash"},
+		M{"type": "thinking_level_change", "id": "tl1", "timestamp": "2026-10-06T18:39:02.000Z", "thinkingLevel": "high"},
+		msgRow("m1", "2026-10-06T18:40:00.002Z", M{"role": "user", "timestamp": ms(0), "content": text("hello")}),
+		msgRow("m2", "2026-10-06T18:40:05.100Z", M{
+			"role": "assistant", "timestamp": ms(4 * time.Second), "model": "gemini-3.8-flash", "provider": "p",
+			"stopReason": "stop", "durationMs": 1200, "responseId": "resp_1",
+			"usage": M{"input": 100, "output": 50, "cacheRead": 300, "cacheWrite": 20, "reasoning": 30, "totalTokens": 470,
+				"cost": M{"input": 0.001, "output": 0.002, "total": 0.0123}},
+			"content": []M{{"type": "thinking", "thinking": "pondering", "thinkingSignature": "sig"}, {"type": "text", "text": "hi there"}},
+		}),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+
+	if s.Session.ID != "pi-1" || s.Session.Cwd != "/home/u/proj" || s.Session.Model != "gemini-3.8-flash" {
+		t.Errorf("session = %+v", s.Session)
+	}
+	if s.Session.Title != "hello" || s.Session.Version != "" {
+		// The header's version is the session format's (3), not the CLI's
+		t.Errorf("title %q, version %q", s.Session.Title, s.Session.Version)
+	}
+	turn := s.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt thinking reply" {
+		t.Errorf("items = %s", got)
+	}
+	if turn.Ask != "hello" || turn.Answer != "hi there" {
+		t.Errorf("ask %q answer %q", turn.Ask, turn.Answer)
+	}
+	if len(turn.Calls) != 1 {
+		t.Fatalf("calls = %+v", turn.Calls)
+	}
+	// pi counts the cache apart from the input already, and the output with the reasoning
+	want := model.Usage{Input: 100, Output: 50, CacheRead: 300, CacheWrite: 20, Reasoning: 30}
+	call := turn.Calls[0]
+	if call.Usage == nil || *call.Usage != want || call.CostUSD != 0.0123 || call.DurMs != 1200 || call.Stop != "stop" || call.Model != "gemini-3.8-flash" {
+		t.Errorf("call = %+v", call)
+	}
+	if s.Stats.Usage != want || s.Stats.CostUSD != 0.0123 {
+		t.Errorf("stats = %+v", s.Stats)
+	}
+}
+
+// TestFlatSessionDir: --session-dir stores the <time>_<uuid>.jsonl files flat in the
+// directory it was given — the convention a host or wrapper embedding pi uses — while the
+// interactive default nests one directory per project. A root holding the flat shape must
+// list its sessions all the same.
+func TestFlatSessionDir(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "2026-10-14T08-10-05-693Z_01a13976-21f3-7461-a370-8f4009a9589b.jsonl"),
+		M{"type": "session", "version": 3, "id": "01a13976-21f3-7461-a370-8f4009a9589b", "cwd": "/w/hosted"},
+		msgRow("m1", "2026-10-14T08:10:06Z", M{"role": "user", "timestamp": 1791312000000, "content": text("run")}),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	if s.Session.ID != "01a13976-21f3-7461-a370-8f4009a9589b" || s.Session.Cwd != "/w/hosted" || s.Turn(t, 1).Ask != "run" {
+		t.Errorf("session = %+v", s.Session)
+	}
+}
+
+// TestSessionRowNotFirst: when the session row is not the first line, another row's id must
+// not become the session id. The original code took the first line's id unconditionally,
+// and a model_change record carries its own id — measured locally, this really happened.
+func TestSessionRowNotFirst(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "proj", "2026-09-04T09-05-45-921Z_01a06baa-real-uuid.jsonl"),
+		M{"type": "model_change", "id": "e74f2cff", "provider": "newapi", "modelId": "m"},
+		M{"type": "model_change", "id": "deadbeef", "provider": "newapi", "modelId": "m2"},
+		header("pi-real", "/w/real"),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	if s.Session.ID != "pi-real" {
+		t.Errorf("id = %q; must not take model_change's id", s.Session.ID)
+	}
+	if s.Session.Cwd != "/w/real" {
+		t.Errorf("cwd = %q", s.Session.Cwd)
+	}
+}
+
+// TestNoSessionRow: with no session row at all (a truncated or resumed file), the id is the
+// uuid in the filename rather than some event's id
+func TestNoSessionRow(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "proj", "2026-09-04T09-05-45-921Z_01a06baa-b9c1.jsonl"),
+		M{"type": "model_change", "id": "e74f2cff", "provider": "newapi"},
+		msgRow("ff24cc88", "2026-09-04T09:05:50Z", M{"role": "user", "content": text("hi")}),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	if s.Session.ID != "01a06baa-b9c1" {
+		t.Errorf("id = %q; should fall back to the uuid in the filename", s.Session.ID)
+	}
+	if s.Session.Cwd != "" {
+		t.Errorf("no session row should mean no cwd, got %q", s.Session.Cwd)
+	}
+}
+
+func TestIDFromStem(t *testing.T) {
+	cases := map[string]string{
+		"2026-09-04T09-05-45-921Z_01a06baa-b9c1": "01a06baa-b9c1",
+		"no-underscore-here":                     "no-underscore-here",
+		"trailing_":                              "trailing_",
+	}
+	for in, want := range cases {
+		if got := idOf(in); got != want {
+			t.Errorf("idOf(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestToolResultPairing: a Pi tool call is a block on the assistant message and its result
+// is a message of its own with role toolResult, toolCallId, toolName and isError riding on
+// the message. Measured locally: 554 such pairs in the newest 40 sessions, 49 of them
+// failures.
+func TestToolResultPairing(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "proj", "2026-10-01T10-00-00_pppp.jsonl"),
+		header("pppp", "/w"),
+		msgRow("m1", "2026-10-06T18:40:00Z", M{"role": "user", "content": text("run it"), "timestamp": ms(0)}),
+		msgRow("m2", "2026-10-06T18:40:01Z", M{"role": "assistant", "stopReason": "toolUse", "timestamp": ms(time.Second), "durationMs": 800,
+			"content": []M{
+				{"type": "toolCall", "id": "c1", "name": "bash", "arguments": M{"command": "pwd"}},
+				{"type": "toolCall", "id": "c2", "name": "read", "arguments": M{"path": "/w/a.go"}},
+			}}),
+		msgRow("m3", "2026-10-06T18:40:03Z", M{"role": "toolResult", "toolCallId": "c1", "toolName": "bash", "isError": true, "durationMs": 120,
+			"timestamp": ms(2 * time.Second), "content": text("boom")}),
+		// an image has no text; the blocks that do are the output
+		msgRow("m4", "2026-10-06T18:40:03Z", M{"role": "toolResult", "toolCallId": "c2", "toolName": "read", "isError": false,
+			"timestamp": ms(2 * time.Second), "content": []M{{"type": "text", "text": "line 1"}, {"type": "image", "data": "AAAA", "mimeType": "image/png"}, {"type": "text", "text": "line 2"}}}),
+		msgRow("m5", "2026-10-06T18:40:04Z", M{"role": "assistant", "stopReason": "stop", "timestamp": ms(3 * time.Second), "content": text("it failed")}),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	turn := s.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt tool tool reply" {
+		t.Errorf("items = %s", got)
+	}
+	tools := sourcetest.Tools(turn)
+	if len(tools) != 2 {
+		t.Fatalf("tools = %+v", tools)
+	}
+	bash, read := tools[0], tools[1]
+	if bash.Name != "bash" || bash.Kind != model.ToolExec || bash.CallID != "c1" || bash.Command != "pwd" {
+		t.Errorf("call = %+v", bash)
+	}
+	if !bash.Done || bash.Status != model.StatusError || bash.Output != "boom" || bash.DurMs != 120 {
+		t.Errorf("result = %+v", bash)
+	}
+	if read.Status != model.StatusOK || read.Output != "line 1\nline 2" || len(read.Files) != 1 || read.Files[0] != "/w/a.go" {
+		t.Errorf("read = %+v", read)
+	}
+	if turn.Tools != 2 || turn.Failures != 1 {
+		t.Errorf("tools %d, failures %d", turn.Tools, turn.Failures)
+	}
+}
+
+// TestResultWithoutItsCall: a result names its tool itself, so one whose call is not in the
+// transcript is still a tool item with the right name
+func TestResultWithoutItsCall(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "p", "2026-10-01T10-00-00_oooo.jsonl"),
+		msgRow("m1", "2026-10-06T18:40:00Z", M{"role": "user", "content": text("go")}),
+		msgRow("m2", "2026-10-06T18:40:01Z", M{"role": "toolResult", "toolCallId": "gone", "toolName": "read", "isError": false, "content": text("contents")}),
+	)
+	tools := sourcetest.Tools(sourcetest.One(t, Spec.Open(root)).Turn(t, 1))
+	if len(tools) != 1 || tools[0].Name != "read" || tools[0].Output != "contents" || tools[0].Status != model.StatusOK {
+		t.Errorf("tools = %+v", tools)
+	}
+}
+
+// TestMessageTime: a row is written up to minutes after the message in it was created, and
+// the message's own time is message.timestamp — epoch milliseconds, exact to the
+// millisecond. The row's time is only the fallback. Measured over six sessions, the row
+// trailed the message by 1 ms at the median, 11 s at p90 and six minutes at worst; a time
+// taken from the row put a message after what it was found next to.
+func TestMessageTime(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "proj", "2026-10-06T18-40-00-000Z_bbbb.jsonl"),
+		header("pi-time", "/w"),
+		msgRow("m1", "2026-10-06T18:40:00.400Z", M{"role": "user", "timestamp": 1791312000000, "content": text("set up the reverse proxy")}),
+		// written eleven seconds after the message was created
+		msgRow("m2", "2026-10-06T18:40:20.500Z", M{"role": "assistant", "timestamp": 1791312009500, "content": text("use proxy_pass for that")}),
+		// a message with no time of its own takes its row's
+		msgRow("m3", "2026-10-06T18:41:00.250Z", M{"role": "user", "content": text("thanks")}),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	items := s.Items()
+	if len(items) != 3 {
+		t.Fatalf("items = %+v", items)
+	}
+	for i, want := range []time.Time{
+		time.Date(2026, 10, 6, 18, 40, 0, 0, time.UTC),
+		time.Date(2026, 10, 6, 18, 40, 9, 500_000_000, time.UTC),
+		time.Date(2026, 10, 6, 18, 41, 0, 250_000_000, time.UTC),
+	} {
+		if !items[i].At.Equal(want) {
+			t.Errorf("item %d at %s, want %s", i, items[i].At.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+		}
+	}
+}
+
+// TestAbortedResponse: a response the user stopped is an interruption, and — empty as it is
+// — still a call pi measured
+func TestAbortedResponse(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "p", "2026-10-01T10-00-00_iiii.jsonl"),
+		msgRow("m1", "2026-10-06T18:40:00Z", M{"role": "user", "timestamp": ms(0), "content": text("write a long essay")}),
+		msgRow("m2", "2026-10-06T18:40:06Z", M{"role": "assistant", "timestamp": ms(time.Second), "model": "m", "stopReason": "aborted", "errorMessage": "Request was aborted",
+			"durationMs": 5384, "usage": M{"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0}, "content": []M{}}),
+	)
+	turn := sourcetest.One(t, Spec.Open(root)).Turn(t, 1)
+	if !turn.Interrupted || sourcetest.Kinds(turn) != "prompt event" || turn.Items[1].Event != model.EventInterrupted || turn.Items[1].Text != "Request was aborted" {
+		t.Errorf("turn = %+v", turn)
+	}
+	if len(turn.Calls) != 1 || turn.Calls[0].DurMs != 5384 || turn.Calls[0].Stop != "aborted" || turn.Calls[0].Usage != nil {
+		t.Errorf("calls = %+v", turn.Calls)
+	}
+}
+
+// TestUserContentAsString: a user message's content is a block array or a plain string
+func TestUserContentAsString(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "p", "2026-10-01T10-00-00_ssss.jsonl"),
+		msgRow("m1", "2026-10-06T18:40:00Z", M{"role": "user", "content": "plain words"}),
+		// a system message pi writes keeps its prompt in structured sections, not in content
+		msgRow("m0", "2026-10-06T18:40:00Z", M{"role": "system", "content": "", "sections": M{"cwd": "/w"}}),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	if s.Stats.Turns != 1 || s.Turn(t, 1).Ask != "plain words" {
+		t.Errorf("turns = %+v", s.Turns)
+	}
+	if len(s.Turns) != 1 {
+		t.Errorf("an empty system message is no context, and opens no turn 0: %+v", s.Turns)
+	}
+}
+
+// TestWhatPiKeepsForItself: the prompt and tool loadout pi writes as a system message at
+// the head of every session is what it rebuilds its state from, not conversation; what an
+// extension, the person's own shell or a compaction put in front of the model is context
+// and events, and none of it is anyone's ask.
+func TestWhatPiKeepsForItself(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "p", "2026-10-01T10-00-00_ctxx.jsonl"),
+		header("ctxx", "/w"),
+		msgRow("m0", "2026-10-06T18:40:00Z", M{"role": "system", "content": "Be brief."}),
+		M{"type": "model_change", "id": "mc", "timestamp": "2026-10-06T18:40:00Z", "modelId": "m"},
+		msgRow("m1", "2026-10-06T18:40:01Z", M{"role": "user", "content": text("go")}),
+		msgRow("m2", "2026-10-06T18:40:02Z", M{"role": "bashExecution", "command": "ls", "output": "a.txt", "exitCode": 2}),
+		M{"type": "custom_message", "id": "cm", "timestamp": "2026-10-06T18:40:03Z", "content": "an extension's note"},
+		M{"type": "compaction", "id": "cp", "timestamp": "2026-10-06T18:40:04Z", "summary": "what came before",
+			"usage": M{"input": 100, "output": 20, "cacheRead": 0, "cacheWrite": 0}},
+		M{"type": "branch_summary", "id": "bs", "timestamp": "2026-10-06T18:40:05Z", "summary": "the branch left behind"},
+		M{"type": "session_info", "id": "si", "timestamp": "2026-10-06T18:40:06Z", "name": "Release prep"},
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	if len(s.Turns) != 1 || s.Stats.Turns != 1 {
+		t.Fatalf("turns = %+v: the system message opens no turn 0", s.Turns)
+	}
+	turn := s.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt context context event event" {
+		t.Errorf("items = %s", got)
+	}
+	if shell := turn.Items[1].Text; !strings.Contains(shell, "Ran `ls`") || !strings.Contains(shell, "exited with code 2") {
+		t.Errorf("the person's shell command = %q", shell)
+	}
+	if turn.Items[3].Event != model.EventCompaction || turn.Items[3].Text != "what came before" || turn.Items[4].Event != "branch_summary" {
+		t.Errorf("events = %+v", turn.Items[3:])
+	}
+	// What a compaction's summary cost is model work pi bills, and is counted
+	if s.Stats.Usage != (model.Usage{Input: 100, Output: 20}) {
+		t.Errorf("usage = %+v", s.Stats.Usage)
+	}
+	if s.Session.Title != "Release prep" {
+		t.Errorf("title = %q, want the name /name gave it", s.Session.Title)
+	}
+}
+
+// TestForkInheritsItsParentsRows: /fork writes a new file — a header naming the file it
+// came from, then the parent's rows as they were. The copy is the parent's work.
+func TestForkInheritsItsParentsRows(t *testing.T) {
+	root := t.TempDir()
+	fork := header("fork", "/w")
+	fork["timestamp"] = "2026-10-06T19:00:00.000Z"
+	fork["parentSession"] = "/somewhere/2026-10-06_parent.jsonl"
+	sourcetest.Write(t, filepath.Join(root, "p", "2026-10-06T19-00-00_fork.jsonl"),
+		fork,
+		msgRow("p1", "2026-10-06T18:40:00Z", M{"role": "user", "content": text("the parent's ask")}),
+		msgRow("p2", "2026-10-06T18:40:05Z", M{"role": "assistant", "model": "m", "content": text("the parent's reply"),
+			"usage": M{"input": 1000, "output": 1000, "cacheRead": 0, "cacheWrite": 0}}),
+		msgRow("f1", "2026-10-06T19:00:10Z", M{"role": "user", "content": text("try the other way")}),
+		msgRow("f2", "2026-10-06T19:00:20Z", M{"role": "assistant", "model": "m", "content": text("done"),
+			"usage": M{"input": 5, "output": 7, "cacheRead": 0, "cacheWrite": 0}}),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	if s.Stats.Turns != 1 || s.Turn(t, 1).Ask != "try the other way" || s.Session.Title != "try the other way" {
+		t.Fatalf("turns = %+v title %q", s.Stats, s.Session.Title)
+	}
+	if s.Stats.Usage != (model.Usage{Input: 5, Output: 7}) {
+		t.Errorf("usage = %+v: the copied rows are the parent's", s.Stats.Usage)
+	}
+	for _, it := range s.Turn(t, 0).Items {
+		if !it.Inherited {
+			t.Errorf("item %d of the copy is not inherited", it.Seq)
+		}
+	}
+}
+
+func TestLocate(t *testing.T) {
+	home := "/home/u"
+	cases := []struct {
+		name string
+		vars []string
+		want string
+	}{
+		{"default", nil, filepath.Join(home, ".pi", "agent", "sessions")},
+		{"agent dir moved", []string{"PI_CODING_AGENT_DIR", "/moved/agent"}, filepath.Join("/moved/agent", "sessions")},
+		// the flat --session-dir layout replaces the directory outright, and wins
+		{"session dir", []string{"PI_CODING_AGENT_SESSION_DIR", "/hosted"}, "/hosted"},
+		{"session dir beats agent dir", []string{"PI_CODING_AGENT_DIR", "/moved/agent", "PI_CODING_AGENT_SESSION_DIR", "/hosted"}, "/hosted"},
+	}
+	for _, c := range cases {
+		if got := Spec.Locate(sourcetest.Env(home, c.vars...)); got != c.want {
+			t.Errorf("%s: %s, want %s", c.name, got, c.want)
+		}
+	}
+}
+
+func TestScan(t *testing.T) {
+	root := t.TempDir()
+	a := filepath.Join(root, "proj", "2026-10-01T10-00-00_aaaa.jsonl")
+	b := filepath.Join(root, "proj", "2026-10-01T11-00-00_bbbb.jsonl")
+	flat := filepath.Join(root, "2026-10-01T12-00-00_cccc.jsonl")
+	sourcetest.Write(t, a, header("aaaa", "/w"), msgRow("m1", "2026-10-06T18:40:00Z", M{"role": "user", "content": text("one")}))
+	sourcetest.Write(t, b, header("bbbb", "/w"))
+	sourcetest.Write(t, flat, header("cccc", "/w"))
+	// none of these is a transcript
+	sourcetest.Write(t, filepath.Join(root, "proj", "notes.txt"), "not a session")
+	sourcetest.Write(t, filepath.Join(root, "README.md"), "nor this")
+	if err := os.MkdirAll(filepath.Join(root, "proj", "dir.jsonl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	src := Spec.Open(root)
+	stamps := func() map[string]string {
+		refs, err := src.Scan(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, r := range refs {
+			if r.ModTime.IsZero() {
+				t.Errorf("%s has no modification time", r.Key)
+			}
+			out[r.Key] = r.Stamp
+		}
+		return out
+	}
+	before := stamps()
+	if len(before) != 3 || before[a] == "" || before[b] == "" || before[flat] == "" {
+		t.Fatalf("refs = %v", before)
+	}
+	// An untouched store scans to the same stamps
+	if again := stamps(); again[a] != before[a] || again[b] != before[b] || again[flat] != before[flat] {
+		t.Errorf("stamps moved with nothing changed: %v / %v", before, again)
+	}
+	// One session grows: its stamp moves and the others' hold
+	sourcetest.Write(t, a, header("aaaa", "/w"),
+		msgRow("m1", "2026-10-06T18:40:00Z", M{"role": "user", "content": text("one")}),
+		msgRow("m2", "2026-10-06T18:40:01Z", M{"role": "assistant", "content": text("two")}))
+	after := stamps()
+	if after[a] == before[a] || after[b] != before[b] || after[flat] != before[flat] {
+		t.Errorf("stamps after one session changed: %v / %v", before, after)
+	}
+}
+
+func TestScanFollowsLinkedProjectDirectories(t *testing.T) {
+	root, elsewhere := t.TempDir(), t.TempDir()
+	sourcetest.Write(t, filepath.Join(elsewhere, "2026-10-01T10-00-00_llll.jsonl"), header("llll", "/w"))
+	if err := os.Symlink(elsewhere, filepath.Join(root, "linked")); err != nil {
+		t.Skip("no symlinks here:", err)
+	}
+	if s := sourcetest.One(t, Spec.Open(root)); s.Session.ID != "llll" {
+		t.Errorf("session = %+v", s.Session)
+	}
+}
+
+func TestScanOfAMissingStore(t *testing.T) {
+	src := Spec.Open(filepath.Join(t.TempDir(), "never-made"))
+	if src.Exists() {
+		t.Error("a store that is not there exists")
+	}
+	if refs, err := src.Scan(context.Background()); err != nil || len(refs) != 0 {
+		t.Errorf("refs %v, err %v: a store that is not there is empty, not broken", refs, err)
+	}
+}
+
+func TestBrokenLinesAreSkipped(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "p", "2026-10-01T10-00-00_bbbb.jsonl"),
+		header("pi-b", "/w"),
+		`{"type":"message","id":"half","message":{"role":"user","content":[{"type":"te`, // cut off mid-write
+		`not json at all`,
+		msgRow("m1", "2026-10-06T18:40:00Z", M{"role": "user", "content": text("after the damage")}),
+		// a field of an unexpected type loses that field, not the message
+		msgRow("m2", "2026-10-06T18:40:01Z", M{"role": "assistant", "durationMs": "slow", "usage": "none", "content": text("still here")}),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	if !strings.HasPrefix(s.Turn(t, 1).Ask, "after the damage") || s.Turn(t, 1).Answer != "still here" {
+		t.Errorf("turn = %+v", s.Turn(t, 1))
+	}
+}

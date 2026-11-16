@@ -48,6 +48,9 @@ func (s Style) green(t string) string  { return s.paint("32", t) }
 func (s Style) yellow(t string) string { return s.paint("33", t) }
 func (s Style) cyan(t string) string   { return s.paint("36", t) }
 
+// Warn paints a mark that asks to be read, without being a failure.
+func (s Style) Warn(t string) string { return s.yellow(t) }
+
 func (s Style) now() time.Time {
 	if s.Now.IsZero() {
 		return time.Now()

@@ -44,7 +44,35 @@ type Writer struct {
 	lastModel string
 	firstAsk  string
 	anyPrompt string // the first user text of any kind, the title of last resort
+
+	unread map[string]int // what the adapter passed over without knowing what it was
 }
+
+// unreadKinds bounds how many different kinds of unread record a transcript is told
+// apart by; past it they are counted together. A file of noise has as many "kinds" as
+// it has lines.
+const unreadKinds = 32
+
+// Unread notes a record the adapter passed over because it does not know what it is: a
+// row type, a block type, an event its CLI had not written when the adapter was made.
+// The transcript is read without it. Counted, it is how a reader learns that a CLI's
+// format has moved on — a field renamed, a record type added — when nothing fails and
+// the record simply reads as less than it holds. asq doctor lists them.
+//
+// kind is "what:name" — "row:queue-operation", "block:server_tool_use". What an adapter
+// skips on purpose, knowing what it is, is not unread: it has a case of its own.
+func (w *Writer) Unread(kind string) {
+	if w.unread == nil {
+		w.unread = map[string]int{}
+	}
+	if _, seen := w.unread[kind]; !seen && len(w.unread) >= unreadKinds {
+		kind = "other"
+	}
+	w.unread[kind]++
+}
+
+// Unreads is what Unread was told, by kind; nil when nothing was passed over.
+func (w *Writer) Unreads() map[string]int { return w.unread }
 
 // turn is a Turn while it is being built.
 type turn struct {
@@ -575,6 +603,7 @@ type Collected struct {
 	Session model.Session
 	Stats   model.Stats
 	Turns   []model.Turn
+	Unread  map[string]int // see Writer.Unread
 }
 
 // Collector is a Sink that keeps every turn. It is for the callers that want a session

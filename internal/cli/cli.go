@@ -746,6 +746,9 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 		Turns    int    `json:"turns"`
 		Items    int    `json:"items"`
 		Error    string `json:"error,omitempty"`
+		// Unread is what the newest transcripts held that the adapter did not know how to
+		// read, by kind: the sign that a CLI changed its format
+		Unread map[string]int `json:"unread,omitempty"`
 	}
 	st := c.style(io.out)
 	var checks []check
@@ -753,7 +756,7 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 	for _, store := range set.All() {
 		ck := check{Source: store.Name, Location: store.Source.Location(), Found: store.Source.Exists()}
 		if ck.Found {
-			ck.Sessions, ck.Newest, ck.Turns, ck.Items, err = deepRead(ctx, store)
+			ck.Sessions, ck.Newest, ck.Turns, ck.Items, ck.Unread, err = deepRead(ctx, store)
 			if err != nil {
 				ck.Error, failed = err.Error(), true
 			}
@@ -774,6 +777,9 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 			default:
 				fmt.Fprintf(io.out, "✓ %-12s %4d transcripts   newest read whole: %s, %s   %s\n", ck.Source, ck.Sessions, plural(ck.Turns, "turn"), plural(ck.Items, "step"), st.Path(ck.Location))
 			}
+			if len(ck.Unread) > 0 {
+				fmt.Fprintf(io.out, "  %s %s\n", st.Warn("!"), unreadLine(ck.Unread))
+			}
 		}
 	}
 	if failed {
@@ -783,14 +789,16 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 }
 
 // deepRead lists a store and reads its newest session whole. A list alone proves little:
-// a format that drifted lists fine and reads as empty.
-func deepRead(ctx context.Context, store index.Store) (sessions int, newest string, turns, items int, err error) {
+// a format that drifted lists fine and reads as empty. It also reads the next newest, a
+// few, for what they held that the adapter did not know: a format that drifted in part
+// reads as less than it is, with nothing failing.
+func deepRead(ctx context.Context, store index.Store) (sessions int, newest string, turns, items int, unread map[string]int, err error) {
 	refs, err := store.Source.Scan(ctx)
 	if err != nil {
-		return 0, "", 0, 0, fmt.Errorf("listing: %w", err)
+		return 0, "", 0, 0, nil, fmt.Errorf("listing: %w", err)
 	}
 	if len(refs) == 0 {
-		return 0, "", 0, 0, nil
+		return 0, "", 0, 0, nil, nil
 	}
 	sort.Slice(refs, func(i, j int) bool { return refs[i].ModTime.After(refs[j].ModTime) })
 	// The newest that holds a conversation. A session opened and closed with nothing said
@@ -799,9 +807,9 @@ func deepRead(ctx context.Context, store index.Store) (sessions int, newest stri
 	// so the look goes on, newest first, for as long as a person would wait for it.
 	deadline := time.Now().Add(5 * time.Second)
 	var firstErr error
-	tried := 0
+	tried, read := 0, 0
 	for _, ref := range refs {
-		if ctx.Err() != nil || (tried >= 5 && time.Now().After(deadline)) {
+		if ctx.Err() != nil || (tried >= 5 && time.Now().After(deadline)) || read >= doctorReads {
 			break
 		}
 		tried++
@@ -812,14 +820,50 @@ func deepRead(ctx context.Context, store index.Store) (sessions int, newest stri
 			}
 			continue
 		}
+		for kind, n := range got.Unread {
+			if unread == nil {
+				unread = map[string]int{}
+			}
+			unread[kind] += n
+		}
 		if got.Stats.Items > 0 {
-			return len(refs), got.Session.ID, got.Stats.Turns, got.Stats.Items, nil
+			if read == 0 {
+				newest, turns, items = got.Session.ID, got.Stats.Turns, got.Stats.Items
+			}
+			read++
 		}
 	}
-	if firstErr != nil {
-		return len(refs), "", 0, 0, firstErr
+	if read > 0 {
+		return len(refs), newest, turns, items, unread, nil
 	}
-	return len(refs), "", 0, 0, fmt.Errorf("the %d newest sessions all read as empty: %s may have changed how it writes them", tried, store.Name)
+	if firstErr != nil {
+		return len(refs), "", 0, 0, unread, firstErr
+	}
+	return len(refs), "", 0, 0, unread, fmt.Errorf("the %d newest sessions all read as empty: %s may have changed how it writes them", tried, store.Name)
+}
+
+// doctorReads is how many of a store's newest conversations doctor reads for what they
+// held that was not understood.
+const doctorReads = 3
+
+// unreadLine says what was not read, the most frequent first.
+func unreadLine(unread map[string]int) string {
+	kinds := make([]string, 0, len(unread))
+	for k := range unread {
+		kinds = append(kinds, k)
+	}
+	sort.Slice(kinds, func(i, j int) bool {
+		if unread[kinds[i]] != unread[kinds[j]] {
+			return unread[kinds[i]] > unread[kinds[j]]
+		}
+		return kinds[i] < kinds[j]
+	})
+	parts := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		parts = append(parts, fmt.Sprintf("%s ×%d", k, unread[k]))
+	}
+	return "not understood in the newest transcripts, and passed over: " + strings.Join(parts, ", ") +
+		" — the CLI may have changed how it writes them; what is shown is what was understood"
 }
 
 func readOne(ctx context.Context, src sources.Source, ref sources.Ref) (transcript.Collected, error) {
@@ -829,7 +873,7 @@ func readOne(ctx context.Context, src sources.Source, ref sources.Ref) (transcri
 		return transcript.Collected{}, err
 	}
 	stats, err := w.Finish()
-	return transcript.Collected{Session: w.S, Stats: stats, Turns: col.Turns}, err
+	return transcript.Collected{Session: w.S, Stats: stats, Turns: col.Turns, Unread: w.Unreads()}, err
 }
 
 func cmdIndex(ctx context.Context, args []string, io *streams) error {

@@ -5,6 +5,7 @@ package sourcetest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -75,7 +76,77 @@ func Read(t testing.TB, src sources.Source, ref sources.Ref) Session {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Session{Ref: ref, Collected: transcript.Collected{Session: w.S, Stats: stats, Turns: c.Turns}}
+	return Session{Ref: ref, Collected: transcript.Collected{Session: w.S, Stats: stats, Turns: c.Turns, Unread: w.Unreads()}}
+}
+
+// NothingUnread fails the test for every record an adapter passed over without knowing
+// what it was (see transcript.Writer.Unread). The samples a test is built from are the
+// formats the adapter knows: anything in them it does not recognise is a gap, and every
+// kind it skips on purpose must say so with a case of its own.
+func NothingUnread(t testing.TB, sessions ...Session) {
+	t.Helper()
+	for _, s := range sessions {
+		for kind, n := range s.Unread {
+			t.Errorf("session %s: %d records of a kind the adapter does not know: %s", s.Session.ID, n, kind)
+		}
+	}
+}
+
+// Attempt scans a source and reads every session it lists, as a fuzz target does: an
+// error is an answer — the input was not a transcript — but a panic is not, and neither
+// is a session that breaks what every record must hold (see Invariants).
+func Attempt(t testing.TB, src sources.Source) {
+	t.Helper()
+	refs, err := src.Scan(context.Background())
+	if err != nil {
+		return
+	}
+	for _, ref := range refs {
+		c := &transcript.Collector{}
+		w := transcript.New(c)
+		if err := src.Read(context.Background(), ref, w); err != nil {
+			continue
+		}
+		stats, err := w.Finish()
+		if err != nil {
+			continue
+		}
+		Invariants(t, Session{Ref: ref, Collected: transcript.Collected{Session: w.S, Stats: stats, Turns: c.Turns, Unread: w.Unreads()}})
+	}
+}
+
+// Invariants checks what any session read from any input must hold, however strange
+// the input: no counter below zero, turns in order, every step numbered after the last.
+func Invariants(t testing.TB, s Session) {
+	t.Helper()
+	negative := func(what string, u model.Usage) {
+		if u.Input < 0 || u.Output < 0 || u.CacheRead < 0 || u.CacheWrite < 0 || u.Reasoning < 0 {
+			t.Errorf("%s: a token count below zero: %+v", what, u)
+		}
+	}
+	negative("the session", s.Stats.Usage)
+	if s.Stats.Turns < 0 || s.Stats.Items < 0 || s.Stats.Tools < 0 || s.Stats.Failures < 0 || s.Stats.Calls < 0 || s.Stats.CostUSD < 0 {
+		t.Errorf("a count below zero: %+v", s.Stats)
+	}
+	last, seq := -1, -1
+	for _, turn := range s.Turns {
+		if turn.Index <= last {
+			t.Errorf("turn %d comes after turn %d", turn.Index, last)
+		}
+		last = turn.Index
+		negative(fmt.Sprintf("turn %d", turn.Index), turn.Usage)
+		for _, call := range turn.Calls {
+			if call.Usage != nil {
+				negative(fmt.Sprintf("a call in turn %d", turn.Index), *call.Usage)
+			}
+		}
+		for _, item := range turn.Items {
+			if item.Seq <= seq {
+				t.Errorf("turn %d: step %d comes after step %d", turn.Index, item.Seq, seq)
+			}
+			seq = item.Seq
+		}
+	}
 }
 
 // All scans a source and reads every session it lists, ordered by session id.

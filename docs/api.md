@@ -1,222 +1,144 @@
 # HTTP API
 
-Query endpoints are all `GET` (only MCP's `/mcp` and the login endpoints are `POST`, see
-[mcp.md](mcp.md)). The `/sessions` family also accepts an `/api/sessions` prefix; `/`,
-`/health` and `/stats` have no alias.
+`asq serve` answers on `http://127.0.0.1:7717`. Everything is `GET`, JSON and read-only, except
+signing in and the MCP endpoint. The page is a client of this API and uses nothing else.
 
-| Endpoint | Auth | What it does |
-|----------|------|--------------|
-| `/` `/health` `/stats` | no | Service info and health check. `/` is the one to read first: it lists every endpoint below and says which of them need a token — a request that asks for `text/html` (a browser's address bar) is redirected to `/ui` instead, so curl's output is unchanged. `/health` adds the enabled sources, the version, `authRequired` and connection stats |
-| `/sessions` | yes | List every session (merged across sources, newest first). A Claude Code session whose work was handed to subagents says how many in `subagents`; `?subagents=1` lists the subagents as rows of their own too, each with `parentSessionId`, `agentType`, `agentDepth` (1 for one the session spawned, 2 for one an agent spawned), `parentAgentId` when an agent spawned it and `parentToolUseId` when a call did — or, for a workflow's agent, which no call of its own started, `workflowRunId`, the run whose Workflow call did |
-| `/export?project=&branch=&since=&until=&source=&mode=index` | yes | **Export several sessions as one document.** Oldest first, because a pack answers "how did this get here" where the list answers "what am I doing". `mode=index` (the default) gives one block per session — when, where, what was asked, what it concluded, and the id to check it against; `mode=full` inlines the transcripts. `format=md` (default) or `jsonl`. `limit` defaults to 20 sessions of the matching set, and the header always states how many of that set it holds |
-| `/sessions/<pattern>` | yes | One session's metadata |
-| `/sessions/<pattern>/messages?limit=50&order=asc&full=1` | yes | A session's messages; `order=asc` (the default) takes the earliest N, `order=desc` the latest N, `offset=N` walks stable pages from that end (use this for scrolling; it does not depend on timestamps), and `at=<time>` anchors the window at that instant instead of at an end. Tool output and thinking come cut to a preview and marked `truncated: true`; `full=1` returns them whole (ask for a narrow window, a build log is large) — for Claude Code that includes an output it saved to a file beside the transcript, which the transcript itself holds only a 2 KB preview of. A prompt typed into Claude Code while the agent was working comes as a `user` message marked `queued: true`, at the time it was typed. A Claude Code fork's transcript opens with a copy of its parent's conversation: those rows come marked `inherited: true`, without usage. Capped by `--max-limit`; offsets are capped at 20,000. |
-| `/sessions/<pattern>/final?source=` | yes | A session's final result; `source` disambiguates when an id collides across sources. A Grok session still running answers from its whole-message log with `isProcessing: true` and no stop reason yet |
-| `/sessions/<pattern>/subagents?source=` | yes | The Claude Code subagents that ran under a session, in the order they started — or under a subagent, given its id. Each is a session of its own: its `sessionId` (the agent id) opens with every route below |
-| `/sessions/<pattern>/rounds?source=` | yes | The session split into rounds — one per real user message (command plumbing, tool results, the rows a CLI injects and a prompt queued while the agent worked do not start one — a team lead's instruction to a member does, and a fork's `inherited` rows are no rounds of its own — and the blocks a harness closes a prompt with — T3 Code's `<runtime_info>` — are not part of the ask): index, times, message and tool-call counts, `failures` (tool results that reported an error or an interruption), `files` touched by any tool, `filesChanged` (write-kind calls that did not fail) and `changedByKind` (those files counted as code / test / docs / config by path convention), whether the round ended interrupted, and `usage` — the round's own tokens, summed from its messages, with `cacheHit` where the source records cache numbers. The scan covers the **latest** 20 000 messages — `partial` / `messagesScanned` / `messagesTotal` say when it is shorter than the session, and round numbering is over that tail |
-| `/sessions/<pattern>/brief?round=&at=&since=&source=` | yes | A compact handoff brief (`text/markdown`, deterministic extraction, not a summary): the ask in the user's words, the files changed and the files touched (and a `Split:` line counting the changes as code / test / docs / config), tools by category with how many failed, how the round ended, the state at the end, and the command that reopens the session in its own CLI (with the `cd` it needs) — with the same partial-scan note when it applies (the scan covers the latest messages; round numbering is over that tail). The rounds index marks a round with failures `✗` and an interrupted one `⚠`. Defaults to the latest round; `round=N` picks one, `at=<time>` briefs the round a timestamp falls in, `since=<time|2h|7d>` briefs every round that ran after a moment and opens with what the stretch adds up to — the delta for handing the same session over a second time; `source` disambiguates when an id collides across sources |
-| `/sessions/<pattern>/export?order=desc&format=md` | yes | Export the session. **No `limit` means the whole session** (up to 20 000 messages), and tool output and thinking are carried whole, never cut to a preview; the header states what it covers, and says so when it is partial. A result says how it ended (`↳ Bash — failed · exit 1 · 2.3s`) and events between the turns are quoted. Four formats: |
+- Field names are those of [the record](model.md).
+- Times are RFC 3339. `since` and `until` take a span back from now (`90m`, `12h`, `7d`, `2w`),
+  a date, or a date and time.
+- An error is `{"error": "…"}` with a status that means it: `400` the request does not parse,
+  `401` no token, `403` refused by a guard, `404` no such session, `429` too many wrong tokens.
+- Replies are `gzip`-compressed when the caller accepts it, and `Cache-Control: no-store`: the
+  record is private and changes under the reader.
+- Who may call is in [Deploying](deploy.md#who-may-ask). In short: no token, loopback only; with
+  a token, `Authorization: Bearer <token>`.
 
-| `format` | Served as | For |
-|---|---|---|
-| `md` (default) | `text/markdown` | reading, pasting into an issue |
-| `jsonl` | `application/x-ndjson` | one tagged JSON object per line (`session` / `message` / `final`) — a query with `jq` is a filter, not a parse |
-| `json` | `application/json` | the same data as one document, for a consumer that wants a single parse |
-| `html` | `text/html` | a page that stands on its own: inline stylesheet, no scripts, no requests, so it opens from disk and can be attached to anything |
-| `/search?q=&limit=30&per_session=3&since=30d&until=&source=&project=&branch=&pattern=&role=` | yes | **Full-text search** across every source; `source` / `project` / `branch` / `since` / `until` narrow which sessions are scanned, `pattern` scopes it to one session, `role` keeps only `user` or `assistant` hits. A hit is in something the transcript shows: Claude Code's hook output and reminders are not searched (a prompt typed while the agent was busy is). A subagent's transcript is searched with the session it ran in: its hits come back in that session's result, each carrying `agentId` (the transcript to open), `agent` and `agentType`; `subagents=0` leaves them out |
-| `/projects` | yes | Session counts grouped by project (cwd) |
-| `/failures?since=&until=&source=&project=&tool=&limit=100` | yes | **Failed tool results** across the sessions updated in the window, newest first: `tool`, `command`, an `output` preview, and the `sessionId` / `round` each belongs to, with the round's span in `roundStartAt` / `roundEndAt` (the ask to the end of its work — anchor a window there to read the round whole, reply included). `since` defaults to 7d; `tool` matches a substring of the tool name; `source`, `project`, `until` select sessions as `/sessions` does. `truncated` says the page was cut, `sessionsScanned` how far the scan went |
-| `/digest?since=&until=&source=&project=` | yes | **A window's work per project**: `sessions`, `rounds`, `failures`, `tokens` (summed from the finals, as `/usage` does) with `cacheHit`, `kinds` (changed files as code / test / docs / config), `models` and `sources`, plus `firstAt` / `lastAt` — and the same shape under `totals`. `since` defaults to 7d |
-| `/usage` | yes | **What the sessions consumed**: `windows` (24h / 3d / 7d / 30d / all, rolling — sessions, model calls, tokens), `byModel`, `byDay` (the last 30 days), `bySource` and `byProject`, each row carrying `cacheHit` — the share of prompt tokens served from cache (`cacheRead / (input + cacheRead)`; 0 where a source records no cache numbers). A session's usage lands where it was last updated. A Codex fork copies its parent's turns into its own rollout, and those copied turns are counted once — in the parent — not again in the fork. No cost: that would mean maintaining a price table. Cached like the session lists |
-| `/mcp` | yes | MCP's Streamable HTTP transport, `POST`; see [mcp.md](mcp.md) |
-| `/login` | no | `POST {"token": "..."}`, the token being the same one the header takes — answered with an `app_session` cookie (HttpOnly, `SameSite=Lax`, `Path=/`, 180 days) that authenticates every "yes" endpoint above, plus the moment it expires. Constant-time compare; 10 attempts a minute per client IP (`429` with `Retry-After` when over); request body capped at 4 KiB (`413`). `403` when no token is configured |
-| `/logout` | no | `POST`, clears the `app_session` cookie (`Max-Age=0`). `403` when no token is configured |
+## Sessions
 
-**Authentication**: once `--hook_token` is set, endpoints marked "yes" require
-`Authorization: Bearer <token>` — or the `app_session` cookie that `POST /login` issued for
-the same token, which is the form a browser uses so the token never sits in the page's
-`localStorage`. Without a token everything is open to whoever can reach the
-port — and a non-loopback `--host` without a token is refused at startup, not served with
-a warning. Tokens are compared in constant time. CORS is off by default, see
-`--cors-origin`.
+**`GET /api/sessions`** — the list, newest first.
 
-**DNS-rebinding guards**: every route except `OPTIONS` preflights (answered `200` before
-the guards, deliberately — a preflight asks nothing of its own) refuses a request carrying
-an `Origin` that does not match `--cors-origin` (`403 Origin not allowed`; native clients
-send no `Origin`, and one naming this server itself passes — browsers attach `Origin` to
-every `POST`, including the page's own `/login`). On top of that, when the server is bound
-to a loopback address (the
-default) **and** no token is configured, any request whose `Host` is not a loopback name
-(`localhost`, `127.0.0.0/8`, `::1`) is refused — that combination is the one where a web
-page could otherwise reach the data by resolving its own name to `127.0.0.1`. A configured
-token, or a deliberate non-loopback `--host`, turns the `Host` check off: behind a reverse
-proxy the forwarded `Host` is the public name, and the token is what protects the data
-there. A non-loopback bind without a token is refused at startup rather than warned about,
-and the bound socket itself is re-checked: a `--host` name that resolves off loopback is
-refused too.
+| parameter | |
+|---|---|
+| `text` | title, id or directory contains this |
+| `source`, `project`, `branch` | as on the command line |
+| `since`, `until` | by when the session was last written |
+| `archived=1`, `agents=1` | include archived sessions; include subagents' transcripts |
+| `limit` (50, at most 500), `offset` | paging |
 
-**Archived sessions**: a session its CLI has archived — Grok's and Codex's moved into
-`archived_sessions`, OpenCode's marked `time_archived`, the ones Hermes hides — is left out
-of `/sessions`, `/search`, `/export` and `/projects`, as each CLI leaves it out of
-its own list, and `include_archived=1` on any of them reads it too, marked `archived: true`.
-`/sessions` says how many there are either way (`archived`, present when there are some),
-and one still opens by its id.
-
-**Branch**: a session row carries `branch` when its CLI recorded one — the branch the
-session opened on, written down at the time, not what the checkout is on now. Claude Code
-records it on nearly every row; the other sources do not record it at all, and the key is
-then absent rather than empty. MCP `list_sessions` filters on it.
-
-**Capabilities**: `/health` lists what the build can do as `capabilities`, a sorted array of
-names such as `brief.since` or `messages.full`. A client that upgrades separately from the
-server it talks to asks for the name rather than mapping a version onto a feature list. The
-list is append-only: a name is never renamed or removed.
-
-**Conditional requests**: `/sessions` returns an `ETag`; repeating the request with
-`If-None-Match` while the list is unchanged returns `304`. The tag also changes with the
-server's version, and the body carries it as `version`: a page served by the previous
-version gets a full answer on its next poll and reloads itself.
-
-**Limits and overload**: connections past the cap queue, and get a 503 if they cannot;
-`?limit=` is clamped to `--max-limit`. See the
-[configuration table in the README](../README.md#configuration).
-
-**Full-text search**: `/search?q=nginx` searches **message bodies** across every enabled
-source (the search on `/sessions` only matches metadata). It is case-insensitive — beyond
-ASCII too: `École` finds `école`, `Ошибка` finds `ошибка` (one fold for every script with
-case, no locale rules; `ß` does not become `ss`) — and builds
-no index — measured locally, a cold scan of 562 MB across 143 sessions takes 1.9 s and a
-warm one 43-112 ms. Snippets are stripped of ANSI escape sequences and other control
-characters before being returned: tool output in a transcript is full of them, and a
-snippet is built for display rather than chosen by the caller. The same text is scanned for
-secret-shaped runs — a known key prefix followed by a long opaque tail, a JWT, a PEM header
-— and each is replaced with `[redacted]`. That covers everything this service assembles
-for someone to read: snippets, session titles (both the ones it synthesises and the ones
-the CLIs themselves wrote), the `asked` / `outcome` lines of `/rounds` and the brief, and
-a pack's `Asked` / `Concluded` lines in both `/export` formats. It is best effort by
-construction. It finds what announces itself and cannot find a password written in prose,
-so treat it as one less sharp edge rather than a guarantee.
-
-Transcripts are the data and are returned exactly as stored: message bodies from
-`/sessions/<id>/messages`, a session's `/sessions/<id>/export`, and the transcripts a pack
-inlines under `mode=full`. What to do with them is the caller's policy — and note that a
-transcript can contain text shaped like instructions, which this service neither marks nor
-strips; see the injection note in [mcp.md](mcp.md).
-
-In the response, `matched` is how many of the scanned sessions matched, `total` how many
-were returned, and `scanned` how many were examined. Once `limit` sessions have matched the
-scan stops — candidates are newest-first, so nothing unscanned could have reached the page
-— and `matched` is then a lower bound; `truncated.scan` says the scan stopped there, and
-`limit=0` is the count-only request that always scans everything. The stop is a scheduling
-decision, so two identical requests can stop at different points: `scanned` and
-`truncated.scan` describe that run, while the results and the sessions they cover are
-exact either way. `truncated` carries the
-reasons results are short as separate booleans rather than one flag, because they are
-different knobs: `sessions` means the page was cut by `limit` (more sessions matched than
-`limit` returned, or the scan stopped there), `hits` means some session had more hits than
-`per_session` returned, and `scan` means the scan stopped once `limit` was reached. With `limit=0` no page was asked
-for, so `sessions` reads true by definition (more matched than the zero returned) — `matched`
-is already the exact count there, and it is not a reason to raise the limit.
-
-With a lot of history, narrow the scan with `since=30d` (which also accepts `12h` or
-`2026-09-01`), `until` for the other end of that window, `source`, `project` and `branch`,
-`pattern` to search inside one session instead of all of them, and `role` (`user` or
-`assistant`) to keep only hits from those messages. Each session contributes at most
-`per_session` snippets — with `role` set, that counts hits matching the role rather than
-whichever hits happened to come first in the file.
-
-`source`, `project` and `branch` mean what they mean for `list_sessions` and a pack, and
-they narrow **before** the scan, so `limit` counts sessions inside the selection: with the
-filter applied to the page afterwards, newer hits elsewhere could fill it and leave nothing
-for the project or source being asked about. `source` takes a mode (`claude`, which also
-reaches labeled instances such as `claude:box2`) or one instance's full name, and a name
-that matches neither is a 400 listing the valid ones. `project` is a substring of the
-project path — the cwd, or gemini's own project name — and `branch` a substring of the git
-branch the session opened on; a session whose CLI recorded no branch is outside any
-`branch` filter. With `pattern`, `source` picks which CLI's session the pattern may name,
-and the rest of the selection still has to hold for that session.
-
-**`<pattern>` matching rules** (first rank to hit wins; every source takes part in every
-round, so a fuzzy hit never shadows an exact hit in another source): ① exact `sessionId`
-→ ② exact `key` → ③ `key` ending in `:<pattern>` or `/<pattern>` → ④ `key` substring
-→ ⑤ `sessionId` substring. A leading `Session: ` or `Run: ` is stripped automatically, and a
-pattern containing a colon needs URL encoding (`%3A`).
-
-```bash
-/sessions/e4b2b405-88ea-4782-a84c-92574380ed16   # Claude Code: the full uuid, or a fragment
-/sessions/rollout-2026-09-13T23-07-05           # Codex: part of the rollout filename
-/sessions/hook:alert:prometheus:b5123b01-...    # OpenClaw: the full key or its tail
+```json
+{"sessions": [{"source": "claude", "id": "3f2a…", "ref": "claude/3f2a…", "title": "…",
+               "cwd": "/work/api", "branch": "main", "model": "…", "updatedAt": "…",
+               "stats": {"turns": 4, "tools": 31, "failures": 1, "calls": 40, "usage": {…}},
+               "agents": 2, "lastAsk": "…", "answer": "…", "active": true, "resume": "cd … && claude --resume …"}],
+ "total": 363, "limit": 50, "offset": 0}
 ```
 
-**Responses**:
+`lastAsk` and `answer` are cut to a row's worth here; a session read on its own carries them
+whole. `active` means written within the last two minutes — recency, not a process check.
 
-- List / single session: `source`, `key`, `shortKey`, `sessionId`, `file`, `hasFile`,
-  `status`, `updatedAt`, `project` (cwd, or gemini's project name) and `isActive` (the
-  session's newest message is less than 2 minutes old — recent activity, **not** a check
-  that a process is running: a session that ended a minute ago still reports true, and one
-  whose agent has been working for longer than the window reports false). `resumeCommand`
-  is how to reopen the session in the CLI that wrote it. Run it in the session's `cwd`:
-  the session itself is found from anywhere, but a resumed agent inherits the directory it
-  was launched in, so anywhere else it carries on talking about files its tools can no
-  longer reach. It is absent for `gemini`, which
-  addresses sessions by position rather than identity, so a session id cannot be turned
-  into a command at all; and for `openclaw`, which can resume by session id but only over
-  the last 50 sessions still inside its recent-activity window and only with its Gateway
-  running, so the command would work for the newest handful and fail for the rest. The per-source extras — `cwd`, `model`,
-  `cliVersion`, `platform`, `displayName`, `createdAt`, `totalTokens`, `estimatedCostUsd`,
-  `runtimeMs`, `files`, `messageCount` — are omitted rather than empty when the source has
-  nothing to say (the same rule `branch` follows). `messageCount`, `totalTokens`,
-  `estimatedCostUsd` and `runtimeMs` stay present whenever the source recorded them — a
-  recorded zero stays — so a missing one means "not recorded", not zero. A session its CLI
-  archived carries `archived: true`, and is listed only with `include_archived=1` (see
-  below)
-- Search: the list fields plus `matches` (`snippet` + `role` + `timestamp`) and `matchCount`.
-  A match's `timestamp` is the time of the message it is in — the one `messages?at=` cuts
-  windows by, so passing it there lands on the match. That is the row's own time for every
-  source but pi, whose rows are written after the message they carry (by seconds, sometimes
-  minutes) and whose matches carry the message's creation time, to the millisecond, instead
-- Messages: `content` is an array of blocks typed `text` / `thinking` / `toolCall` /
-  `toolResult` / `event`. A `toolCall` carries `id`, `name` and `arguments`; a `toolResult`
-  carries `callId` (the call it answers), `toolName`, `content`, and — when the source
-  recorded them — `status` (`ok` / `error` / `interrupted`), `exitCode` and `durationMs`.
-  Claude Code's Workflow call carries `workflowRunId` on its result: the run it started,
-  whose agents name the same run on their records. A
-  result without `status` is one whose writer did not record the outcome (Hermes), which is
-  not the same as success. An `event` is something that happened between the turns, with
-  `kind` (`compaction` / `interrupted` / `hook_error` / `model_change`) and `content`; an
-  OpenCode compaction's `content` is the summary the model went on from, with `status`,
-  `reason` and `keepId` beside it. Tool
-  output is cut to 500 characters and thinking to 1 000 unless `full=1` is given; a cut
-  block carries `truncated: true`. A user message the CLI assembled rather than the person
-  typed (Codex's AGENTS.md and environment rows) carries `injected: true` and does not start
-  a round. An assistant message names the `model` that answered when the transcript says
-  (Claude Code, Codex per turn, Pi, OpenCode as `provider/model`, Gemini, OpenClaw,
-  Antigravity, dsh, Grok's history log; Claude Code writes `<synthetic>` on a row it made
-  itself). Claude Code splits one response into a row per content block: each row carries
-  the API `response` id, and the response's `usage` rides on its first row only, so a sum
-  over messages counts it once — with the response's final counters (CLI 2.1.284–2.1.304
-  wrote a running output count; the first row is raised to the last row's figure). Pi's
-  and OpenCode's assistant messages carry `durationMs`, the call's own time from the
-  message's creation, and OpenCode 2.x's `firstTokenMs`, when the response began to
-  arrive. The `order` field echoes which end the batch came from; either direction is
-  returned chronologically
-- final: `isFinal` / `stopReason` / `text` / `thinking` / `toolCalls` / `usage` /
-  `messageCount`. `usage` is the session's total, and agrees with its messages: Claude Code's
-  counts each response once with its final figures, however many rows it was written as,
-  and leaves out a fork's `inherited` rows. When the file does not exist you get
-  `isFinal=false` plus an `error` field (the HTTP status is still 200)
-- Errors: 401 / 404 / 500 return `{"error": "..."}`; a 503 from the connection cap is plain
-  text
-- `warnings`: `[{source, error}]`, present on `/sessions`, `/health` and MCP
-  `list_sessions` only when a source could not be read. Without it "no sessions" reads the
-  same whether you have none or the source broke — the list is empty either way, and the
-  status is still 200. A source that is merely empty reports nothing. `/health` cannot scan
-  (it answers without a token), so it shows the failure the last list hit; a server that has
-  not listed yet has nothing to report — and once a token is configured, the warnings
-  themselves require it (they can name filesystem paths), while the rest of `/health` stays
-  open for probes
+**`GET /api/sessions/{source}/{id}`** — one session: `{"session", "turns", "agents", "above"}`.
+`turns` is the **outline** — every turn without its items, each saying how many `steps` it
+holds; an ask or an answer longer than a couple of thousand characters is cut here and whole in
+the turn itself. `agents` is the subagent sessions directly beneath it, and `above` — for a
+subagent's transcript — the transcripts it sits beneath, the session it ran in first. `{id}` may
+be any unambiguous start of the id.
 
-## See also
+**`GET /api/sessions/{source}/{id}/turns?turns=`** — turns *with* their items.
+`turns` is `3`, `3-5`, `last` (the default) or `all`. Long text arrives as a preview — the head
+and the tail — with the whole size beside it (`item.bytes`, `tool.outBytes`, `tool.inBytes`);
+`full=1` sends everything whole, which for a long session is megabytes.
 
-- MCP transports: [mcp.md](mcp.md)
-- Per-source parsing details and performance: [internals.md](internals.md)
+**`GET /api/sessions/{source}/{id}/items/{seq}`** — one step whole:
+`{"session", "turn", "item"}`.
+
+**`GET /api/sessions/{source}/{id}/brief?turn=&since=`** — `{"session", "brief"}`, the
+[handoff brief](cli.md#handing-over) as Markdown.
+
+**`GET /api/sessions/{source}/{id}/export?format=md|json|jsonl|html`** — the whole session, as a
+download. Always `Content-Disposition: attachment`: an exported page is a transcript's text laid
+out as HTML, and it is not served as a page of this origin.
+
+## Search
+
+**`GET /api/search?q=`** — the turns that match, with the [query syntax](cli.md#finding) of the
+command line. Takes the list's filters, `recent=1` (newest first), `per_session` (default 3, `0`
+for no bound), `limit` (20, at most 100), `offset`.
+
+```json
+{"hits": [{"ref": "claude/3f2a…#4", "turn": 4, "at": "…", "ask": "…", "answer": "…",
+           "tools": 12, "failures": 1, "score": 14.2,
+           "session": {"ref": "claude/3f2a…", "title": "…", "cwd": "…"},
+           "matches": [{"kind": "tool", "part": "output", "tool": "Bash", "seq": 57, "snippet": "… ECONNREFUSED 127.0.0.1:5432 …"}]}],
+ "total": 29, "sessions": 24}
+```
+
+`total` is turns that matched across all pages; `sessions` how many sessions they are in. A
+match's `seq` is the step to open (`/items/{seq}`).
+
+## Reports
+
+| | |
+|---|---|
+| `GET /api/usage` | `{"total", "windows", "byModel", "byDay", "bySource", "byProject"}` — the rolling windows are 24h, 3d, 7d, 30d, all |
+| `GET /api/usage?by=model\|day\|source\|project\|session` | `{"by", "rows", "total"}` |
+| `GET /api/failures?tool=` | `{"failures", "total", "byTool"}` — the last 7 days unless `since` says otherwise. `tool` names one tool exactly (`Bash` is not `bash`), or with a trailing `*` by how its name begins; `byTool` counts every tool of the window whichever is asked for |
+| `GET /api/digest` | `{"projects", "total"}` — likewise |
+| `GET /api/files?path=&changed=1` | `{"files", "total"}` |
+| `GET /api/projects` | `{"projects"}` |
+| `GET /api/pack?turns=1` | `{"pack", "sessions"}` — Markdown |
+
+All take the list's filters. A usage row is
+`{"key", "sessions", "calls", "usage": {"input", "output", "cacheRead", "cacheWrite", "reasoning"}, "total", "cacheHit", "costUsd"}`
+(a subagent's calls count toward the session it ran in);
+`total` beside the rows is the whole they are parts of, which a list cut to its largest groups
+does not add up to.
+
+## Live
+
+**`GET /api/events`** — Server-Sent Events.
+
+```
+event: hello
+data: {"version": "1.0.0", "sync": {"running": false, "at": "…"}}
+
+event: changes
+data: {"sessions": [{"source": "claude", "id": "3f2a…"}]}
+
+event: sync
+data: {"running": true, "total": 1276, "done": 412}
+```
+
+`changes` names the sessions a sync wrote (`"gone": true` for one that was deleted), or says
+`{"all": true}` when more changed than is worth naming. `sync` reports a long read of the stores
+as it goes. The stream carries no content: a client that hears a session changed asks for what
+it wants of it. A comment line every 20 seconds keeps proxies from closing a quiet stream.
+
+How fresh the answers are: every request first brings the index up to date, waiting at most a
+few seconds; while a first read of a large history is still running, answers come from what has
+been read so far and `sync` says how far that is. While someone is looking — an open stream, or
+a request in the last minute and a half — the stores are checked every two seconds; an idle
+server checks every thirty.
+
+## Status
+
+**`GET /api/health`** — the version, the index file, what it holds, where the last sync stands,
+every store (found or not; `sessions` as the list counts them, and `transcripts` with subagents',
+archived and empty ones), and `warnings`: the stores that could not be read, in whole or in
+part. Without it, "no sessions" reads the same whether there are none or the store broke. A
+store that could be read only in part keeps everything known of it: what a short listing leaves
+out is not taken for deleted.
+
+**`GET /healthz`** — `200 ok` while the process serves. No token needed; it says nothing else.
+
+## Signing in
+
+**`GET /api/auth`** — `{"required": true, "authenticated": false}`; always answers.
+
+**`POST /api/login`** with `{"token": "…"}` — sets the `asq_session` cookie (HttpOnly,
+SameSite=Strict, 180 days). **`POST /api/logout`** drops it. Programs do not need either: they
+send the header.
+
+## MCP
+
+**`POST /mcp`** — the [MCP server](mcp.md) over HTTP: one JSON-RPC message per request, a JSON
+reply. Behind the same guards and token as the API.

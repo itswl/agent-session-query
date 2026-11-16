@@ -1,286 +1,236 @@
-# agent-session-query
+# asq
 
-**English** · [简体中文](README.zh-CN.md)
+**The session history of every agent CLI on your machine, as one record you can search, read, hand over and measure.**
 
-Query the session records left behind by the agent CLIs on your machine: **a read-only web
-page, an HTTP API, and an MCP server for agents to call**. It never modifies session data.
+[中文说明](README.zh-CN.md)
 
-A single binary (no cgo, no resident runtime) — `scp` it to any machine of the same
-architecture and run it. The external dependencies are pure Go (the SQLite driver for
-Hermes's `state.db` and a zstd decoder for DeepSeek Harness frames), so cross-compilation
-still works as usual.
+Claude Code, Codex, Gemini CLI, OpenCode, Grok, Antigravity, Pi, DeepSeek Harness, Hermes and
+OpenClaw each keep a transcript of what they did — in ten different shapes, in ten different
+places. `asq` reads them all into one model and answers the questions you actually have:
 
-Ten sources; whichever exist are queried, and they can be merged in one query:
+- *How did I fix this last time?* — full-text search over every turn of every session
+- *What was that agent doing?* — read any session as a list of turns, then step by step
+- *Pick this up from where it stopped* — a handoff brief another agent can start from
+- *What did this week cost?* — tokens, cache hit rate and cost, by model, day and project
+- *What keeps failing?* — every failed tool call, with the command and the end of its output
 
-| Source | Where sessions live | Session ID |
-|--------|---------------------|------------|
-| Hermes | `~/.hermes/sessions/` (`sessions.json`) or `~/.hermes/state.db` (newer, all SQLite) | `session_id` in `sessions.json` / `id` in the `sessions` table |
-| OpenClaw | `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite` (SQLite, 2026.9+; older `sessions.json` layouts still read) | `session_id` in `session_windows` |
-| Pi | `~/.pi/agent/sessions/<project>/*.jsonl`, plus flat `*.jsonl` under a `--session-dir` | `id` on the session row |
-| Claude Code | `~/.claude/projects/<project>/*.jsonl` | the filename (a uuid) / the `sessionId` field |
-| Codex | `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl`, plus `~/.codex/archived_sessions/` | `payload.session_id` on the metadata row |
-| Gemini CLI | `~/.gemini/tmp/<project>/chats/session-*.jsonl` | `sessionId` on the first line |
-| OpenCode | `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` (SQLite; `%LOCALAPPDATA%\opencode` on Windows; the 1.x `session` tables and the 2.x `session_v2` / `session_message` tables both) | `id` in the `session` or `session_v2` table |
-| Grok CLI | `~/.grok/sessions/<url-encoded-cwd>/<session-id>/` (`summary.json` + `updates.jsonl`), plus `~/.grok/archived_sessions/` | `info.id` in `summary.json` |
-| Antigravity | `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl` (the IDE writes `~/.gemini/antigravity/brain/`); `conversation_summaries.db` beside each brain holds the title and workspace | the directory name |
-| DeepSeek Harness | `~/.dsh/sessions/<project>/<session>/session.v<N>.jsonl[.zstd]` (concatenated zstd frames; the highest generation is the current transcript) | `id` in the header row |
+It is one static binary. It only ever reads. Nothing leaves your machine unless you tell it to.
 
-The `~` in that table resolves to the running user's home: `$HOME` on Linux and macOS,
-`%USERPROFILE%` on Windows (so `C:\Users\<you>\.claude\projects` and the like). Each
-directory is also resolved the way its CLI resolves it — `CLAUDE_CONFIG_DIR`,
-`CODEX_HOME`, `GROK_HOME`, `HERMES_HOME`, `OPENCLAW_STATE_DIR`, pi's
-`PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR`, opencode's `XDG_DATA_HOME` and
-DeepSeek Harness's `DSH_HOME` are honoured, read from this service's own environment.
-Antigravity defines none of its own; its `--gemini_dir` profiles are pointed at with
-`--path`. Per-source parsing details are in
-[docs/internals.md](docs/internals.md); relocations and extra instances in
-[docs/sources.md](docs/sources.md).
+```console
+$ asq ls
+claude/aaaa1111  28m ago · 2 turns · 1 failed · 1 agent · /work/alpha · main
+  Fix flaky test
+codex/bbbb2222   2d ago · 1 turn · /work/beta · release
+  rotate the deploy key
 
-## Quick start
+$ asq search ECONNREFUSED
+1 turn in 1 session
 
-### Install with one line
+1. claude/aaaa1111-0000-4000-8000-000000000001#1  2026-11-13 17:43 · /work/alpha
+   ask    fix the flaky test
+   output Bash › --- FAIL: TestOrder dial tcp: ECONNREFUSED 127.0.0.1:5432 exit status 1
 
-No Go toolchain needed, and **avoids macOS Gatekeeper / Windows SmartScreen quarantine blocks**:
+$ asq show claude/aaaa1111#1
+claude/aaaa1111-0000-4000-8000-000000000001#1 · 2026-11-13 17:43 · 20s · exec 1 · failed 1 · 2.1k in · 70 out · cache 92%
 
-**macOS / Linux:**
-```bash
+17:43:39 ASK
+    fix the flaky test
+17:43:44 thinking the order of a map is not stable
+17:43:44 Bash go test ./...  ✗ failed · 2s  [2]
+    --- FAIL: TestOrder
+    dial tcp: ECONNREFUSED 127.0.0.1:5432
+    exit status 1
+
+17:43:59 REPLY
+    The test depended on map order; fixed by sorting the keys.
+```
+
+## The idea
+
+Whatever the CLI, a session is the same thing: **a person asked, an agent worked, the agent
+answered.** That exchange is the unit here — a *turn* — and everything `asq` offers is a view of
+turns:
+
+```
+Session ─┬─ Turn 1   the ask → replies, reasoning, tool calls with their results → the answer
+         ├─ Turn 2
+         │    └─ a subagent the turn started: a session of its own, beneath this one
+         └─ Turn n
+```
+
+An adapter per CLI converts its transcript into this record and does nothing else. Listing,
+search, briefs, usage, failures, traces and the web page are written once, over the record, so
+they work the same for every CLI — and a new CLI is one small package. Token counts are
+normalized on the way in (input never includes cached tokens; output always includes reasoning),
+so a sum across CLIs adds like with like. → [The record](docs/model.md)
+
+## Install
+
+**macOS and Linux** — downloads the release for your machine and verifies it against the
+published checksums:
+
+```sh
 curl -fsSL https://raw.githubusercontent.com/itswl/agent-session-query/main/install.sh | sh
 ```
 
-**Windows (PowerShell):**
+**Windows** (PowerShell):
+
 ```powershell
 irm https://raw.githubusercontent.com/itswl/agent-session-query/main/install.ps1 | iex
 ```
 
-The script detects your OS/architecture, downloads the latest release, **verifies it
-against the published `SHA256SUMS`**, and installs it (on Windows it also clears the
-download's trust marking and adds the install directory to your PATH).
+**With Go** (1.26 or newer; no cgo, no other toolchain):
 
-### Manual download
-
-Pushing a tag like `v0.1.0` triggers
-[GitHub Actions](.github/workflows/release.yml), which cross-compiles **six platforms**
-(`linux` / `darwin` / `windows` × `amd64` / `arm64`) and attaches the artifacts to the
-Releases page. Unpack and run. Unix gets `.tar.gz`, Windows `.zip`:
-
-```bash
-tar xzf agent-session-query-darwin-arm64.tar.gz
-./agent-session-query --port 8080
+```sh
+go install github.com/itswl/agent-session-query/cmd/asq@latest
 ```
 
-```powershell
-# Windows
-Expand-Archive agent-session-query-windows-amd64.zip -DestinationPath .
-.\agent-session-query.exe --port 8080
+Or take an archive from the [releases](https://github.com/itswl/agent-session-query/releases)
+(amd64 and arm64 for all three systems), or run the container image
+`ghcr.io/itswl/agent-session-query` — see [Deploying](docs/deploy.md).
+
+Then:
+
+```sh
+asq doctor     # which stores were found, and whether each reads
+asq ls         # the first run indexes your history: about ten seconds per gigabyte
 ```
 
-The artifacts are unsigned, so the OS will stop you once: on macOS
-`xattr -d com.apple.quarantine agent-session-query`; on Windows, "More info → Run anyway".
-
-### Build locally
-
-```bash
-go build -o agent-session-query ./cmd/agent-session-query
-./agent-session-query --port 8080                     # auto-detect: enable whatever exists
-./agent-session-query --mode claude                    # just one source
-./agent-session-query --hook_token mysecrettoken       # with authentication
-```
-
-It prints the sources it enabled, then open `http://127.0.0.1:8080/ui` in a browser.
-
-Add `-d` to put it in the background; the parent confirms the port really came up before
-printing the PID and exiting:
-
-```bash
-./agent-session-query -d --port 8080
-# Started in the background
-#   PID:     82575
-#   Address: http://127.0.0.1:8080
-#   Log:     /tmp/agent-session-query-8080.log
-#   Stop:    kill 82575
-```
-
-`-d` is for running in the background temporarily — nothing restarts the process if it dies.
-For a supervised service (Linux systemd / macOS launchd / Windows scheduled task / Docker),
-see **[docs/deploy.md](docs/deploy.md)**.
-
-## Web page (`/ui`)
-
-Three panes: **session list / conversation read by rounds / final result**. The list
-carries every session under a readable name, with body search in the same query as
-filtering; the conversation folds each round's work to one line, in five views (all /
-words / changes / commands / failures); the result pane keeps the answer visible beside a
-round-by-round table of contents, the resume command, exports and the project's pack.
-
-<p align="center">
-  <img src="docs/screenshots/desktop.png" alt="The page on a desktop: sessions from five CLIs in the list, a round opened to its steps with one failed test run, and the details pane with the final result, the table of contents and usage" width="1000">
-</p>
-
-<table>
-  <tr>
-    <td valign="top" width="50%">
-      <img src="docs/screenshots/search.png" alt="Searching for retry: four sessions match in their message bodies, each with its snippet; the one opened shows the match highlighted and the find bar filled in" width="370"><br>
-      <b>Body search</b> — hits in message bodies come with their snippet; opening one lands on the match.
-    </td>
-    <td valign="top" width="50%">
-      <img src="docs/screenshots/changes.png" alt="The changes view: each edit in the session as a diff, with its file and its result" width="370"><br>
-      <b>changes</b> — the session's edits as diffs, round by round, whichever way the CLI spelled them.
-    </td>
-  </tr>
-  <tr>
-    <td valign="top">
-      <img src="docs/screenshots/failures.png" alt="The Failures list: six failed tool calls from Claude Code and Codex sessions, one opened at its failed test run" width="370"><br>
-      <b>Failures</b> — the failed tool calls of the last seven days, across sources; a click opens the session at the failure.
-    </td>
-    <td valign="top">
-      <img src="docs/screenshots/subagents.png" alt="Two Explore subagents nested under their session, one opened as a transcript of its own with a link back to the session" width="370"><br>
-      <b>Subagents</b> — nested under the session that spawned them, each opening as a transcript of its own.
-    </td>
-  </tr>
-</table>
-
-Installs as a web app, works as three screens on a phone, refreshes without disturbing
-what you are reading.
-
-<p align="center">
-  <img src="docs/screenshots/mobile-list.png" alt="The session list on a phone" width="260">
-  <img src="docs/screenshots/mobile-conversation.png" alt="A conversation on a phone, its round opened to the steps" width="260">
-</p>
-
-The full walkthrough — subagents, archived sessions, find, paging, copy affordances,
-shortcuts — is in **[docs/ui.md](docs/ui.md)**.
-
-## Endpoints at a glance
-
-Every query is a `GET` (MCP's `/mcp` and the login endpoints are `POST`). Once
-`--hook_token` is set, endpoints marked "yes" require `Authorization: Bearer <token>` — or
-the `app_session` cookie that `POST /login` issued for the same token.
-
-| Endpoint | Auth | What it does |
-|----------|------|--------------|
-| `/` `/health` `/stats` | no | Service info and health check |
-| `/ui` | no | The embedded page (holds no data) |
-| `/sessions` | yes | List every session, merged across sources |
-| `/sessions/<pattern>/…` | yes | One session: `/messages`, `/final`, `/rounds`, `/brief`, `/export` |
-| `/search?q=` | yes | Full-text search across every source |
-| `/projects` | yes | Session counts by project |
-| `/usage` | yes | What the sessions consumed: tokens and cache hit rate, by window, model, day and project |
-| `/export?project=&since=` | yes | Several sessions as one pack document |
-| `/mcp` | yes | MCP's Streamable HTTP transport |
-| `/login` `/logout` | no | `POST` the token to `/login` once, get an `app_session` cookie (HttpOnly, 180 days) that authenticates everything else; `/logout` clears it |
-
-Full parameters, the `<pattern>` matching rules and every response field are in
-**[docs/api.md](docs/api.md)**.
-
-## MCP
-
-`--mcp` runs on stdio; in HTTP mode there is also `POST /mcp`. That lets **an agent query
-its own history** — Claude Code can go looking for the same problem you solved with Codex
-last week. Fourteen tools, from `search_sessions` to `get_digest`
-and `session_brief`; client configuration and the security notes (session text is
-untrusted input — reported on, never followed) are in **[docs/mcp.md](docs/mcp.md)**.
-
-## Configuration
-
-| Flag | Default | What it does |
-|------|---------|--------------|
-| `--host` | `127.0.0.1` | Bind address; use `0.0.0.0` to expose it (refused without `--hook_token`) |
-| `--port` | `8080` | Listen port |
-| `--mode` | `auto` | `auto` (enable whatever exists) / `all` (enable all ten) / `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` / `opencode` / `grok` / `antigravity` / `dsh` |
-| `--otel-endpoint` | none | Send rounds to an OTLP/HTTP collector (Langfuse included); off unless set. See [docs/telemetry.md](docs/telemetry.md) |
-| `--otel-export` | off | Export the window once and exit |
-| `--otel-since` | `7d` | Backfill window; `all` for the whole history |
-| `--otel-content` | `none` | `io` also sends prompts, replies and tool output (masked, 256 KiB) |
-| `--otel-metrics` | off | Also send OTLP sums (rounds, tokens, tool failures) to `/v1/metrics` |
-| `--path` | none | Relocate or duplicate a source: `--path claude=/mnt/disk/.claude/projects` points the source elsewhere; `--path claude:box2=/mnt/box2/.claude/projects` adds a second instance named `claude:box2`. Directory-shaped sources (`pi`, `claude`, `codex`, `gemini`, `grok`, `antigravity`, `dsh`) and opencode's database (its data dir or the `opencode.db` file). Repeatable — the way a pi hosted behind a wrapper's `--session-dir` is pointed at |
-| `--hook_token` | none | Bearer token; without it the API is unauthenticated. The same token also logs a browser in: `POST /login` answers with an `app_session` cookie (HttpOnly, 180 days, 10 tries/min/IP) |
-| `--max-connections` | `50` | Maximum concurrent connections; anything past it queues |
-| `--accept-queue` | `0` (auto) | Queue slots when at capacity; `0` means `2 × max-connections`, never below 32. A full queue returns 503 immediately |
-| `--timeout` | `30` | Connection timeout in seconds |
-| `--cache-ttl` | `2` | Seconds to cache the session list; `0` disables caching |
-| `--max-limit` | `1000` | Upper bound for `?limit=`; anything larger is clamped |
-| `--cors-origin` | none (off) | Allowed CORS origin; `*` or a specific origin. Unset means no CORS headers at all |
-| `-d` | off | Run in the background, detached from the terminal, logging to a file |
-| `--log-file` | derived from the port | Log path used with `-d`; defaults to `<tmp>/agent-session-query-<port>.log` |
-| `--check` | off | Diagnose every source and exit: found or not, session count, a deep read of the newest session. Exit 0 healthy, 1 a source failed — the drift defence, before an empty list gets mistaken for no data |
-| `--mcp` | off | Run as an MCP server on stdio (see above); does not listen on a port |
-| `--version` | — | Print the version and exit |
-
-Docker: every release publishes a multi-arch image to GitHub Container Registry, so nothing
-has to be built; `HOOK_TOKEN` and `SESSION_MODE` (default `auto`) are its environment
-variables, and `GO_IMAGE` is a build argument for a local build. See
-[docs/deploy.md](docs/deploy.md).
-
-Without `--hook_token` the `HOOK_TOKEN` environment variable is read instead — **command-line
-arguments show up in `ps`, environment variables do not**, so prefer the latter for anything
-long-running.
-
-## Security
-
-- It can read complete session content, tool output included, so **always set
-  `--hook_token`** before exposing it. A non-loopback `--host` without a token is refused
-  at startup, not warned about
-- **Cookie login**: the token works two ways. Scripts and MCP clients send it as the
-  `Authorization: Bearer` header, as always. Browsers `POST /login` with it once
-  (`{"token": "..."}`) and get back an `app_session` cookie — HttpOnly,
-  `SameSite=Lax`, valid for 180 days — that authenticates every route, so the token never
-  has to sit in the page's `localStorage` where an XSS could read it. `/login` compares it
-  constant-time, caps the request body at 4 KiB, and allows 10 attempts per minute per
-  client IP. The cookie is a signed expiry, not the token; rotating the token retires
-  every cookie at once (there is no per-session revocation)
-- It binds `127.0.0.1` and sends no CORS headers by default; on top of that, `Origin` is
-  validated on every route except `OPTIONS` preflights, and with no token on a loopback
-  bind any request whose `Host`
-  is not a loopback name (`localhost`, `127.0.0.0/8`, `::1`) is refused — the shape a
-  DNS-rebinding page sends. A token, or a deliberate non-loopback bind, turns the `Host`
-  check off: behind a reverse proxy the forwarded `Host` is the public name, and the token
-  is what protects the data there
-- Put it behind an HTTPS reverse proxy (Nginx, Caddy) rather than on the public internet.
-  `/ui` carries no data, but authenticate it at the proxy anyway
-- `/ui` ships a `Content-Security-Policy` (same-origin scripts and styles only, nothing
-  inline, no framing) and renders exclusively through `textContent`
-- Release archives are covered by a published `SHA256SUMS`, and both install scripts verify
-  the download against it before installing anything (releases before v0.25.0 have no sums
-  file; the scripts say so and continue)
-- Rotate tokens; keep them out of images and repositories; mount session directories `:ro`
-
-## Troubleshooting
-
-1. **A source was not enabled** (it is missing from `sources` in `/health`): check the
-   directory exists using the table above; `--mode all` prints which ones were missing.
-   Hermes needs `sessions.json` **or** `state.db`, either is enough. In a container, confirm
-   the directory was actually mounted. With nothing installed at all, `auto` (and `all`)
-   falls back to OpenClaw so the service still starts — `/health` lists it and it will
-   simply be empty. In `auto`/`all` the set is re-checked while the process runs, so a CLI
-   whose first session appears after startup is picked up without a restart.
-2. **The list is empty**: check `/health` for which sources are enabled, and that the process
-   can read those directories. A `warnings` entry there names the source that could not be
-   read and why — a source that broke and a source with nothing in it both answer with an
-   empty list, and only one of them is a problem (with a token configured, `warnings` is
-   included only for an authenticated request).
-3. **401**: check that `Authorization: Bearer <token>` matches the `--hook_token` the server
-   started with.
-4. **Port already in use**: pick another `--port`.
-
-## Documentation
+## Commands
 
 | | |
 |---|---|
-| [docs/api.md](docs/api.md) | The full HTTP API: parameters, matching rules, response fields |
-| [docs/ui.md](docs/ui.md) | The web page, pane by pane: views, search, find, shortcuts, mobile |
-| [docs/mcp.md](docs/mcp.md) | MCP: both transports, client configuration, the tool table |
-| [docs/deploy.md](docs/deploy.md) | Supervised deployment: systemd / launchd / Windows scheduled task / Docker |
-| [docs/sources.md](docs/sources.md) | Data sources, relocations and `--path` for sessions outside the default home |
-| [docs/development.md](docs/development.md) | Layout, tests, releasing, adding a source |
-| [docs/internals.md](docs/internals.md) | Implementation: per-source parsing, performance, search, cross-platform |
-| [docs/telemetry.md](docs/telemetry.md) | OTLP export: what is sent, timing fidelity, Langfuse setup, continuous mode |
-| [docs/roadmap.md](docs/roadmap.md) | What has shipped, what is still open and how worth doing it looks, and what is not planned |
+| `asq ls` | recent sessions — `--project`, `--since 7d`, `--source codex`, `--branch`, or a word of the title |
+| `asq search <words>` | the turns that hold these words: asks, replies, reasoning, tool input and output |
+| `asq show <ref>` | a session as its turns; `<ref>#4` one turn step by step; `--seq 12` one step whole; `-f` follows it live |
+| `asq brief <ref>` | a handoff brief: what was asked, changed, failed and concluded — `--turn N`, `--since 2h` |
+| `asq pack` | several sessions as one document, oldest first — `--project`, `--since` |
+| `asq export <ref>` | a session whole — `--format md \| json \| jsonl \| html` |
+| `asq usage` | what the model calls consumed — `--by model \| day \| source \| project \| session` |
+| `asq failures` | the tool calls that failed — `--tool Bash`, `--since` |
+| `asq digest` | what a stretch of work added up to, per project |
+| `asq files <path>` | the turns that touched a file — `--changed` |
+| `asq projects` | the directories sessions ran in |
+| `asq resume <ref>` | the command that reopens a session in its own CLI — `--run` to run it |
+| `asq serve` | the web page and the HTTP API |
+| `asq mcp` | an MCP server on stdio, for agents to ask their own history |
+| `asq otel` | export sessions as OpenTelemetry traces |
+| `asq doctor` · `asq index` | check the stores · inspect, rebuild or remove the index |
+
+A **ref** is what `ls` and `search` print: `claude/3f2a9c1e`, or just the start of a session's
+id, the way a commit is named. `#4` names a turn. Every command takes `--json`.
+
+**Search** understands `"a phrase"`, `-not`, and `ask:` `reply:` `thinking:` `tool:` `output:` to
+confine a word to one part of a turn. Bare words match as prefixes (`rebind` finds `rebinding`).
+Chinese, Japanese, Korean and Thai are matched by substring: `asq search 数据库` works.
+→ [Command line](docs/cli.md)
+
+## The page
+
+```sh
+asq serve --open        # http://127.0.0.1:7717
+```
+
+![A session in the page: its turns, and one turn opened to its steps](docs/screenshots/session-steps.png)
+
+The same record in a browser: the list with filters, search with highlighted hits, a session as
+a timeline of turns that opens down to a single tool call's full output, usage charts, failures
+and a digest — updating live while agents work. It listens on loopback only and refuses to
+listen anywhere else without a token. → [The page](docs/ui.md) · [HTTP API](docs/api.md) ·
+[Deploying](docs/deploy.md)
+
+## For agents: MCP
+
+An agent that can ask its own history stops solving the same problem twice — and can read what
+*another* agent did: Claude Code can search the session you had with Codex last week.
+
+```sh
+claude mcp add --scope user asq -- asq mcp      # Claude Code
+codex mcp add asq -- asq mcp                    # Codex
+```
+
+Any other client: the command is `asq mcp`, on stdio. A running `asq serve` also answers MCP
+over HTTP at `/mcp`.
+
+Ten read-only tools — `search`, `sessions`, `read`, `brief`, `pack`, `usage`, `failures`,
+`digest`, `files`, `projects` — return compact plain text rather than JSON, cut to a budget the
+caller can raise, with secret-shaped strings masked: what a model reads is paid for by the
+token, and leaves the machine with it. → [MCP](docs/mcp.md)
+
+## Traces
+
+```sh
+asq otel --endpoint https://collector.example:4318            # timings, models, tokens, tool names
+LANGFUSE_PUBLIC_KEY=… LANGFUSE_SECRET_KEY=… asq otel --content asks --every 10m
+```
+
+Every turn becomes a trace: a span per model response with its tokens, the tool calls beneath
+the response that made them, a subagent beneath the call that started it. OpenTelemetry GenAI
+conventions, plus what Langfuse needs. Ids are derived from the content, and a ledger remembers
+what each collector already has, so a turn is sent once. By default **no text of the
+conversation is sent** — `--content asks` or `all` opts in. → [Telemetry](docs/telemetry.md)
+
+## What it reads
+
+| `--source` | CLI | where its sessions are |
+|---|---|---|
+| `claude` | Claude Code | `~/.claude/projects` — including subagents and workflow agents |
+| `codex` | Codex | `~/.codex/sessions`, and `archived_sessions` beside it |
+| `gemini` | Gemini CLI | `~/.gemini/tmp` |
+| `opencode` | OpenCode | `~/.local/share/opencode/opencode.db` |
+| `grok` | Grok CLI | `~/.grok/sessions` |
+| `antigravity` | Antigravity | `~/.gemini/antigravity-cli`, `~/.gemini/antigravity` |
+| `pi` | Pi | `~/.pi/agent/sessions` |
+| `dsh` | DeepSeek Harness | `~/.dsh/sessions` |
+| `hermes` | Hermes | `~/.hermes/state.db` |
+| `openclaw` | OpenClaw | `~/.openclaw/agents` |
+
+Each CLI's own variable for moving its store is honoured (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …).
+A store somewhere else — another machine's home directory, a backup — is added by name:
+`asq ls --path claude@box2=/mnt/box2/.claude/projects`, and its sessions appear as
+`claude@box2/…`. → [Sources](docs/sources.md)
+
+## How it stays fast, and private
+
+- **An index, not a scan.** The first run reads every transcript into one SQLite file in your
+  cache directory (full-text indexed, compressed, a fraction of the transcripts' size).
+  After that a command checks which transcripts changed — a `stat` each — and reads only those,
+  and only their turns that changed. A search over gigabytes of history answers in
+  milliseconds. The index is a cache: `asq index rm` and it is rebuilt.
+- **Read-only.** Nothing in `asq` can write to a CLI's store.
+- **Local.** No telemetry, no network calls, no account. The two things that can send anything
+  anywhere are the ones you point at a destination yourself: `asq otel`, and an agent you gave
+  the MCP server to.
+- **Careful with what it shows.** Terminal escape sequences in tool output are stripped before
+  they reach your terminal. Anything assembled for someone else — a brief, a pack, an MCP
+  answer, a trace — has secret-shaped strings masked (API keys, tokens, private keys: the
+  shapes that announce themselves; a password in prose is not detectable, and the docs say so).
+- **Guarded when served.** No token: loopback only, with DNS-rebinding and cross-site requests
+  refused. With a token: an `Authorization` header for programs, an `HttpOnly` cookie for the
+  page, wrong guesses throttled.
+
+## Documentation
+
+[The record](docs/model.md) · [Command line](docs/cli.md) · [The page](docs/ui.md) ·
+[HTTP API](docs/api.md) · [MCP](docs/mcp.md) · [Telemetry](docs/telemetry.md) ·
+[Sources](docs/sources.md) · [Deploying](docs/deploy.md) · [Development](docs/development.md)
+
+## Coming from agent-session-query
+
+`asq` is a ground-up redesign of `agent-session-query`, not a new version of it. The binary, the
+flags, the HTTP routes, the MCP tool names and the page are all different; nothing is kept for
+compatibility. What changes for you:
+
+- The binary is `asq`. `agent-session-query --port 8080` is now `asq serve` (port 7717);
+  `--mcp` is `asq mcp`; `--otel-export` is `asq otel`.
+- An MCP client configured for the old server needs its command changed to `asq mcp`. The tools
+  are fewer and differently named (`search_sessions` → `search`, `get_messages` → `read`,
+  `list_rounds` → `read` without a turn, `session_brief` → `brief`, …).
+- A *round* is now a *turn*, and it is the unit everywhere, including search results.
+- `HOOK_TOKEN` is `ASQ_TOKEN`. Sessions are named `source/id` in every interface.
+- The old OpenTelemetry cursor is not read: the first `asq otel` to a collector sends its window
+  again, under new span ids.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
-
----
-
-**Note**: this service is read-only. It never modifies the session data of Hermes, OpenClaw,
-Pi, Claude Code, Codex, Gemini, OpenCode or Grok.
+[MIT](LICENSE)

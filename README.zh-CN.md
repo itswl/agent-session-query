@@ -1,254 +1,216 @@
-# agent-session-query
+# asq
 
-[English](README.md) · **简体中文**
+**把这台机器上所有 agent CLI 的会话历史，读成同一份记录：可搜索、可阅读、可交接、可度量。**
 
-查询本机各个 agent CLI 留下的会话记录：**一个只读网页、一套 HTTP API、以及一个供 agent 调用的
-MCP server**。它不会修改任何会话数据。
+[English](README.md)
 
-单个二进制（不依赖 cgo，没有常驻运行时）—— `scp` 到任意同架构的机器上直接跑。外部依赖都是纯 Go
-（读取 Hermes `state.db` 的 SQLite 驱动、解 DeepSeek Harness zstd 帧的解码器），所以交叉编译照常可用。
+Claude Code、Codex、Gemini CLI、OpenCode、Grok、Antigravity、Pi、DeepSeek Harness、Hermes、OpenClaw
+各自都记录了自己做过的事——十种格式，十个位置。`asq` 把它们读进同一个模型，回答你真正会问的问题：
 
-支持十个数据源；存在哪个就查哪个，也可以在一次查询里合并：
+- *上次这个问题我是怎么解决的？* —— 对所有会话的每一轮做全文搜索
+- *那个 agent 当时在干什么？* —— 任意会话先看成一串「轮次」，再逐步展开
+- *从它停下的地方接着干* —— 生成一份另一个 agent 可以直接接手的交接简报
+- *这周花了多少？* —— token、缓存命中率、费用，按模型 / 日期 / 项目汇总
+- *什么总在失败？* —— 每一次失败的工具调用，带命令和输出末尾
 
-| 数据源 | 会话存放位置 | 会话 ID |
-|--------|--------------|---------|
-| Hermes | `~/.hermes/sessions/`（`sessions.json`）或 `~/.hermes/state.db`（较新版本，全 SQLite） | `sessions.json` 里的 `session_id` / `sessions` 表里的 `id` |
-| OpenClaw | `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite`（SQLite，2026.9+；旧版 `sessions.json` 布局仍可读） | `session_windows` 表的 `session_id` |
-| Pi | `~/.pi/agent/sessions/<project>/*.jsonl`，以及 `--session-dir` 目录下平铺的 `*.jsonl` | session 行上的 `id` |
-| Claude Code | `~/.claude/projects/<project>/*.jsonl` | 文件名（一个 uuid）/ `sessionId` 字段 |
-| Codex | `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl`，以及 `~/.codex/archived_sessions/` | 元数据行上的 `payload.session_id` |
-| Gemini CLI | `~/.gemini/tmp/<project>/chats/session-*.jsonl` | 首行的 `sessionId` |
-| OpenCode | `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db`（SQLite；Windows 为 `%LOCALAPPDATA%\opencode`；1.x 的 `session` 表与 2.x 的 `session_v2` / `session_message` 表都读） | `session` 或 `session_v2` 表的 `id` |
-| Grok CLI | `~/.grok/sessions/<url 编码的 cwd>/<session-id>/`（`summary.json` + `updates.jsonl`），以及 `~/.grok/archived_sessions/` | `summary.json` 里的 `info.id` |
-| Antigravity | `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl`（IDE 写的是 `~/.gemini/antigravity/brain/`）；每个 brain 旁的 `conversation_summaries.db` 存标题与工作区 | 目录名 |
-| DeepSeek Harness | `~/.dsh/sessions/<project>/<session>/session.v<N>.jsonl[.zstd]`（首尾相接的 zstd 帧；最高版本是当前 transcript） | 头行里的 `id` |
+它是一个静态二进制，只读，除非你明确让它发，否则任何内容都不会离开这台机器。
 
-表中的 `~` 指向运行用户的家目录：Linux 和 macOS 上是 `$HOME`，Windows 上是 `%USERPROFILE%`
-（也就是 `C:\Users\<you>\.claude\projects` 之类）。每个目录也按各家 CLI 自己的方式解析——
-`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`GROK_HOME`、`HERMES_HOME`、`OPENCLAW_STATE_DIR`、pi 的
-`PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR`、opencode 的 `XDG_DATA_HOME`、DeepSeek Harness 的
-`DSH_HOME` 都会生效（读的是本服务自身环境里的值）。Antigravity 没有这类变量，它的 `--gemini_dir` 私有目录用 `--path` 指过来。各数据源的解析细节见
-[docs/internals.md](docs/internals.md)；目录迁移与额外实例见
-[docs/sources.md](docs/sources.md)。
+```console
+$ asq ls
+claude/aaaa1111  28m ago · 2 turns · 1 failed · 1 agent · /work/alpha · main
+  Fix flaky test
+codex/bbbb2222   2d ago · 1 turn · /work/beta · release
+  rotate the deploy key
 
-## 快速开始
+$ asq search 数据库
+1 turn in 1 session
 
-### 一行命令安装
+1. claude/aaaa1111-0000-4000-8000-000000000001#2  2026-11-13 18:13 · /work/alpha
+   ask    现在给数据库加索引
 
-不需要 Go 工具链；下载**用发布页的 `SHA256SUMS` 校验**，Windows 上还会自动解除系统拦截标记
-（SmartScreen / Zone.Identifier）：
+$ asq show claude/aaaa1111#1
+claude/aaaa1111-0000-4000-8000-000000000001#1 · 2026-11-13 17:43 · 20s · exec 1 · failed 1 · 2.1k in · 70 out · cache 92%
 
-**macOS / Linux:**
-```bash
+17:43:39 ASK
+    fix the flaky test
+17:43:44 thinking the order of a map is not stable
+17:43:44 Bash go test ./...  ✗ failed · 2s  [2]
+    --- FAIL: TestOrder
+    dial tcp: ECONNREFUSED 127.0.0.1:5432
+    exit status 1
+
+17:43:59 REPLY
+    The test depended on map order; fixed by sorting the keys.
+```
+
+## 核心想法
+
+不管是哪个 CLI，一次会话说的都是同一件事：**人提出要求，agent 干活，agent 给出回答。** 这一来一回就是这里的
+基本单位——一「轮」（turn）——`asq` 提供的一切都是对轮次的某种呈现：
+
+```
+会话 ─┬─ 第 1 轮   提问 → 回复、思考、工具调用及其结果 → 最终回答
+      ├─ 第 2 轮
+      │    └─ 这一轮启动的子 agent：它自己是一个会话，挂在本会话之下
+      └─ 第 n 轮
+```
+
+每个 CLI 一个适配器，只负责把它的 transcript 转成这份记录，别的什么都不做。列表、搜索、简报、用量、失败、
+trace、网页都只写一遍，写在这份记录之上——所以对每个 CLI 行为一致，新增一个 CLI 只是一个小包。token 计数在读入时
+就已归一（input 不含缓存部分，output 一定包含 reasoning），跨 CLI 求和才是同口径相加。→ [记录模型](docs/model.md)
+
+## 安装
+
+**macOS 与 Linux** —— 下载对应平台的发布包，并用发布的校验和验证：
+
+```sh
 curl -fsSL https://raw.githubusercontent.com/itswl/agent-session-query/main/install.sh | sh
 ```
 
-**Windows (PowerShell):**
+**Windows**（PowerShell）：
+
 ```powershell
 irm https://raw.githubusercontent.com/itswl/agent-session-query/main/install.ps1 | iex
 ```
 
-脚本自动检测系统与架构，拉取最新 Release 产物、**用 `SHA256SUMS` 校验**后安装
-（Windows 上会解除下载的信任标记并把安装目录加进 PATH）。
+**用 Go**（1.26 及以上；无 cgo，不需要其他工具链）：
 
-### 手动下载构建产物
-
-推送一个形如 `v0.1.0` 的 tag 会触发
-[GitHub Actions](.github/workflows/release.yml)，交叉编译 **六个平台**
-（`linux` / `darwin` / `windows` × `amd64` / `arm64`）并把产物挂到 Releases 页面。解压即用。
-Unix 是 `.tar.gz`，Windows 是 `.zip`：
-
-```bash
-tar xzf agent-session-query-darwin-arm64.tar.gz
-./agent-session-query --port 8080
+```sh
+go install github.com/itswl/agent-session-query/cmd/asq@latest
 ```
 
-```powershell
-# Windows
-Expand-Archive agent-session-query-windows-amd64.zip -DestinationPath .
-.\agent-session-query.exe --port 8080
+也可以从 [releases](https://github.com/itswl/agent-session-query/releases) 直接下载压缩包（三个系统均提供
+amd64 与 arm64），或运行容器镜像 `ghcr.io/itswl/agent-session-query` —— 见 [部署](docs/deploy.md)。
+
+然后：
+
+```sh
+asq doctor     # 找到了哪些存储，各自是否能读
+asq ls         # 第一次运行会建索引：每 GB 历史大约十秒
 ```
 
-产物没有签名，所以系统会拦你一次：macOS 上执行
-`xattr -d com.apple.quarantine agent-session-query`；Windows 上选"更多信息 → 仍要运行"。
-
-### 本地构建
-
-```bash
-go build -o agent-session-query ./cmd/agent-session-query
-./agent-session-query --port 8080                     # 自动探测：存在哪个就启用哪个
-./agent-session-query --mode claude                    # 只启用单个数据源
-./agent-session-query --hook_token mysecrettoken       # 带鉴权
-```
-
-启动时会打印启用了哪些数据源，然后用浏览器打开 `http://127.0.0.1:8080/ui`。
-
-加 `-d` 可以让它转入后台；父进程会先确认端口真的起来了，再打印 PID 并退出：
-
-```bash
-./agent-session-query -d --port 8080
-# Started in the background
-#   PID:     82575
-#   Address: http://127.0.0.1:8080
-#   Log:     /tmp/agent-session-query-8080.log
-#   Stop:    kill 82575
-```
-
-`-d` 只适合临时跑在后台——进程挂了没人拉起来。要做成有监管的常驻服务
-（Linux systemd / macOS launchd / Windows 计划任务 / Docker），见
-**[docs/deploy.md](docs/deploy.md)**。
-
-## 网页（`/ui`）
-
-三栏：**会话列表 / 按轮阅读的对话 / 最终结果**。列表里每个会话都有可读的名字，
-过滤和正文搜索同一次完成；对话把每轮的工作折叠成一行，有五种视图（全部 / 只看文字 /
- 改动 / 命令 / 失败）；结果栏常驻答案，配对话目录、恢复命令、导出和项目 pack。
-
-<p align="center">
-  <img src="docs/screenshots/desktop.png" alt="桌面端网页：列表里是五个 CLI 的会话，一轮对话展开到各个步骤（其中一次测试失败），右侧详情栏是最终结果、对话目录与用量" width="1000">
-</p>
-
-<table>
-  <tr>
-    <td valign="top" width="50%">
-      <img src="docs/screenshots/search.png" alt="搜索 retry：四个会话在正文里命中，各带一段摘录；打开的会话里命中处已高亮，查找栏也已填好" width="370"><br>
-      <b>正文搜索</b>——正文里的命中带着摘录，点开直接落在命中处。
-    </td>
-    <td valign="top" width="50%">
-      <img src="docs/screenshots/changes.png" alt="改动视图：会话里的每次编辑都显示成 diff，附文件与执行结果" width="370"><br>
-      <b>改动视图</b>——按轮只看 diff，不论 CLI 用哪种写法表达编辑。
-    </td>
-  </tr>
-  <tr>
-    <td valign="top">
-      <img src="docs/screenshots/failures.png" alt="失败列表：来自 Claude Code 与 Codex 会话的六次失败工具调用，其中一个已在失败的测试处打开" width="370"><br>
-      <b>失败列表</b>——最近七天跨数据源的失败工具调用，点一下就在失败处打开会话。
-    </td>
-    <td valign="top">
-      <img src="docs/screenshots/subagents.png" alt="两个 Explore 子 agent 嵌在它们的会话下，其中一个作为独立 transcript 打开，带有回到父会话的链接" width="370"><br>
-      <b>子 agent</b>——嵌在派生它们的会话下，各自作为独立的 transcript 打开。
-    </td>
-  </tr>
-</table>
-
-可装成 Web 应用，手机上是三个屏幕，刷新不打断阅读。
-
-<p align="center">
-  <img src="docs/screenshots/mobile-list.png" alt="手机端的会话列表" width="260">
-  <img src="docs/screenshots/mobile-conversation.png" alt="手机端的对话，这一轮已展开到各个步骤" width="260">
-</p>
-
-完整功能——子 agent、归档开关、会话内查找、翻页、复制、快捷键——见
-**[docs/ui.md](docs/ui.md)**。
-
-## 接口一览
-
-所有查询都是 `GET`（MCP 的 `/mcp` 和登录接口是 `POST`）。一旦设置了 `--hook_token`，标注"是"的
-接口就需要 `Authorization: Bearer <token>`——或用同一把 token 在 `POST /login` 换来的
-`app_session` cookie。
-
-| 接口 | 鉴权 | 作用 |
-|------|------|------|
-| `/` `/health` `/stats` | 否 | 服务信息与健康检查 |
-| `/ui` | 否 | 内嵌页面（本身不含数据） |
-| `/sessions` | 是 | 列出全部会话，跨数据源合并 |
-| `/sessions/<pattern>/…` | 是 | 单个会话：`/messages`、`/final`、`/rounds`、`/brief`、`/export` |
-| `/search?q=` | 是 | 跨全部数据源的全文搜索 |
-| `/projects` | 是 | 按项目分组的会话数 |
-| `/usage` | 是 | 会话消耗了多少：token 与缓存命中率，按窗口、模型、天、项目 |
-| `/export?project=&since=` | 是 | 多个会话打包成一份文档 |
-| `/mcp` | 是 | MCP 的 Streamable HTTP 传输 |
-| `/login` `/logout` | 否 | 把 token `POST` 到 `/login` 一次，换 `app_session` cookie（HttpOnly，180 天）认证其余一切；`/logout` 清除它 |
-
-完整参数、`<pattern>` 的匹配规则和每个响应字段见 **[docs/api.md](docs/api.md)**。
-
-## MCP
-
-`--mcp` 走 stdio；HTTP 模式下另有 `POST /mcp`。这让 **agent 能查询自己的历史**——Claude Code
-可以去翻你上周用 Codex 解决过的同一个问题。共十四个工具，从 `search_sessions`、`get_session_pack`
-到 `list_rounds`、`find_failures`、`get_digest`、`session_brief`；客户端配置与安全注意事项（会话正文是不可信输入——只报告、
-绝不照做）见 **[docs/mcp.md](docs/mcp.md)**。
-
-## 配置
-
-| 参数 | 默认值 | 作用 |
-|------|--------|------|
-| `--host` | `127.0.0.1` | 绑定地址；对外暴露用 `0.0.0.0`（非回环且未设 `--hook_token` 时拒绝启动） |
-| `--port` | `8080` | 监听端口 |
-| `--mode` | `auto` | `auto`（存在哪个启用哪个）/ `all`（十个全启用）/ `hermes` / `openclaw` / `pi` / `claude` / `codex` / `gemini` / `opencode` / `grok` / `antigravity` / `dsh` |
-| `--path` | 无 | 迁移或复制数据源：`--path claude=/mnt/disk/.claude/projects` 迁移；`--path claude:box2=/mnt/box2/.claude/projects` 增加名为 `claude:box2` 的实例。支持目录型（`pi` / `claude` / `codex` / `gemini` / `grok` / `antigravity` / `dsh`）与 opencode 的数据库（其数据目录或 `opencode.db` 文件本身）。可重复——被包装器 `--session-dir` 托管的 pi 就是这么接进来的 |
-| `--hook_token` | 无 | Bearer token；不设则 API 不鉴权。同一把 token 也能登录浏览器：`POST /login` 返回 `app_session` cookie（HttpOnly，180 天，10 次/分钟/IP） |
-| `--max-connections` | `50` | 最大并发连接数，超出的排队 |
-| `--accept-queue` | `0`（自动） | 满载时的排队位；`0` 表示 `2 × max-connections`，且不低于 32。队列满则立即返回 503 |
-| `--timeout` | `30` | 连接超时（秒） |
-| `--cache-ttl` | `2` | 会话列表的缓存秒数；`0` 关闭缓存 |
-| `--max-limit` | `1000` | `?limit=` 的上限，超出则截断 |
-| `--cors-origin` | 无（关闭） | 允许的 CORS 来源；`*` 或具体来源。不设则完全不发 CORS 头 |
-| `-d` | 关闭 | 后台运行，脱离终端，日志写入文件 |
-| `--log-file` | 由端口推导 | `-d` 模式的日志路径，默认 `<tmp>/agent-session-query-<port>.log` |
-| `--check` | 关闭 | 自检每个数据源后退出：是否存在、会话数、最新会话的深读。健康退出 0，有源失败退出 1——格式漂移的防御，别把空列表当成没数据 |
-| `--mcp` | 关闭 | 以 MCP server 身份跑在 stdio 上（见上），不监听端口 |
-| `--version` | — | 打印版本并退出 |
-
-Docker：每次发版都会把多架构镜像发布到 GitHub Container Registry，不必自己构建；环境变量为 `HOOK_TOKEN` 与 `SESSION_MODE`（默认 `auto`），本地构建时可用 `GO_IMAGE` 构建参数。见 [docs/deploy.md](docs/deploy.md)。
-
-不带 `--hook_token` 时会转而读取 `HOOK_TOKEN` 环境变量——**命令行参数会出现在 `ps` 里，环境变量
-不会**，所以长期运行的场景优先用后者。
-
-## 安全
-
-- 它能读到完整的会话内容，包括工具输出，所以**对外暴露前一定要设 `--hook_token`**；非回环地址
-  且未设 token 时进程会**拒绝启动**，而不是只警告
-- **Cookie 登录**：同一把 token 两种用法。脚本和 MCP 客户端照旧放在 `Authorization: Bearer`
-  头里；浏览器则只需 `POST /login`（`{"token": "..."}`）一次，换取 `app_session` cookie——
-  HttpOnly、`SameSite=Lax`、有效期 180 天——凭它访问全部接口，token 不必再存进页面的
-  `localStorage` 被 XSS 读取。`/login` 对 token 做常数时间比较，请求体上限 4 KiB，每客户端 IP
-  每分钟至多 10 次。cookie 是带签名的到期时间，不是 token 本身；轮换 token 即让所有 cookie
-  一次性失效（没有单会话撤销）
-- 默认绑定 `127.0.0.1` 且不发任何 CORS 头；在此之上，除 `OPTIONS` 预检外，所有路由都校验 `Origin`，且在没有 token
-  且绑定回环时，`Host` 不是回环名字（`localhost`、`127.0.0.0/8`、`::1`）的请求一律 403——这正是
-  DNS rebinding 页面发出的形状。设了 token、或显式绑非回环地址时 Host 检查关闭：反代转发过来的
-  是公网名字，那里靠的是 token
-- 放在 HTTPS 反向代理（Nginx、Caddy）之后，而不是直接挂到公网。`/ui` 本身不含数据，但也请在代理
-  层加上鉴权
-- `/ui` 带有 `Content-Security-Policy`（只允许同源脚本与样式，禁止内联，禁止被 frame），并且一律
-  通过 `textContent` 渲染
-- 发布产物附带 `SHA256SUMS`，两个安装脚本装前都会校验；v0.25.0 之前的发布没有该文件，脚本会说明并跳过
-- 定期轮换 token；不要把它写进镜像和仓库；挂载会话目录时加 `:ro`
-
-## 排查
-
-1. **某个数据源没被启用**（`/health` 的 `sources` 里没有它）：对照上面的表检查目录是否存在；
-   `--mode all` 会打印哪些缺失。Hermes 有 `sessions.json` **或** `state.db` 之一即可。容器里
-   请确认目录真的挂进来了。若机器上什么都没装，`auto`（和 `all`）会回退启用 OpenClaw 让服务能起来,
-   `/health` 里会有它，只是内容为空。`auto`/`all` 下这个集合在进程运行期间会持续重新探测，
-   启动之后才产生第一个会话的 CLI 无需重启即可被识别。
-2. **列表是空的**：看 `/health` 里启用了哪些数据源，以及进程是否有权限读这些目录。如果某个
-   数据源读不出来，`/health` 的 `warnings` 会指出是哪个源、报什么错——读不出来和本来就没数据
-   都表现为空列表，但只有前者是问题（设置了 token 时，`warnings` 只随带鉴权的请求返回）。
-3. **401**：检查 `Authorization: Bearer <token>` 与服务端启动时的 `--hook_token` 是否一致。
-4. **端口被占用**：换一个 `--port`。
-
-## 文档
-
-下列文档均为英文。
+## 命令
 
 | | |
 |---|---|
-| [docs/api.md](docs/api.md) | 完整 HTTP API：参数、匹配规则、响应字段 |
-| [docs/ui.md](docs/ui.md) | 网页逐栏详解：视图、搜索、查找、快捷键、手机端 |
-| [docs/mcp.md](docs/mcp.md) | MCP：两种传输、客户端配置、工具表 |
-| [docs/deploy.md](docs/deploy.md) | 常驻部署：systemd / launchd / Windows 计划任务 / Docker |
-| [docs/sources.md](docs/sources.md) | 数据源、目录迁移与 `--path` 自定义路径 |
-| [docs/development.md](docs/development.md) | 目录结构、测试、发版、新增数据源 |
-| [docs/internals.md](docs/internals.md) | 实现细节：各源解析、性能、搜索、跨平台 |
-| [docs/roadmap.md](docs/roadmap.md) | 已经做了什么、还剩什么以及值不值得做、明确不做什么 |
+| `asq ls` | 最近的会话 —— `--project`、`--since 7d`、`--source codex`、`--branch`，或标题里的一个词 |
+| `asq search <词>` | 包含这些词的轮次：提问、回复、思考、工具输入与输出 |
+| `asq show <ref>` | 把会话看成轮次列表；`<ref>#4` 逐步展开某一轮；`--seq 12` 完整看某一步；`-f` 实时跟随 |
+| `asq brief <ref>` | 交接简报：问了什么、改了什么、什么失败了、结论是什么 —— `--turn N`、`--since 2h` |
+| `asq pack` | 把多个会话合成一份文档，由旧到新 —— `--project`、`--since` |
+| `asq export <ref>` | 导出整个会话 —— `--format md \| json \| jsonl \| html` |
+| `asq usage` | 模型调用消耗 —— `--by model \| day \| source \| project \| session` |
+| `asq failures` | 失败的工具调用 —— `--tool Bash`、`--since` |
+| `asq digest` | 一段时间的工作按项目汇总 |
+| `asq files <路径>` | 碰过某个文件的轮次 —— `--changed` 只看修改 |
+| `asq projects` | 会话所在的工作目录 |
+| `asq resume <ref>` | 在原 CLI 里重新打开该会话的命令 —— `--run` 直接执行 |
+| `asq serve` | 网页与 HTTP API |
+| `asq mcp` | stdio 上的 MCP server，让 agent 查询自己的历史 |
+| `asq otel` | 把会话导出为 OpenTelemetry trace |
+| `asq doctor` · `asq index` | 检查各存储 · 查看、重建或删除索引 |
+
+**ref** 就是 `ls` 和 `search` 打印的东西：`claude/3f2a9c1e`，或者只写会话 id 的开头，像引用一个 commit
+那样。`#4` 指第 4 轮。所有命令都支持 `--json`。
+
+**搜索**支持 `"短语"`、`-排除词`，以及 `ask:` `reply:` `thinking:` `tool:` `output:` 把某个词限定在一轮的某个部分。
+裸词按前缀匹配（`rebind` 能找到 `rebinding`）。中文、日文、韩文、泰文按子串匹配：`asq search 数据库` 可以直接用。
+→ [命令行](docs/cli.md)
+
+## 网页
+
+```sh
+asq serve --open        # http://127.0.0.1:7717
+```
+
+![网页中的一个会话：轮次时间线，其中一轮展开到每一步](docs/screenshots/session-steps.png)
+
+同一份记录的浏览器形态：带筛选的列表、高亮命中的搜索、把会话展开成轮次时间线（可以一路点到某次工具调用的完整输出）、
+用量图表、失败列表、摘要——agent 干活时实时更新。默认只监听回环地址；没有 token 时拒绝监听其他地址。
+→ [网页](docs/ui.md) · [HTTP API](docs/api.md) · [部署](docs/deploy.md)
+
+## 给 agent 用：MCP
+
+能查询自己历史的 agent 不会把同一个问题解决两遍——而且它能读到*另一个* agent 做过的事：Claude Code 可以搜到你上周和
+Codex 的那次会话。
+
+```sh
+claude mcp add --scope user asq -- asq mcp      # Claude Code
+codex mcp add asq -- asq mcp                    # Codex
+```
+
+其他客户端：命令是 `asq mcp`，走 stdio。运行中的 `asq serve` 也在 `/mcp` 上以 HTTP 提供 MCP。
+
+十个只读工具——`search`、`sessions`、`read`、`brief`、`pack`、`usage`、`failures`、`digest`、`files`、
+`projects`——返回紧凑的纯文本而不是 JSON，按预算截断（调用方可以调大），并遮掉形似密钥的字符串：模型读到的每个字都
+按 token 计费，而且会随它离开这台机器。→ [MCP](docs/mcp.md)
+
+## Trace
+
+```sh
+asq otel --endpoint https://collector.example:4318            # 只发时间、模型、token、工具名
+LANGFUSE_PUBLIC_KEY=… LANGFUSE_SECRET_KEY=… asq otel --content asks --every 10m
+```
+
+每一轮是一条 trace：每次模型响应一个 span（带 token），它发起的工具调用挂在它下面，子 agent 挂在启动它的那次调用下面。
+遵循 OpenTelemetry GenAI 约定，外加 Langfuse 需要的属性。span id 由内容推导，另有一本账记录每个 collector
+已经收到什么，所以一轮只发一次。默认**不发送任何对话文本**——`--content asks` 或 `all` 才会带上。
+→ [遥测](docs/telemetry.md)
+
+## 读取哪些 CLI
+
+| `--source` | CLI | 会话位置 |
+|---|---|---|
+| `claude` | Claude Code | `~/.claude/projects` —— 包含子 agent 与 workflow agent |
+| `codex` | Codex | `~/.codex/sessions`，以及旁边的 `archived_sessions` |
+| `gemini` | Gemini CLI | `~/.gemini/tmp` |
+| `opencode` | OpenCode | `~/.local/share/opencode/opencode.db` |
+| `grok` | Grok CLI | `~/.grok/sessions` |
+| `antigravity` | Antigravity | `~/.gemini/antigravity-cli`、`~/.gemini/antigravity` |
+| `pi` | Pi | `~/.pi/agent/sessions` |
+| `dsh` | DeepSeek Harness | `~/.dsh/sessions` |
+| `hermes` | Hermes | `~/.hermes/state.db` |
+| `openclaw` | OpenClaw | `~/.openclaw/agents` |
+
+各 CLI 自己用来挪动存储位置的环境变量都会被遵守（`CLAUDE_CONFIG_DIR`、`CODEX_HOME` 等）。别处的存储——另一台机器的
+home 目录、一份备份——按名字加进来：`asq ls --path claude@box2=/mnt/box2/.claude/projects`，其中的会话显示为
+`claude@box2/…`。→ [数据来源](docs/sources.md)
+
+## 为什么快，为什么可以放心
+
+- **查索引，不扫文件。** 第一次运行把所有 transcript 读进缓存目录里的一个 SQLite 文件（全文索引、压缩，只有原文件体积的
+  一小部分）。此后每条命令只检查哪些 transcript 变了——每个文件一次 `stat`——只读变化的文件，且只重写其中变化的轮次。
+  对几个 GB 的历史做搜索是毫秒级。索引只是缓存：`asq index rm` 之后会自动重建。
+- **只读。** `asq` 里没有任何东西会写入某个 CLI 的存储。
+- **本地。** 没有遥测，没有网络请求，没有账号。只有两样东西可能把内容发出去，而且都是你自己指定去向的：`asq otel`，
+  以及你把 MCP server 交给的那个 agent。
+- **展示时小心。** 工具输出里的终端转义序列在到达你的终端之前就被去掉。凡是给别人看的东西——简报、pack、MCP 回答、
+  trace——都会遮掉形似密钥的字符串（API key、token、私钥：那些“自报家门”的形状；一段散文里的密码无法识别，文档里
+  也如实说明）。
+- **对外服务时有防护。** 没有 token：只监听回环地址，并拒绝 DNS rebinding 与跨站请求。有 token：程序用
+  `Authorization` 头，网页用 `HttpOnly` cookie，猜错会被限速。
+
+## 文档
+
+[记录模型](docs/model.md) · [命令行](docs/cli.md) · [网页](docs/ui.md) · [HTTP API](docs/api.md) ·
+[MCP](docs/mcp.md) · [遥测](docs/telemetry.md) · [数据来源](docs/sources.md) · [部署](docs/deploy.md) ·
+[开发](docs/development.md)
+
+（文档正文为英文。）
+
+## 从 agent-session-query 迁移
+
+`asq` 是对 `agent-session-query` 的一次从零重新设计，而不是它的新版本。二进制名、参数、HTTP 路由、MCP 工具名、
+网页全都不同，没有为兼容保留任何东西。对你来说的变化：
+
+- 二进制叫 `asq`。`agent-session-query --port 8080` 现在是 `asq serve`（端口 7717）；`--mcp` 是 `asq mcp`；
+  `--otel-export` 是 `asq otel`。
+- 为旧 server 配置的 MCP 客户端需要把命令改成 `asq mcp`。工具更少、名字也变了（`search_sessions` → `search`，
+  `get_messages` → `read`，`list_rounds` → 不带轮次的 `read`，`session_brief` → `brief`……）。
+- 原来的 *round* 现在叫 *turn*，而且它是所有地方的基本单位，包括搜索结果。
+- `HOOK_TOKEN` 改为 `ASQ_TOKEN`。所有接口里会话都以 `source/id` 命名。
+- 不读取旧的 OpenTelemetry 游标：对某个 collector 第一次执行 `asq otel` 会把时间窗内的内容用新的 span id 重发一遍。
 
 ## 许可证
 
-MIT，见 [LICENSE](LICENSE)。
-
----
-
-**说明**：本服务是只读的。它不会修改 Hermes、OpenClaw、Pi、Claude Code、Codex、Gemini、OpenCode
-或 Grok 的任何会话数据。
+[MIT](LICENSE)

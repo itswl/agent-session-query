@@ -1,133 +1,139 @@
-# The web page (`/ui`)
+# The page
 
-Three panes: **session list / message stream / final result**. A token is only requested
-when the server was started with `--hook_token`; the page trades it at `/login` for an
-HttpOnly cookie and keeps no copy. A token a page from before the cookie stored in
-localStorage is traded the same way on the next load and removed — one the server turns
-down (the token was rotated) is removed too, and the page asks for the current one.
+```sh
+asq serve --open        # http://127.0.0.1:7717
+```
 
-## The panes
+The page is the same record as the command line, for reading at length: a list to find a session
+in, a timeline to read it by, and three reports. It is a client of the [HTTP API](api.md) and
+uses nothing else, so anything it shows can be had from the API too.
 
-### Left — the list
+![The sessions list](screenshots/sessions.png)
 
-Every session under a readable name (opencode's own title, or the first real user message
-elsewhere), grouped by time or project, with a pulsing dot for recent activity (hovering
-says how long ago — it means recent writing, not a liveness check) and a message count
-filled in by a background scan, so the list request never waits for it. Claude Code
-subagents nest under the session that spawned them ("▸ 12 agents"), each opening as a
-transcript of its own with a link back, and an `Agent` step in the session leads to the
-transcript it started. Sessions a CLI has archived stay out of the list, as they do in the
-CLI itself; an **Archived** switch above the list brings them in, marked. A **Failures**
-switch turns the list into the failed tool calls of the last seven days — tool, the command
-or the start of the output, the session it belongs to and its round — and a click opens that
-session at the failure, with the round it happened in whole: the steps after it and the reply
-too. Source problems are the one thing an empty list cannot say: when
-`/health` reports a source that could not be read, a warning strip under the header says so
-(with a dismiss), because a source that failed and a source with nothing in it look
-otherwise identical.
+## Sessions
 
-Typing filters sessionId / path / cwd and, in the same query, **searches message bodies**
-on the server. Body hits append under an "N more in message bodies" divider, carrying the
-matching snippet; with a source picked in the filter, the body search runs within that
-source. <kbd>Enter</kbd> skips the wait. A body match picked in the list opens with its
-words already in the find bar, the match in view, and its round whole: the window ends at
-the match (latest first) or starts at it (earliest first), and the other side is read
-alongside to complete the round — the steps after the match and the reply, up to the next
-ask, or the ask and the steps that led to it.
+The list is grouped by day, newest first, fifty at a time. A row is the session's title, its last
+ask and how it was answered, and the facts worth scanning for: which CLI, how many turns and tool
+calls, how many of those failed, subagents, project, branch. A session written in the last two
+minutes is marked *live*.
 
-### Middle — the conversation, read by rounds
+The filters on the left — store, time, project, archived sessions, subagent transcripts — live in
+the address, so a filtered view can be bookmarked and Back goes where you expect. The counts
+beside each store are what the list shows of it.
 
-You asked, the agent worked, the agent answered. The work between an ask and its reply
-folds to one line (*72 steps · 61 commands · changed 2 files · 1 code · 1 test · 18.2k in · 900 out · cache 71% · 1 failed · 24m39s*),
-keeping failures in view with the start of their output; a run of reads and searches
-folds to "explored — read 4 files, searched twice". Every step opens to its arguments and
-output, edits as diffs whichever way the CLI spelled the edit, results with exit code and
-duration; what happened between turns (a compaction, an interruption, a hook that failed)
-gets a line of its own, and a compaction that carries its summary keeps it folded under the
-line. Steps are coloured by category (run / read / write / search /
-network / delegate).
+## Search
 
-The rounds are the ones the server numbers (`/rounds`, the Failures list's `#N`, a brief's
-`round=N`). An agent team's member starts a round at each instruction from its lead, the
-words shown and the `<teammate-message>` element folded beneath them; a Claude Code fork
-opens with a copy of its parent's conversation, shown as one folded block — *copied from
-the parent session* — with no number of its own, and its rounds start at its directive,
-the boilerplate before it folded the same way.
+Type in the box (`/` focuses it). Results are **turns**, best match first, each with what was
+asked there and the lines the words were found in — a reply, the reasoning, a tool's input or its
+output — with the matches marked. The query syntax is the [command line's](cli.md#finding);
+`?` shows it. A result opens its session at that turn, on the step that matched.
 
-Five views: **all**, **conversation** (the words alone), and one kind of step alone, round
-by round — **changes** (the diffs), **commands** (every command run) and **failures**
-(every failed step, opened to its output). Under the toolbar the window's sums — rounds,
-tool calls, failures, how long it ran — and the failure count steps through the failures
-one at a time (‹ ›, or <kbd>[</kbd> <kbd>]</kbd>), past the loaded window to the nearest
-round that failed.
+![Search results](screenshots/search.png)
 
-**Find in the session** (the magnifier, or <kbd>f</kbd>) marks the words wherever the
-stream draws them and walks the matches with <kbd>Enter</kbd> / <kbd>Shift</kbd>+<kbd>Enter</kbd>,
-beyond the loaded window when the match is there; a match inside cut tool output is read
-whole before it is shown.
+## A session
 
-The stream opens on the latest 200 messages and **loads the previous page when you scroll
-to the top** (the next one at the bottom, when reading from the earliest); the header's
-count says how far into the session you are. Tool output comes cut to a preview, and
-"Show full output" fetches the rest. Markdown renders — headings, lists, code, tables,
-links — and a message's time shows the clock alone on the session's own day, the date in
-front on any other (the full timestamp in the tooltip).
+`/s/<store>/<id>` — the address is the session's ref, and `#4` on the end is turn 4, `#4.31`
+step 31 in it. Any of these can be pasted to someone with the same history.
 
-**Copying is where the thing is**: a code block in a reply copies itself, a round's ask
-copies that round's brief, and an opened step copies its command, its change as a diff, or
-its output — read whole first when the window holds only its start.
+The head says what the session is: title, ref, project, branch, when, totals, and the command
+that reopens it in its own CLI. **Brief** opens the [handoff brief](cli.md#handing-over) with a
+copy button; **Export** downloads the session as Markdown, JSON, JSON Lines or a standalone
+page. A subagent's transcript links to the session it ran in, and a session lists its subagents.
 
-### Right — the result and the map
+![A session](screenshots/session.png)
 
-The final result stays visible: stopReason, the answer, the thinking. Then the
-**conversation table of contents** — two lines a round, what you asked and what the agent
-concluded, with how many steps it took and a red mark when one failed or the round was
-interrupted — clicking either jumps into the stream (it covers the loaded window and says
-so when the session is longer). Below, the session's facts: the command that reopens it in
-its own CLI (copied with the `cd` it needs), the file path, export to Markdown / JSONL /
-JSON / a standalone HTML page, usage and cost, and the project's other sessions — with the
-project's **pack** (what each of its latest sessions asked and concluded, oldest first) to
-copy into another agent or save as a file; a project's header in the list saves it too.
+![The handoff brief](screenshots/brief.png)
 
-## As an app, on a phone
+Below it, the turns: for each, the ask in full, a line of facts (what kinds of tool calls, files
+changed, tokens), and the answer. Only this outline is loaded up front — a long session is
+megabytes — and a turn's steps are fetched when it is opened.
 
-It installs as a web app: open `/ui` on a phone and "Add to Home Screen" gives it an
-icon, a name and a window without browser chrome, honouring the notch and the home
-indicator. After a server upgrade an open page reloads itself on its next refresh — an
-installed app is never reloaded by hand; the Details screen ends with a card naming the
-server's version and how the page was opened. (The icons are drawn by
-`go run tools/icongen.go` — standard library only, so the same source produces the same
-bytes anywhere.)
+![A turn's steps](screenshots/session-steps.png)
 
-On a phone the three panes are screens behind one another, the way an app lays them out:
-the list is the home screen, picking a session slides its conversation in, and the
-conversation's head carries the way back and the way to the details. The system's back
-gesture walks the same way back. Each screen scrolls as a page does, its head fixed at
-the top, and keeps its place while another screen is up; the search box and list filters
-belong to the list, so a conversation or a details screen opens straight into content.
+Opened, a turn is its steps in order. A tool call is one row — the tool, what it was given, how
+it ended, how long it took — that opens to its input and output. Long output arrives as its head
+and tail; *Show all* fetches the rest. Reasoning and injected context are folded; a compaction or
+an interruption is a labelled divider; rows a forked agent copied from its parent are grouped
+and dimmed. A call that started a subagent links to it.
 
-## Live follow
+How a call ended is said by its mark and, when it is anything but fine, in words: *error*,
+*interrupted*, *no result yet* — and **outcome not recorded** when the CLI wrote down no outcome
+at all, which is not the same as success and is not shown as one.
 
-A session still being written is followed as it grows: while the open session is active,
-a light poll watches it alone, and a new round arrives marked with a soft edge that
-eases out over a few seconds, so new work is findable without the stream shouting. It
-shares the Auto-refresh switch.
+While a session is being written the page follows it: new turns appear, open turns refresh, and
+if you were reading at the end you stay at the end. Scroll up and it leaves you where you are;
+the button at the bottom takes you back to the newest turn, or turns following off.
 
-## Behaviour that survives attention
+## Reports
 
-It refreshes every 10 seconds without disturbing what you are reading — expanded blocks,
-opened rounds and your place in the text are kept, a rebuild holding the round you were
-reading where it was even when something above it changed. Your view controls — grouping,
-source filter, order, folded groups — survive a reload. `/ui#<sessionId>` works as a deep
-link. Light and dark follow the system; the half-disc button switches, and switching back
-hands control to the system again. Each side pane has a bar of its own — its name and the
-controls that act on it ("Collapse all" over the project groups) — and a chevron at the
-edge folds the pane away to a slim rail, remembered.
+**Usage** — tokens over rolling windows, the last thirty days as stacked bars (cache reads,
+cache writes, input, output; *Without cache reads* rescales to what is left, since cache reads
+are usually most of it), then tables by model, store and project. Every rounded figure carries
+its exact value on hover, and the chart can be read as a table.
 
-## Shortcuts
+![Usage](screenshots/usage.png)
 
-<kbd>j</kbd> <kbd>k</kbd> move between sessions (metadata matches and body matches alike)
-· <kbd>/</kbd> focus search · <kbd>Enter</kbd> search the bodies now · <kbd>g</kbd>
-<kbd>G</kbd> jump to the start/end of the stream · <kbd>f</kbd> find in the session ·
-<kbd>[</kbd> <kbd>]</kbd> previous/next failure · <kbd>r</kbd> refresh · <kbd>Esc</kbd>
-clear the search.
+**Failures** — the tool calls that failed in the last day, week or month, newest first: the
+command, how it ended, the end of what it printed, and a link to the step. The chips narrow to
+one tool.
+
+![Failures](screenshots/failures.png)
+
+**Digest** — the same window per project: sessions, turns, tool calls and failures, tokens, files
+changed by kind, which models and CLIs did the work.
+
+![Digest](screenshots/digest.png)
+
+## Keys
+
+| | |
+|---|---|
+| `/` | search |
+| `j` `k` | next, previous — a row in a list, a turn in a session |
+| `Enter` | open |
+| `o` | show or hide a turn's steps |
+| `e` | expand every step of the opened turns |
+| `g g` · `G` | top · bottom |
+| `Esc` | back to the list |
+| `?` | search syntax and keys |
+
+## Dark, small, signed in
+
+The page follows the system's colour scheme, and the button in the bar overrides it. It is laid
+out for a phone as well as a desk.
+
+<p>
+<img src="screenshots/sessions-dark.png" width="62%" alt="The list, dark">
+<img src="screenshots/phone-session.png" width="27%" alt="A session on a phone">
+</p>
+
+When the server was started with a token the page asks for it once and nothing else is shown
+until it has it. The token is exchanged for a cookie that script cannot read, and is not kept by
+the page. See [who may ask](deploy.md#who-may-ask).
+
+If the index is still reading a large history, the bar says how far it is and what is on screen
+covers what has been read. If a store could not be read, a notice says which and why: an empty
+list is never the only sign that something broke.
+
+## How it is built
+
+By hand, and that is a decision rather than an economy.
+
+- **No build step, no dependencies.** HTML, CSS and ES modules, embedded in the binary as they
+  are: `web/` is what the browser gets. There is nothing to install, audit or keep up to date,
+  and `asq serve --page-dir web` serves the directory live for working on it.
+- **Transcript text never becomes markup.** A transcript is other people's text — model output,
+  tool output, whatever a web page said to an agent. Every string from the API reaches the page
+  as a text node or an attribute value, through one element-building function that refuses the
+  alternatives. The Markdown rendering of replies is a small subset (code, emphasis, lists,
+  links to `http` and `https` only) built as nodes, not parsed into HTML.
+- **A policy that enforces it.** The page is served with a Content-Security-Policy that allows
+  scripts and styles from its own files only — no inline script, no inline style, no other
+  origin, no framing. If the rule above were ever broken, the injected text still could not run.
+- **Tested for what a bundler would have caught.** `web/web_test.go` checks that every module a
+  module imports exists, that everything the page points at is embedded, that no script uses a
+  sink that turns text into markup, and that the HTML needs nothing inline.
+
+The stream that keeps it live carries no content — only which sessions changed — and the page
+asks for what it is showing. So a missed event costs a stale row until the next one, never a
+wrong one.

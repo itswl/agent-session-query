@@ -1,159 +1,197 @@
-# Deployment
+# Deploying
 
-`-d` only puts the process in the background; if it dies, nothing brings it back. For a real
-long-running service, pick one of the three below. Flags are described in the
-[configuration table in the README](../README.md#configuration).
+`asq` needs no deployment to be useful: the command line, and `asq mcp` started by an agent, read
+the stores directly. This page is about `asq serve` — the page, the HTTP API and the MCP
+endpoint — kept running, and about who may reach it.
 
-## Supervised options
+```sh
+asq serve                 # http://127.0.0.1:7717, this machine only
+```
 
-**Linux (systemd user service)** — a single binary, no Docker required:
+## Who may ask
+
+What `asq serve` reads out is private: every prompt you typed, every file an agent printed.
+There are two ways to run it, and each has its own guard.
+
+**Without a token** it listens on loopback only — starting it on any other address is refused,
+not warned about — and what protects it is that only this machine can connect. The hole in that
+is the browser: any web page you visit can make your browser connect to `localhost`. So a
+request must name a loopback `Host` (a DNS name rebound to `127.0.0.1` does not), and must not
+come from another site: a foreign `Origin`, or a browser's `Sec-Fetch-Site: cross-site`, is
+refused with `403` before anything is read.
+
+**With a token** — `ASQ_TOKEN`, at least 16 characters; `openssl rand -hex 24` makes a good one
+— it may listen anywhere, and every request to the API proves it holds the token:
+
+- programs send `Authorization: Bearer <token>`;
+- the page trades the token once, at `POST /api/login`, for a cookie script never sees —
+  `HttpOnly`, `SameSite=Strict`, good for 180 days. The cookie holds no secret: it is an expiry
+  and its signature under a key derived from the token, so nobody can mint or extend one, and
+  changing the token retires every cookie at once.
+
+Ten wrong tokens from one address in a minute, by either route, and that address is answered
+`429` until the minute rolls over — without the token even being compared.
+
+Keep the token in the environment, not in `--token`: a flag shows in the process list.
+
+**TLS.** `asq` speaks plain HTTP. On loopback that is what it should speak. Anywhere else, put
+it behind something that terminates TLS — a reverse proxy, a tunnel, a tailnet — because a token
+sent in the clear is a token shared with the network:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:7717;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;   # lets the cookie be marked Secure
+    proxy_buffering off;                           # the live stream is sent as it happens
+    proxy_read_timeout 1h;
+}
+```
+
+**Other origins.** A page served from somewhere else may call the API only if its origin is
+listed: `--cors-origin https://dash.example` (repeatable, or `ASQ_CORS_ORIGIN`). Such a page
+authenticates with the header; the cookie is never sent across origins. `--cors-origin '*'` is
+refused without a token.
+
+## Keeping it running
+
+**Linux — a systemd user service**
 
 ```ini
-# ~/.config/systemd/user/agent-session-query.service
+# ~/.config/systemd/user/asq.service
 [Unit]
-Description=Local agent session query (read-only)
+Description=asq — agent session history
 After=network.target
 
 [Service]
-ExecStart=%h/.local/bin/agent-session-query --host 127.0.0.1 --port 8787
-EnvironmentFile=%h/.config/agent-session-query/env    # one line: HOOK_TOKEN=...
+ExecStart=%h/.local/bin/asq serve
+# For anything but loopback: ASQ_HOST=0.0.0.0 and ASQ_TOKEN=… in this file, mode 600
+EnvironmentFile=-%h/.config/asq/env
 Restart=on-failure
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
+ReadWritePaths=%h/.cache/asq %h/.local/state/asq
 PrivateTmp=true
 
 [Install]
 WantedBy=default.target
 ```
 
-```bash
-systemctl --user daemon-reload && systemctl --user enable --now agent-session-query
-sudo loginctl enable-linger "$USER"     # without this, the service stops when you log out
+```sh
+mkdir -p ~/.cache/asq ~/.local/state/asq
+systemctl --user daemon-reload && systemctl --user enable --now asq
+sudo loginctl enable-linger "$USER"     # without this the service stops when you log out
 ```
 
-**macOS (launchd LaunchAgent)** — drop it in `~/Library/LaunchAgents/` and it starts at
-login:
+The home directory is mounted read-only for the service — it reads the stores and can write only
+its index and its state. Variables that move a CLI's store (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …)
+go in the environment file too: they are read from the service's environment, not from your
+shell's.
+
+**macOS — a LaunchAgent**
 
 ```xml
-<!-- ~/Library/LaunchAgents/io.github.itswl.agent-session-query.plist -->
+<!-- ~/Library/LaunchAgents/io.github.itswl.asq.plist -->
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>io.github.itswl.agent-session-query</string>
+  <key>Label</key><string>io.github.itswl.asq</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/YOURNAME/.local/bin/agent-session-query</string>
-    <string>--host</string><string>127.0.0.1</string>
-    <string>--port</string><string>8787</string>
-    <string>--mode</string><string>auto</string>
+    <string>/usr/local/bin/asq</string>
+    <string>serve</string>
   </array>
-  <key>EnvironmentVariables</key>
-  <dict><key>HOOK_TOKEN</key><string>your-token</string></dict>
   <key>RunAtLoad</key><true/>
-  <!-- Restart only on an abnormal exit, the equivalent of systemd's Restart=on-failure -->
+  <!-- Restart only on an abnormal exit -->
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ProcessType</key><string>Background</string>
-  <key>StandardOutPath</key><string>/Users/YOURNAME/Library/Logs/agent-session-query.log</string>
-  <key>StandardErrorPath</key><string>/Users/YOURNAME/Library/Logs/agent-session-query.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOU/Library/Logs/asq.log</string>
 </dict>
 </plist>
 ```
 
-```bash
-chmod 600 ~/Library/LaunchAgents/io.github.itswl.agent-session-query.plist  # it holds a token
-plutil -lint ~/Library/LaunchAgents/io.github.itswl.agent-session-query.plist
-
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/io.github.itswl.agent-session-query.plist
-launchctl print "gui/$(id -u)/io.github.itswl.agent-session-query"          # state and pid
-launchctl kickstart -k "gui/$(id -u)/io.github.itswl.agent-session-query"   # restart after an edit
-launchctl bootout   "gui/$(id -u)/io.github.itswl.agent-session-query"      # stop and unload
+```sh
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/io.github.itswl.asq.plist
+launchctl kickstart -k "gui/$(id -u)/io.github.itswl.asq"     # restart after an edit
+launchctl bootout "gui/$(id -u)/io.github.itswl.asq"          # stop and unload
 ```
 
-Things that catch people out:
+- A plist does not expand `~`: every path in it is absolute. This is the usual way a launchd
+  setup fails, and it fails quietly.
+- A LaunchAgent, not a LaunchDaemon: a daemon runs as root, whose home is not yours, and reads
+  nobody's sessions.
+- If the plist holds a token (`EnvironmentVariables`), `chmod 600` it.
 
-- **A plist does not expand `~`, so every path must be absolute** — both in
-  `ProgramArguments` and for the logs. This is the most common way launchd setups fail, and
-  it fails quietly
-- **Use a LaunchAgent, not a LaunchDaemon.** Services in `/Library/LaunchDaemons/` run as
-  root at boot, where `$HOME` is root's, so they read `/var/root/.claude` rather than your
-  sessions
-- The older `launchctl load -w` / `unload` spelling still works but is deprecated; on a
-  current machine use the `bootstrap` / `bootout` commands above
-- launchd does not rotate logs, so clean them up yourself or hand that to `newsyslog`
-
-**Windows** — no systemd, so use a scheduled task that starts at logon. Keep the token in
-the environment rather than on the command line (arguments are visible in Task Manager):
+**Windows — a scheduled task at logon**
 
 ```powershell
-[Environment]::SetEnvironmentVariable('HOOK_TOKEN', 'your-token', 'User')
-schtasks /create /tn agent-session-query /sc onlogon `
-  /tr "$HOME\bin\agent-session-query.exe --host 127.0.0.1 --port 8787"
+schtasks /create /tn asq /sc onlogon /tr "$env:LOCALAPPDATA\Programs\asq\asq.exe serve"
 ```
 
-That leaves a console window open. To run fully in the background, or to start at boot
-rather than at logon, register it as a service with something like [nssm](https://nssm.cc/).
+For a token, set it in the user's environment (`[Environment]::SetEnvironmentVariable('ASQ_TOKEN', '…', 'User')`)
+rather than on the command line, which Task Manager shows.
 
-**Docker** — a single binary is already easy enough, so Docker is not the route for a
-machine you sit at. Where it fits is a host you only reach over the network: the box the
-agents run on. Every release tag publishes a multi-arch image (linux/amd64 + linux/arm64)
-to GitHub Container Registry, so nothing has to be built:
+## In a container
 
-```bash
-docker run -d --name agent-session-query -p 127.0.0.1:8080:8080 \
-  -e HOOK_TOKEN=mysecrettoken \
+A single binary is already easy to run, so a container is not the route for the machine you sit
+at. Where it fits is a host you reach only over the network: the box the agents run on.
+
+```sh
+ASQ_TOKEN=$(openssl rand -hex 24) docker compose up -d      # builds from this checkout
+```
+
+[`docker-compose.yml`](../docker-compose.yml) lists every store's mount with the note each
+needs. Each release also publishes a multi-arch image (linux/amd64, linux/arm64) built from the
+released binaries, `ghcr.io/itswl/agent-session-query`, so nothing has to be built:
+
+```sh
+docker run -d --name asq -p 127.0.0.1:7717:7717 \
+  -e ASQ_TOKEN="$ASQ_TOKEN" -e TZ=Europe/Berlin \
+  -v asq-index:/data \
   -v ~/.claude/projects:/root/.claude/projects:ro \
   -v ~/.codex/sessions:/root/.codex/sessions:ro \
   ghcr.io/itswl/agent-session-query:latest
 ```
 
-Mount whichever source directories the host has; a source with nothing mounted is skipped.
-Inside the container `$HOME` is `/root`, so a directory mounts to the same place under
-`/root/...`. Mount the whole of `~/.hermes` for Hermes — `state.db` needs its `-wal`/`-shm`
-companions alongside it. The image's `CMD` passes `--host 0.0.0.0` explicitly (otherwise the
-port mapping cannot reach it), so a container deployment **must** set `HOOK_TOKEN` — that
-is enforced: without it the container exits immediately with a `[FATAL]` line in
-`docker logs` (and under a restart policy, restarts in a visible crash loop rather than
-serving). The image runs as root on purpose: a mounted session file keeps its owner and
-its `0600` mode — Claude's transcripts are not world-readable — and the image cannot know
-which uid the host user has, while root is the one uid that can read any owner's. The
-mount being `:ro` is the containment: the process can read the session directories and
-nothing else of the host. To run the process as yourself anyway, add
-`--user "$(id -u):$(id -g)"` to the `docker run` above — the host's uid is exactly what
-the mounted files' modes allow, where a uid baked into the image would only happen to
-match.
+- **A token is required.** A container listens on all of its interfaces, and `asq` refuses to do
+  that without one: the container exits at once with the reason in `docker logs`.
+- **Mount stores read-only, and only the sessions.** Inside, the home directory is `/root`, so
+  each store mounts where its CLI keeps it under the home directory. Mount `~/.codex/sessions`,
+  not `~/.codex`: beside the sessions sit the CLI's credentials. Hermes is the exception — its
+  `state.db` needs its `-wal` and `-shm` beside it, so the whole of `~/.hermes` comes along.
+- **`/data` is the index and the export ledger.** A volume there means a restart reads only what
+  changed; without one the history is read again on every start.
+- **`TZ`** names the zone a report's days are counted in. The binary carries the zone database,
+  so it works in an image that has none.
+- **It runs as root, on purpose.** Mounted transcripts keep their owner and their `0600` mode,
+  the image cannot know the host user's uid, and root is the one uid that reads any owner's. The
+  read-only mounts are the containment. To run as yourself, add `--user "$(id -u):$(id -g)"` and
+  make the `/data` volume writable by that uid.
+- The image is built from scratch: the binary, root certificates (for `asq otel` to an HTTPS
+  collector), nothing else. Its health check is the binary asking itself: `asq ping`.
 
-Reach for `docker-compose.yml` only when the mounts stop fitting on one line: every source
-directory, sessions that live outside the default home (mount the directory and put
-`--path` in `command:`, see below), or a local build against a registry mirror. The file
-lists every source mount with the note each one needs (including OpenClaw's `agents/`
-tree and opencode's XDG data directory):
+Stores outside the default home — another machine's, a fleet's bind mount — are mounted anywhere
+and named with `ASQ_PATH`:
 
-```bash
-HOOK_TOKEN=mysecrettoken docker compose up -d
+```yaml
+    environment:
+      ASQ_PATH: "claude@box2=/mnt/box2"
+    volumes:
+      - /srv/box2/.claude/projects:/mnt/box2:ro
 ```
 
-## Sessions outside the default home
+## Exporting continuously
 
-Sources derive from `$HOME`, so sessions on another disk, in a backup, or inside agent
-containers whose sessions land on a bind mount are invisible by default. `--path` reads
-them, relocating a source or adding labeled instances of it:
+`asq otel --every 10m` is a process of its own; it shares the index with a running server, and
+either can be restarted without the other. Under systemd it is a second unit with
+`ExecStart=%h/.local/bin/asq otel --every 10m` and the collector's address in its environment
+file. See [Telemetry](telemetry.md).
 
-```
-./agent-session-query --path claude:build-box=/mnt/containers/build-box/home/.claude/projects
-```
+## What it costs to leave running
 
-The flags, their semantics and the label rules: [sources.md](sources.md).
-
-## Applies to all of them
-
-- **Keep the token in the environment**: `HOOK_TOKEN` is read automatically. Command-line
-  arguments show up in `ps` and Task Manager; environment variables do not. (Under Docker,
-  `docker inspect` can read a container's environment too — but anyone who can run docker
-  can already read the mounted sessions, so there the rule is about argv and process
-  listings, not about the daemon.)
-- **The default bind is `127.0.0.1`.** To share the service, pass `--host 0.0.0.0`
-  explicitly, set `--hook_token`, and put it behind a reverse proxy. A non-loopback bind
-  without a token is **refused at startup**, not warned about. The reasoning is in the
-  [security section of the README](../README.md#security).
+An idle server looks at the stores every thirty seconds — a `stat` per transcript — and reads
+nothing that did not change. While a page is open it looks every two seconds. Memory is the
+SQLite page cache, tens of megabytes. The index is a fraction of the size of the transcripts it
+caches, and `asq index rm` gets all of it back.

@@ -1,317 +1,121 @@
-# OTLP export
+# Telemetry: sessions as traces
 
-The service can send what it reads to any OpenTelemetry collector as OTLP/HTTP JSON —
-traces only, no new dependency, no vendor code. Langfuse is one destination among many: it
-is the same exporter with its endpoint and two headers, plus the `langfuse.*` attribute
-names every span already carries.
+`asq otel` sends the record to an OpenTelemetry collector — Langfuse, Phoenix, Tempo, Jaeger,
+an OTel Collector, anything that takes OTLP over HTTP. Nothing is sent unless you run it.
 
-**Off by default.** Export starts only when `--otel-endpoint` is set (and a one-shot
-`--otel-export` needs it explicitly). Nothing is sent without it.
-
-## What is sent
-
-One **trace per round** — a user ask and the work that answered it — with a root span and
-children:
-
-```
-round 12                              langfuse.observation.type=span
-├─ model gemini-3.8-flash             type=generation, gen_ai.usage.*
-├─ shell                              type=tool, gen_ai.tool.name, status, exit code
-├─ Agent                              type=tool
-│  └─ subagent general-purpose        type=agent — the subagent's round, its spans beneath
-├─ edit                               type=tool
-└─ compaction                         type=event
+```sh
+asq otel --endpoint https://collector.example:4318
 ```
 
-Every span carries `langfuse.session.id`, `langfuse.trace.name`, `session.source`,
-`session.project` (when known), `round.index`, and `timing.source`; the root also carries
-`session.title`. The trace name is the round's ask (its first line, masked, cut to 100
-characters) when content is exported, and the session title when it is not — metadata
-only keeps the asks at home. Model spans also carry `gen_ai.operation.name=chat`,
-`gen_ai.request.model` / `gen_ai.response.model` — the model of that response when the
-source names it, the session's last model otherwise — and
-`gen_ai.usage.input_tokens` / `output_tokens` / `cache_read.input_tokens` /
-`cache_creation.input_tokens` / `reasoning.output_tokens`. Tool spans carry
-`gen_ai.tool.name`, `gen_ai.tool.call.id`, `tool.command`, `tool.status` and
-`tool.exit_code`. A failed tool is a span with status `ERROR` and the failure text as its
-message. A round whose last tool call failed is an `ERROR`; a round that had failed calls
-but went on is a `WARNING` (`langfuse.observation.level`) with the count in its status
-message — a command that exits 1 and is retried is not a failed round.
+## What a turn becomes
 
-**One generation per model response.** Claude Code writes a response as several rows (one
-per content block, the tool results in between), every row carrying the response's usage;
-the rows share a `response` id and fold into one generation, keyed by the first row, whose
-usage is the response's, once (measured: 19,288 of 23,430 local responses were split, up to
-18 rows). The response's figures are its final ones: CLI 2.1.284–2.1.304 wrote a running
-output count, the first row holding part of it and the last the whole (1,917 of those
-responses, about a tenth of their output tokens).
-A generation's body is chat messages, the way a backend draws a conversation: its input is
-what reached the model since its previous call — the ask for the round's first call, then
-the tool results (`role: tool`, by `tool_call_id`) and any prompt typed mid-round — and its
-output the response as an assistant message with its `tool_calls`. The ask is not repeated
-on every call, and a tool result or a call's arguments is cut at 32 KiB inside them. A row the
-CLI made itself (`<synthetic>`, e.g. a resumed session's "No response requested.") is no
-generation and does not stretch its round.
+One trace per turn:
 
-A round's root carries `langfuse.trace.tags`: the source, `project:<folder>`, `subagent`
-for a subagent that keeps a trace of its own (below), `tool-failure` when a tool call
-failed and `failed` when the round ended on one. A generation carries `langfuse.observation.completion_start_time`
-(time to first token) where the source records when the response began to arrive —
-OpenCode 2.x, from a part's own `time.created` — and `langfuse.observation.cost_details`
-when the CLI worked out a cost above zero (Pi's `usage.cost.total`, OpenCode's `cost`). A
-zero is a CLI without a price for the model and is not sent: give the backend the price
-(Langfuse: Settings › Models) and it prices the tokens itself. Nothing in a transcript is a
-prompt from Langfuse's prompt management or a score: those stay empty.
+```
+turn                       the root: the ask, how long the work took, how it ended
+├─ chat claude-opus-5      one span per model response, with its tokens
+│  ├─ execute_tool Bash    the calls that response made, beneath it
+│  └─ execute_tool Agent
+│     └─ turn              a subagent that call started: its own turns, in this trace
+├─ chat claude-opus-5
+└─ compaction              what happened between the words, as an event
+```
 
-**Subagents hang beneath the call that started them.** A Claude Code subagent is a
-transcript of its own, exported as a session of its own, but it ran inside one of its
-parent's calls — an Agent call, or the Workflow call that started a workflow's agents. Its
-rounds go into the parent round's trace, each round's root an `agent` observation
-(`subagent <type>`) beneath the call's span, with the top-level session's
-`langfuse.session.id`; one spawned by another subagent hangs beneath that agent's call, in
-the same trace. The trace's name and tags stay the parent round's: the subagent's spans
-carry none, and say whose they are in `subagent.session.id` (and `subagent.type` on the
-root). The call is the one the meta file names (`toolUseId`), or for a workflow's agent
-the Workflow call whose result names its run. Measured here, 223 of 228 subagent
-transcripts were placed that way; the rest, a team's members, name no call and keep a
-trace of their own, tagged `subagent`.
+- **Names and attributes** follow the OpenTelemetry GenAI conventions (`gen_ai.operation.name`,
+  `gen_ai.request.model`, `gen_ai.usage.*`, `gen_ai.tool.name`, `gen_ai.conversation.id`), plus
+  the `langfuse.*` attributes Langfuse needs to show a generation as a generation, group traces
+  by session, and carry tags, levels and costs.
+- **Tokens** are sent the way the conventions count them — the input is everything the model was
+  shown, cached or not, with the cached parts named beside it; the output includes reasoning.
+  The record keeps those parts apart in [one shape](model.md#usage-one-shape) for every CLI, so
+  this is one sum rather than a table of who counts what.
+- **Timing.** A CLI writes a response's rows as they finish, so a response's first row is not
+  when the model was asked. Each response's span starts when whatever came before it ended — the
+  ask, or the last result of the calls before — which is the time the model took, and what a
+  timeline is read for. Where a CLI measured a duration itself, that is used. Every such span
+  says which, in `asq.timing`: `recorded`, `derived` or `inferred`.
+- **A subagent** hangs beneath the tool call that started it, in its parent's trace, found by
+  the call's id (or the workflow run the call began). Its traces are filed under the session it
+  ran in.
+- **A CLI that counts tokens per session, not per response** (Hermes) has model-call spans
+  without token counts: there is no response to hang a session's total on. `asq usage` still
+  reports those totals.
+- **A failed tool call** is a span with an error status; a turn with failures is marked
+  `WARNING` and tagged `tool-failure`.
 
-A team's member is handed its work, and every later instruction, by the lead in a
-`<teammate-message teammate_id="team-lead">` row: each of those starts a round, read without
-the wrapper (the lead's protocol messages, a shutdown request, do not). A fork's transcript
-opens with a copy of its parent's conversation up to the call that started it; those rows
-are the parent's, exported with the parent, and the fork's rounds start at its directive
-(read without the `<fork-boilerplate>` before it).
+## How much leaves the machine
 
-**Token counts are in the GenAI shape**: `gen_ai.usage.input_tokens` includes the cached
-input, read and written, and `output_tokens` includes the reasoning — OpenAI's shape, and
-Codex's. A backend reads them that way: Langfuse takes the cache back out of the input and
-the reasoning out of the output. The sources that record a part apart have it added back
-before they are sent — the cache for Claude Code, Pi, OpenClaw, Grok, dsh and OpenCode, the
-reasoning for OpenCode and Gemini — or Langfuse would take it out a second time and floor
-what is left at zero (it did: every Claude Code input, more than half of OpenCode's input
-and output). The parts themselves go as recorded.
+`--content` decides, and the default is the least:
 
-What a source does not record cannot be exported: Hermes keeps usage per session, not
-per message, so its generations carry the model (from `state.db` when `sessions.json`
-does not name it) but no token counts; Codex and Grok report usage per turn
-(`token_usage_record`, `turn_completed`), which lands on the turn's assistant message.
+| | sent |
+|---|---|
+| `none` (default) | timings, models, token counts, tool names and how each ended, the project's directory *name*. **No text of the conversation.** A trace is named `claude turn 4` |
+| `asks` | also what the person asked and what the agent answered, on the turn's root; traces are named after the ask; the full working directory |
+| `all` | also everything in between: reasoning, every tool's input and output, commands, file paths |
 
-Span and trace ids are derived from source, session, round and step with SHA-256, so a
-re-export of the same session sends the same ids: a backend that updates by id (Langfuse
-does) treats it as a correction, not a duplicate. That holds within one span format; see
-[Upgrading](#upgrading) for what changes between them.
+At every level, secret-shaped strings are masked and terminal control sequences removed, and one
+body is held to 256 KiB — the head and the tail kept. An endpoint that is plain `http://` on
+another machine gets a warning when content is on.
 
-## Bodies are opt-in
+## Sent once
 
-By default only metadata leaves the machine: no prompts, no replies, no tool output.
-`--otel-content=io` adds them as `langfuse.observation.input` / `output`; secrets are
-masked (`RedactSecrets`) and each body is cut at 256 KiB. The session title, project path
-and tool names still travel either way.
+Span and trace ids are derived from what a span *is* — the store, the session, the turn, the
+step — not from when it was sent. The same turn always produces the same ids, so on a backend
+that keys by id a turn sent twice is one turn.
 
-## Timing: what is recorded and what is inferred
+On top of that, a **ledger** remembers for each collector the hash of every turn it took. A turn
+whose hash has not moved is not sent again; one that grew is sent again under the same ids.
+Changing `--content` sends again too: what the collector has is not what was asked for now.
 
-The CLIs disagree about time. Every span says where its times came from, in
-`timing.source`:
+The ledger is deliberately not part of the index. The index is a cache that can be deleted at
+any time; what a collector has already been sent cannot be read back off the transcripts. It
+lives with the program's state (`ASQ_STATE`; otherwise `$XDG_STATE_HOME/asq`,
+`~/.local/state/asq` on Linux, the user configuration directory elsewhere) and names turns by
+what they are, so it survives every rebuild.
 
-- **recorded** — the source wrote a duration or both ends (a tool result's `durationMs`).
-- **derived** — both ends are real row timestamps; the span is the elapsed time between
-  them (tool call row → result row, the round from ask to last work).
-- **inferred** — the start is the previous event, because the CLI records only completion
-  (model responses on Codex, Claude, Gemini, Grok, Antigravity; OpenCode records both
-  ends). A gap of more than 30 minutes is idle or a resumed session, not a call: the span
-  is drawn at its completion instead.
+A turn still being written waits: `--settle` (default `2m`) holds a turn back until it has been
+quiet that long, so it is sent once, whole, rather than again with every row.
 
-Pi and OpenCode measure their calls: an assistant message's `durationMs` from its creation
-gives the generation outright, marked **recorded**.
-
-| Source | Model span timing | Tool span timing |
-|---|---|---|
-| OpenCode | recorded (`time.created` → `time.completed`; 2.x also the first token) | derived, or recorded with `durationMs` |
-| Codex | inferred (completion = `token_usage_record`) | recorded/derived from the call and its output, incl. the tool's wall time when present |
-| Claude Code | inferred | derived from the call/result rows |
-| Pi | recorded (`durationMs`) | derived |
-| Gemini, Grok, Hermes, OpenClaw, Antigravity | inferred | derived |
-
-**Model latency is not a measurement.** A generation span runs from the previous event to
-the completion, so tool time and user time sit inside it. Dashboards that need real p99
-must filter on `timing.source=recorded`; the token counts are exact.
+If the collector is down, the export stops with an error and what was not taken is not written
+down as sent; the next run picks up there.
 
 ## Flags
 
-| Flag | Meaning |
+| | |
 |---|---|
-| `--otel-endpoint` | OTLP/HTTP base URL; `/v1/traces` is appended. `https://cloud.langfuse.com/api/public/otel` for Langfuse |
-| `--otel-headers` | comma-separated `name=value`, percent-encoded; e.g. `Authorization=Basic%20<pk:sk>` |
-| `--otel-content` | `none` (default) or `io` — prompts, replies and tool output, masked and cut at 256 KiB |
-| `--otel-export` | export once and exit, instead of serving. No time limit: a whole-history backfill runs to the end, and Ctrl-C keeps the cursor of what was sent, so the next run goes on from there |
-| `--otel-since` | the first pass's window: `7d` (default), `48h`, a date, or `all` for the whole history. With a cursor, each source also reaches back to where the cursor last walked it whole, when that is earlier (see [the cursor's reach](#the-cursors-reach)) |
-| `--otel-every` | in server mode, export settled changes on this interval (default `10m`, `0` disables) |
-| `--otel-metrics` | also POST delta sums to `/v1/metrics` (rounds, token sums, tool failures); off by default — Langfuse does not take metrics |
-| `--otel-settle` | leave a session written more recently than this to a later pass (default `2m`) |
-| `--otel-state` | cursor file (default `~/.local/state/agent-session-query/otel.json`); `off` re-sends the window every run |
-| `--otel-resend` | ignore the cursor and export the window again |
-| `--otel-dry-run` | with `--otel-export`, print the OTLP JSON instead of sending |
+| `--endpoint URL` | the collector: its base address (`/v1/traces` is appended) or the traces path itself |
+| `--header Name=value` | a header to send; repeatable |
+| `--content none\|asks\|all` | how much of the conversation is sent |
+| `--since 7d` | which turns: asked within this window. The default is the last 7 days — a first run does not send a year of history by surprise; `--since all` does |
+| `--source`, `--project`, `--branch`, `--until` | narrow the selection |
+| `--settle 2m` | leave a turn until it has been quiet this long |
+| `--every 10m` | keep running, exporting this often |
+| `--resend` | send every selected turn again, whatever the ledger says |
+| `--dry-run` | print the OTLP requests to stdout instead of sending them |
+
+The endpoint and headers also come from the variables OpenTelemetry's own tools read —
+`OTEL_EXPORTER_OTLP_ENDPOINT` (or `…_TRACES_ENDPOINT`) and `OTEL_EXPORTER_OTLP_HEADERS`.
 
 ## Langfuse
 
-```bash
-agent-session-query --otel-export \
-  --otel-endpoint https://cloud.langfuse.com/api/public/otel \
-  --otel-headers 'Authorization=Basic%20<base64(public-key:secret-key)>,x-langfuse-ingestion-version=4' \
-  --otel-since 7d
+With `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` set, no endpoint is needed: spans go to
+`LANGFUSE_HOST` (default `https://cloud.langfuse.com`) with the keys as Basic auth.
+
+```sh
+export LANGFUSE_PUBLIC_KEY=pk-lf-… LANGFUSE_SECRET_KEY=sk-lf-…
+asq otel --content asks --every 10m
 ```
 
-`x-langfuse-ingestion-version: 4` makes spans visible immediately (without it Langfuse may
-take up to ten minutes). Langfuse takes traces only; this exporter sends nothing else. Its
-UI groups the rounds under the session id, renders generations and tools from the
-`langfuse.observation.type` names, and prices tokens with its own model table — the
-service sends a cost only where the CLI worked one out (see above).
+Each turn is a trace, the model responses are generations with usage (and cost, where the CLI
+computed one — otherwise Langfuse prices it from the model name), and a session's traces are
+grouped under its id. Tags: the store, `project:<name>`, `subagent`, `tool-failure`,
+`interrupted`.
 
-## Metrics (optional)
+## Seeing what would be sent
 
-`--otel-metrics` adds OTLP sums to `/v1/metrics`, delta temporality (each pass reports what
-it sent; a collector adds them up):
-
-| Metric | Attributes | Meaning |
-|---|---|---|
-| `agent_session.rounds` | `session.source` | rounds exported in this pass |
-| `agent_session.round.duration` | `session.source` | their wall-clock time, ms |
-| `agent_session.tokens` | `session.source`, `gen_ai.request.model`, `gen_ai.token.type` | input / output / cache_read / cache_creation / reasoning tokens — input with the cached input in it and output with the reasoning, as on the spans |
-| `agent_session.tool.failures` | `session.source`, `gen_ai.tool.name` | failed tool calls |
-
-A pass that is stopped part-way (Ctrl-C, a server shutting down) still posts the sums of
-what it sent, with a ten-second deadline of its own.
-
-Langfuse takes traces only, so this is off by default; point it at a collector that stores
-metrics (Grafana, Prometheus via the collector) when that reader exists. The numbers come
-from the same spans the trace export just built, so both signals agree.
-
-## Continuous export
-
-With an endpoint set and the server running, the first pass covers `--otel-since` (7 days
-by default) and every `--otel-every` after that exports sessions whose `UpdatedAt` moved,
-skipping any written within `--otel-settle` (so a turn is pressed while it is still being
-written). The cursor file remembers the last exported version per session; it is the only
-file this service writes, and only when export is on. `--otel-state=off` disables it —
-useful for a one-off backfill into a backend that does not update by id.
-
-A session that is exported and then grows is sent again **only for the rounds that
-changed**: the cursor keeps a fingerprint per round, so a finished round is never re-sent.
-The changed round keeps its deterministic ids, so an id-keyed backend updates it and an
-append-only store sees one round twice, not the whole conversation. A round is pressed
-once the session has been quiet for `--otel-settle`; a round that changes afterwards (a
-late message) is re-sent for that reason alone.
-
-The cursor is version 2: `sessions → {updatedAt, at, rounds → {index: fingerprint}}`.
-Version 1 (a session-level mark) is discarded on sight: it cannot say which rounds were
-sent, so the next pass re-exports one window rather than guessing.
-
-### The cursor's reach
-
-`--otel-since` is a window, and a session is only looked at when its `UpdatedAt` falls in
-it. Run the export by hand every few weeks, or bring the server back after a fortnight
-off, and a fixed 7-day window misses the sessions that changed in between and went quiet
-since: outside the window, and not in the cursor either. So the cursor keeps
-`checkedUntil`, per source — where the last pass that walked that source to its end began,
-less `--otel-settle` — and a source's window starts there when that is earlier than
-`--otel-since`. Sessions it already holds at their current version cost a comparison, not
-a read, so the reach back is cheap. The mark is per source (`claude`, `claude:box2`, `pi`)
-because sources are often exported a run each (`--mode pi`): one run's mark must not stand
-for another source's.
-
-- A pass stopped part-way (Ctrl-C, a shutdown) has not looked at the sessions it did not
-  reach: the mark of the source it was in, and of those after, stays where it was.
-- A session the pass failed to send holds the mark at its own update, so the next pass
-  reaches it again.
-- The settle margin covers a session written while the pass was reading the list, and one
-  a tick left to settle: both were updated after the mark.
-- A shorter `--otel-since` (say `48h`) is still widened: it is the window of a first pass,
-  and a cursor that has been kept says how far back the work actually is.
-- A source the cursor holds no session of has not been exported: its first pass takes
-  `--otel-since` (use `all` to backfill it whole).
-- A cursor written before `checkedUntil` existed knows when it last sent each session: a
-  source it holds sessions of reaches back to a day before the latest of those (or before
-  `lastRun` when none says), then gets its mark.
-- The window reads a session's `UpdatedAt`, the time of its last row, not when the file
-  arrived. A transcript that turns up late with older content — a `--path` mount synced
-  days behind, a restore from backup — is outside a window that started after its last
-  row: run once with `--otel-since all` to take it in.
-- `--otel-resend` takes its window as given, and so does a run on a cursor of an earlier
-  format (it is being replaced, see [Upgrading](#upgrading)). If such a window starts after
-  the mark, the stretch between them was not read and the mark does not move.
-
-## State
-
-The cursor lives at `--otel-state` (default `$XDG_STATE_HOME/agent-session-query/otel.json`,
-falling back to `~/.local/state/...`), is written atomically and holds no session content —
-only versions and round fingerprints:
-
-```json
-{
-  "version": 2,
-  "format": 4,
-  "lastRun": "2026-10-28T07:05:02Z",
-  "checkedUntil": {"opencode": "2026-10-28T07:02:58Z"},
-  "sessions": {
-    "opencode|ses_ebc6c0083ffeoPUbq6IcTfGBNV": {
-      "updatedAt": "2026-10-28T07:04:25",
-      "at": "2026-10-28T07:05:01Z",
-      "rounds": {
-        "1": "5c0f8a4e9b7d2f13a6c4e8b0d1f3a5c7",
-        "2": "9a1d3f5b7c9e0a2d4f6b8c0e1a3d5f7b"
-      }
-    }
-  }
-}
+```sh
+asq otel --dry-run --since 1d --content none | jq '.resourceSpans[].scopeSpans[].spans[] | {name, attributes: [.attributes[].key]}'
 ```
 
-`--otel-state=off` disables it; `--otel-resend` ignores it for one run. Deleting it makes
-the next pass treat the window as new. `format` is the span format the cursor's sessions
-were sent in (below); a cursor without it was written before format 2.
-
-## Upgrading
-
-The span format is the shape a transcript takes as spans. It changes when the same
-transcript would now be sent under other ids or with other contents, and a backend that
-updates by id cannot drop what it got under the old ids: those spans stay beside the new
-ones.
-
-**Format 2** (v0.39.7) makes one generation per model response. Under format 1
-every row of a Claude Code response was a generation of its own, each with the response's
-whole usage, so Langfuse counted those tokens up to 18 times; the round attributes (trace
-name, tags, levels) changed as well, so every round exported before is re-sent the next
-time its session changes. Run on a cursor of an earlier format, the exporter says so once
-on stderr. To start clean:
-
-1. Delete the traces exported before from the backend, or point the exporter at a new
-   Langfuse project.
-2. Run one backfill over the window you exported before:
-   `agent-session-query --otel-export --otel-resend --otel-since all …` (the endpoint and
-   headers as usual).
-
-**Format 3** (v0.39.8) hangs a subagent's rounds beneath the call that
-started it, in the parent round's trace. Under format 2 each subagent had traces of its
-own; the spans move, keeping their ids, but the traces they left stay behind in a backend,
-named and tagged and empty. The same clean start applies.
-
-**Format 4** (v0.39.9) leaves out the rows a fork copied from its parent:
-format 3 sent them as the fork's first rounds, beneath its call, so the parent's responses
-were generations twice, and the fork's own rounds are now numbered from 1 under other ids.
-The same release sends token counts in the GenAI shape (input with the cache in it, output
-with the reasoning) and exports a team's members, which had no round before; those change
-spans under the ids they had, or add new ones. The same clean start applies.
-
-Without that, sessions that never change again keep their earlier spans, and those that do
-change carry both.
-
-## Limits
-
-- Full history is read for an export (the API's rounds read only the tail): a very large
-  session costs its whole length, once per export, and the round tail cap does not apply.
-- Spans are batched at 250 or 8 MiB per POST, retried once, then logged and skipped — a
-  collector that is down never fails the service or the request path.
-- A subagent hangs beneath its call only when the call can be found: a team's members, and
-  an agent whose parent transcript is gone or archived, keep a trace of their own. Placing
-  one reads its parent's transcript once per pass.
-- Only sessions the service can list are exported; archived sessions are not.
+`--dry-run` neither sends nor writes the ledger. Run it at the level you intend to use before
+pointing `asq otel` at a collector someone else operates.

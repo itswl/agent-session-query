@@ -28,34 +28,48 @@ refused with `403` before anything is read.
   `HttpOnly`, `SameSite=Strict`, good for 180 days. The cookie holds no secret: it is an expiry
   and its signature, and the server keeps nothing about it. The key it is signed with is made
   from the token and from 32 random bytes the server keeps in its state directory
-  (`session.key`, readable by its owner). So nobody can mint or extend a cookie; changing the
-  token retires every one at once, and so does deleting that file; and a cookie forged from a
-  guess at the token is refused whether or not the guess was right — it is not a way to try
-  tokens. Where there is no directory to keep the secret in, the server makes one for the run
-  and says that sign-ins will end with it.
+  (`session.key`, its owner's alone). So nobody can mint or extend a cookie; changing the token
+  retires every one, and so do deleting that file and restarting the server, which reads it
+  when it starts; and a cookie forged from a guess at the token is refused whether or not the
+  guess was right — it is not a way to try tokens. A `session.key` others can read is replaced,
+  and a state directory others can write is not used. Where there is no directory to keep the
+  secret in, the server makes one for the run and says that sign-ins will end with it.
 
 Ten wrong tokens from one caller in a minute, by either route, and that caller is answered `429`
-until the minute rolls over — without the token even being compared. A caller is the address a
-connection comes from; an IPv6 caller is its `/64`, since that is what it holds.
+until the minute rolls over — without the token even being compared. Who "one caller" is decides
+whom the limit shuts out:
 
-**Behind a proxy** every connection comes from the proxy, so "the address it comes from" would
-name everyone at once — and ten wrong tokens from anywhere would shut out every caller, the
-agents on the machine itself included. Two things prevent that:
+- **The programs on this machine** — the agents calling the API or `/mcp`, a script with
+  `curl` — are one caller: a loopback connection with no forwarding header and no mark of a
+  browser. Nothing that arrives through a proxy, and nothing a web page does, is charged to
+  them, so neither can shut them out.
+- **A page in a browser on this machine** is another: a loopback connection whose request
+  carries what browsers add and a page's script cannot remove (`Sec-Fetch-Site`, `Origin`). A
+  page elsewhere that points a name of its own at `127.0.0.1` is such a page.
+- **A caller from elsewhere** is the address its connection comes from; an IPv6 caller is its
+  `/64`, since that is what it holds.
+- **What a proxy relays** — a request with a forwarding header (`Forwarded`, `X-Forwarded-*`,
+  `X-Real-IP`, `Via`, `CF-Connecting-IP`) — is counted apart from what reached the port
+  directly. This needs no setting. Without more, everything one proxy relays is one caller:
+  one of its callers guessing shuts out the rest of them for the minute.
 
-- What a proxy relayed is counted apart from what reached the port directly. A request with a
-  forwarding header (`Forwarded`, `X-Forwarded-*`, `X-Real-IP`, `Via`, `CF-Connecting-IP`) is
-  one of the relayed; nothing that arrives through the proxy can spend the allowance of the
-  programs that call `asq` on its own machine. This needs no setting.
-- To count the callers behind the proxy one by one, say which header names them:
-  `--proxy-header CF-Connecting-IP` behind Cloudflare, `X-Real-IP` behind the nginx below,
-  `X-Forwarded-For` behind anything that appends to it (the last address in it is used — the
-  one your proxy wrote). Without it they share one allowance, and one of them guessing shuts
-  out the rest of them for the minute.
+To count the callers behind a proxy one by one, say which header names them:
+`--proxy-header CF-Connecting-IP` behind Cloudflare, `X-Real-IP` behind the nginx below. The
+header is believed only on a connection from this machine or a private network, which is where a
+proxy of yours connects from, and only the last address in it, the one your proxy wrote. Name a
+header your proxy *sets*: one it merely passes on is the caller's own word. `X-Forwarded-For`
+is right only behind a proxy that appends to it — nginx with
+`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`, not as configured below.
 
-The header is believed only on a connection from the machine itself or a private network, which
-is where a proxy of yours connects from. Name one your proxy *sets*: a header it merely passes
-on is the caller's own word, and a caller who may choose its address has no limit at all. A
-tunnel that passes bytes through unchanged (`ssh -R`, a TCP forward) marks nothing, and what
+Whatever the header says, every caller it names draws on one more allowance as well, the
+proxy's: ten callers' worth of wrong tokens a minute, together. A caller who can choose what the
+header says — a page that reaches the proxy's port, a device on the network — gets that and no
+more, instead of a fresh allowance with every guess.
+
+The server remembers 4,096 callers at once. Past that, during a flood of addresses, the callers it
+does not know share one allowance of their kind; the callers on this machine are always known.
+
+A tunnel that passes bytes through unchanged (`ssh -R`, a TCP forward) marks nothing, and what
 comes through it cannot be told from this machine's own.
 
 Keep the token in the environment, not in `--token`: a flag shows in the process list.

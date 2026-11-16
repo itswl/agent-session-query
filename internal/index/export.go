@@ -20,7 +20,7 @@ type TurnStamp struct {
 // and whose last row was written before quiet, oldest first. A turn still being written
 // is left for a later pass: sent now it would be sent again in a minute.
 func (ix *Index) TurnStamps(ctx context.Context, f Filter, w Window, quiet time.Time) ([]TurnStamp, error) {
-	where, args := reportFilter(f).where()
+	where, args := ix.widen(ctx, reportFilter(f), !w.Since.IsZero()).where()
 	when, whenArgs := w.where("t.started_at")
 	args = append(args, whenArgs...)
 	q := `SELECT t.sid, t.idx, t.hash, t.started_at, max(t.last_at, t.ended_at, t.started_at)

@@ -86,7 +86,7 @@ func (ix *Index) Usage(ctx context.Context, f Filter, w Window, by string, limit
 	if key == "" {
 		return nil, fmt.Errorf("usage is grouped by model, day, source, project or session, not by %q", by)
 	}
-	where, args := reportFilter(f).where()
+	where, args := ix.widen(ctx, reportFilter(f), !w.Since.IsZero()).where()
 	when, whenArgs := w.where("u.at")
 	order := "sum(u.tok_in + u.tok_out + u.tok_cr + u.tok_cw) DESC"
 	if by == ByDay {
@@ -151,7 +151,7 @@ type FailureReport struct {
 // counts every tool of the window regardless.
 func (ix *Index) Failures(ctx context.Context, f Filter, w Window, tool string, p Page) (FailureReport, error) {
 	rep := FailureReport{Failures: []Failure{}, ByTool: []FailureCount{}}
-	where, args := reportFilter(f).where()
+	where, args := ix.widen(ctx, reportFilter(f), !w.Since.IsZero()).where()
 	when, whenArgs := w.where("x.at")
 	args = append(args, whenArgs...)
 	// The count per tool covers the whole window, whichever tool is asked for: it is what
@@ -293,7 +293,7 @@ type DigestReport struct {
 // It counts the turns asked in the window, wherever their sessions began or ended.
 func (ix *Index) Digest(ctx context.Context, f Filter, w Window) (DigestReport, error) {
 	rep := DigestReport{Projects: []Digest{}, Total: newDigest("")}
-	where, args := reportFilter(f).where()
+	where, args := ix.widen(ctx, reportFilter(f), !w.Since.IsZero()).where()
 	by := map[string]*Digest{}
 	get := func(cwd string) *Digest {
 		d := by[cwd]

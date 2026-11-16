@@ -71,6 +71,10 @@ type Filter struct {
 	Agents   bool
 	// Empty includes the transcripts that hold no conversation: a CLI opened and closed.
 	Empty bool
+
+	// wide says the store term filters nothing — Stores names every store the index
+	// holds — and the query is one the time should drive. See Index.widen.
+	wide bool
 }
 
 // where renders the filter as conditions on the sessions table, aliased s.
@@ -78,11 +82,17 @@ func (f Filter) where() (string, []any) {
 	conds := []string{"s.copy_of = 0"}
 	var args []any
 	if len(f.Stores) > 0 {
-		// The + keeps this term from choosing the plan. It names the stores this process
-		// reads, which as a rule is every session there is; taken for a narrow search, it
-		// starts every report from the sessions and walks all their turns to find the
-		// week's, where the index on the time finds them directly.
-		conds = append(conds, "+s.source IN ("+placeholders(len(f.Stores))+")")
+		// The term names the stores this process reads. When that is every store in the
+		// index it filters nothing, and if it chose the plan a report would start from
+		// the sessions and walk all their turns to find a week's: the + keeps it out of
+		// the choice. When it is some of them — a process confined to one store, in an
+		// index another process fills with all of them — it is the narrowest thing the
+		// query has, and is left to drive.
+		term := "s.source IN ("
+		if f.wide {
+			term = "+s.source IN ("
+		}
+		conds = append(conds, term+placeholders(len(f.Stores))+")")
 		for _, name := range f.Stores {
 			args = append(args, name)
 		}
@@ -168,7 +178,8 @@ type Page struct {
 // Sessions lists the sessions a filter selects, the most recently written first, and
 // says how many there are in all.
 func (ix *Index) Sessions(ctx context.Context, f Filter, p Page) ([]Session, int, error) {
-	where, args := f.where()
+	// Newest first: the index on the time serves it, when the store term lets it
+	where, args := ix.widen(ctx, f, true).where()
 	var total int
 	if err := ix.ro.QueryRowContext(ctx, `SELECT count(*) FROM sessions s WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err

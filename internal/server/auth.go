@@ -57,8 +57,11 @@ const (
 	// matter of minutes into one of geological time.
 	attemptsMax    = 10
 	attemptsWindow = time.Minute
-	// attemptsKept callers are remembered at once; past it the rest share one allowance.
-	// A flood of addresses costs the server a table of this size and no more.
+	// proxyMax wrong tokens per attemptsWindow, together, from every caller a proxy names:
+	// ten callers' worth.
+	proxyMax = 10 * attemptsMax
+	// attemptsKept callers are remembered at once; past it the rest share an allowance of
+	// their kind. A flood of addresses costs the server a table of this size and no more.
 	attemptsKept = 4096
 
 	secretFile = "session.key"
@@ -83,13 +86,35 @@ func signKey(secret []byte, token string) []byte {
 // loadSecret reads the secret kept in dir, making it the first time: 32 random bytes in
 // a file only its owner reads. Servers that start together end up holding the same one,
 // whichever was written first.
+//
+// The directory and the file must be this user's alone. A secret another user could
+// read, or a directory another user could write a secret of their choosing into — a
+// state directory that fell back to a shared temporary one — is no secret: the
+// directory is refused, and the file is replaced.
 func loadSecret(dir string) ([]byte, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
+	if info, err := os.Stat(dir); err != nil {
+		return nil, err
+	} else if owned, known := ownedHere(info); known && (!owned || info.Mode().Perm()&0o022 != 0) {
+		return nil, fmt.Errorf("%s is not this user's alone (mode %v)", dir, info.Mode().Perm())
+	}
 	path := filepath.Join(dir, secretFile)
 	for try := 0; try < 40; try++ {
 		have, err := os.ReadFile(path)
+		if err == nil && len(have) == secretSize {
+			if info, serr := os.Stat(path); serr == nil {
+				if owned, known := ownedHere(info); known && (!owned || info.Mode().Perm()&0o077 != 0) {
+					// Readable by others, or someone else's: it may be known. A new one
+					// signs everyone out, which is the point
+					if err := os.Remove(path); err != nil {
+						return nil, err
+					}
+					continue
+				}
+			}
+		}
 		switch {
 		case err == nil && len(have) == secretSize:
 			return have, nil
@@ -170,9 +195,37 @@ func signed(key []byte, value string, now time.Time) bool {
 	return hmac.Equal([]byte(want), []byte(sig))
 }
 
-// limiter counts wrong tokens per caller in a fixed window. It needs no goroutine of its
-// own: an entry that has outlived its window counts for nothing wherever it is read, and
-// the table is swept once a window, as attempts come in.
+// An allowance is what a caller may get wrong in a window. Who "a caller" is decides
+// whether the limit does its work, and whom it hurts when it does:
+//
+//   - The programs on this machine — the agents asking over HTTP, a script with curl —
+//     are one caller, "local": a loopback connection with no forwarding header and no
+//     mark of a browser. Nothing that arrives through a proxy and nothing a web page
+//     does is charged to it, so neither can shut the agents out.
+//   - A page in a browser on this machine is another, "local browser": a loopback
+//     connection whose request carries what a browser adds and script cannot remove
+//     (Sec-Fetch-Site, Origin). A page that rebinds a name of its own to 127.0.0.1 is
+//     such a page. Node's fetch, which MCP clients use, sends neither.
+//   - What a proxy relays is charged apart from what reached the port directly. When
+//     the proxy says who is calling (Options.ProxyHeader), and is one to believe, each
+//     caller behind it has an allowance of its own; all of them together also draw on
+//     one larger allowance per proxy. A caller who can choose what the header says — a
+//     page that reaches the proxy's port, a device on the network — would otherwise
+//     take a fresh allowance with every guess.
+//   - An IPv6 caller holds a /64, and is charged as one.
+//   - The table of callers is bounded. Past attemptsKept, the callers it does not know
+//     share one allowance of their kind. The callers on this machine are always known by
+//     name, and never share it.
+type allowance struct {
+	key   string // whose it is
+	kind  string // the shared allowance it falls back on when the table is full; "" for none
+	proxy string // the allowance it also draws on, with every caller behind the same proxy
+}
+
+// limiter counts wrong tokens per allowance in a fixed window. It needs no goroutine of
+// its own: an entry that has outlived its window counts for nothing wherever it is read,
+// and the table is swept as attempts come in — once a window, or once a second while it
+// is full.
 type limiter struct {
 	mu    sync.Mutex
 	hits  map[string]hit
@@ -184,95 +237,136 @@ type hit struct {
 	count   int
 }
 
-// everyoneElse is who an attempt is charged to once the table is full.
-const everyoneElse = "everyone else"
+// The reasons a caller is refused, for the answer to say.
+const (
+	byCaller = "caller"
+	byKind   = "kind"
+	byProxy  = "proxy"
+)
 
-// slot is the entry a caller's attempts are kept under: its own, while there is room.
-func (l *limiter) slot(who string) string {
-	if _, ok := l.hits[who]; ok || len(l.hits) < attemptsKept {
-		return who
+// slot is the entry an allowance's attempts are kept under: its own, while there is
+// room or when it is one of this machine's.
+func (l *limiter) slot(a allowance, now time.Time) (string, string) {
+	if a.kind == "" {
+		return a.key, byCaller
 	}
-	return everyoneElse
+	if _, ok := l.hits[a.key]; ok {
+		return a.key, byCaller
+	}
+	if len(l.hits) >= attemptsKept && now.Sub(l.swept) >= time.Second {
+		l.sweep(now) // full of callers whose minute may be over
+	}
+	if len(l.hits) < attemptsKept {
+		return a.key, byCaller
+	}
+	return "everyone else " + a.kind, byKind
 }
 
-// blocked reports whether a caller has used up its attempts, and for how long.
-func (l *limiter) blocked(who string, now time.Time) (bool, time.Duration) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	h, ok := l.hits[l.slot(who)]
-	if !ok || now.Sub(h.started) >= attemptsWindow || h.count < attemptsMax {
+func (l *limiter) sweep(now time.Time) {
+	for key, h := range l.hits {
+		if now.Sub(h.started) >= attemptsWindow {
+			delete(l.hits, key)
+		}
+	}
+	l.swept = now
+}
+
+func (l *limiter) over(key string, most int, now time.Time) (bool, time.Duration) {
+	h, ok := l.hits[key]
+	if !ok || now.Sub(h.started) >= attemptsWindow || h.count < most {
 		return false, 0
 	}
 	return true, h.started.Add(attemptsWindow).Sub(now)
 }
 
-// failed records one wrong token from a caller.
-func (l *limiter) failed(who string, now time.Time) {
+// blocked reports whether an allowance is used up, for how long, and whose it is.
+func (l *limiter) blocked(a allowance, now time.Time) (bool, time.Duration, string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	key, whose := l.slot(a, now)
+	if b, wait := l.over(key, attemptsMax, now); b {
+		return true, wait, whose
+	}
+	if a.proxy != "" {
+		if b, wait := l.over(a.proxy, proxyMax, now); b {
+			return true, wait, byProxy
+		}
+	}
+	return false, 0, ""
+}
+
+// failed records one wrong token against an allowance, and its proxy's.
+func (l *limiter) failed(a allowance, now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.hits == nil {
 		l.hits = map[string]hit{}
 	}
 	if now.Sub(l.swept) >= attemptsWindow {
-		for key, h := range l.hits {
-			if now.Sub(h.started) >= attemptsWindow {
-				delete(l.hits, key)
-			}
-		}
-		l.swept = now
+		l.sweep(now)
 	}
-	who = l.slot(who)
-	h := l.hits[who]
+	key, _ := l.slot(a, now)
+	l.add(key, now)
+	if a.proxy != "" {
+		l.add(a.proxy, now)
+	}
+}
+
+// add counts one attempt; an entry past its window starts over where it lies.
+func (l *limiter) add(key string, now time.Time) {
+	h := l.hits[key]
 	if h.count == 0 || now.Sub(h.started) >= attemptsWindow {
 		h = hit{started: now}
 	}
 	h.count++
-	l.hits[who] = h
+	l.hits[key] = h
 }
 
 // relayHeaders are what a proxy adds to a request it passes on.
 var relayHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-Ip", "Via", "Cf-Connecting-Ip"}
 
-// caller names who a wrong token is charged to.
+// caller is the allowance a request's wrong token is charged to (see allowance).
 //
-// It is the address the connection came from, and that is the whole answer until there
-// is a proxy in front. Then every connection comes from the proxy, and the plain rule
-// gets three things wrong:
-//
-//   - What the proxy relays and what programs on this machine send would share one
-//     allowance: anyone on the network could spend the ten guesses of the agents that
-//     call this server from the machine itself, and keep them out for as long as they
-//     cared to. So a request that carries a forwarding header is counted apart from one
-//     that does not. Only the header's presence is used — a client can write anything
-//     into one, but cannot take away the one its proxy adds.
-//   - Telling the callers behind the proxy apart takes the proxy's word for who they
-//     are, and that word is worth something only when it is the proxy speaking. So it
-//     is asked for (Options.ProxyHeader names the header); it is the last address in the
-//     header that counts, the one the nearest proxy wrote; and it is read only on a
-//     connection from this machine or a private network, which is where a proxy of the
-//     owner's connects from. From anywhere else that header is a caller describing
-//     itself.
-//   - An IPv6 caller holds a /64, not an address, and could offer every guess from a new
-//     one. Its attempts are charged to the /64.
-func (s *Server) caller(r *http.Request) string {
+// A forwarding header is taken as a sign of a proxy by its presence alone: a client can
+// write anything into one, but cannot take away the one its proxy adds. What the header
+// says is believed only when it is the header Options.ProxyHeader names, on a connection
+// from this machine or a private network — where a proxy of the owner's connects from —
+// and only the last address in it, the one the nearest proxy wrote.
+func (s *Server) caller(r *http.Request) allowance {
 	peer, ok := addrOf(r.RemoteAddr)
 	if !ok {
-		return r.RemoteAddr
+		return allowance{key: "unknown " + r.RemoteAddr, kind: "unknown"}
 	}
 	header := s.opts.ProxyHeader
-	if header != "" && (peer.IsLoopback() || peer.IsPrivate() || peer.IsLinkLocalUnicast()) {
-		if said, ok := lastAddr(r.Header.Values(header)); ok {
-			return network(said)
-		}
-	}
 	relayed := header != "" && len(r.Header.Values(header)) > 0
 	for _, name := range relayHeaders {
 		relayed = relayed || len(r.Header.Values(name)) > 0
 	}
-	if relayed {
-		return network(peer) + " relayed"
+	local := peer.IsLoopback()
+	if !relayed {
+		switch {
+		case local && fromBrowser(r):
+			return allowance{key: "local browser"}
+		case local:
+			return allowance{key: "local"}
+		}
+		return allowance{key: network(peer), kind: "direct"}
 	}
-	return network(peer)
+	if header != "" && (local || peer.IsPrivate() || peer.IsLinkLocalUnicast()) {
+		if said, ok := lastAddr(r.Header.Values(header)); ok {
+			return allowance{key: network(said), kind: "named", proxy: "proxy " + network(peer)}
+		}
+	}
+	if local {
+		return allowance{key: "local relayed"}
+	}
+	return allowance{key: network(peer) + " relayed", kind: "relayed"}
+}
+
+// fromBrowser reports whether a request carries what a browser adds to every request it
+// makes and a page's script cannot remove.
+func fromBrowser(r *http.Request) bool {
+	return r.Header.Get("Sec-Fetch-Site") != "" || r.Header.Get("Origin") != ""
 }
 
 // addrOf reads an address that may carry a port: a connection's, or an entry of a
@@ -321,28 +415,29 @@ const (
 	throttled
 )
 
-// authorize decides whether a request may read the record.
-func (s *Server) authorize(r *http.Request) (verdict, time.Duration) {
+// authorize decides whether a request may read the record; when it is refused for
+// guessing, for how long and whose allowance ran out.
+func (s *Server) authorize(r *http.Request) (verdict, time.Duration, string) {
 	if s.opts.Token == "" {
-		return allowed, 0 // loopback only; the guards in front already ran
+		return allowed, 0, "" // loopback only; the guards in front already ran
 	}
 	now := time.Now()
 	if c, err := r.Cookie(cookieName); err == nil && signed(s.key, c.Value, now) {
-		return allowed, 0
+		return allowed, 0, ""
 	}
 	given, ok := bearer(r)
 	if !ok {
-		return unauthorized, 0
+		return unauthorized, 0, ""
 	}
 	who := s.caller(r)
-	if blocked, wait := s.attempts.blocked(who, now); blocked {
-		return throttled, wait
+	if blocked, wait, whose := s.attempts.blocked(who, now); blocked {
+		return throttled, wait, whose
 	}
 	if subtle.ConstantTimeCompare([]byte(given), []byte(s.opts.Token)) == 1 {
-		return allowed, 0
+		return allowed, 0, ""
 	}
 	s.attempts.failed(who, now)
-	return unauthorized, 0
+	return unauthorized, 0, ""
 }
 
 // isLoopbackHost reports whether a Host header names this machine by a name that cannot
@@ -429,7 +524,7 @@ func (s *Server) cors(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
-	v, _ := s.authorize(r)
+	v, _, _ := s.authorize(r)
 	writeJSON(w, r, http.StatusOK, map[string]any{"required": s.opts.Token != "", "authenticated": v == allowed})
 }
 
@@ -440,8 +535,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	who, now := s.caller(r), time.Now()
-	if blocked, wait := s.attempts.blocked(who, now); blocked {
-		tooMany(w, r, wait)
+	if blocked, wait, whose := s.attempts.blocked(who, now); blocked {
+		tooMany(w, r, wait, whose)
 		return
 	}
 	var body struct {
@@ -488,8 +583,15 @@ func isHTTPS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
-func tooMany(w http.ResponseWriter, r *http.Request, wait time.Duration) {
+func tooMany(w http.ResponseWriter, r *http.Request, wait time.Duration, whose string) {
 	secs := max(1, int(wait.Round(time.Second).Seconds()))
 	w.Header().Set("Retry-After", strconv.Itoa(secs))
-	writeError(w, r, http.StatusTooManyRequests, fmt.Sprintf("too many wrong tokens from this address: try again in %ds", secs))
+	from := "from this caller"
+	switch whose {
+	case byProxy:
+		from = "through this proxy"
+	case byKind:
+		from = "from callers this server cannot tell apart, of whom there are too many"
+	}
+	writeError(w, r, http.StatusTooManyRequests, fmt.Sprintf("too many wrong tokens %s: try again in %ds", from, secs))
 }

@@ -77,12 +77,21 @@ func (a *App) Sync(ctx context.Context, opts index.SyncOptions) (index.SyncResul
 		}
 		a.mu.Lock()
 	}
+	done := a.claim()
+	a.mu.Unlock()
+	return a.run(ctx, opts, done)
+}
+
+// claim marks a sync as under way, from now. a.mu must be held, and no sync running.
+func (a *App) claim() chan struct{} {
 	done := make(chan struct{})
 	a.running, a.began = done, time.Now()
-	a.mu.Unlock()
+	return done
+}
 
+// run is the sync a claim was made for.
+func (a *App) run(ctx context.Context, opts index.SyncOptions, done chan struct{}) (index.SyncResult, error) {
 	res, err := a.Index.Sync(ctx, a.Set.Present(), opts)
-
 	a.mu.Lock()
 	a.running, a.last, a.lastErr = nil, time.Now(), err
 	a.mu.Unlock()
@@ -109,25 +118,26 @@ func (a *App) Sync(ctx context.Context, opts index.SyncOptions) (index.SyncResul
 func (a *App) Fresh(ctx context.Context, maxAge, wait time.Duration) bool {
 	a.mu.Lock()
 	running, began, last := a.running, a.began, a.last
-	a.mu.Unlock()
 	switch {
-	case last.IsZero():
-		// never read: this is the first, and it is waited for
-	case running == nil && time.Since(last) <= maxAge:
+	case last.IsZero() && running != nil:
+		// the first read is under way: it is the one waited for
+	case running == nil && !last.IsZero() && time.Since(last) <= maxAge:
+		a.mu.Unlock()
 		return true
 	case running != nil && began.Sub(last) <= maxAge:
+		a.mu.Unlock()
 		return true
 	}
 	if running == nil {
-		done := make(chan struct{})
+		// Claimed before the lock is let go, so that the questions arriving with this
+		// one find it under way and wait for it, rather than each starting its own. The
+		// sync outlives the question that started it: a first read is not thrown away
+		// because one caller stopped waiting
+		done := a.claim()
 		running = done
-		go func() {
-			defer close(done)
-			// The sync outlives the question that started it: a first read is not thrown
-			// away because one caller stopped waiting
-			_, _ = a.Sync(context.WithoutCancel(ctx), index.SyncOptions{})
-		}()
+		go func() { _, _ = a.run(context.WithoutCancel(ctx), index.SyncOptions{}, done) }()
 	}
+	a.mu.Unlock()
 	if wait <= 0 {
 		select {
 		case <-running:

@@ -260,6 +260,9 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 		}
 	}
 
+	if res.Read > 0 || res.Removed > 0 {
+		ix.recount()
+	}
 	if (res.Read > 0 || res.Removed > 0) && ctx.Err() == nil {
 		if err := ix.link(ctx); err != nil && firstErr == nil {
 			firstErr = err
@@ -339,5 +342,6 @@ func (ix *Index) Forget(ctx context.Context, keep []Store) (int, error) {
 		_, err := tx.ExecContext(ctx, `DELETE FROM source_state WHERE `+where, names...)
 		return err
 	})
+	ix.recount()
 	return len(sids), err
 }

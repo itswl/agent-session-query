@@ -88,6 +88,28 @@ func TestWhenAQuestionWaitsForTheStores(t *testing.T) {
 	if !a.Fresh(ctx, maxAge, 5*time.Second) || !synced().After(read) {
 		t.Error("a stale index was not read again when asked")
 	}
+	// Questions that arrive together share one read: the first claims it before it lets
+	// go, and the next finds it under way rather than starting its own
+	a.mu.Lock()
+	a.last = time.Now().Add(-time.Minute)
+	a.mu.Unlock()
+	a.Fresh(ctx, maxAge, time.Nanosecond)
+	a.mu.Lock()
+	claimed := a.running
+	a.mu.Unlock()
+	if claimed == nil {
+		t.Fatal("a stale index was asked about, and when the question returned no read was under way")
+	}
+	a.Fresh(ctx, maxAge, time.Nanosecond)
+	a.mu.Lock()
+	second := a.running
+	a.mu.Unlock()
+	if second != nil && second != claimed {
+		t.Error("a second read was started beside the first")
+	}
+	<-claimed
+	time.Sleep(10 * time.Millisecond)
+
 	// And then it is fresh, with nothing to do
 	read = synced()
 	if !a.Fresh(ctx, maxAge, 5*time.Second) || !synced().Equal(read) {

@@ -60,9 +60,9 @@ type Options struct {
 	// outlives a restart. Empty keeps nothing: each start makes a new secret, and the
 	// cookies of the run before stop working.
 	State string
-	// ProxyHeader names the header in which a proxy in front states who is calling:
-	// CF-Connecting-IP, X-Real-IP, X-Forwarded-For. Wrong tokens are then counted per
-	// caller rather than per proxy (see caller).
+	// ProxyHeader names the header in which a proxy in front states who is calling —
+	// CF-Connecting-IP, X-Real-IP, an X-Forwarded-For the proxy appends to. Wrong tokens
+	// are then counted per caller rather than per proxy (see allowance).
 	ProxyHeader string
 	// Log receives one line per request that failed, and what the server has to say.
 	Log io.Writer
@@ -127,6 +127,9 @@ func New(a *app.App, opts Options) (*Server, error) {
 		return nil, fmt.Errorf("--proxy-header takes the name of a header (CF-Connecting-IP, X-Real-IP, X-Forwarded-For), not %q", opts.ProxyHeader)
 	}
 	s := &Server{app: a, opts: opts, mcp: mcp.New(a, opts.Log), assets: map[string]asset{}}
+	// The MCP endpoint answers as the rest of the API does: from the index the watcher
+	// keeps, without waiting for a read that is only following the stores
+	s.mcp.MaxAge = maxAge
 	if opts.Token != "" {
 		s.key = signKey(s.cookieSecret(), opts.Token)
 	}
@@ -234,9 +237,9 @@ func (s *Server) routes() {
 // private wraps a route that reads the record: the caller proves who it is first.
 func (s *Server) private(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch v, wait := s.authorize(r); v {
+		switch v, wait, whose := s.authorize(r); v {
 		case throttled:
-			tooMany(w, r, wait)
+			tooMany(w, r, wait, whose)
 			return
 		case unauthorized:
 			w.Header().Set("WWW-Authenticate", `Bearer realm="asq"`)

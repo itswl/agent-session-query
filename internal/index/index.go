@@ -29,6 +29,63 @@ type Index struct {
 	stateMu sync.Mutex
 	state   SyncState
 	subs    map[chan Change]struct{}
+
+	// The stores the index holds sessions of, as last counted (see widen)
+	sourcesMu sync.Mutex
+	sources   []string
+	sourcesAt time.Time
+}
+
+// widen marks a filter whose stores are every store the index holds, for a query the
+// time should drive — bounded in time, or ordered by it. Its store term then filters and
+// does not choose the plan (see Filter.where). Results are the same either way; only the
+// work differs.
+func (ix *Index) widen(ctx context.Context, f Filter, timed bool) Filter {
+	f.wide = timed && len(f.Stores) > 0 && ix.coversAll(ctx, f.Stores)
+	return f
+}
+
+// coversAll reports whether stores names every store the index holds sessions of. The
+// count is kept for a minute and dropped when a sync of this process changes the index;
+// one another process made is noticed within the minute, and till then only costs work.
+func (ix *Index) coversAll(ctx context.Context, stores []string) bool {
+	ix.sourcesMu.Lock()
+	defer ix.sourcesMu.Unlock()
+	if ix.sources == nil || time.Since(ix.sourcesAt) > time.Minute {
+		rows, err := ix.ro.QueryContext(ctx, `SELECT DISTINCT source FROM sessions`)
+		if err != nil {
+			return false
+		}
+		have := []string{}
+		for rows.Next() {
+			var s string
+			if rows.Scan(&s) == nil {
+				have = append(have, s)
+			}
+		}
+		rows.Close()
+		if rows.Err() != nil {
+			return false
+		}
+		ix.sources, ix.sourcesAt = have, time.Now()
+	}
+	named := make(map[string]bool, len(stores))
+	for _, s := range stores {
+		named[s] = true
+	}
+	for _, s := range ix.sources {
+		if !named[s] {
+			return false
+		}
+	}
+	return true
+}
+
+// recount drops the count of stores, after the index changed.
+func (ix *Index) recount() {
+	ix.sourcesMu.Lock()
+	ix.sources = nil
+	ix.sourcesMu.Unlock()
 }
 
 // DefaultPath is where the index lives unless told otherwise: the user's cache

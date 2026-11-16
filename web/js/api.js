@@ -12,7 +12,37 @@ export class ApiError extends Error {
 
 export const isAbort = (e) => e?.name === 'AbortError';
 
-export async function api(path, { signal, method = 'GET', body } = {}) {
+// What a view was last answered. A view that is opened again shows this at once and asks
+// for the fresh answer behind it, so that going from one view to another is not a wait
+// for the network. It lives as long as the page does, holds the last few answers, and is
+// emptied when the sign-in is lost.
+const KEPT = 24;
+const answers = new Map();
+
+const forgetFns = new Set();
+
+export const last = (path) => answers.get(path)?.data;
+// onForget registers what else must be let go of when the sign-in is lost
+export const onForget = (fn) => { forgetFns.add(fn); };
+export function forget() {
+  answers.clear();
+  forgetFns.forEach((fn) => fn());
+}
+
+function keepAnswer(path, text, data) {
+  const had = answers.get(path);
+  answers.delete(path);
+  // The same text is the same answer: handing back the object already held lets a view
+  // see by identity that there is nothing to draw again
+  const entry = had?.text === text ? had : { text, data };
+  answers.set(path, entry);
+  if (answers.size > KEPT) answers.delete(answers.keys().next().value);
+  return entry.data;
+}
+
+// api asks the server. With keep, the answer is remembered for last(), and an answer that
+// has not changed is the very object returned before.
+export async function api(path, { signal, method = 'GET', body, keep = false } = {}) {
   let res;
   try {
     res = await fetch(path, {
@@ -24,10 +54,25 @@ export async function api(path, { signal, method = 'GET', body } = {}) {
     if (isAbort(e)) throw e;
     throw new ApiError(0, 'The server could not be reached. Is asq still running?');
   }
-  const data = await res.json().catch(() => null);
-  if (res.status === 401 && path !== '/api/login') lost();
+  const text = await res.text().catch(() => '');
+  let data = null;
+  try { data = JSON.parse(text); } catch { /* not JSON: an error page from something in between */ }
+  if (res.status === 401 && path !== '/api/login') {
+    forget();
+    lost();
+  }
   if (!res.ok) throw new ApiError(res.status, data?.error || `${res.status} ${res.statusText}`);
-  return data;
+  return keep && data != null ? keepAnswer(path, text, data) : data;
+}
+
+// ahead asks for what a view will want before it is opened — when a link to it is
+// pointed at — so that the answer is there when it is. Nothing is asked twice in a row,
+// and nothing is said if it fails: the view will ask again and say so itself.
+const asked = new Map();
+export function ahead(path) {
+  if (Date.now() - (asked.get(path) || 0) < 5000) return;
+  asked.set(path, Date.now());
+  api(path, { keep: true }).catch(() => {});
 }
 
 // qs renders parameters, leaving out the empty ones; true is "1".

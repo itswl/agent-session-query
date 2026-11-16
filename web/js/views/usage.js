@@ -1,7 +1,7 @@
 // What the model calls consumed: rolling windows, the last thirty days, and where it went.
 
 import { h, mark, skeleton, errorBox } from '../dom.js';
-import { api, qs } from '../api.js';
+import { api, qs, last } from '../api.js';
 import { coalesce } from '../live.js';
 import * as f from '../format.js';
 
@@ -9,18 +9,24 @@ import * as f from '../format.js';
 const PARTS = [['cacheRead', 'Cache read'], ['cacheWrite', 'Cache write'], ['input', 'Input'], ['output', 'Output']];
 const WINDOWS = { '24h': 'Last 24 hours', '3d': 'Last 3 days', '7d': 'Last 7 days', '30d': 'Last 30 days', all: 'All time' };
 
+// first is what the view asks for when it opens, so that it can be asked for ahead.
+export const first = () => '/api/usage';
+
 export function mount(main, route, ctx) {
   document.title = 'Usage · asq';
-  const state = { withCache: true, table: false, report: null };
-  const body = h('div', { class: 'page-body' }, skeleton(6, 'line'));
+  // What it showed last time is shown at once; the fresh report replaces it when it comes
+  const state = { withCache: true, table: false, report: last(first()) };
+  const body = h('div', { class: 'page-body' }, state.report ? null : skeleton(6, 'line'));
   main.append(h('div', { class: 'page' }, h('header', { class: 'page-head' }, h('h1', { tabIndex: -1 }, 'Usage')), body));
 
   async function load() {
     try {
-      state.report = await api('/api/usage', { signal: ctx.signal });
+      const report = await api(first(), { signal: ctx.signal, keep: true });
+      if (report === state.report) return; // nothing changed: what is drawn stays as it is, under the pointer
+      state.report = report;
       render();
     } catch (e) {
-      if (e.name !== 'AbortError') body.replaceChildren(errorBox(e, load));
+      if (e.name !== 'AbortError' && !state.report) body.replaceChildren(errorBox(e, load));
     }
   }
 
@@ -76,6 +82,7 @@ export function mount(main, route, ctx) {
           parts.map(([k]) => h('td', { class: 'n' }, f.num(d.usage[k] || 0))), h('td', { class: 'n' }, f.num(sum(d)))))))));
   }
 
+  if (state.report) render();
   load();
   return { changes: coalesce(load, 5000) };
 }

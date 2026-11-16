@@ -118,6 +118,27 @@ If the index is still reading a large history, the bar says how far it is and wh
 covers what has been read. If a store could not be read, a notice says which and why: an empty
 list is never the only sign that something broke.
 
+## Quick, and quiet
+
+**Going from one view to another is not a wait.** Each view keeps what it was last answered for
+as long as the page is open. Opened again, it draws that at once and asks for the fresh answer
+behind it; an answer that has not changed draws nothing, so what is under the pointer stays
+there. A list is kept by its address, so Back from a session, the link in the bar and a filter
+taken off again all return to it whole, and Back returns to where it was read. Pointing at a
+view's link asks for it before the click lands. Nothing of this outlives the page, and all of it
+is dropped when the sign-in is lost.
+
+**The status says one of three things**: *up to date*; *reading 412 of 1,276…* while the index
+catches up — a first read, or many transcripts after a while away; *reconnecting…* if the
+connection has been gone for more than a moment. It does not report the reading that follows a
+session as it is written. With an agent at work that never stops, and the list shows its result
+anyway.
+
+**A tab nobody is looking at asks for nothing.** Changes that arrive while the page is hidden
+are remembered as one fact — something changed — and fetched when it is looked at again. After a
+minute hidden it lets go of the stream as well, so the server stops following the stores closely
+for the sake of a tab in the background.
+
 ## How it is built
 
 By hand, and that is a decision rather than an economy.

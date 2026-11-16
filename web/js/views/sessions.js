@@ -2,7 +2,7 @@
 // in the address: a filtered view can be linked, and Back undoes a filter.
 
 import { h, icon, mark, time, skeleton, errorBox, empty, fill } from '../dom.js';
-import { api, qs, sessionHref, isAbort } from '../api.js';
+import { api, qs, sessionHref, isAbort, onForget } from '../api.js';
 import { go, savedY } from '../router.js';
 import { health, coalesce, onStatus, status } from '../live.js';
 import { needles, highlight } from '../md.js';
@@ -13,9 +13,14 @@ const HITS = 20;
 const WHEN = [['', 'All time'], ['today', 'Today'], ['7d', '7 days'], ['30d', '30 days']];
 const TOP_PROJECTS = 8;
 
-// The list as it was left, so that Back from a session returns to it whole
-let kept = null;
+// Each list as it was left, by its address. Coming back to one — by Back from a session,
+// by its link in the bar, by taking a filter off again — shows it whole and at once, and
+// then asks what has changed since.
+const KEPT = 12;
+const kept = new Map();
+const keyOf = (route) => (route.name === 'search' ? '/search?' : '/?') + route.query.toString();
 let projectsP = null;
+onForget(() => { kept.clear(); projectsP = null; });
 
 function apiFilters(q) {
   const since = q.get('since');
@@ -144,7 +149,7 @@ export function mount(main, route, ctx) {
   function emptyState() {
     const q = v.route.query.get('q') || '';
     const filtered = ['source', 'project', 'since'].some((k) => v.route.query.get(k));
-    const warned = (v.warnings || []).length;
+    const warned = (status.health?.warnings || []).length;
     const clear = filtered && h('a', { href: hrefWith(v.route, { source: '', project: '', since: '' }) }, 'Clear the filters');
     if (searching() && !q.trim()) {
       return empty('Search every turn of every session.', 'Type in the search box above. Words match what they begin: "deploy" finds "deployment".',
@@ -173,7 +178,6 @@ export function mount(main, route, ctx) {
       renderHead();
     }
     try {
-      v.warnings = (await health().catch(() => null))?.warnings;
       if (searching() && !q.trim()) {
         v.end = true;
       } else if (searching()) {
@@ -232,16 +236,27 @@ export function mount(main, route, ctx) {
 
   function start(how) {
     renderFilters();
-    const key = location.pathname + location.search;
-    if (how === 'pop' && kept?.key === key) {
-      Object.assign(v, kept.state, { busy: null, rows: new Map() });
+    const was = kept.get(keyOf(v.route));
+    if (was) {
+      Object.assign(v, was, { busy: null, rows: new Map() });
       renderList();
-      scrollTo(0, savedY() ?? 0);
+      // Back returns to where the list was read; a link to it starts at its top
+      scrollTo(0, how === 'pop' ? savedY() ?? 0 : 0);
       changes();
     } else {
       scrollTo(0, 0);
       load(true);
     }
+  }
+
+  // remember keeps the list under the address it was shown at
+  function remember() {
+    v.busy?.abort();
+    if (!v.items.length) return;
+    const key = keyOf(v.route);
+    kept.delete(key);
+    kept.set(key, { items: v.items, total: v.total, sessions: v.sessions, end: v.end, sel: v.sel });
+    if (kept.size > KEPT) kept.delete(kept.keys().next().value);
   }
   start(ctx.how);
 
@@ -249,9 +264,11 @@ export function mount(main, route, ctx) {
     update(r, how) {
       if (r.name !== 'sessions' && r.name !== 'search') return false;
       const was = v.route;
+      const moved = was.query.toString() !== r.query.toString() || was.name !== r.name;
+      if (moved) remember();
       v.route = r;
       if (was.name !== r.name) v.rows.clear();
-      if (was.query.toString() !== r.query.toString() || was.name !== r.name) {
+      if (moved) {
         aside.classList.remove('open');
         start(how);
       }
@@ -274,7 +291,7 @@ export function mount(main, route, ctx) {
       io.disconnect();
       offStatus();
       changes.cancel();
-      kept = { key: location.pathname + location.search, state: { items: v.items, total: v.total, sessions: v.sessions, end: v.end, sel: v.sel, warnings: v.warnings } };
+      remember();
     },
   };
 }

@@ -1,31 +1,72 @@
 // What changed, as it changes: the event stream, the index's reading of the stores, and
 // the health report that says which stores were found and which could not be read.
+//
+// The stream is listened to while the page is looked at. A tab left in the background
+// hears nothing and asks for nothing — the server follows the stores closely for as long
+// as a stream is open, and nobody is reading a hidden tab — and catches up in one go
+// when it is looked at again.
 
 import { api } from './api.js';
 
 export const status = { conn: 'connecting', sync: null, health: null };
 const changeFns = new Set();
 const statusFns = new Set();
+const AWAY = 60000; // a tab hidden this long lets go of the stream
 let es = null;
 let hellos = 0;
 let retry = 1000;
 let retryTimer = 0;
+let awayTimer = 0;
+let away = false;
+let missed = false;
 let healthP = null;
+let healthKey = '';
 
 export const onChanges = (fn) => { changeFns.add(fn); return () => changeFns.delete(fn); };
 export const onStatus = (fn) => { statusFns.add(fn); fn(status); return () => statusFns.delete(fn); };
-const emit = (ev) => changeFns.forEach((fn) => fn(ev));
 const notify = () => statusFns.forEach((fn) => fn(status));
+
+// A change is passed on while the page is looked at; while it is not, it is remembered
+// as one thing: something changed.
+function emit(ev, askHealth = staleHealth) {
+  if (document.hidden) { missed = true; return; }
+  changeFns.forEach((fn) => fn(ev));
+  askHealth();
+}
 
 export function start() {
   connect();
   refreshHealth();
+  document.addEventListener('visibilitychange', seen);
 }
 
 export function stop() {
+  document.removeEventListener('visibilitychange', seen);
+  clearTimeout(awayTimer);
+  hangUp();
+}
+
+function hangUp() {
   clearTimeout(retryTimer);
   es?.close();
   es = null;
+}
+
+function seen() {
+  clearTimeout(awayTimer);
+  if (document.hidden) {
+    awayTimer = setTimeout(() => { away = true; hangUp(); }, AWAY);
+    return;
+  }
+  if (away) {
+    // The stream's first word, on its return, says everything may have changed
+    away = false;
+    missed = false;
+    connect();
+  } else if (missed) {
+    missed = false;
+    emit({ all: true });
+  }
 }
 
 function connect() {
@@ -35,7 +76,7 @@ function connect() {
     status.conn = 'live';
     setSync(JSON.parse(e.data).sync);
     // A stream that came back may have missed changes while it was away
-    if (hellos++ > 0) { emit({ all: true }); refreshHealth(); }
+    if (hellos++ > 0) emit({ all: true }, refreshHealth);
   });
   es.addEventListener('changes', (e) => emit(JSON.parse(e.data)));
   es.addEventListener('sync', (e) => setSync(JSON.parse(e.data)));
@@ -60,18 +101,29 @@ async function reconnect() {
   }
 }
 
+// The stream speaks of a sync when it is a catch-up, and of the stores when their
+// condition moved. Either is a reason to ask how things stand; the reading that follows
+// a session as it is written is neither, and is not heard of here at all.
 function setSync(sync) {
-  const finished = status.sync?.running && !sync.running;
+  const was = status.sync;
   status.sync = sync;
   notify();
-  if (finished) refreshHealth();
+  if ((was?.running && !sync.running) || (was && (was.stores || '') !== (sync.stores || ''))) refreshHealth();
 }
 
+// health is the report as it was last asked for. status.health changes — and those who
+// watch it are told — only when what the page shows of it does: which stores there are,
+// how many sessions each holds, which could not be read. The rest of the report moves
+// with every line an agent writes.
 export function health() {
   healthP ||= api('/api/health').then((h) => {
-    status.health = h;
-    notify();
-    return h;
+    const key = JSON.stringify([h.stores, h.warnings]);
+    if (key !== healthKey || !status.health) {
+      healthKey = key;
+      status.health = h;
+      notify();
+    }
+    return status.health;
   });
   healthP.catch(() => { healthP = null; });
   return healthP;
@@ -95,3 +147,7 @@ export function coalesce(fn, ms = 1000) {
   call.cancel = () => { clearTimeout(timer); timer = 0; };
   return call;
 }
+
+// The counts beside the stores go out of date as sessions are added; half a minute
+// behind is near enough for a number in a filter.
+const staleHealth = coalesce(refreshHealth, 30000);

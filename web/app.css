@@ -170,9 +170,11 @@ kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width:
 .help dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 12px; margin-bottom: 12px; font-size: 12.5px; }
 .help dl > div { display: contents; }
 .help dd { color: var(--muted); }
-.sync { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
-.sync .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
-.sync.busy .dot { background: var(--warn); animation: breathe 1.2s infinite; }
+/* The status holds its place and its figures hold their width: nothing beside it moves
+   when what it says changes. It pulses only for a catch-up, and slowly. */
+.sync { display: inline-flex; align-items: center; gap: 6px; min-width: 76px; font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sync .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); transition: background-color .4s; }
+.sync.busy .dot { background: var(--warn); animation: breathe 2.4s ease-in-out infinite; }
 .sync.off .dot { background: var(--faint); }
 
 /* Sessions and search: the header, the filters, the list */
@@ -474,10 +476,13 @@ th.n, td.n { text-align: right; }
   .sync.busy .sync-text { display: inline; }
   .nav a { padding: 5px 7px; }
   .nav { order: 1; }
-  .sync { order: 2; margin-left: auto; }
+  .sync { order: 2; margin-left: auto; min-width: 0; }
   .bar > .icon-btn { order: 3; }
-  .search { order: 4; flex-basis: calc(100% - 40px); max-width: none; margin: 0; }
+  /* The second row is the search and what is left over beside it: the help, and with a
+     token the way out. The search gives up room for both and takes back what is unused. */
+  .search { order: 4; flex: 1 1 calc(100% - 84px); max-width: none; margin: 0; }
   .help-drop { order: 5; }
+  .bar > .signout { order: 6; }
   .notices, .page, .session { padding-left: 12px; padding-right: 12px; }
   .turn, .t-day { padding-left: 18px; }
   .steps { padding-left: 6px; }

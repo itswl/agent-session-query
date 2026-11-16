@@ -1,16 +1,23 @@
 // What a window's work added up to, per project.
 
 import { h, mark, skeleton, errorBox, empty, choices } from '../dom.js';
-import { api, qs, isAbort } from '../api.js';
+import { api, qs, isAbort, last } from '../api.js';
 import { coalesce } from '../live.js';
 import * as f from '../format.js';
 
 const WINDOWS = [['24h', '24 hours'], ['7d', '7 days'], ['30d', '30 days']];
 const KINDS = ['code', 'test', 'docs', 'config'];
 
+const windowOf = (query) => (WINDOWS.some(([k]) => k === query.get('since')) ? query.get('since') : '7d');
+
+// first is what the view asks for when it opens, so that it can be asked for ahead.
+export const first = (query) => '/api/digest' + qs({ since: windowOf(query) });
+
 export function mount(main, route, ctx) {
   document.title = 'Digest · asq';
-  const since = WINDOWS.some(([k]) => k === route.query.get('since')) ? route.query.get('since') : '7d';
+  const since = windowOf(route.query);
+  const path = first(route.query);
+  let shown = null;
   const summary = h('p', { class: 'summary' });
   const body = h('div', { class: 'page-body' }, skeleton(5, 'block'));
   main.append(h('div', { class: 'page' },
@@ -18,26 +25,33 @@ export function mount(main, route, ctx) {
       choices('Window', WINDOWS.map(([k, label]) => ['/digest' + qs({ since: k }), label, k === since]))),
     summary, body));
 
+  function show(r) {
+    shown = r;
+    const t = r.total;
+    summary.replaceChildren(h('span', { class: 'dots' },
+      h('span', null, f.plural(r.projects.length, 'project')),
+      h('span', null, f.plural(t.sessions, 'session')),
+      h('span', null, f.plural(t.turns, 'turn')),
+      h('span', null, f.plural(t.tools, 'tool call')),
+      h('span', { class: t.failures ? 'bad' : null }, `${f.num(t.failures)} failed`),
+      h('span', { title: f.num(f.totalTokens(t.usage)) }, `${f.tokens(f.totalTokens(t.usage))} tokens`),
+      h('span', null, `${f.plural(KINDS.reduce((n, k) => n + (t.changed?.[k] || 0), 0), 'file')} changed`)));
+    body.replaceChildren(r.projects.length
+      ? h('ol', { class: 'digest' }, r.projects.map(project))
+      : empty(`Nothing was asked in the last ${WINDOWS.find(([k]) => k === since)[1]}.`, 'Try a longer window.'));
+  }
+
   async function load() {
     try {
-      const r = await api('/api/digest' + qs({ since }), { signal: ctx.signal });
-      const t = r.total;
-      summary.replaceChildren(h('span', { class: 'dots' },
-        h('span', null, f.plural(r.projects.length, 'project')),
-        h('span', null, f.plural(t.sessions, 'session')),
-        h('span', null, f.plural(t.turns, 'turn')),
-        h('span', null, f.plural(t.tools, 'tool call')),
-        h('span', { class: t.failures ? 'bad' : null }, `${f.num(t.failures)} failed`),
-        h('span', { title: f.num(f.totalTokens(t.usage)) }, `${f.tokens(f.totalTokens(t.usage))} tokens`),
-        h('span', null, `${f.plural(KINDS.reduce((n, k) => n + (t.changed?.[k] || 0), 0), 'file')} changed`)));
-      body.replaceChildren(r.projects.length
-        ? h('ol', { class: 'digest' }, r.projects.map(project))
-        : empty(`Nothing was asked in the last ${WINDOWS.find(([k]) => k === since)[1]}.`, 'Try a longer window.'));
+      const r = await api(path, { signal: ctx.signal, keep: true });
+      if (r !== shown) show(r);
     } catch (e) {
-      if (!isAbort(e)) body.replaceChildren(errorBox(e, load));
+      if (!isAbort(e) && !shown) body.replaceChildren(errorBox(e, load));
     }
   }
 
+  // What it showed last time is shown at once; the fresh digest replaces it when it comes
+  if (last(path)) show(last(path));
   load();
   return { changes: coalesce(load, 5000) };
 }

@@ -1,7 +1,7 @@
 // The page: the bar, the view the address names, the keys, and the line to the server.
 
 import { h, icon, tick, errorBox, dropdown, fill } from './js/dom.js';
-import { api, qs, onUnauthorized } from './js/api.js';
+import { api, qs, onUnauthorized, ahead } from './js/api.js';
 import * as router from './js/router.js';
 import * as live from './js/live.js';
 import * as f from './js/format.js';
@@ -30,6 +30,14 @@ const helpBtn = h('button', { type: 'button', class: 'icon-btn', 'aria-label': '
 const themeBtn = h('button', { type: 'button', class: 'icon-btn' });
 const syncEl = h('span', { class: 'sync', role: 'status' });
 const navLinks = NAV.map(([href, label, names]) => h('a', { href, dataset: { names } }, label));
+// Pointing at a view asks for what it will show, so that it is there when the click lands
+for (const a of navLinks) {
+  const first = VIEWS[a.dataset.names.split(' ').pop()]?.first;
+  if (!first) continue;
+  const ask = () => { if (!locked && a.getAttribute('aria-current') !== 'page') ahead(first(new URLSearchParams())); };
+  a.addEventListener('pointerenter', ask);
+  a.addEventListener('focus', ask);
+}
 let view = null;
 let ctrl = null;
 let locked = false;
@@ -101,7 +109,7 @@ function buildBar(signedIn) {
     dropdown(helpBtn, help, 'help-drop'),
     syncEl,
     themeBtn,
-    signedIn && h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Sign out', title: 'Sign out', onclick: signOut }, icon('logout')),
+    signedIn && h('button', { type: 'button', class: 'icon-btn signout', 'aria-label': 'Sign out', title: 'Sign out', onclick: signOut }, icon('logout')),
   );
   bar.hidden = false;
   renderTheme();
@@ -160,15 +168,21 @@ function notFound() {
   return {};
 }
 
+// The status says one of three things, and says it once. It is drawn again only when it
+// would read differently: a region that announces itself must not be rewritten for
+// nothing, and a dot that pulses must not start over.
+let shownStatus = '';
+let offTimer = 0;
+
 function renderStatus(st) {
   const s = st.sync;
   let text = 'up to date';
   let cls = 'ok';
-  let title = s?.at ? `The index is up to date. Last read ${f.stamp(f.when(s.at))}${s.tookMs ? `, in ${f.dur(s.tookMs)}` : ''}.` : 'The index is up to date.';
+  let title = 'The index follows the stores as they are written.' + (s?.at ? ` Last read ${f.stamp(f.when(s.at))}${s.tookMs ? `, in ${f.dur(s.tookMs)}` : ''}.` : '');
   if (s?.running) {
     cls = 'busy';
-    text = s.total ? `reading ${f.num(s.done)} of ${f.num(s.total)}…` : 'reading…';
-    title = 'Reading transcripts into the index. What is shown so far is what has been read.';
+    text = s.total ? `reading ${f.num(s.done || 0)} of ${f.num(s.total)}…` : 'reading…';
+    title = 'Catching up: reading transcripts into the index. What is shown so far is what has been read.';
   } else if (st.conn === 'reconnecting') {
     cls = 'off';
     text = 'reconnecting…';
@@ -176,14 +190,27 @@ function renderStatus(st) {
   } else if (st.conn === 'connecting') {
     cls = 'off';
     text = 'connecting…';
+    title = '';
   }
-  syncEl.className = 'sync ' + cls;
-  syncEl.title = title;
-  syncEl.replaceChildren(h('span', { class: 'dot', 'aria-hidden': 'true' }), h('span', { class: 'sync-text' }, text));
   if (st.health !== seenHealth) {
     seenHealth = st.health;
     renderWarnings();
   }
+  // A connection that is a moment in coming is not news: it is said if it lasts
+  clearTimeout(offTimer);
+  if (cls === 'off' && !shownStatus.startsWith('off')) {
+    offTimer = setTimeout(() => drawStatus(cls, text, title), 1500);
+    return;
+  }
+  drawStatus(cls, text, title);
+}
+
+function drawStatus(cls, text, title) {
+  syncEl.title = title;
+  if (shownStatus === cls + '\n' + text) return;
+  shownStatus = cls + '\n' + text;
+  syncEl.className = 'sync ' + cls;
+  syncEl.replaceChildren(h('span', { class: 'dot', 'aria-hidden': 'true' }), h('span', { class: 'sync-text' }, text));
 }
 
 // A store that could not be read says so, so that its silence is not read as "no sessions"

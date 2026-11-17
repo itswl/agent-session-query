@@ -173,7 +173,7 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			flights.Add(1)
 			go func() {
 				defer flights.Done()
-				if replies := s.answerAll(ctx, reqs); len(replies) > 0 {
+				if replies := s.answerAll(ctx, reqs); len(replies) > 0 && ctx.Err() == nil {
 					send(replies)
 				}
 			}()

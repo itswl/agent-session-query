@@ -36,7 +36,7 @@ refused with `403` before anything is read.
   secret in, the server makes one for the run and says that sign-ins will end with it.
 
 Ten wrong tokens from one caller in a minute, by either route, and that caller is answered `429`
-until the minute rolls over — without the token even being compared. Who "one caller" is decides
+until the minute rolls over, whether or not the token it brings is right. Who "one caller" is decides
 whom the limit shuts out:
 
 - **The programs on this machine** — the agents calling the API or `/mcp`, a script with
@@ -64,14 +64,18 @@ is right only behind a proxy that appends to it — nginx with
 Whatever the header says, every caller it names draws on one more allowance as well, the
 proxy's: ten callers' worth of wrong tokens a minute, together. A caller who can choose what the
 header says — a page that reaches the proxy's port, a device on the network — gets that and no
-more, instead of a fresh allowance with every guess. A caller the header names is counted apart
-from the same address calling the port directly, so naming a machine does not shut it out.
+more, instead of a fresh allowance with every guess. A caller the header names is counted by its
+address and the proxy that named it: naming a machine through one proxy spends nothing of what it
+has through another, or calling the port directly.
 
 When the proxy's allowance is spent, the proxy is shut for the rest of the minute to callers that
 have not shown the right token in the last day, sign-ins included. A caller that has — an agent
 asking with its token, a browser that signed in — is held back only by its own wrong tokens, and
 a browser holding its cookie is never held back at all. So callers guessing at ten addresses can
-keep newcomers out for as long as they keep at it, and nobody who is already in.
+keep newcomers out for as long as they keep at it, and nobody who is already in. Two limits to
+that: who is known is kept in memory, so after a restart everyone is a newcomer until they next get
+through; and a caller that can write the header through the same proxy can name a known caller and
+spend its ten.
 
 The server remembers 4,096 callers at once. Past that, during a flood of addresses, the callers it
 does not know share one allowance of their kind; the callers on this machine are always known.

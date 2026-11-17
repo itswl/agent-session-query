@@ -723,8 +723,42 @@ func TestGuessesAreChargedToWhoMadeThem(t *testing.T) {
 		if c := code(s, "192.168.1.20:40000", right, nil); c != http.StatusOK {
 			t.Errorf("the caller named, calling directly = %d", c)
 		}
-		if c := code(s, "192.168.1.31:40000", right, map[string]string{"X-Real-IP": "192.168.1.20"}); c != http.StatusTooManyRequests {
-			t.Errorf("the caller named, named again = %d", c)
+		if c := code(s, "192.168.1.30:40000", right, map[string]string{"X-Real-IP": "192.168.1.20"}); c != http.StatusTooManyRequests {
+			t.Errorf("the caller named, named again through the same proxy = %d", c)
+		}
+		if c := code(s, "192.168.1.31:40000", right, map[string]string{"X-Real-IP": "192.168.1.20"}); c != http.StatusOK {
+			t.Errorf("the caller named, named through another proxy = %d", c)
+		}
+	})
+
+	t.Run("a device that writes the header is a proxy of its own, and cannot reach the callers known", func(t *testing.T) {
+		s, _, _ := build(t, Options{Host: "0.0.0.0", Token: token, ProxyHeader: "X-Real-IP"})
+		// The owner's devices have used the token through the proxy on this machine
+		for i := 101; i <= 120; i++ {
+			if c := code(s, local, right, map[string]string{"X-Real-IP": fmt.Sprintf("192.168.1.%d", i)}); c != http.StatusOK {
+				t.Fatalf("device %d = %d", i, c)
+			}
+		}
+		// A device on the network, straight at the port, names every address in turn
+		compared := 0
+		for i := 1; i <= 254; i++ {
+			for range attemptsMax {
+				switch c := code(s, "192.168.1.66:40000", wrong, map[string]string{"X-Real-IP": fmt.Sprintf("192.168.1.%d", i)}); c {
+				case http.StatusUnauthorized:
+					compared++
+				case http.StatusTooManyRequests:
+				default:
+					t.Fatalf("guess naming %d = %d", i, c)
+				}
+			}
+		}
+		if compared != proxyMax {
+			t.Errorf("%d of its guesses were compared; its proxy's allowance is %d", compared, proxyMax)
+		}
+		for i := 101; i <= 120; i++ {
+			if c := code(s, local, right, map[string]string{"X-Real-IP": fmt.Sprintf("192.168.1.%d", i)}); c != http.StatusOK {
+				t.Errorf("device %d, after the guessing = %d", i, c)
+			}
 		}
 	})
 

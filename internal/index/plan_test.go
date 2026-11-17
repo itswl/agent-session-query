@@ -2,16 +2,20 @@ package index
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/itswl/agent-session-query/internal/sources"
+	"github.com/itswl/agent-session-query/internal/transcript"
 )
 
 // A report over a window reads the window, and a process that reads one store reads
 // that store's rows. Which of the two drives a query is the store term's to decide: it
-// steps aside only when it names every store the index holds, for a query the time
-// should drive (see Filter.where). These are the plans, as the index makes them.
+// steps aside when the stores it names are most of the index, for a query the time
+// should drive (see Index.widen). These are the plans, as the index makes them.
 func TestAQueryReadsWhatItAsksForAndNotTheWholeIndex(t *testing.T) {
 	ix, err := Open(filepath.Join(t.TempDir(), "index.db"))
 	if err != nil {
@@ -58,13 +62,25 @@ func TestAQueryReadsWhatItAsksForAndNotTheWholeIndex(t *testing.T) {
 			append(append([]any{}, args...), whenArgs...)...)
 	}
 
-	// The index holds two stores, and the process reads both
-	for _, source := range []string{"claude", "codex"} {
-		if _, err := ix.rw.Exec(`INSERT INTO sessions (source, agent, key, stamp, id) VALUES (?, ?, ?, '', ?)`, source, source, source+"-1", source+"-1"); err != nil {
-			t.Fatal(err)
-		}
+	projects := func(f Filter) string {
+		t.Helper()
+		query, args := ix.projectsQuery(ctx, f)
+		return plan(query, args...)
 	}
-	ix.recount()
+	add := func(source string, n int) {
+		t.Helper()
+		for i := range n {
+			key := fmt.Sprintf("%s-%d", source, i)
+			if _, err := ix.rw.Exec(`INSERT INTO sessions (source, agent, key, stamp, id) VALUES (?, ?, ?, '', ?)`, source, strings.Split(source, "@")[0], key, key); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ix.recount()
+	}
+
+	// The index holds two stores, and the process reads both
+	add("claude", 30)
+	add("codex", 10)
 
 	if got := digest(Filter{Stores: every}, week); !strings.Contains(got, "COVERING INDEX turns_report") {
 		t.Errorf("a week's digest does not read the week from the index made for it:\n%s", got)
@@ -72,28 +88,72 @@ func TestAQueryReadsWhatItAsksForAndNotTheWholeIndex(t *testing.T) {
 	if got := list(Filter{Stores: every}); !strings.Contains(got, "sessions_updated") || strings.Contains(got, "TEMP B-TREE FOR ORDER BY") {
 		t.Errorf("the list of sessions is sorted instead of read in order:\n%s", got)
 	}
+	if got := projects(Filter{Stores: every, Since: week.Since}); !strings.Contains(got, "sessions_updated") {
+		t.Errorf("a week's projects do not read the week:\n%s", got)
+	}
 	// All time, the store term drives as it always did: a window that is everything is
 	// not narrowed by the index on the time
 	if got := usage(Filter{Stores: every}, Window{}); !strings.Contains(got, "sessions_parent") {
 		t.Errorf("all-time usage does not start from the stores:\n%s", got)
 	}
 
-	// A process that reads one of them — ASQ_ONLY=codex in an MCP server's environment,
-	// beside a server that indexes everything — reads that store's rows
+	// A process that reads the lesser of them — ASQ_ONLY=codex in an MCP server's
+	// environment, beside a server that indexes everything — reads that store's rows
 	only := Filter{Stores: []string{"codex"}}
 	for name, got := range map[string]string{"a week's digest": digest(only, week), "a week's usage": usage(only, week), "the list": list(only)} {
 		if !strings.Contains(got, "sessions_parent") {
-			t.Errorf("%s, for one store of two, does not start from that store:\n%s", name, got)
+			t.Errorf("%s, for the lesser store of two, does not start from that store:\n%s", name, got)
 		}
 	}
 
-	// A store this process has not heard of turns up — another process indexed it — and
-	// the store term is the narrowest thing again
-	if _, err := ix.rw.Exec(`INSERT INTO sessions (source, agent, key, stamp, id) VALUES ('pi@box2', 'pi', 'k', '', 'p-1')`); err != nil {
+	// A store this process does not read turns up — another process indexed it, once —
+	// and while it is the lesser part of the index the week is still read from the time
+	add("pi@box2", 5)
+	if got := digest(Filter{Stores: every}, week); !strings.Contains(got, "turns_report") {
+		t.Errorf("one small store this process does not read sent a week's digest through every session:\n%s", got)
+	}
+	// Once the stores this process reads are the lesser part, they drive
+	add("pi@box3", 40)
+	if got := digest(Filter{Stores: every}, week); strings.Contains(got, "turns_report") {
+		t.Errorf("the stores this process reads are the lesser part of the index, and the week is read for every store:\n%s", got)
+	}
+}
+
+// A sync that changes which stores the index holds is a change in what the plans should
+// be, at once and not within the minute the counts are kept.
+func TestASyncRecountsTheStores(t *testing.T) {
+	ix, err := Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	ix.recount()
-	if got := digest(Filter{Stores: every}, week); strings.Contains(got, "turns_report") {
-		t.Errorf("with a store in the index this process does not read, the week is read for every store:\n%s", got)
+	defer ix.Close()
+	ctx := context.Background()
+	codex := []string{"codex"}
+	if !ix.mostly(ctx, codex) {
+		t.Fatal("an empty index: any store is most of it")
 	}
+	if _, err := ix.Sync(ctx, []Store{{Name: "claude", Spec: sources.Spec{Name: "claude"}, Source: many{n: 3}}}, SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if ix.mostly(ctx, codex) {
+		t.Error("after a sync brought in another store, the counts of the empty index were still used")
+	}
+}
+
+// many is a store of n sessions of one message each.
+type many struct{ n int }
+
+func (many) Location() string { return "test" }
+func (many) Exists() bool     { return true }
+func (m many) Scan(context.Context) ([]sources.Ref, error) {
+	refs := make([]sources.Ref, m.n)
+	for i := range refs {
+		refs[i] = sources.Ref{Key: fmt.Sprint(i), Stamp: "1", ModTime: time.Now()}
+	}
+	return refs, nil
+}
+func (many) Read(_ context.Context, ref sources.Ref, w *transcript.Writer) error {
+	w.S.ID = "s" + ref.Key
+	w.Add(transcript.Message{Role: transcript.User, At: time.Now(), Blocks: []transcript.Block{{Type: transcript.Text, Text: "hello"}}})
+	return nil
 }

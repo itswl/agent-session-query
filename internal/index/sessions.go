@@ -409,13 +409,17 @@ type Project struct {
 	Sources   map[string]int `json:"sources"`
 }
 
+func (ix *Index) projectsQuery(ctx context.Context, f Filter) (string, []any) {
+	where, args := ix.widen(ctx, f, !f.Since.IsZero()).where()
+	return `SELECT s.cwd, s.source, count(*), sum(s.turns), max(s.updated_at) FROM sessions s WHERE ` + where + `
+GROUP BY s.cwd, s.source`, args
+}
+
 // Projects groups the sessions a filter selects by working directory, the most recently
 // used first.
 func (ix *Index) Projects(ctx context.Context, f Filter) ([]Project, error) {
-	where, args := f.where()
-	rows, err := ix.ro.QueryContext(ctx, `
-SELECT s.cwd, s.source, count(*), sum(s.turns), max(s.updated_at) FROM sessions s WHERE `+where+`
-GROUP BY s.cwd, s.source`, args...)
+	query, args := ix.projectsQuery(ctx, f)
+	rows, err := ix.ro.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

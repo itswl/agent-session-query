@@ -248,8 +248,10 @@ export function mount(main, route, ctx) {
     } catch (e) {
       // What is drawn stays, and says it is from earlier; the next change asks again
       if (isAbort(e)) return;
-      if (v.failed) list.replaceChildren(errorBox(e, () => load(true)));
-      else note.say(e, refresh);
+      if (v.failed) {
+        list.replaceChildren(errorBox(e, () => load(true)));
+        more.replaceChildren();
+      } else note.say(e, refresh);
     } finally {
       if (v.busy === c) v.busy = null;
     }
@@ -273,7 +275,7 @@ export function mount(main, route, ctx) {
     // A search is ranked, not dated, so what it found cannot be brought up to date row by
     // row: it comes back whole on Back, and is asked for afresh any other way
     if (was && (how === 'pop' || !searching())) {
-      Object.assign(v, was, { busy: null, rows: new Map(), renew: how !== 'pop' });
+      Object.assign(v, was, { busy: null, rows: new Map(), renew: how !== 'pop', failed: false });
       renderList();
       // Back returns to where the list was read; a link to it starts at its top
       scrollTo(0, how === 'pop' ? savedY() ?? 0 : 0);

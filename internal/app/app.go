@@ -276,7 +276,7 @@ func Resume(s *index.Session) string {
 	if !ok || spec.Resume == "" {
 		return ""
 	}
-	cmd := spec.Resume + " " + ShellArg(s.ID)
+	cmd := spec.Resume + " " + ShellArg(s.ID) // a spec's words are plain: see ResumeArgs
 	if isAbsolute(s.Cwd) {
 		cd := "cd "
 		if runtime.GOOS == "windows" {
@@ -285,6 +285,21 @@ func Resume(s *index.Session) string {
 		cmd = cd + ShellArg(s.Cwd) + " && " + cmd
 	}
 	return cmd
+}
+
+// ResumeArgs is what Resume says, as a program to run rather than a line for a shell:
+// the CLI and its arguments, and the directory the session was worked in when that is
+// known. None for a session no CLI reopens.
+func ResumeArgs(s *index.Session) (dir string, argv []string) {
+	if Resume(s) == "" {
+		return "", nil
+	}
+	spec, _ := catalog.Spec(s.Source)
+	argv = append(strings.Fields(spec.Resume), s.ID)
+	if isAbsolute(s.Cwd) {
+		dir = s.Cwd
+	}
+	return dir, argv
 }
 
 // isAbsolute: a plain absolute path, Unix or Windows.

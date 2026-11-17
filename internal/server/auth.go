@@ -214,9 +214,10 @@ func signed(key []byte, value string, now time.Time) bool {
 //     such a page. Node's fetch, which MCP clients use, sends neither.
 //   - What a proxy relays is charged apart from what reached the port directly. When
 //     the proxy says who is calling (Options.ProxyHeader), and is one to believe, each
-//     caller behind it has an allowance of its own, apart from the one the same address
-//     has when it calls directly; all of them together also draw on one larger allowance
-//     per proxy. A caller who can choose what the header says — a page that reaches the
+//     caller behind it has an allowance of its own — kept by the address the header
+//     names and the proxy that wrote it, so that naming an address through one proxy
+//     spends nothing of what it has through another, or directly — and all of them
+//     together also draw on one larger allowance per proxy. A caller who can choose what the header says — a page that reaches the
 //     proxy's port, a device on the network — would otherwise take a fresh allowance
 //     with every guess. A proxy on this machine is one proxy whichever loopback address
 //     it connects from: on Linux a process may connect from any of 127.0.0.0/8.
@@ -224,7 +225,12 @@ func signed(key []byte, value string, now time.Time) bool {
 //   - A caller that has shown the right token is known for a while (knownFor), and what
 //     others spend does not hold it back: neither its proxy's allowance nor a full
 //     table, only its own allowance. Callers guessing through a proxy can keep newcomers
-//     out for as long as they keep at it, and nobody who is already in.
+//     out for as long as they keep at it, and nobody who is already in — short of
+//     writing the header through the same proxy, naming them, and spending their own.
+//     A known caller is its address through that proxy: a device that can write the
+//     header and connects some other way is a proxy of its own, capped like any other.
+//     Who is known is kept in memory: after a restart everyone is a newcomer again
+//     until they next get through.
 //   - The table of callers is bounded. Past attemptsKept, the callers it does not know
 //     share one allowance of their kind. The callers on this machine are always known by
 //     name, and never share it.
@@ -395,11 +401,11 @@ func (s *Server) caller(r *http.Request) allowance {
 	}
 	if header != "" && (local || peer.IsPrivate() || peer.IsLinkLocalUnicast()) {
 		if said, ok := lastAddr(r.Header.Values(header)); ok {
-			proxy := "proxy " + network(peer)
+			via := network(peer)
 			if local {
-				proxy = "proxy local"
+				via = "local"
 			}
-			return allowance{key: "named " + network(said), kind: "named", proxy: proxy}
+			return allowance{key: "named " + network(said) + " via " + via, kind: "named", proxy: "proxy " + via}
 		}
 	}
 	if local {

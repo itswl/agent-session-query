@@ -77,12 +77,19 @@ func TestResolveAndResume(t *testing.T) {
 	if !strings.HasPrefix(s.Resume, "cd ") || !strings.HasSuffix(s.Resume, "/work/alpha && claude --resume "+fixture.Alpha) {
 		t.Errorf("resume = %q: it changes to the session's directory, then reopens it by id", s.Resume)
 	}
+	// The same, as a program to run: no shell in between
+	if dir, argv := app.ResumeArgs(&s); dir != "/work/alpha" || strings.Join(argv, " ") != "claude --resume "+fixture.Alpha {
+		t.Errorf("resume args = %q, %q", dir, argv)
+	}
 	if _, turn, _ := a.Resolve(ctx, "aaaa1111"); turn != -1 {
 		t.Errorf("a ref that names no turn = %d", turn)
 	}
 	agent, _, err := a.Resolve(ctx, "claude/"+fixture.Agent)
 	if err != nil || agent.Resume != "" {
 		t.Errorf("a subagent's transcript is not something a CLI reopens: %q, %v", agent.Resume, err)
+	}
+	if _, argv := app.ResumeArgs(&agent); argv != nil {
+		t.Errorf("resume args for a subagent = %q", argv)
 	}
 	above, err := a.Above(ctx, &agent)
 	if err != nil || len(above) != 1 || above[0].ID != fixture.Alpha || above[0].Title != "Fix flaky test" {

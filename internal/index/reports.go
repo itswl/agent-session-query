@@ -224,7 +224,7 @@ type FileTouch struct {
 // which sessions changed it, in which turn, and what was being asked there. With
 // changedOnly, the turns that merely read it are left out.
 func (ix *Index) Files(ctx context.Context, f Filter, w Window, path string, changedOnly bool, p Page) ([]FileTouch, int, error) {
-	where, args := reportFilter(f).where()
+	where, args := ix.widen(ctx, reportFilter(f), !w.Since.IsZero()).where()
 	when, whenArgs := w.where("x.at")
 	args = append(args, whenArgs...)
 	cond := where + ` AND ` + when + ` AND instr(lower(x.path), lower(?)) > 0`

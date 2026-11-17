@@ -87,7 +87,9 @@ HTML are documents; JSON is the record; JSONL is one tagged object per line (`se
 scripts, no requests.
 
 **`asq resume <ref>`** — prints the command that reopens the session in the CLI that wrote it,
-including the `cd` it needs (`cd /work/api && claude --resume …`). `--run` runs it.
+including the `cd` it needs (`cd /work/api && claude --resume …`). `--run` runs it: on macOS and
+Linux asq hands itself over to the agent, in the session's directory, so that the terminal and its
+signals are the agent's alone.
 
 ## Handing over
 

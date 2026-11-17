@@ -9,13 +9,14 @@ import (
 )
 
 // runShell runs a command line in the user's shell, the terminal handed over to it: a
-// resumed agent is interactive.
+// resumed agent is interactive. Where asq cannot hand itself over to the agent (see
+// resume), this is how it is run.
 //
 // For as long as it runs, asq goes on catching Ctrl+C and TERM, however many come. A
 // Ctrl+C at the terminal reaches the command too, which decides what it means — an
 // agent may take it to stop a turn — and it must not end asq beneath it: the shell would
 // take the terminal back from a program still using it. A TERM sent to asq alone is
-// passed on, so that stopping asq stops what it started.
+// passed on to the shell.
 func runShell(line string) error {
 	cmd := exec.Command("sh", "-c", line)
 	if runtime.GOOS == "windows" {

@@ -720,7 +720,8 @@ func cmdResume(ctx context.Context, args []string, io *streams) error {
 		fmt.Fprintln(io.out, s.Resume)
 		return nil
 	}
-	return runShell(s.Resume)
+	dir, argv := app.ResumeArgs(&s)
+	return resume(dir, argv, s.Resume)
 }
 
 func cmdDoctor(ctx context.Context, args []string, io *streams) error {

@@ -168,9 +168,11 @@ runs.
 whether its newest conversation reads whole. Listing alone proves little — a format that drifted
 lists fine and reads as empty — so it reads one, and then the next two, and lists what the three
 held that the adapter did not understand: records a CLI has started to write since the adapter
-was written. Those are a warning (see [Sources](sources.md#what-each-adapter-reads)). Exits 1 if
-a store that is there cannot be read. Its first line is the version of `asq` that read them, which
-is what a report of a store that will not read needs first.
+was written. Those are a warning (see [Sources](sources.md#what-each-adapter-reads)). Sessions
+whose CLI moved them, whole or in part, where `asq` does not read them (OpenClaw's cold storage)
+are counted, and are not taken for a format that drifted. Exits 1 if a store that is there cannot
+be read, or if doctor was stopped before it looked at every store. Its first line is the version
+of `asq` that read them, which is what a report of a store that will not read needs first.
 
 **`asq index`** — where the index is and what it holds. `asq index path` prints the file;
 `asq index rebuild` reads everything again; `asq index rm` deletes it (the next command rebuilds

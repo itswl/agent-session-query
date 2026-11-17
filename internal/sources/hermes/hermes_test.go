@@ -412,3 +412,24 @@ func TestAFigureOfTheWrongTypeDoesNotHideTheStore(t *testing.T) {
 		t.Errorf("b = %+v", b.Session)
 	}
 }
+
+// Whether a message is the summary compression left is read as whatever the column
+// holds: a word or a blob in one row is that row's flag unknown, not the session
+// unreadable. (Whether a row is live, Hermes itself decides in its query, and a row whose
+// flag is not 1 is not shown, by Hermes or here.)
+func TestAFlagOfTheWrongTypeDoesNotHideTheSession(t *testing.T) {
+	src, _ := home(t, schema,
+		`INSERT INTO sessions (id, source, started_at) VALUES ('f', 'tui', 1790000000)`,
+		msg("f", "user", "check the queue", 1790000001, ""),
+		`INSERT INTO messages (session_id, role, content, timestamp, active, _compressed_summary) VALUES ('f', 'assistant', 'The queue is drained.', 1790000002, 1, 'no')`,
+		`INSERT INTO messages (session_id, role, content, timestamp, active, _compressed_summary) VALUES ('f', 'user', 'and the dead letters?', 1790000003, 1, x'00')`,
+		`INSERT INTO messages (session_id, role, content, timestamp, active, _compressed_summary) VALUES ('f', 'assistant', 'What compression kept.', 1790000004, 1, '1')`,
+	)
+	s := sourcetest.One(t, src)
+	if s.Stats.Turns != 2 || s.Turn(t, 1).Answer != "The queue is drained." || s.Turn(t, 2).Ask != "and the dead letters?" {
+		t.Fatalf("turns = %d: answer %q, ask %q", s.Stats.Turns, s.Turn(t, 1).Answer, s.Turn(t, 2).Ask)
+	}
+	if got := sourcetest.Kinds(s.Turn(t, 2)); got != "prompt event" {
+		t.Errorf("a summary flagged '1' = %s, want the compaction event", got)
+	}
+}

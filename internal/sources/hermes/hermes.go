@@ -18,6 +18,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -177,6 +178,26 @@ FROM sessions s`)
 		return rows.Err()
 	})
 	return out, err
+}
+
+// flag reads a flag column scanned as whatever it held: a number as itself, text that is
+// one as the number, and anything else — NULL, a blob, a word — as missing.
+func flag(v any, missing int64) int64 {
+	switch t := v.(type) {
+	case []byte:
+		v = string(t)
+	}
+	if s, ok := v.(string); ok {
+		f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+		if err != nil {
+			return missing
+		}
+		v = f
+	}
+	if n, ok := kit.Num(v); ok && n >= math.MinInt64 && n < math.MaxInt64 {
+		return int64(n)
+	}
+	return missing
 }
 
 // number reads a figure of a column scanned as whatever it held: a number as itself, and
@@ -406,10 +427,12 @@ FROM messages WHERE session_id = ?`+shown(cols)+` ORDER BY rowid`, id)
 	for rows.Next() {
 		// The row's position is its rowid — the id column is an integer in current Hermes
 		// and was text before, and nothing forces it to be unique
-		var rid, active, summary sql.NullInt64
+		// The two flags are read as whatever the column holds: a value of another type in
+		// one row is that row's flag unknown, not the whole session unreadable
+		var rid sql.NullInt64
 		var role, content, think, calls, tool, callID, meta, kind, finish sql.NullString
-		var mid, ts any
-		if err := rows.Scan(&rid, &mid, &role, &content, &think, &calls, &tool, &callID, &active, &meta, &kind, &summary, &finish, &ts); err != nil {
+		var mid, ts, activeV, summaryV any
+		if err := rows.Scan(&rid, &mid, &role, &content, &think, &calls, &tool, &callID, &activeV, &meta, &kind, &summaryV, &finish, &ts); err != nil {
 			return nil, nil, err
 		}
 		// Rows the model reads but nobody typed, and the ones Hermes itself leaves out
@@ -432,7 +455,7 @@ FROM messages WHERE session_id = ?`+shown(cols)+` ORDER BY rowid`, id)
 		case "assistant":
 			m.Role = transcript.Assistant
 			m.Model, m.Stop = sessionModel, finish.String
-			if summary.Int64 != 0 {
+			if flag(summaryV, 0) != 0 {
 				// The summary compression put in the place of what it folded away
 				m.Role = transcript.System
 				m.Blocks = []transcript.Block{transcript.EventOf(model.EventCompaction, content.String)}
@@ -455,10 +478,7 @@ FROM messages WHERE session_id = ?`+shown(cols)+` ORDER BY rowid`, id)
 		if len(m.Blocks) == 0 {
 			continue
 		}
-		live := int64(1)
-		if active.Valid {
-			live = active.Int64
-		}
+		live := flag(activeV, 1)
 		// The identity Hermes collapses on: who said it, what, when, and which call
 		key := sha256.Sum256([]byte(strings.Join([]string{role.String, content.String, timeKey(ts), callID.String, calls.String, tool.String}, "\x00")))
 		if i, seen := at[key]; seen {

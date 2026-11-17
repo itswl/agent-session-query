@@ -118,8 +118,21 @@ with their token totals matching independent sums exactly. OpenClaw (2026.11) an
 Harness (0.2.2) were verified against sessions run for the purpose on their current releases,
 likewise to the token; both turned out to write things the earlier samples did not show.
 Gemini CLI, Grok CLI and Antigravity are covered by tests built from samples of each CLI's
-files, and have not been checked against a live store. If a CLI changes how it writes,
-`asq doctor` is where it shows: the store lists, and its newest conversation reads as empty.
+files, and have not been checked against a live store.
+
+If a CLI changes how it writes, nothing fails. An adapter passes over a record it does not know —
+a new row type, a renamed block — and the session reads as less than it holds: a turn short, a
+cost missing. So each adapter counts what it passes over without knowing what it is (what it
+skips on purpose is not counted), and `asq doctor` reads the three newest conversations of each
+store and lists what they held that was not understood, most frequent first:
+
+```text
+  ! not understood in the newest transcripts, and passed over: row:queue-operation ×4, block:server_tool_use ×1 — the CLI may have changed how it writes them; what is shown is what was understood
+```
+
+It is a warning, not a failure: what is shown is still right as far as it goes. A format that
+drifted further shows the same way it always did — the store lists, and its newest
+conversation reads as empty.
 
 Sessions a CLI has archived — Codex's and Grok's moved into `archived_sessions`, OpenCode's
 marked archived, the ones Hermes hides — are read like any other, marked `archived`, and left

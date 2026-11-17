@@ -154,8 +154,10 @@ runs.
 
 **`asq doctor`** — for each store: whether it was found, how many transcripts it lists, and
 whether its newest conversation reads whole. Listing alone proves little — a format that drifted
-lists fine and reads as empty — so it reads one. Exits 1 if a store that is there cannot be
-read.
+lists fine and reads as empty — so it reads one, and then the next two, and lists what the three
+held that the adapter did not understand: records a CLI has started to write since the adapter
+was written. Those are a warning (see [Sources](sources.md#what-each-adapter-reads)). Exits 1 if
+a store that is there cannot be read.
 
 **`asq index`** — where the index is and what it holds. `asq index path` prints the file;
 `asq index rebuild` reads everything again; `asq index rm` deletes it (the next command rebuilds

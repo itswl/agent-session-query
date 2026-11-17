@@ -515,16 +515,17 @@ type UsageReport struct {
 	ByProject []UsageRow `json:"byProject"`
 }
 
-// UsageSummary answers what was consumed. The windows roll — 24h, 3d, 7d, 30d, all —
-// because a calendar window reads differently depending on which day it is asked. The
-// breakdowns cover w; the days, the last thirty when w is unbounded.
+// UsageSummary answers what was consumed. The windows roll — 24h, 7d, 30d, all, the ones
+// every view of the page offers — because a calendar window reads differently depending
+// on which day it is asked. The breakdowns cover w; the days are the last thirty, or the
+// days of w when it ends before now.
 func (ix *Index) UsageSummary(ctx context.Context, f Filter, w Window) (UsageReport, error) {
 	var rep UsageReport
 	now := time.Now()
 	for _, win := range []struct {
 		name string
 		d    time.Duration
-	}{{"24h", 24 * time.Hour}, {"3d", 72 * time.Hour}, {"7d", 7 * 24 * time.Hour}, {"30d", 30 * 24 * time.Hour}, {"all", 0}} {
+	}{{"24h", 24 * time.Hour}, {"7d", 7 * 24 * time.Hour}, {"30d", 30 * 24 * time.Hour}, {"all", 0}} {
 		var bounds Window
 		if win.d > 0 {
 			bounds.Since = now.Add(-win.d)
@@ -547,9 +548,14 @@ func (ix *Index) UsageSummary(ctx context.Context, f Filter, w Window) (UsageRep
 	if rep.ByModel, err = ix.Usage(ctx, f, w, ByModel, 12); err != nil {
 		return rep, err
 	}
-	days := w
-	if days.Since.IsZero() {
-		days.Since = now.Add(-30 * 24 * time.Hour)
+	// A chart of days, the same whichever window the breakdowns cover — unless that window
+	// ended some time ago, and its own days are the ones asked about
+	days := Window{Since: now.Add(-30 * 24 * time.Hour)}
+	if !w.Until.IsZero() && w.Until.Before(now.Add(-time.Minute)) {
+		days = w
+		if days.Since.IsZero() {
+			days.Since = w.Until.Add(-30 * 24 * time.Hour)
+		}
 	}
 	if rep.ByDay, err = ix.Usage(ctx, f, days, ByDay, 0); err != nil {
 		return rep, err

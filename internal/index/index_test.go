@@ -294,8 +294,17 @@ func TestReports(t *testing.T) {
 		t.Error("an unknown grouping is an error, not a silent total")
 	}
 	rep, err := a.Index.UsageSummary(ctx, f, index.Window{})
-	if err != nil || len(rep.Windows) != 5 || rep.Windows[0].Key != "24h" || rep.Windows[0].Usage.Input != 175 || rep.Windows[4].Usage.Input != 285 || rep.Total.Usage != want {
-		t.Errorf("summary = %+v, %v", rep, err)
+	var keys []string
+	for _, w := range rep.Windows {
+		keys = append(keys, w.Key)
+	}
+	if err != nil || strings.Join(keys, " ") != "24h 7d 30d all" || rep.Windows[0].Usage.Input != 175 || rep.Windows[3].Usage.Input != 285 || rep.Total.Usage != want {
+		t.Errorf("summary = %+v, %v: the windows every view offers, %v", rep, err, keys)
+	}
+	// The breakdowns cover the window asked for; the days are the last thirty whichever it is
+	day1, err := a.Index.UsageSummary(ctx, f, index.Window{Since: h.Now.Add(-24 * time.Hour)})
+	if err != nil || len(day1.ByProject) != 1 || day1.ByProject[0].Key != "/work/alpha" || len(day1.ByDay) != len(rep.ByDay) || len(rep.ByDay) < 2 {
+		t.Errorf("the last 24 hours: by project %+v, %d days against %d for all time, %v", day1.ByProject, len(day1.ByDay), len(rep.ByDay), err)
 	}
 
 	fails, err := a.Index.Failures(ctx, f, index.Window{}, "", index.Page{})

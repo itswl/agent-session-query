@@ -116,7 +116,7 @@ nothing in it claims to be what is true now.
 
 ## Measuring
 
-**`asq usage`** — rolling windows (24h, 3d, 7d, 30d, all), then model, source and project
+**`asq usage`** — rolling windows (24h, 7d, 30d, all), then model, source and project
 breakdowns: calls, the prompt (`in`), the output, how much of the output was reasoning, total
 tokens and cache hit rate. `--by model|day|source|project|session` prints one breakdown,
 `--since` bounds it. Token counts are in [one shape](model.md#usage-one-shape) across CLIs. A

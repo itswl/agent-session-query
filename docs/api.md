@@ -83,7 +83,7 @@ match's `seq` is the step to open (`/items/{seq}`).
 
 | | |
 |---|---|
-| `GET /api/usage` | `{"total", "windows", "byModel", "byDay", "bySource", "byProject"}` — the rolling windows are 24h, 3d, 7d, 30d, all |
+| `GET /api/usage` | `{"total", "windows", "byModel", "byDay", "bySource", "byProject"}` — the rolling windows are 24h, 7d, 30d, all; `byDay` is the last 30 days (of `until`, when given); the rest cover `since` and `until` |
 | `GET /api/usage?by=model\|day\|source\|project\|session` | `{"by", "rows", "total"}` |
 | `GET /api/failures?tool=` | `{"failures", "total", "byTool"}` — the last 7 days unless `since` says otherwise. `tool` names one tool exactly (`Bash` is not `bash`), or with a trailing `*` by how its name begins; `byTool` counts every tool of the window whichever is asked for |
 | `GET /api/digest` | `{"projects", "total"}` — likewise |

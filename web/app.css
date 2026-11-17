@@ -87,7 +87,7 @@ time, .dots, .n, dd, td, .count { font-variant-numeric: tabular-nums; }
 .btn:disabled { opacity: .6; cursor: default; }
 .btn[aria-pressed="true"] { background: var(--raised); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.icon-btn { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; background: none; border: 0; border-radius: 6px; color: var(--muted); }
+.icon-btn { display: inline-grid; flex: none; place-items: center; width: 32px; height: 32px; padding: 0; background: none; border: 0; border-radius: 6px; color: var(--muted); }
 .icon-btn:hover { background: var(--sunk); color: var(--text); }
 .link-btn { padding: 4px 8px; background: none; border: 0; color: var(--accent); font-size: 13px; }
 .copy { position: relative; display: inline-grid; place-items: center; width: 26px; height: 26px; padding: 0; background: none; border: 0; border-radius: 5px; color: var(--faint); flex: none; }
@@ -159,8 +159,10 @@ kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width:
 .nav a { padding: 5px 10px; border-radius: 6px; color: var(--muted); font-weight: 500; white-space: nowrap; }
 .nav a:hover { background: var(--sunk); color: var(--text); text-decoration: none; }
 .nav a[aria-current="page"] { background: var(--raised); color: var(--text); }
+/* The search gives up room first, down to nothing of its own: the name, the views, the
+   status's words and the buttons keep theirs */
 .search {
-  flex: 1 1 280px; max-width: 520px; margin-left: auto; display: flex; align-items: center; gap: 8px;
+  flex: 1 1 280px; min-width: 0; max-width: 520px; margin-left: auto; display: flex; align-items: center; gap: 8px;
   height: 34px; padding: 0 8px 0 10px; background: var(--sunk); border: 1px solid transparent; border-radius: 8px; color: var(--muted);
 }
 .search:focus-within { background: var(--surface); border-color: var(--accent); color: var(--text); }
@@ -179,7 +181,7 @@ kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width:
 .help-foot:empty { display: none; }
 /* The status holds its place and its figures hold their width: nothing beside it moves
    when what it says changes. It pulses only for a catch-up, and slowly. */
-.sync { display: inline-flex; align-items: center; gap: 6px; min-width: 76px; font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sync { display: inline-flex; flex: none; align-items: center; gap: 6px; min-width: 76px; font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .sync .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); transition: background-color .4s; }
 .sync.busy .dot { background: var(--warn); animation: breathe 2.4s ease-in-out infinite; }
 .sync.off .dot { background: var(--faint); }

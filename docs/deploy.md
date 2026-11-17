@@ -175,14 +175,20 @@ launchctl bootout "gui/$(id -u)/io.github.itswl.asq"          # stop and unload
 - A LaunchAgent, not a LaunchDaemon: a daemon runs as root, whose home is not yours, and reads
   nobody's sessions.
 - If the plist holds a token (`EnvironmentVariables`), `chmod 600` it.
-- The Files view says how each file a turn changed stands now, which means reading the file. For
-  a project in a folder macOS guards — Documents, Desktop, Downloads, iCloud Drive, another disk
-  — the first read asks on the Mac's screen whether `asq` may, and the read waits for the answer.
-  The page does not: it shows those files without how they stand, says which folder is waiting,
-  and judges them once the question is answered. The question comes again after an upgrade, as
-  macOS knows the binary by its signature and each release is a new one. To answer it ahead of
-  time, allow `asq` in System Settings › Privacy & Security › Files and Folders (or Full Disk
-  Access) after installing.
+- The Files view says how each file a turn changed stands now, which means reading the file —
+  only when the view, `asq files` or the MCP tool asks, only the files the sessions named, in their
+  own directories, and never writing. For a project in a folder macOS guards — Documents,
+  Desktop, Downloads, iCloud Drive, another disk — the first read asks on the Mac's screen
+  whether `asq` may, and the read waits for the answer. The page does not: it shows those files
+  without how they stand, says which folder is waiting, and judges them once the question is
+  answered. Allowing that one folder is all it needs; Full Disk Access is far more, and not
+  needed. Not allowing it costs only how those files stand.
+- macOS keeps the answer across upgrades: the released binaries are all signed with one
+  certificate, as `io.github.itswl.asq` (`codesign -d -r- ~/.local/bin/asq` shows it), and it
+  remembers the answer against that and against the binary's path — so install upgrades where
+  the first one went. A binary built from source is not signed so, and is asked again after each
+  build. macOS asks about `asq` itself only when launchd runs it, as here; run from a terminal or
+  by an agent's app, it asks about that app, and remembers it for that app.
 
 **Windows — a scheduled task at logon**
 

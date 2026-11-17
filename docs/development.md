@@ -188,3 +188,38 @@ Tag `vX.Y.Z` with an annotated tag whose message is the release notes (`git tag 
 workflow tests on three platforms, cross-compiles six, publishes the container image from the
 same linux binaries, writes `SHA256SUMS`, attaches the installers, and creates the release. Both
 images are also built and run on every push, so a tag is not where a broken one is found. The version is set at link time: `-X github.com/itswl/agent-session-query/internal/app.Version=…`.
+
+### Signing for macOS
+
+macOS remembers whether a program may read a folder it guards — Documents, Desktop, Downloads,
+iCloud Drive, another disk — against the program's signature. The release signs both macOS
+binaries with one certificate and the identifier `io.github.itswl.asq`, so every release is the
+same program to it and the answer outlasts an upgrade. Go's own signature is a hash of the one
+build: a binary built from source is asked again after every build.
+
+The certificate is self-signed, made once, and must never change: a release signed with another
+— or not signed — has every macOS user asked again. It is set up in the repository's settings:
+
+| | |
+|---|---|
+| secret `MACOS_SIGNING_KEY` | the private key, PEM |
+| secret `MACOS_SIGNING_CERT` | the certificate, PEM |
+| variable `MACOS_SIGNING_SHA1` | the certificate's SHA-1, which says signing is set up |
+
+```sh
+/usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 10950 -keyout key.pem -out cert.pem \
+  -subj '/CN=asq' -addext 'basicConstraints=critical,CA:false' \
+  -addext 'keyUsage=critical,digitalSignature' -addext 'extendedKeyUsage=critical,codeSigning'
+/usr/bin/openssl x509 -outform DER -in cert.pem | shasum      # the variable
+gh secret set MACOS_SIGNING_KEY < key.pem
+gh secret set MACOS_SIGNING_CERT < cert.pem
+gh variable set MACOS_SIGNING_SHA1 --body <the SHA-1>
+```
+
+Keep `key.pem` and `cert.pem` somewhere safe offline: GitHub does not give a secret back. The
+build signs with [rcodesign](https://github.com/indygreg/apple-platform-rs), pinned by its
+digest, refuses a certificate other than the one the variable names, and fails when the variable
+is set and a secret is not. A job on macOS then checks both binaries with `codesign` against
+`identifier "io.github.itswl.asq" and certificate root = H"<SHA-1>"` before anything is
+published. Without the variable, nothing is signed. `codesign -d -r- $(command -v asq)` shows how
+an installed binary is signed.

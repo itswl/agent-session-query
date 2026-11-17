@@ -72,7 +72,7 @@ export function mount(main, route, ctx) {
     // read them. Their files are listed, and not judged, until it is answered
     const folders = [...new Set(v.items.filter((x) => x.waiting && !x.now).map((x) => x.waiting))];
     waiting.replaceChildren(...folders.map((dir) => h('div', { class: 'notice warn', role: 'status' }, icon('alert'),
-      h('p', null, 'How files in ', h('code', null, dir), ' stand now is not shown: asq is waiting to read that folder. On a Mac, macOS is asking on the Mac’s screen whether asq may — answer it there, or allow asq in System Settings › Privacy & Security › Files and Folders.'))));
+      h('p', null, 'How files in ', h('code', null, dir), ' stand now is not shown: asq is waiting to read that folder. On a Mac, macOS is asking on the Mac’s screen whether asq may — answer it there, or allow asq in System Settings › Privacy & Security › Files and Folders. asq reads only the files the sessions changed, to say how they stand, and never writes to them.'))));
     summary.textContent = `${f.plural(r.total, 'file')}${path ? ` whose path contains “${path}”` : ''} ${read ? 'read or changed' : 'changed'}${within(since)}.`;
     list.replaceChildren(...v.items.map(row));
     if (!v.items.length) list.replaceChildren(h('li', null, empty(path ? `No file whose path contains “${path}”${within(since)}.` : `No files ${read ? 'read or changed' : 'changed'}${within(since)}.`, longer(since))));

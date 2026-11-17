@@ -36,6 +36,12 @@ jobs:
   build:
     needs: test
     runs-on: ubuntu-latest
+    env:
+      # Signing the macOS binaries (docs/development.md, "Signing for macOS"). The variable
+      # names the certificate, and says signing is set up; a step's if: cannot read secrets,
+      # a job's env can.
+      MACOS_SIGNING_SHA1: ${{ vars.MACOS_SIGNING_SHA1 }}
+      MACOS_SIGN: ${{ secrets.MACOS_SIGNING_KEY != '' && secrets.MACOS_SIGNING_CERT != '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -59,9 +65,51 @@ jobs:
           CGO_ENABLED: '0'
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -ldflags "-s -w -X github.com/itswl/agent-session-query/internal/app.Version=${GITHUB_REF_NAME}" -o "asq${{ matrix.ext }}" ./cmd/asq
+
+      # macOS remembers whether asq may read a guarded folder (Documents, Desktop …) against
+      # the binary's signature. Go's own is a hash of the one build, so every release was a
+      # stranger to it and every macOS user was asked again; signed with one certificate
+      # and one identifier, every release is the same program to it. Set up and missing its
+      # key, a release would ask everyone again — twice, once more when the key is back.
+      - name: Signing is set up
+        if: matrix.goos == 'darwin' && env.MACOS_SIGNING_SHA1 != '' && env.MACOS_SIGN != 'true'
+        run: |
+          echo "::error::vars.MACOS_SIGNING_SHA1 is set, but the MACOS_SIGNING_KEY or MACOS_SIGNING_CERT secret is missing"
+          exit 1
+
+      - name: Sign for macOS
+        if: matrix.goos == 'darwin' && env.MACOS_SIGN == 'true'
+        env:
+          KEY: ${{ secrets.MACOS_SIGNING_KEY }}
+          CERT: ${{ secrets.MACOS_SIGNING_CERT }}
+        run: |
+          set -euo pipefail
+          umask 077
+          dir=$(mktemp -d)
+          trap 'rm -rf "$dir"' EXIT
+          # rcodesign signs Mach-O binaries from Linux (indygreg/apple-platform-rs); pinned
+          rc=apple-codesign-0.29.0-x86_64-unknown-linux-musl
+          curl -fsSL -o "$dir/rc.tar.gz" "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F0.29.0/$rc.tar.gz"
+          echo "dbe85cedd8ee4217b64e9a0e4c2aef92ab8bcaaa41f20bde99781ff02e600002  $dir/rc.tar.gz" | sha256sum -c -
+          tar -xzf "$dir/rc.tar.gz" -C "$dir"
+          printf '%s\n' "$KEY" > "$dir/key.pem"
+          printf '%s\n' "$CERT" > "$dir/cert.pem"
+          # The certificate the repository names, and no other
+          have=$(openssl x509 -outform DER -in "$dir/cert.pem" | sha1sum | cut -c1-40)
+          want=$(printf '%s' "$MACOS_SIGNING_SHA1" | tr 'A-F' 'a-f')
+          if [ -n "$want" ] && [ "$have" != "$want" ]; then
+            echo "::error::the signing certificate is $have, not the $want vars.MACOS_SIGNING_SHA1 names"
+            exit 1
+          fi
+          "$dir/$rc/rcodesign" sign --pem-file "$dir/key.pem" --pem-file "$dir/cert.pem" --binary-identifier io.github.itswl.asq asq
+
+      - name: Package
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
           binary="asq${{ matrix.ext }}"
-          go build -trimpath -ldflags "-s -w -X github.com/itswl/agent-session-query/internal/app.Version=${GITHUB_REF_NAME}" -o "$binary" ./cmd/asq
           # Unpacking a tar.gz on Windows is awkward, so it gets a zip
           if [ "$GOOS" = windows ]; then
             zip -q "asq-$GOOS-$GOARCH.zip" "$binary"
@@ -91,6 +139,46 @@ jobs:
           name: image-${{ matrix.goos }}-${{ matrix.goarch }}
           path: image/
           if-no-files-found: error
+
+  verify-macos:
+    # A release signed otherwise than the last one costs every macOS user a question: what
+    # was signed is checked with Apple's own tools against the certificate the repository
+    # names, before anything is published. Only once signing is set up.
+    needs: build
+    if: ${{ vars.MACOS_SIGNING_SHA1 != '' }}
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: asq-darwin-*
+          path: dist
+          merge-multiple: true
+
+      - name: Signature
+        env:
+          MACOS_SIGNING_SHA1: ${{ vars.MACOS_SIGNING_SHA1 }}
+        run: |
+          set -euo pipefail
+          sha1=$(printf '%s' "$MACOS_SIGNING_SHA1" | tr 'A-F' 'a-f')
+          want="designated => identifier \"io.github.itswl.asq\" and certificate root = H\"$sha1\""
+          for arch in arm64 amd64; do
+            mkdir -p "dist/$arch"
+            tar -xzf "dist/asq-darwin-$arch.tar.gz" -C "dist/$arch"
+            codesign -v --strict "dist/$arch/asq"
+            have=$(codesign -d -r- "dist/$arch/asq" 2>&1 | grep -E '^(# )?designated => ' || true)
+            if [ "$have" != "$want" ]; then
+              echo "::error::darwin/$arch is signed as: ${have:-nothing}"
+              exit 1
+            fi
+            # and it runs: the amd64 one where Rosetta is there to run it
+            if [ "$arch" = arm64 ]; then
+              "dist/$arch/asq" --version
+            elif arch -x86_64 /usr/bin/true 2>/dev/null; then
+              arch -x86_64 "dist/$arch/asq" --version
+            fi
+          done
 
   image:
     # The linux binaries the build matrix just produced, copied into an empty image by
@@ -146,12 +234,13 @@ jobs:
 
   publish:
     # Waits for the image so the notes can say whether there is one, but needs only the
-    # binaries: an image that failed to push must not cost the Release.
-    needs: [build, image]
+    # binaries: an image that failed to push must not cost the Release. Nor is anything
+    # published whose macOS signature failed its check (skipped: signing not set up).
+    needs: [build, image, verify-macos]
     runs-on: ubuntu-latest
     # A tag moved by force fires this workflow again; created is true only for a tag
     # that is new, which is the only case worth publishing.
-    if: ${{ !cancelled() && github.event.created && needs.build.result == 'success' }}
+    if: ${{ !cancelled() && github.event.created && needs.build.result == 'success' && (needs.verify-macos.result == 'success' || needs.verify-macos.result == 'skipped') }}
     permissions:
       contents: write
     steps:

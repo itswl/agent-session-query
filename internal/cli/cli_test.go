@@ -453,3 +453,51 @@ func TestTheVersionIsSaid(t *testing.T) {
 		}
 	}
 }
+
+// asq index rm takes what earlier versions of asq left beside the index, and only where
+// they left it: an index at a path of its own is the only one there is.
+func TestIndexRmTakesWhatEarlierVersionsLeft(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	t.Setenv("LocalAppData", filepath.Join(home, "local"))
+	t.Setenv("ASQ_INDEX", "")
+	dir := filepath.Dir(index.DefaultPath())
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	put := func(names ...string) {
+		for _, name := range names {
+			if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	gone := func(names ...string) {
+		t.Helper()
+		for _, name := range names {
+			if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+				t.Errorf("%s is still there", name)
+			}
+		}
+	}
+	current := filepath.Base(index.DefaultPath())
+	put("index-v1.db", "index-v1.db-wal", current)
+	var out, errs bytes.Buffer
+	if code := Run([]string{"index", "rm"}, strings.NewReader(""), &out, &errs); code != 0 {
+		t.Fatalf("asq index rm: exit %d\n%s", code, &errs)
+	}
+	gone("index-v1.db", "index-v1.db-wal", current)
+	if !strings.Contains(out.String(), "index-v1.db — an earlier asq's") {
+		t.Errorf("asq index rm said:\n%s", &out)
+	}
+
+	put("index-v1.db")
+	out.Reset()
+	if code := Run([]string{"index", "--index", filepath.Join(home, "own.db"), "rm"}, strings.NewReader(""), &out, &errs); code != 0 {
+		t.Fatalf("asq index --index … rm: exit %d\n%s", code, &errs)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "index-v1.db")); err != nil {
+		t.Errorf("an index at a path of its own took the earlier asq's with it: %v", err)
+	}
+}

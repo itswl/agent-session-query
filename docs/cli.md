@@ -174,8 +174,9 @@ is what a report of a store that will not read needs first.
 
 **`asq index`** — where the index is and what it holds. `asq index path` prints the file;
 `asq index rebuild` reads everything again; `asq index rm` deletes it (the next command rebuilds
-it). A new release that reads a CLI's files differently has that CLI's sessions read again by
-itself, at the first sync after the upgrade; a rebuild is not needed for that.
+it), and with it any index an earlier version of `asq` left beside it, which `asq index` names. A
+new release that reads a CLI's files differently has that CLI's sessions read again by itself, at
+the first sync after the upgrade; a rebuild is not needed for that.
 
 ## Environment
 

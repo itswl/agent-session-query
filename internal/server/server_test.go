@@ -984,8 +984,9 @@ func TestTheCallersKnownOutliveARestart(t *testing.T) {
 	}
 
 	// A directory that would not take the file: the caller is written down once it does,
-	// on a later request — not on every one meanwhile
-	if runtime.GOOS != "windows" {
+	// on a later request — not on every one meanwhile. Root writes into any directory, and
+	// Windows does not say no by mode
+	if runtime.GOOS != "windows" && os.Getuid() != 0 {
 		if err := os.Remove(path); err != nil {
 			t.Fatal(err)
 		}
@@ -993,6 +994,7 @@ func TestTheCallersKnownOutliveARestart(t *testing.T) {
 		if err := os.Chmod(dir, 0o500); err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { os.Chmod(dir, 0o700) })
 		if c := ask(s, "Bearer "+token, "203.0.113.100"); c != http.StatusOK {
 			t.Fatalf("a caller with the token, the directory read-only = %d", c)
 		}

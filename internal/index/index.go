@@ -134,6 +134,24 @@ func DefaultPath() string {
 	return filepath.Join(dir, "asq", "index-v"+strconv.Itoa(schemaVersion)+".db")
 }
 
+// Older lists the index files earlier versions of asq left beside this one's, at the
+// default path: each a whole copy of the history as that version read it, which this one
+// does not read. None when the index is at a path of its own (ASQ_INDEX).
+func Older() []string {
+	if os.Getenv("ASQ_INDEX") != "" {
+		return nil
+	}
+	dir := filepath.Dir(DefaultPath())
+	var old []string
+	for v := range schemaVersion {
+		path := filepath.Join(dir, "index-v"+strconv.Itoa(v)+".db")
+		if _, err := os.Stat(path); err == nil {
+			old = append(old, path)
+		}
+	}
+	return old
+}
+
 // Open opens the index at path, creating it when it is not there. The file holds
 // everything the transcripts do, so it is created readable by its owner alone.
 func Open(path string) (*Index, error) {

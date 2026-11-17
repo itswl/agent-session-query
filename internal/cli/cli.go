@@ -985,6 +985,15 @@ func cmdIndex(ctx context.Context, args []string, io *streams) error {
 			return err
 		}
 		fmt.Fprintln(io.out, "removed", path, "— it is rebuilt from the stores on the next run")
+		// and what earlier versions left beside it, when it is where they kept theirs
+		if cfg.IndexPath == "" {
+			for _, old := range index.Older() {
+				if err := index.Remove(old); err != nil {
+					return err
+				}
+				fmt.Fprintln(io.out, "removed", old, "— an earlier asq's")
+			}
+		}
 		return nil
 	case "rebuild":
 		if err := index.Remove(path); err != nil {
@@ -1013,6 +1022,11 @@ func cmdIndex(ctx context.Context, args []string, io *streams) error {
 	fmt.Fprintf(io.out, "%s\n  %s · %s · %s · %s · last brought up to date in %s\n", path,
 		sessions, plural(h.Totals.Agents, "subagent transcript"), plural(h.Totals.Turns, "turn"),
 		strconv.FormatFloat(float64(h.Totals.Bytes)/(1<<20), 'f', 1, 64)+" MB", txt.Duration(time.Duration(h.Sync.Took)*time.Millisecond))
+	if cfg.IndexPath == "" {
+		for _, old := range index.Older() {
+			fmt.Fprintf(io.out, "  · an earlier asq's index is still here, and not read: %s (asq index rm removes it)\n", old)
+		}
+	}
 	for _, s := range h.Stores {
 		if !s.Found {
 			fmt.Fprintf(io.out, "  · %-12s not found      %s\n", s.Source, s.Location)

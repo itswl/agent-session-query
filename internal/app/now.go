@@ -293,11 +293,11 @@ func (l *looker) leftBy(ctx context.Context, t *index.FileTouch) (whole *string,
 			if s == nil {
 				return nil, nil, false
 			}
-			it, _, err := l.a.Index.Item(ctx, s, items[i].Seq)
-			if err != nil || it.Tool == nil {
+			whole, ok, err := l.a.Index.Input(ctx, s, items[i].Seq)
+			if err != nil || !ok {
 				return nil, nil, false
 			}
-			input = it.Tool.Input
+			input = whole
 		}
 		return written(input, t.Path)
 	}
@@ -517,8 +517,10 @@ func (l *looker) later(ctx context.Context, f *index.Failure) *index.Later {
 
 // passed reports whether a call says its command succeeded: it ended well — an exit
 // status of 0 where one was recorded, an "ok" where none was — the line's status was the
-// command's own (nothing after it on the line could hide a failure: see mainCommand),
-// and what came back was its end, not word that it is still running in the background.
+// command's own, at every level the line was read through (nothing after it could hide a
+// failure: see resolve), and what came back was its end, not word that it runs on in the
+// background. A command that outlasted a CLI's wait — Codex's — has no status, and so
+// did not pass.
 func passed(t *model.Tool) bool {
 	switch {
 	case t.Exit != nil:
@@ -528,23 +530,19 @@ func passed(t *model.Tool) bool {
 	case t.Status != model.StatusOK:
 		return false
 	}
-	if _, decides := mainCommand(t.Command); !decides {
+	if _, decides := resolve(t.Command, 0); !decides {
 		return false
 	}
 	return !stillRunning(t)
 }
 
 // stillRunning reports whether a call's answer is that its command was started and runs
-// on: Claude Code's run_in_background, a Codex command that outlasted its wait.
+// on: Claude Code's run_in_background, which answers ok at once.
 func stillRunning(t *model.Tool) bool {
 	var in struct {
 		Background bool `json:"run_in_background"`
 	}
-	if json.Unmarshal(t.Input, &in) == nil && in.Background {
-		return true
-	}
-	head := t.Output[:min(len(t.Output), 512)]
-	return strings.Contains(head, "Process running with session ID") || strings.Contains(head, "running in background")
+	return json.Unmarshal(t.Input, &in) == nil && in.Background
 }
 
 func oneSpace(s string) string { return strings.Join(strings.Fields(s), " ") }

@@ -23,6 +23,7 @@ func TestFilesSayHowTheyStandNow(t *testing.T) {
 	}
 	edited, written, read, gone := filepath.Join(proj, "edited.go"), filepath.Join(proj, "written.txt"), filepath.Join(proj, "read.go"), filepath.Join(proj, "gone.go")
 	elsewhere := "/no/such/machine/dir/file.go"
+	big, bigText := filepath.Join(proj, "big.go"), strings.Repeat("x := 1 // a line of a large file\n", 400)
 
 	turnAt := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
 	at := func(s int) string { return turnAt.Add(time.Duration(s) * time.Second).Format(time.RFC3339Nano) }
@@ -67,6 +68,8 @@ func TestFilesSayHowTheyStandNow(t *testing.T) {
 	result(at(6), "t3", "package x", false)
 	use(at(7), "t4", "Write", map[string]any{"file_path": gone, "content": "soon gone"})
 	result(at(8), "t4", "ok", false)
+	use(at(9), "t5big", "Write", map[string]any{"file_path": big, "content": bigText}) // past what a turn keeps of an input
+	result(at(9), "t5big", "ok", false)
 	use(at(9), "t5", "Write", map[string]any{"file_path": elsewhere, "content": "another machine's"})
 	result(at(10), "t5", "ok", false)
 	use(at(10), "t5b", "Bash", map[string]any{"command": "go test ./pkg"}) // passed before the failure: not "later"
@@ -150,6 +153,7 @@ func TestFilesSayHowTheyStandNow(t *testing.T) {
 	put(edited, "package x\n\nfunc brandNew() int { return 42 }\n")
 	put(written, "the whole file\r\nas written\r\n") // on disk with the line endings the input had
 	put(read, "package x\n")
+	put(big, bigText)
 	put(mine, "theirs")
 	put(theirs, "theirs")
 
@@ -197,6 +201,7 @@ func TestFilesSayHowTheyStandNow(t *testing.T) {
 		edited:    "same/content", // the edit's text is there
 		written:   "same/content", // the whole file is what was written, line endings aside
 		read:      "same/time",    // a file only read is judged by its time
+		big:       "same/content", // its write read whole, past the preview the turn keeps
 		gone:      "deleted/",     // written by the turn, never put on disk here
 		elsewhere: "-",            // not on this machine: nothing to say
 		mine:      "-",            // a labelled store's session: another machine's, whatever is here
@@ -348,8 +353,26 @@ func TestCommandKey(t *testing.T) {
 		"python3 -m pytest tests/":             "python3 -m pytest",
 		"python3 script.py -c config":          "python3 script.py",
 		"/usr/bin/make check":                  "make check",
-		"":                                     "",
-		"   ":                                  "",
+		// Codex keeps its argv commands joined by spaces, the script unquoted
+		"bash -lc cd /p && go test ./...":   "go test",
+		"bash -lc go build ./...":           "go build",
+		"/bin/zsh -lc cd /x && make lint":   "make lint",
+		"bash -lc 'cd /p && go test ./...'": "go test",
+		"(cd web && npm test)":              "npm test",
+		"! go test ./...":                   "",
+		"if go test ./...; then echo; fi":   "",
+		"python3 - <<'EOF'\nprint(1)\nEOF":  "",
+		"python3 <<EOF\nprint(1)\nEOF":      "",
+		"cat > t.py <<'EOF'\nx\nEOF":        "",
+		"pnpm --filter web build":           "pnpm build",
+		"pnpm -C web build":                 "pnpm build",
+		"npm --prefix web run build":        "npm run build",
+		"make -C web build":                 "make build",
+		"git --work-tree /x status":         "git status",
+		"uv run --with x pytest":            "uv run pytest",
+		"# run the tests\ngo test ./...":    "go test",
+		"":                                  "",
+		"   ":                               "",
 	} {
 		if got := commandKey(in); got != want {
 			t.Errorf("commandKey(%q) = %q, want %q", in, got, want)
@@ -376,9 +399,35 @@ func TestTheLinesStatusIsTheCommands(t *testing.T) {
 		`echo "a; b" && make`:                       true, // a quoted ";" is no operator
 		`go test -run 'A|B' ./...`:                  true,
 		"go test $(go list ./... | grep -v vendor)": true,
+		// Through the shells and wrappers a line is read through
+		"bash -lc 'go test ./...'":                        true,
+		"timeout 300 bash -c 'go test ./... 2>&1 | tail'": false,
+		"bash -lc go test ./... | tail -5":                false,
+		"bash -lc 'go test ./...' | tail -5":              false,
+		"(cd web && npm test)":                            true,
+		"(cd web && npm test) || true":                    false,
+		"(cd web && npm test) &":                          false,
+		// What only ends the line hides nothing
+		"go test ./...\n":                true,
+		"go test ./... ;":                true,
+		"go test ./... &&\necho ok":      true,
+		"go test ./... # note; more":     true,
+		"# run the tests\ngo test ./...": true,
 	} {
-		if _, got := mainCommand(in); got != want {
-			t.Errorf("mainCommand(%q) decides = %v, want %v", in, got, want)
+		if _, got := resolve(in, 0); got != want {
+			t.Errorf("resolve(%q) decides = %v, want %v", in, got, want)
 		}
 	}
+}
+
+// No line, however it is made, stops the reading of a command: it is a transcript's word.
+func FuzzCommandKey(f *testing.F) {
+	for _, seed := range []string{"go test ./...", "bash -lc cd /p && go test ./... | tail", "(cd x && make) || true", `cd "/a b" && npm run build`,
+		"python3 - <<'EOF'\nx\nEOF", "echo $(date; ls) `x|y` 2>&1 &", "sudo -u a timeout 5 env A=1 nice -n 2 bash -c 'make'", "((", "'", `"\`, "\\"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, line string) {
+		commandKey(line)
+		resolve(line, 0)
+	})
 }

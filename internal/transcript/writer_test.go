@@ -287,3 +287,22 @@ func TestCallFactsReadsPatches(t *testing.T) {
 		t.Errorf("command = %q", cmd)
 	}
 }
+
+// Passing over a record costs a map lookup, however many there are of it: a store that
+// drifted holds thousands.
+func BenchmarkUnread(b *testing.B) {
+	w := New(&Collector{})
+	b.ReportAllocs()
+	for i := 0; b.Loop(); i++ {
+		w.Unread("row:queue-operation")
+		w.Unread("block:server_tool_use")
+	}
+}
+
+func TestUnreadIsCheapOnceSeen(t *testing.T) {
+	w := New(&Collector{})
+	w.Unread("row:x")
+	if allocs := testing.AllocsPerRun(100, func() { w.Unread("row:x") }); allocs > 0 {
+		t.Errorf("%v allocations for a kind already seen", allocs)
+	}
+}

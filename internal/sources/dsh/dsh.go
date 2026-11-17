@@ -498,18 +498,20 @@ func resultText(raw json.RawMessage, unread func(kind string)) string {
 // read by the one rule for a token count (kit.Count): a figure below zero, or past what one
 // response could use, is no count and is read as none.
 func usageOf(raw map[string]any) (u model.Usage) {
+	// Two keys that mean one counter — input_tokens and prompt_tokens — are read as the
+	// larger, so that a row reads the same however its map is walked
 	for key, v := range raw {
 		switch strings.ReplaceAll(strings.ToLower(key), "_", "") {
 		case "inputtokens", "input", "prompttokens":
-			u.Input = kit.Count(v)
+			u.Input = max(u.Input, kit.Count(v))
 		case "outputtokens", "output", "completiontokens":
-			u.Output = kit.Count(v)
+			u.Output = max(u.Output, kit.Count(v))
 		case "cachereadtokens", "cacheread", "cachereadinputtokens":
-			u.CacheRead = kit.Count(v)
+			u.CacheRead = max(u.CacheRead, kit.Count(v))
 		case "cachewritetokens", "cachewrite", "cachecreationinputtokens":
-			u.CacheWrite = kit.Count(v)
+			u.CacheWrite = max(u.CacheWrite, kit.Count(v))
 		case "reasoningtokens", "reasoning":
-			u.Reasoning = kit.Count(v)
+			u.Reasoning = max(u.Reasoning, kit.Count(v))
 		}
 	}
 	return u

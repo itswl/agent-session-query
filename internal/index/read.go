@@ -152,6 +152,25 @@ func (ix *Index) restore(it *model.Item, part string, data []byte) {
 	}
 }
 
+// Input reads a tool call's input whole, where the turn keeps a preview of it (its
+// InBytes is set): only that, not the turn it is in. ok is false when the index holds no
+// more of it than the preview.
+func (ix *Index) Input(ctx context.Context, s *Session, seq int) (input json.RawMessage, ok bool, err error) {
+	var data []byte
+	err = ix.ro.QueryRowContext(ctx, `SELECT data FROM bodies WHERE sid = ? AND seq = ? AND part = 'input'`, s.sid, seq).Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	raw, err := ix.dec.DecodeAll(data, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	return raw, true, nil
+}
+
 // ErrNoItem says a session holds no item at that position.
 var ErrNoItem = errors.New("no such item")
 

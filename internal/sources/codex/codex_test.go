@@ -698,3 +698,17 @@ func TestDurationsThatAreNotDurations(t *testing.T) {
 		}
 	}
 }
+
+// A command that outlasted the wait answers with its output so far and a session to poll:
+// it has not ended, so it has no status — and nothing reading the record takes it for one
+// that succeeded. One that ended says how.
+func TestACommandStillRunningHasNoStatus(t *testing.T) {
+	text, o := stripHeader("Chunk ID: b2\nWall time: 10.0 seconds\nProcess running with session ID 7\nOriginal token count: 3\nOutput:\n=== RUN TestX\n")
+	if text != "=== RUN TestX\n" || o.Status != "" || o.Exit != nil {
+		t.Errorf("still running: %q, %+v", text, o)
+	}
+	_, o = stripHeader("Chunk ID: b3\nWall time: 1.0 seconds\nProcess exited with code 0\nOriginal token count: 3\nOutput:\nok\n")
+	if o.Status != model.StatusOK || o.Exit == nil || *o.Exit != 0 {
+		t.Errorf("ended: %+v", o)
+	}
+}

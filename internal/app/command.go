@@ -2,11 +2,13 @@ package app
 
 import (
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 )
 
 // What a command line runs, read the way a shell would read it — closely enough to tell
-// which program a line is about, and whether its exit status is the line's.
+// which program a line is about, and whether its exit status is that program's.
 
 // segment is one simple command of a line, and the operator that follows it: "&&",
 // "||", ";", "|", "&", or "" at the end.
@@ -16,9 +18,12 @@ type segment struct {
 }
 
 // parseLine splits a command line into simple commands. Quotes and backslashes are
-// honoured, a newline separates commands as ";" does, and a word is taken as written,
-// quotes removed. What a shell does beyond that — expansions, subshells, here-documents
-// — is not needed to tell which program runs, and is not done.
+// honoured; a newline separates commands as ";" does; a "#" that begins a word begins a
+// comment; the parentheses of a
+// subshell group what they hold and are otherwise passed over, as are { and }; and a
+// command substituted — $(…), `…` — is part of the word it is in. A word is taken as
+// written, quotes removed. What a shell does beyond that — expansions, here-documents'
+// bodies — is not needed to tell which program runs, and is not done.
 func parseLine(line string) []segment {
 	var (
 		out   []segment
@@ -28,15 +33,19 @@ func parseLine(line string) []segment {
 	)
 	endWord := func() {
 		if in {
-			words = append(words, word.String())
+			if w := word.String(); w != "{" && w != "}" {
+				words = append(words, w)
+			}
 			word.Reset()
 			in = false
 		}
 	}
 	endSegment := func(op string) {
 		endWord()
-		if len(words) > 0 || op != "" {
+		if len(words) > 0 {
 			out = append(out, segment{words: words, then: op})
+		} else if op == "&" && len(out) > 0 {
+			out[len(out)-1].then = "&" // "( … ) &": the group runs in the background
 		}
 		words = nil
 	}
@@ -88,10 +97,16 @@ func parseLine(line string) []segment {
 			word.WriteString(line[i : j+1])
 			in = true
 			i = j
+		case c == '#' && !in:
+			for i+1 < len(line) && line[i+1] != '\n' {
+				i++ // a comment, to the end of the line
+			}
+		case c == '(' && !in, c == ')':
+			endWord() // a subshell's bounds: what is inside is read as it is
 		case c == ' ' || c == '\t' || c == '\r':
 			endWord()
 		case c == '\n' || c == ';':
-			endSegment(";")
+			endSegment(";") // a segment of no words is none: a newline after "&&" goes on with the list
 		case c == '&' && i > 0 && (line[i-1] == '>' || line[i-1] == '<'):
 			word.WriteByte(c) // 2>&1 is a redirection
 			in = true
@@ -114,25 +129,29 @@ func parseLine(line string) []segment {
 		}
 	}
 	endSegment("")
+	if n := len(out); n > 0 && out[n-1].then == ";" {
+		out[n-1].then = "" // a ";" with nothing after it ends the line and hides nothing
+	}
 	return out
 }
 
 // mainCommand is the simple command a line is about, past what only prepares for it — a
 // cd, a source of an environment, an export, a set — and whether its exit status is the
 // line's: whether nothing after it can hide a failure (a pipe without pipefail, a ";",
-// an "||", running it in the background).
+// an "||", running it in the background). A line that begins with a shell's own syntax —
+// if, for, while, case, a function, a "!" — is about no one command.
 func mainCommand(line string) (words []string, decides bool) {
 	segs := parseLine(line)
 	pipefail := false
 	for i, s := range segs {
-		if len(s.words) == 0 {
-			continue
-		}
 		if preparing(s.words) && (s.then == "&&" || s.then == ";") {
 			if s.words[0] == "set" && strings.Contains(strings.Join(s.words, " "), "pipefail") {
 				pipefail = true
 			}
 			continue
+		}
+		if reserved[s.words[0]] {
+			return nil, false
 		}
 		// Its own status is the line's when what follows it runs only if it succeeded:
 		// an "&&", and after that pipes and more "&&"s, which it guards. A pipe straight
@@ -148,6 +167,10 @@ func mainCommand(line string) (words []string, decides bool) {
 	}
 	return nil, false
 }
+
+var reserved = map[string]bool{"if": true, "then": true, "elif": true, "else": true, "fi": true, "for": true,
+	"while": true, "until": true, "do": true, "done": true, "case": true, "esac": true, "function": true,
+	"select": true, "!": true, "[[": true}
 
 // preparing reports whether a simple command only sets the scene for the next.
 func preparing(words []string) bool {
@@ -176,67 +199,98 @@ func assignment(w string) bool {
 	return true
 }
 
+// shellArgv is a line that runs a shell's -c on a script given as words of its own rather
+// than as one quoted word: how Codex's argv commands, ["bash", "-lc", "cd /p && make"],
+// are kept, joined by spaces. The script is all the rest of the line.
+var shellArgv = regexp.MustCompile(`^\s*(?:\S*/)?(?:bash|sh|zsh|dash|ksh)\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*c[A-Za-z]*\s+([^\s'"].*)$`)
+
+// resolve is the simple command a line runs, read through everything that only runs
+// another — the programs that wrap one (sudo, env, time, timeout, nice, nohup) and a
+// shell's -c, whose script is read in turn — and whether the line's exit status is that
+// command's, at every level it was read through.
+func resolve(line string, depth int) (words []string, decides bool) {
+	if depth > 4 {
+		return nil, false
+	}
+	if m := shellArgv.FindStringSubmatch(line); m != nil {
+		return resolve(m[1], depth+1)
+	}
+	words, decides = mainCommand(line)
+	for {
+		for len(words) > 0 && assignment(words[0]) {
+			words = words[1:]
+		}
+		if len(words) == 0 {
+			return nil, false
+		}
+		prog, args := filepath.Base(words[0]), words[1:]
+		switch prog {
+		case "sudo", "doas":
+			words = skipOptions(args, "ugCDhprtT")
+		case "env":
+			words = skipOptions(args, "uSCP")
+		case "time", "nohup", "command", "exec", "builtin", "caffeinate", "stdbuf":
+			words = skipOptions(args, "")
+		case "nice", "ionice":
+			words = skipOptions(args, "nc")
+		case "timeout", "gtimeout":
+			words = skipOptions(args, "sk", "--signal", "--kill-after")
+			if len(words) > 0 {
+				words = words[1:] // the duration
+			}
+		case "bash", "sh", "zsh", "dash", "ksh":
+			for i, a := range args {
+				if !strings.HasPrefix(a, "-") || strings.HasPrefix(a, "--") {
+					break
+				}
+				if strings.Contains(a, "c") {
+					if i+1 >= len(args) {
+						return nil, false
+					}
+					inner, ok := resolve(args[i+1], depth+1)
+					return inner, decides && ok
+				}
+			}
+			return words, decides
+		default:
+			return words, decides
+		}
+	}
+}
+
 // commandKey is what a command line asks of which program: the program and its first
 // argument when that is a word and not a flag — "go test", "git push", "make",
-// "./run.sh" — past what prepares for it, the variables set in front of it, and the
-// programs that only run another (sudo, env, time, timeout, nice, nohup). A shell's -c
-// is the script it runs; a runner's run is what it runs ("npm run build", "uv run
-// pytest", "npx tsc"). Code given inline (python -c, node -e) is no command that can be
-// recognised again, and has no key; nor has a line with none.
+// "./run.sh" — of the command the line resolves to (see resolve), past the options that
+// come before a subcommand. A runner's run is what it runs ("npm run build", "uv run
+// pytest", "npx tsc"). Code given inline — python -c, node -e, a script fed in by a
+// here-document — is no command that can be recognised again, and has no key; nor has a
+// line with none.
 func commandKey(line string) string {
-	words, _ := mainCommand(line)
+	words, _ := resolve(line, 0)
 	return keyOf(words, 0)
 }
 
 func keyOf(words []string, depth int) string {
-	if depth > 3 {
-		return ""
-	}
-	for len(words) > 0 && assignment(words[0]) {
-		words = words[1:]
-	}
-	if len(words) == 0 {
+	if depth > 3 || len(words) == 0 {
 		return ""
 	}
 	prog := words[0]
 	if strings.ContainsAny(prog, "$`") {
 		return "" // a program named by what an expansion yields is not known here
 	}
+	for _, w := range words[1:] {
+		if strings.HasPrefix(w, "<<") {
+			return "" // what it reads is a here-document: inline
+		}
+	}
 	if filepath.IsAbs(prog) {
 		prog = filepath.Base(prog) // /usr/bin/make is make
 	}
 	args := words[1:]
 	switch prog {
-	case "sudo", "doas":
-		return keyOf(skipOptions(args, "ugCDhprtT"), depth+1)
-	case "env":
-		return keyOf(skipOptions(args, "uSCP"), depth+1)
-	case "time", "nohup", "command", "exec", "builtin", "caffeinate", "stdbuf":
-		return keyOf(skipOptions(args, ""), depth+1)
-	case "nice", "ionice":
-		return keyOf(skipOptions(args, "nc"), depth+1)
-	case "timeout", "gtimeout":
-		rest := skipOptions(args, "sk")
-		if len(rest) > 0 {
-			rest = rest[1:] // the duration
-		}
-		return keyOf(rest, depth+1)
-	case "bash", "sh", "zsh", "dash", "ksh", "fish":
-		for i, a := range args {
-			if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a, "c") {
-				if i+1 < len(args) {
-					inner, _ := mainCommand(args[i+1])
-					return keyOf(inner, depth+1)
-				}
-				return ""
-			}
-			if !strings.HasPrefix(a, "-") {
-				break
-			}
-		}
 	case "python", "python3", "node", "deno", "bun", "ruby", "perl", "php":
 		for _, a := range args {
-			if a == "-c" || a == "-e" || a == "--eval" || a == "-p" || a == "--print" || a == "eval" {
+			if a == "-c" || a == "-e" || a == "--eval" || a == "-p" || a == "--print" || a == "eval" || a == "-" {
 				return "" // inline code: the next run is other code
 			}
 			if a == "-m" || !strings.HasPrefix(a, "-") {
@@ -247,20 +301,26 @@ func keyOf(words []string, depth int) string {
 			return "bun run " + args[1]
 		}
 	case "git":
-		args = skipOptions(args, "Cc") // git -C dir push is git push
+		args = skipOptions(args, "Cc", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env")
+	case "make", "gmake":
+		args = skipOptions(args, "CfIjlWoe", "--directory", "--file", "--makefile", "--jobs")
+	case "cargo":
+		args = skipOptions(args, "Z", "--manifest-path", "--config", "--color")
 	case "npx", "bunx", "pnpx":
-		if inner := keyOf(skipOptions(args, "p"), depth+1); inner != "" {
+		if inner := keyOf(skipOptions(args, "pc", "--package", "--call"), depth+1); inner != "" {
 			return prog + " " + inner
 		}
 		return ""
 	case "uv", "poetry", "pipenv", "pdm", "rye", "hatch":
+		args = skipOptions(args, "", "--directory", "--project", "--config-file")
 		if len(args) > 0 && args[0] == "run" {
-			if inner := keyOf(skipOptions(args[1:], ""), depth+1); inner != "" {
+			if inner := keyOf(skipOptions(args[1:], "p", "--with", "--python", "--project", "--directory", "--group", "--extra", "--env-file", "--package"), depth+1); inner != "" {
 				return prog + " run " + inner
 			}
 			return ""
 		}
 	case "npm", "pnpm", "yarn":
+		args = skipOptions(args, "CwF", "--prefix", "--dir", "--filter", "--workspace", "--cwd")
 		if len(args) > 1 && (args[0] == "run" || args[0] == "run-script" || args[0] == "exec" || args[0] == "dlx") && !strings.HasPrefix(args[1], "-") {
 			return prog + " " + args[0] + " " + args[1]
 		}
@@ -274,16 +334,18 @@ func keyOf(words []string, depth int) string {
 	return prog
 }
 
-// skipOptions passes over a program's options: "-x", "--long", "--long=value", and for
-// the single letters in withValue, the word after them too.
-func skipOptions(args []string, withValue string) []string {
+// skipOptions passes over a program's options: "-x", "--long", "--long=value", and the
+// word after an option that takes one — the single letters in withValue, and the long
+// options listed after it.
+func skipOptions(args []string, withValue string, long ...string) []string {
 	for len(args) > 0 && strings.HasPrefix(args[0], "-") && args[0] != "-" {
 		a := args[0]
 		args = args[1:]
 		if a == "--" {
 			break
 		}
-		if len(a) == 2 && strings.IndexByte(withValue, a[1]) >= 0 && len(args) > 0 {
+		takes := len(a) == 2 && strings.IndexByte(withValue, a[1]) >= 0 || slices.Contains(long, a)
+		if takes && len(args) > 0 {
 			args = args[1:]
 		}
 	}

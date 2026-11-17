@@ -124,7 +124,8 @@ If a CLI changes how it writes, nothing fails. An adapter passes over a record i
 a new row type, a renamed block — and the session reads as less than it holds: a turn short, a
 cost missing. So each adapter counts what it passes over without knowing what it is (what it
 skips on purpose is not counted), and `asq doctor` reads up to three of the newest
-conversations of each store and lists what they held that was not understood, most frequent
+conversations of each store — and any newer session that reads as empty, which is how a format
+that drifted whole shows — and lists what they held that was not understood, most frequent
 first:
 
 ```text

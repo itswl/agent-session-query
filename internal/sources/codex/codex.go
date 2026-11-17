@@ -900,8 +900,11 @@ func stripHeader(text string) (string, transcript.Outcome) {
 					outcome.Status = model.StatusError
 				}
 			}
-		case strings.HasPrefix(line, "Chunk ID:"), strings.HasPrefix(line, "Original token count:"),
-			strings.HasPrefix(line, "Process running with session ID"):
+		case strings.HasPrefix(line, "Process running with session ID"):
+			// The command outlasted the wait and runs on: it has not ended, so how it ended
+			// is not recorded — not "ok", which would say it succeeded
+			outcome.Status = ""
+		case strings.HasPrefix(line, "Chunk ID:"), strings.HasPrefix(line, "Original token count:"):
 			// known header lines that carry nothing worth keeping
 		default:
 			return text, transcript.Outcome{Status: model.StatusOK}

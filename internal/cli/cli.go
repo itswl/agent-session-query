@@ -806,13 +806,14 @@ func deepRead(ctx context.Context, store index.Store) (sessions int, newest stri
 	// gateway that starts a session for every scheduled run, most of which say nothing —
 	// so the look goes on, newest first, for as long as a person would wait for it.
 	//
-	// What was not understood is what the conversations read held; an empty session's is
-	// told only when every session read was empty, where it may be why. Once one
-	// conversation is found, the next two are looked for among the next doctorLook
-	// transcripts and no further.
+	// What was not understood is what the conversations read held, and the empty sessions
+	// newer than the first of them: a session that reads as empty because none of its
+	// records were understood is how a format that drifted shows. An empty session older
+	// than a conversation found is one of the many a gateway leaves, and is not counted.
+	// Once one conversation is found, the next two are looked for among the next
+	// doctorLook transcripts and no further.
 	deadline := time.Now().Add(5 * time.Second)
 	var firstErr error
-	var empty map[string]int
 	tried, read, past := 0, 0, 0
 	for _, ref := range refs {
 		if ctx.Err() != nil || (tried >= 5 && time.Now().After(deadline)) || read >= doctorReads || past >= doctorLook {
@@ -829,28 +830,28 @@ func deepRead(ctx context.Context, store index.Store) (sessions int, newest stri
 			}
 			continue
 		}
-		into := &empty
+		if got.Stats.Items > 0 || read == 0 {
+			for kind, n := range got.Unread {
+				if unread == nil {
+					unread = map[string]int{}
+				}
+				unread[kind] += n
+			}
+		}
 		if got.Stats.Items > 0 {
-			into = &unread
 			if read == 0 {
 				newest, turns, items = got.Session.ID, got.Stats.Turns, got.Stats.Items
 			}
 			read++
-		}
-		for kind, n := range got.Unread {
-			if *into == nil {
-				*into = map[string]int{}
-			}
-			(*into)[kind] += n
 		}
 	}
 	if read > 0 {
 		return len(refs), newest, turns, items, unread, nil
 	}
 	if firstErr != nil {
-		return len(refs), "", 0, 0, empty, firstErr
+		return len(refs), "", 0, 0, unread, firstErr
 	}
-	return len(refs), "", 0, 0, empty, fmt.Errorf("the %d newest sessions all read as empty: %s may have changed how it writes them", tried, store.Name)
+	return len(refs), "", 0, 0, unread, fmt.Errorf("the %d newest sessions all read as empty: %s may have changed how it writes them", tried, store.Name)
 }
 
 // doctorReads is how many of a store's newest conversations doctor reads for what they

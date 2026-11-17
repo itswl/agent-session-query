@@ -46,7 +46,8 @@ type Writer struct {
 	firstAsk  string
 	anyPrompt string // the first user text of any kind, the title of last resort
 
-	unread map[string]int // what the adapter passed over without knowing what it was
+	unread map[string]int    // what the adapter passed over without knowing what it was
+	kinds  map[string]string // a kind as the adapter named it → as it is counted
 }
 
 // unreadKinds bounds how many different kinds of unread record a transcript is told
@@ -64,9 +65,21 @@ const unreadKinds = 32
 // skips on purpose, knowing what it is, is not unread: it has a case of its own.
 func (w *Writer) Unread(kind string) {
 	// A kind is made from what the transcript calls the record, and is printed: it is held
-	// to one short line of text, with nothing in it a terminal would act on
-	if kind = txt.OneLine(kind, 80); kind == "" {
-		kind = "(blank)"
+	// to one short line of text, with nothing in it a terminal would act on. A store that
+	// drifted passes over the same few kinds thousands of times, so each is cleaned once
+	raw := kind
+	if clean, ok := w.kinds[raw]; ok {
+		kind = clean
+	} else {
+		if kind = txt.OneLine(kind, 80); kind == "" {
+			kind = "(blank)"
+		}
+		if w.kinds == nil {
+			w.kinds = map[string]string{}
+		}
+		if len(w.kinds) < 4*unreadKinds {
+			w.kinds[raw] = kind
+		}
 	}
 	if w.unread == nil {
 		w.unread = map[string]int{}

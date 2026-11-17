@@ -637,3 +637,13 @@ func TestARepeatIsCountedOnceEvenWhenTheFirstCopyAddedNothing(t *testing.T) {
 		t.Errorf("answer %q, usage %+v in %d calls; want \"seen it\", 4 in and 2 out in 1", turn.Answer, s.Stats.Usage, s.Stats.Calls)
 	}
 }
+
+// Keys that mean one counter are read the same way however the map is walked.
+func TestUsageOfKeysThatMeanOneCounter(t *testing.T) {
+	raw := map[string]any{"input_tokens": 5.0, "prompt_tokens": 9.0, "output_tokens": 2.0, "completion_tokens": 1.0}
+	for range 100 {
+		if u := usageOf(raw); u.Input != 9 || u.Output != 2 {
+			t.Fatalf("usage = %+v", u)
+		}
+	}
+}

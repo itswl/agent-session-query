@@ -61,6 +61,17 @@ func TestDoctorReadsConversations(t *testing.T) {
 		t.Errorf("%d sessions read past the conversation found; doctorLook is %d", read-1, doctorLook)
 	}
 
+	// The newest sessions read as empty because nothing in them was understood — the
+	// format drifted — and an older conversation, in the old format, reads whole: what the
+	// empty ones held is what doctor is for
+	talk = make([]bool, 20)
+	talk[3] = true
+	read = 0
+	_, newest, _, _, unread, err = deepRead(context.Background(), index.Store{Name: "test", Source: shelf{talk: talk, read: &read}})
+	if err != nil || newest != "s3" || unread["row:in-an-empty-one"] != 3 {
+		t.Errorf("drifted newest sessions: %q, %v, unread %v", newest, err, unread)
+	}
+
 	// Nothing but empty sessions: what they held is told, since it may be why
 	read = 0
 	_, _, _, _, unread, err = deepRead(context.Background(), index.Store{Name: "test", Source: shelf{talk: make([]bool, 8), read: &read}})

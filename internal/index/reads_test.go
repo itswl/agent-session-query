@@ -81,16 +81,22 @@ func TestANewReadingIsReadAgain(t *testing.T) {
 	}
 
 	// An asq from before readings, at the same path, reads what moved and writes its own
-	// reading over the row, saying nothing of readings: the reading the row names is not
-	// the one it holds, and the files are read again, once
-	if _, err := ix.rw.Exec(`UPDATE sessions SET stamp = '3'`); err != nil {
-		t.Fatal(err)
-	}
-	if n := moved(2, "3"); n != 4 {
-		t.Errorf("rows an asq from before readings rewrote: %d read again, want 4", n)
-	}
-	if n := moved(2, "3"); n != 0 {
-		t.Errorf("and then %d", n)
+	// reading over the row, saying nothing of readings — at a stamp of its own, or at the
+	// one this asq read a moment before it: the reading the row names is not the one it
+	// holds, and the files are read again, once
+	for _, write := range []struct{ how, stamp string }{
+		{`UPDATE sessions SET stamp = '3', read_at = read_at + 1`, "3"},
+		{`UPDATE sessions SET read_at = read_at + 1`, "3"},
+	} {
+		if _, err := ix.rw.Exec(write.how); err != nil {
+			t.Fatal(err)
+		}
+		if n := moved(2, write.stamp); n != 4 {
+			t.Errorf("rows an asq from before readings rewrote (%s): %d read again, want 4", write.how, n)
+		}
+		if n := moved(2, write.stamp); n != 0 {
+			t.Errorf("and then %d", n)
+		}
 	}
 }
 
@@ -231,9 +237,16 @@ func TestWhatIsNewIsReadBeforeWhatIsReadAgain(t *testing.T) {
 // gains them in place, however many processes open it at once, and every session in it is
 // read again, once.
 func TestAnIndexFromBeforeReadingsGainsThem(t *testing.T) {
-	const column = "  reads      INTEGER NOT NULL DEFAULT 0,   -- the adapter's reading it was read with (sources.Spec.Reads)\n"
-	if !strings.Contains(schema, column) {
-		t.Fatal("the reads column is not where the test looks for it")
+	columns := []string{
+		"  reads      INTEGER NOT NULL DEFAULT 0,   -- the adapter's reading it was read with (sources.Spec.Reads)\n",
+		"  reads_seq  INTEGER NOT NULL DEFAULT 0,   -- this asq's writes of the row: see readsTrigger\n",
+	}
+	before := schema // as an asq from before readings made it
+	for _, column := range columns {
+		if !strings.Contains(before, column) {
+			t.Fatalf("the column is not where the test looks for it: %q", column)
+		}
+		before = strings.Replace(before, column, "", 1)
 	}
 	older := func() string {
 		t.Helper()
@@ -247,7 +260,7 @@ func TestAnIndexFromBeforeReadingsGainsThem(t *testing.T) {
 		if _, err := old.Exec(`PRAGMA journal_mode=WAL`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := old.Exec(strings.Replace(schema, column, "", 1)); err != nil {
+		if _, err := old.Exec(before); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := old.Exec(`INSERT INTO sessions (source, agent, key, stamp, id) VALUES ('claude', 'claude', '0', '1', 's0')`); err != nil {

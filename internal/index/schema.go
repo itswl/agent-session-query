@@ -28,6 +28,20 @@ package index
 // 2: the reads column, and Gemini's subagents and Antigravity's conversations listed apart.
 const schemaVersion = 2
 
+// readsTrigger forgets the reading of a session another asq wrote. An index at a path of
+// its own can be written by an asq from before readings as well — an asq mcp an agent
+// started before the upgrade, a container rolled back — which reads a session its own way,
+// writes that over the row, and leaves reads as this one set it: the row would then name a
+// reading it does not hold. This asq counts its every write of a row in reads_seq; a write
+// of read_at that does not is another's, and the session's reading is none, so that it is
+// read again, once. The trigger is in the file, and fires whichever asq writes.
+const readsTrigger = `
+CREATE TRIGGER IF NOT EXISTS sessions_read_by_another AFTER UPDATE OF read_at ON sessions
+WHEN NEW.reads_seq = OLD.reads_seq
+BEGIN
+  UPDATE sessions SET reads = 0 WHERE sid = NEW.sid;
+END`
+
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
@@ -42,7 +56,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   key        TEXT NOT NULL,      -- the transcript within the store
   stamp      TEXT NOT NULL,      -- the fingerprint it was read at
   reads      INTEGER NOT NULL DEFAULT 0,   -- the adapter's reading it was read with (sources.Spec.Reads)
-  reads_stamp TEXT NOT NULL DEFAULT '',    -- the stamp that reading was of: another, and the reading is unknown
+  reads_seq  INTEGER NOT NULL DEFAULT 0,   -- this asq's writes of the row: see readsTrigger
   id         TEXT NOT NULL,      -- the CLI's own session id
   path       TEXT NOT NULL DEFAULT '',
   title      TEXT NOT NULL DEFAULT '',

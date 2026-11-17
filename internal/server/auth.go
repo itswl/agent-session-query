@@ -34,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
@@ -67,6 +68,10 @@ const (
 	// spent proxy allowance nor a full table holds it back. knownKept of them at once.
 	knownFor  = 24 * time.Hour
 	knownKept = 256
+	// knownNoted is how stale a known caller's time may grow before showing the token
+	// again is written down (see keepKnown): a caller asking all day is kept at most hourly.
+	knownNoted = time.Hour
+	knownFile  = "known.json"
 
 	secretFile = "session.key"
 	secretSize = 32
@@ -162,11 +167,13 @@ func loadSecret(dir string) ([]byte, error) {
 
 // cookieSecret is the secret this server signs with: the one kept in its state
 // directory, or — with no directory, or one that cannot be used — one made for this run.
-func (s *Server) cookieSecret() []byte {
+// cookieSecret is the secret cookies are signed with, and whether the state directory
+// keeps it — and so may keep the callers known as well (see keepKnown).
+func (s *Server) cookieSecret() ([]byte, bool) {
 	if dir := s.opts.State; dir != "" {
 		secret, err := loadSecret(dir)
 		if err == nil {
-			return secret
+			return secret, true
 		}
 		s.logf("sign-ins will not outlive this run: the secret that signs them could not be kept in %s: %v", dir, err)
 	}
@@ -174,7 +181,83 @@ func (s *Server) cookieSecret() []byte {
 	if _, err := rand.Read(secret); err != nil {
 		panic(err) // no randomness, no server
 	}
-	return secret
+	return secret, false
+}
+
+// The callers known — those that showed the right token in the last knownFor — outlive a
+// restart: kept in the state directory beside the secret, under the same rules, and read
+// back when the server starts. Without them a restart made every caller a newcomer, and
+// while someone kept a proxy's allowance spent, a remote agent that had asked a minute
+// before was shut out until they stopped.
+type keptKnown struct {
+	Known map[string]time.Time `json:"known"`
+}
+
+// loadKnown reads the callers known when the server last kept them: those still within
+// knownFor, from a file this user owns and nobody else can read or write.
+func (s *Server) loadKnown(now time.Time) {
+	path := filepath.Join(s.opts.State, knownFile)
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	if owned, known := ownedHere(info); known && (!owned || info.Mode().Perm()&0o077 != 0) {
+		s.logf("the callers known were not read: %s is not this user's alone (mode %v)", path, info.Mode().Perm())
+		return
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var kept keptKnown
+	if json.Unmarshal(raw, &kept) != nil {
+		return
+	}
+	s.attempts.mu.Lock()
+	defer s.attempts.mu.Unlock()
+	if s.attempts.hits == nil {
+		s.attempts.hits, s.attempts.known = map[string]hit{}, map[string]time.Time{}
+	}
+	for key, at := range kept.Known {
+		if now.Sub(at) < knownFor && len(s.attempts.known) < knownKept {
+			s.attempts.known[key] = at
+		}
+	}
+}
+
+// keepKnown writes the callers known down, when that moved: a new one, or one whose time
+// grew more than knownNoted stale. Written whole to a file of the owner's alone, and put
+// in place in one step, so that a server starting meanwhile reads the old set or the new.
+func (s *Server) keepKnown() {
+	if !s.keepsKnown {
+		return
+	}
+	s.attempts.mu.Lock()
+	if !s.attempts.noted {
+		s.attempts.mu.Unlock()
+		return
+	}
+	s.attempts.noted = false
+	kept := keptKnown{Known: maps.Clone(s.attempts.known)}
+	s.attempts.mu.Unlock()
+	raw, err := json.Marshal(kept)
+	if err != nil {
+		return
+	}
+	s.keepMu.Lock()
+	defer s.keepMu.Unlock()
+	path := filepath.Join(s.opts.State, knownFile)
+	tmp, err := os.CreateTemp(s.opts.State, knownFile+".*")
+	if err != nil {
+		s.logf("the callers known could not be kept: %v", err)
+		return
+	}
+	_, werr := tmp.Write(raw)
+	cerr := tmp.Close()
+	if werr != nil || cerr != nil || os.Chmod(tmp.Name(), 0o600) != nil || os.Rename(tmp.Name(), path) != nil {
+		os.Remove(tmp.Name())
+		s.logf("the callers known could not be kept in %s", path)
+	}
 }
 
 // sign builds a cookie value: the expiry in Unix seconds, a dot, and its HMAC.
@@ -229,8 +312,8 @@ func signed(key []byte, value string, now time.Time) bool {
 //     writing the header through the same proxy, naming them, and spending their own.
 //     A known caller is its address through that proxy: a device that can write the
 //     header and connects some other way is a proxy of its own, capped like any other.
-//     Who is known is kept in memory: after a restart everyone is a newcomer again
-//     until they next get through.
+//     Who is known is kept in the state directory, and outlives a restart (see
+//     keepKnown).
 //   - The table of callers is bounded. Past attemptsKept, the callers it does not know
 //     share one allowance of their kind. The callers on this machine are always known by
 //     name, and never share it.
@@ -249,6 +332,7 @@ type limiter struct {
 	hits  map[string]hit
 	swept time.Time
 	known map[string]time.Time // when each caller known last showed the right token
+	noted bool                 // known has moved since it was last kept
 }
 
 type hit struct {
@@ -357,6 +441,9 @@ func (l *limiter) knows(key string, now time.Time) bool {
 // know remembers a caller that showed the right token. With knownKept remembered, the
 // one that showed it longest ago is forgotten.
 func (l *limiter) know(key string, now time.Time) {
+	if at, ok := l.known[key]; !ok || now.Sub(at) >= knownNoted {
+		l.noted = true
+	}
 	if _, ok := l.known[key]; !ok && len(l.known) >= knownKept {
 		oldest := ""
 		for k, at := range l.known {
@@ -485,6 +572,7 @@ func (s *Server) authorize(r *http.Request) (verdict, time.Duration, string) {
 		return throttled, wait, whose // right or not: past the limit the answer does not say
 	}
 	if right {
+		s.keepKnown()
 		return allowed, 0, ""
 	}
 	return unauthorized, 0, ""
@@ -607,6 +695,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusUnauthorized, "that is not the token")
 		return
 	}
+	s.keepKnown()
 	expires := now.Add(cookieLifetime)
 	http.SetCookie(w, &http.Cookie{
 		Name: cookieName, Value: sign(s.key, expires), Path: "/",

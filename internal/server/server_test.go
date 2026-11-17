@@ -891,6 +891,82 @@ func TestGuessesAreChargedToWhoMadeThem(t *testing.T) {
 	}
 }
 
+// The callers known — that showed the right token in the last day — outlive a restart, so
+// that someone keeping a proxy's allowance spent cannot shut out, by waiting for an
+// upgrade, a remote agent that was asking a minute before it.
+func TestTheCallersKnownOutliveARestart(t *testing.T) {
+	const local = "127.0.0.1:50000"
+	dir := filepath.Join(t.TempDir(), "state")
+	opts := Options{Token: token, ProxyHeader: "CF-Connecting-IP", State: dir}
+	ask := func(s *Server, auth, ip string) int {
+		return call{path: "/api/sessions", remote: local, header: map[string]string{"Authorization": auth, "CF-Connecting-IP": ip}}.do(s).Code
+	}
+	flood := func(s *Server) {
+		t.Helper()
+		for i := range proxyMax {
+			if c := ask(s, "Bearer not-it", fmt.Sprintf("198.51.%d.%d", i/250, i%250+1)); c != http.StatusUnauthorized {
+				t.Fatalf("guess %d = %d", i+1, c)
+			}
+		}
+	}
+	s, _, _ := build(t, opts)
+	if c := ask(s, "Bearer "+token, "203.0.113.100"); c != http.StatusOK {
+		t.Fatalf("a caller with the token = %d", c)
+	}
+	path := filepath.Join(dir, knownFile)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("the callers known were not kept: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Errorf("the callers known are readable by others: %v", info.Mode().Perm())
+	}
+
+	// A restart, and the proxy's allowance spent by others: the caller known still gets
+	// through, a newcomer does not
+	s, _, _ = build(t, opts)
+	flood(s)
+	if c := ask(s, "Bearer "+token, "203.0.113.100"); c != http.StatusOK {
+		t.Errorf("a caller known before the restart = %d", c)
+	}
+	if c := ask(s, "Bearer "+token, "203.0.113.101"); c != http.StatusTooManyRequests {
+		t.Errorf("a newcomer = %d", c)
+	}
+
+	// A file others could read or write is not believed
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		s, _, _ = build(t, opts)
+		flood(s)
+		if c := ask(s, "Bearer "+token, "203.0.113.100"); c != http.StatusTooManyRequests {
+			t.Errorf("a caller known from a file others can read = %d", c)
+		}
+	}
+
+	// Nor is a caller known more than a day ago
+	old := `{"known":{"named 203.0.113.100 via local":"` + time.Now().Add(-knownFor-time.Minute).UTC().Format(time.RFC3339) + `"}}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, _, _ = build(t, opts)
+	flood(s)
+	if c := ask(s, "Bearer "+token, "203.0.113.100"); c != http.StatusTooManyRequests {
+		t.Errorf("a caller known more than a day ago = %d", c)
+	}
+
+	// A server with nowhere to keep its secret keeps no callers either
+	nowhere := Options{Token: token, ProxyHeader: "CF-Connecting-IP"}
+	s, _, _ = build(t, nowhere)
+	if c := ask(s, "Bearer "+token, "203.0.113.100"); c != http.StatusOK || s.keepsKnown {
+		t.Errorf("without a state directory: %d, keeps %v", c, s.keepsKnown)
+	}
+}
+
 // A sign-in is good for 180 days, and a restart is not the end of it: the secret the
 // cookies are signed with is kept. What retires them is changing the token, or removing
 // the secret.

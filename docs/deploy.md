@@ -72,10 +72,10 @@ When the proxy's allowance is spent, the proxy is shut for the rest of the minut
 have not shown the right token in the last day, sign-ins included. A caller that has — an agent
 asking with its token, a browser that signed in — is held back only by its own wrong tokens, and
 a browser holding its cookie is never held back at all. So callers guessing at ten addresses can
-keep newcomers out for as long as they keep at it, and nobody who is already in. Two limits to
-that: who is known is kept in memory, so after a restart everyone is a newcomer until they next get
-through; and a caller that can write the header through the same proxy can name a known caller and
-spend its ten.
+keep newcomers out for as long as they keep at it, and nobody who is already in. Who is known is kept
+in the state directory beside the secret (`known.json`, its owner's alone), so a restart does not
+make everyone a newcomer. One limit: a caller that can write the header through the same proxy can
+name a known caller and spend its ten.
 
 The server remembers 4,096 callers at once. Past that, during a flood of addresses, the callers it
 does not know share one allowance of their kind; the callers on this machine are always known.

@@ -78,6 +78,9 @@ type Server struct {
 
 	key      []byte
 	attempts limiter
+	// keepsKnown says the state directory keeps the callers known (see keepKnown)
+	keepsKnown bool
+	keepMu     sync.Mutex
 
 	mux     *http.ServeMux
 	assets  map[string]asset
@@ -134,7 +137,11 @@ func New(a *app.App, opts Options) (*Server, error) {
 	// keeps, without waiting for a read that is only following the stores
 	s.mcp.MaxAge = maxAge
 	if opts.Token != "" {
-		s.key = signKey(s.cookieSecret(), opts.Token)
+		secret, kept := s.cookieSecret()
+		s.key = signKey(secret, opts.Token)
+		if s.keepsKnown = kept; kept {
+			s.loadKnown(time.Now())
+		}
 	}
 	if opts.Page != nil {
 		var err error

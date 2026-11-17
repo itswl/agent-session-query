@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -331,6 +332,18 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	}
 	sort.Slice(indexes, func(i, j int) bool { return indexes[i] < indexes[j] })
 
+	// How the tasks agy sent to the background ended, which it tells the model later — in
+	// the same turn or another — as a note naming the task: read first, so that the step
+	// that answered the call with "running as a background task" can say how it ended
+	finished := map[string]string{}
+	for _, index := range indexes {
+		if st := byIndex[index]; st.Type == "SYSTEM_MESSAGE" {
+			for _, m := range taskFinished.FindAllStringSubmatch(kit.ContentText(st.Content), -1) {
+				finished[m[1]] = m[2]
+			}
+		}
+	}
+
 	// The calls of the latest model step that no step has answered yet, first first: agy
 	// gives a call no id, and answers a step's calls one step each, in the order they were
 	// made. The model speaks again only once they are all answered, so its next step's
@@ -387,6 +400,14 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				c, waiting = waiting[0], waiting[1:]
 			}
 			output, outcome := st.result(text)
+			if st.Status == "RUNNING" {
+				if task := backgroundTask.FindStringSubmatch(text); task != nil {
+					if end, ok := finished[task[1]]; ok {
+						done := step{Status: "DONE"}
+						output, outcome = done.result(end)
+					}
+				}
+			}
 			m.Role = transcript.ToolRole
 			m.Blocks = []transcript.Block{transcript.ResultOf(c.id, c.name, output, outcome)}
 		case "SYSTEM_MESSAGE":
@@ -449,7 +470,14 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 // an error field. A step still RUNNING at its latest line is a tool agy moved to the
 // background — a command that outlasted its wait, a timer — which answers the call with
 // where to find it: the call has returned but not ended, and is neither a success nor a
-// failure.
+// failure, until agy's note that the task finished says how it did (see finished).
+// A step that sent a tool to the background, and the note that says how it ended: agy
+// names the task by its conversation and number in both.
+var (
+	backgroundTask = regexp.MustCompile(`background task with task id: (\S+)`)
+	taskFinished   = regexp.MustCompile(`(?s)Task id "([^"]+)" finished with result:\n(.*?)(?:\nLog: |</SYSTEM_MESSAGE>|$)`)
+)
+
 func (st *step) result(content string) (string, transcript.Outcome) {
 	output := content
 	for {

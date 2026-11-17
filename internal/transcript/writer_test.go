@@ -287,6 +287,10 @@ func TestCallFactsReadsPatches(t *testing.T) {
 	if cmd != "make test" {
 		t.Errorf("command = %q", cmd)
 	}
+	// Antigravity's run_command names it CommandLine
+	if _, cmd := callFacts(model.ToolExec, inputJSON(`{"CommandLine":"ls /missing","Cwd":"/w"}`)); cmd != "ls /missing" {
+		t.Errorf("CommandLine = %q", cmd)
+	}
 }
 
 // Passing over a record costs a map lookup, however many there are of it: a store that

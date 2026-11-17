@@ -114,7 +114,7 @@ func rawObject(s string) json.RawMessage {
 var fileKeys = []string{"filepath", "path", "notebookpath", "file", "targetfile", "absolutepath"}
 
 // commandKeys: the argument keys a tool carries a command line under.
-var commandKeys = []string{"command", "cmd", "script"}
+var commandKeys = []string{"command", "cmd", "script", "commandline"} // CommandLine: Antigravity's run_command
 
 func foldKey(key string) string {
 	return strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(key))

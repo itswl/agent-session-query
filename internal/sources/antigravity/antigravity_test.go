@@ -665,9 +665,9 @@ func TestToolCallsAndWhatAnswersThem(t *testing.T) {
 }
 
 // A command that outlasts agy's wait is moved to the background: its call is answered with
-// where the task runs, and has returned without ending. agy tells the model when the task
-// ends, and that its tasks were stopped when a conversation is taken up again; neither is
-// the person's ask, nor the model's words.
+// where the task runs. agy tells the model when the task ends — how, and what it printed —
+// which is how the call ended; and that its tasks were stopped when a conversation is
+// taken up again. Neither note is the person's ask, nor the model's words.
 func TestABackgroundCommandAndWhatAgyTellsTheModel(t *testing.T) {
 	all := sourcetest.All(t, Spec.Open(agyStore(t)))
 	sourcetest.NothingUnread(t, all...)
@@ -681,8 +681,8 @@ func TestABackgroundCommandAndWhatAgyTellsTheModel(t *testing.T) {
 		t.Fatalf("items = %s", got)
 	}
 	tools := sourcetest.Tools(turn)
-	if !tools[0].Done || tools[0].Status != "" || tools[0].Failed() || !strings.HasPrefix(tools[0].Output, "Tool is running as a background task with task id: ") {
-		t.Errorf("backgrounded = %+v, want answered with no outcome", tools[0])
+	if bgd := tools[0]; !bgd.Done || bgd.Status != model.StatusOK || bgd.Exit == nil || *bgd.Exit != 0 || !strings.Contains(bgd.Output, "finished-asq") {
+		t.Errorf("backgrounded = %+v, want it ended as the note says: exit 0, and its output", bgd)
 	}
 	if tools[1].Name != "manage_task" || tools[1].Status != model.StatusOK || !strings.Contains(tools[1].Output, "Log output:\nfinished-asq") {
 		t.Errorf("status check = %+v", tools[1])

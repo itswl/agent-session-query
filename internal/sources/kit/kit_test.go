@@ -71,6 +71,7 @@ func TestTimes(t *testing.T) {
 	want := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
 	for _, in := range []any{
 		"2026-10-01T10:00:00Z", "2026-10-01T10:00:00.000Z", "2026-10-01T12:00:00+02:00",
+		"2026-10-01 10:00:00.000000000+00:00", // as Antigravity's index writes it
 		float64(want.Unix()), float64(want.UnixMilli()), want.UnixMilli(), int(want.Unix()), "1790848800",
 	} {
 		if got := Time(in); !got.Equal(want) {

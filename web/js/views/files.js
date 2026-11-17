@@ -86,8 +86,9 @@ export function mount(main, route, ctx) {
     try {
       const r = await api(pageAt(route.query, reset ? 0 : v.items.length), { signal: ctx.signal, keep: reset });
       if (reset) note.say();
-      if (reset && r === v.top) return; // the first page is what is on screen already
+      if (reset && r === v.top) return askAgain(); // the first page is what is on screen already
       show(r, reset);
+      if (reset) askAgain();
     } catch (e) {
       if (isAbort(e)) return;
       // What was shown before stays, says it is from earlier, and the next change asks again
@@ -96,6 +97,16 @@ export function mount(main, route, ctx) {
     } finally {
       v.busy = false;
     }
+  }
+
+  // A folder a look is waiting in is asked about again every few seconds while the page is
+  // looked at: its answer comes from the Mac, and no change to the stores says it came
+  let again = 0;
+  ctx.signal.addEventListener('abort', () => clearTimeout(again));
+  function askAgain() {
+    clearTimeout(again);
+    if (ctx.signal.aborted || v.items.length > PAGE || !v.items.some((x) => x.waiting && !x.now)) return;
+    again = setTimeout(() => (document.hidden ? askAgain() : load(true)), 5000);
   }
 
   // What it showed last time is shown at once; the fresh list replaces it when it comes

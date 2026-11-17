@@ -110,7 +110,10 @@ type row struct {
 	AITitle     string `json:"aiTitle"`
 	CustomTitle string `json:"customTitle"`
 
-	TotalCostUSD float64 `json:"totalCostUSD"`
+	// Figures are read as whatever JSON holds (see jsonmap.Cost, kit.Count): a count
+	// written as 1e19 or 12.0, or a price as a string, is no figure, and does not cost the
+	// row it is in — a reply and its tool calls with it
+	TotalCostUSD any `json:"totalCostUSD"`
 
 	HookErrors []json.RawMessage `json:"hookErrors"`
 
@@ -120,12 +123,12 @@ type row struct {
 		Model      string          `json:"model"`
 		Content    json.RawMessage `json:"content"`
 		StopReason string          `json:"stop_reason"`
-		CostUSD    float64         `json:"costUSD"`
+		CostUSD    any             `json:"costUSD"`
 		Usage      *struct {
-			Input      int64 `json:"input_tokens"`
-			Output     int64 `json:"output_tokens"`
-			CacheRead  int64 `json:"cache_read_input_tokens"`
-			CacheWrite int64 `json:"cache_creation_input_tokens"`
+			Input      any `json:"input_tokens"`
+			Output     any `json:"output_tokens"`
+			CacheRead  any `json:"cache_read_input_tokens"`
+			CacheWrite any `json:"cache_creation_input_tokens"`
 		} `json:"usage"`
 	} `json:"message"`
 
@@ -224,6 +227,9 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		}
 		var r row
 		if json.Unmarshal(line, &r) != nil {
+			if kind := undecodable(line); kind != "" {
+				w.Unread(kind) // a row of a known shape with a field of another: not read, and said so
+			}
 			return true
 		}
 		if sessionID == "" {
@@ -369,7 +375,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				Response: r.Message.ID, Model: r.Message.Model, Stop: r.Message.StopReason,
 				CostUSD: jsonmap.Cost(r.Message.CostUSD), Blocks: assistantBlocks(&r, w.Unread)}
 			if u := r.Message.Usage; u != nil && !inherited {
-				m.Usage = &model.Usage{Input: model.Tokens(u.Input), Output: model.Tokens(u.Output), CacheRead: model.Tokens(u.CacheRead), CacheWrite: model.Tokens(u.CacheWrite)}
+				m.Usage = &model.Usage{Input: kit.Count(u.Input), Output: kit.Count(u.Output), CacheRead: kit.Count(u.CacheRead), CacheWrite: kit.Count(u.CacheWrite)}
 			}
 			w.Add(m)
 		case "":
@@ -828,4 +834,18 @@ func readSaved(path string) (string, bool) {
 	return strings.ToValidUTF8(string(head), "") +
 		fmt.Sprintf("\n\n… %d bytes of the middle left out; the whole output is %s …\n\n", gap, filepath.Base(path)) +
 		strings.ToValidUTF8(string(tail), ""), true
+}
+
+// undecodable names a line that is a row — a JSON object with a type — but did not decode
+// as one; "" for a line that is not a row at all.
+func undecodable(line []byte) string {
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	err := json.Unmarshal(line, &envelope)
+	var mistyped *json.UnmarshalTypeError
+	if (err != nil && !errors.As(err, &mistyped)) || envelope.Type == "" {
+		return ""
+	}
+	return "undecodable:row:" + envelope.Type
 }

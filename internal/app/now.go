@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -78,25 +79,27 @@ func (a *App) Failures(ctx context.Context, f index.Filter, w index.Window, tool
 }
 
 // looker reads what one answer needs once: a session resolved, a turn read, a file
-// opened, however many rows name it.
+// looked at, however many rows name it. Turns are read as the index keeps them, with
+// previews; what one row needs whole is read alone.
 type looker struct {
 	a        *App
 	sessions map[string]*index.Session
 	read     map[turnKey]*model.Turn
 	files    map[string]*fileSeen
+	// The last file read, for the rows of one file that follow one another
+	lastPath string
+	lastData []byte
+	lastOK   bool
 }
 
 type turnKey struct {
 	session string
 	idx     int
-	full    bool
 }
 
 type fileSeen struct {
 	info os.FileInfo
 	err  error
-	data []byte
-	read bool
 }
 
 func newLooker(a *App) *looker {
@@ -116,66 +119,106 @@ func (l *looker) session(ctx context.Context, ref string) *index.Session {
 }
 
 // turns reads turns first..last of a session, from what it has already read where it can.
-func (l *looker) turns(ctx context.Context, ref string, first, last int, full bool) []*model.Turn {
+func (l *looker) turns(ctx context.Context, ref string, first, last int) []*model.Turn {
 	s := l.session(ctx, ref)
 	if s == nil {
 		return nil
 	}
 	missing := false
 	for i := first; i <= last && !missing; i++ {
-		_, ok := l.read[turnKey{ref, i, full}]
+		_, ok := l.read[turnKey{ref, i}]
 		missing = !ok
 	}
 	if missing {
-		got, err := l.a.Index.Turns(ctx, s, index.TurnRange{First: first, Last: last, Full: full})
+		got, err := l.a.Index.Turns(ctx, s, index.TurnRange{First: first, Last: last})
 		if err != nil {
 			return nil
 		}
 		for i := first; i <= last; i++ {
-			l.read[turnKey{ref, i, full}] = nil // a turn the session does not have is not asked for again
+			l.read[turnKey{ref, i}] = nil // a turn the session does not have is not asked for again
 		}
 		for i := range got {
-			l.read[turnKey{ref, got[i].Index, full}] = &got[i]
+			l.read[turnKey{ref, got[i].Index}] = &got[i]
 		}
 	}
 	var out []*model.Turn
 	for i := first; i <= last; i++ {
-		if t := l.read[turnKey{ref, i, full}]; t != nil {
+		if t := l.read[turnKey{ref, i}]; t != nil {
 			out = append(out, t)
 		}
 	}
 	return out
 }
 
-func (l *looker) file(path string, data bool) *fileSeen {
+func (l *looker) stat(path string) *fileSeen {
 	f := l.files[path]
 	if f == nil {
 		f = &fileSeen{}
 		f.info, f.err = os.Stat(path)
 		l.files[path] = f
 	}
-	if data && !f.read && f.err == nil && f.info.Mode().IsRegular() && f.info.Size() <= maxCompared {
-		f.data, f.err = os.ReadFile(path)
-		f.data = bytes.ReplaceAll(f.data, []byte("\r\n"), []byte("\n"))
-		f.read = true
-	}
 	return f
 }
 
+// content is a file's text to compare with, CRLFs as LFs; false when it is larger than
+// maxCompared or cannot be read. However large its size said it was: a file can grow,
+// and some (/proc's) say nothing of their size.
+func (l *looker) content(path string) ([]byte, bool) {
+	if path != l.lastPath {
+		l.lastPath = path
+		l.lastData, l.lastOK = readAtMost(path, maxCompared)
+	}
+	return l.lastData, l.lastOK
+}
+
+func readAtMost(path string, most int64) ([]byte, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		return nil, false
+	}
+	data, err := io.ReadAll(io.LimitReader(f, most+1))
+	if err != nil || int64(len(data)) > most {
+		return nil, false
+	}
+	return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")), true
+}
+
 // fileNow says how the file a turn named stands now; nil when that cannot be said.
+//
+// Both kinds of evidence are weighed. What the turn's last write put there is either
+// still in the file or not; and the file has been written since the turn ended, or not.
+// Text still there in a file not written since is as the turn left it. Text gone from a
+// file not written since was changed within the turn — by the turn, or a formatter it ran
+// — and the file is as the turn ended it. A file written since is "written" while its
+// text is all there, and "changed" once it is not; it is as the turn left it only when
+// the turn wrote it whole and it is that, to the byte.
+//
+// Only this machine's files are judged: not those of a labelled store, which is as a rule
+// another machine's, nor those of a session whose directory is not here.
 func (l *looker) fileNow(ctx context.Context, t *index.FileTouch) *index.FileNow {
+	if s := l.session(ctx, t.Session); s == nil || strings.Contains(s.Source, "@") {
+		return nil
+	}
 	path := t.Path
-	if !filepath.IsAbs(path) {
-		if t.Cwd == "" || !filepath.IsAbs(t.Cwd) {
+	if filepath.IsAbs(t.Cwd) {
+		if dir := l.stat(t.Cwd); dir.err != nil || !dir.info.IsDir() {
 			return nil
 		}
-		path = filepath.Join(t.Cwd, path)
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(t.Cwd, path)
+		}
 	}
-	f := l.file(path, false)
+	if !filepath.IsAbs(path) {
+		return nil
+	}
+	f := l.stat(path)
 	if errors.Is(f.err, fs.ErrNotExist) {
-		// Gone from a directory that is here; from one that is not, it is another
-		// machine's file, or a container's, and nothing can be said of it
-		if dir := l.file(filepath.Dir(path), false); dir.err == nil && dir.info.IsDir() {
+		// Gone from a directory that is here; from one that is not, nothing can be said
+		if dir := l.stat(filepath.Dir(path)); dir.err == nil && dir.info.IsDir() {
 			return &index.FileNow{State: index.FileDeleted}
 		}
 		return nil
@@ -183,48 +226,56 @@ func (l *looker) fileNow(ctx context.Context, t *index.FileTouch) *index.FileNow
 	if f.err != nil || !f.info.Mode().IsRegular() {
 		return nil
 	}
-	if t.Changed {
-		if whole, fragments, ok := l.leftBy(ctx, t); ok {
-			if f = l.file(path, true); f.read && f.err == nil {
-				return &index.FileNow{State: compare(f.data, whole, fragments), By: index.ByContent}
-			}
-		}
-	}
 	end := t.Ended
 	if end.IsZero() {
 		end = t.At
 	}
-	if end.IsZero() {
-		return nil
+	timed := !end.IsZero()
+	since := timed && f.info.ModTime().After(end.Add(slack))
+	if t.Changed {
+		if whole, fragments, ok := l.leftBy(ctx, t); ok {
+			if data, ok := l.content(path); ok {
+				held := holds(data, whole, fragments)
+				switch {
+				case held && (whole != nil || !since):
+					return &index.FileNow{State: index.FileSame, By: index.ByContent}
+				case held:
+					return &index.FileNow{State: index.FileWritten, By: index.ByContent}
+				case timed && !since:
+					return &index.FileNow{State: index.FileSame, By: index.ByTime}
+				default:
+					return &index.FileNow{State: index.FileChanged, By: index.ByContent}
+				}
+			}
+		}
 	}
-	if f.info.ModTime().After(end.Add(slack)) {
+	switch {
+	case !timed:
+		return nil
+	case since:
 		return &index.FileNow{State: index.FileWritten, By: index.ByTime}
 	}
 	return &index.FileNow{State: index.FileSame, By: index.ByTime}
 }
 
-// compare says whether the file still holds what the turn left in it.
-func compare(data []byte, whole *string, fragments []string) string {
-	text := string(data)
+// holds says whether the file still holds what the turn left in it.
+func holds(data []byte, whole *string, fragments []string) bool {
 	if whole != nil {
-		if strings.TrimRight(text, "\n") == strings.TrimRight(*whole, "\n") {
-			return index.FileSame
-		}
-		return index.FileChanged
+		return bytes.Equal(bytes.TrimRight(data, "\n"), []byte(strings.TrimRight(*whole, "\n")))
 	}
 	for _, frag := range fragments {
-		if !strings.Contains(text, frag) {
-			return index.FileChanged
+		if !bytes.Contains(data, []byte(frag)) {
+			return false
 		}
 	}
-	return index.FileSame
+	return true
 }
 
 // leftBy is what a turn's last write to a file put there: the whole file, or the
 // fragments it inserted. ok is false when that write said nothing that can be looked
 // for — it only removed text, or its input is in a shape not known here.
 func (l *looker) leftBy(ctx context.Context, t *index.FileTouch) (whole *string, fragments []string, ok bool) {
-	turns := l.turns(ctx, t.Session, t.Turn, t.Turn, true)
+	turns := l.turns(ctx, t.Session, t.Turn, t.Turn)
 	if len(turns) == 0 {
 		return nil, nil, false
 	}
@@ -235,8 +286,20 @@ func (l *looker) leftBy(ctx context.Context, t *index.FileTouch) (whole *string,
 			continue
 		}
 		// The last write is what the turn left; whatever an earlier one put there, the
-		// last may have replaced
-		return written(tool.Input, t.Path)
+		// last may have replaced. Its input is read whole when the turn keeps a preview.
+		input := tool.Input
+		if tool.InBytes > 0 {
+			s := l.session(ctx, t.Session)
+			if s == nil {
+				return nil, nil, false
+			}
+			it, _, err := l.a.Index.Item(ctx, s, items[i].Seq)
+			if err != nil || it.Tool == nil {
+				return nil, nil, false
+			}
+			input = it.Tool.Input
+		}
+		return written(input, t.Path)
 	}
 	return nil, nil, false
 }
@@ -405,28 +468,46 @@ func samePath(name, path string) bool {
 // later finds where the command that failed next succeeded in its session.
 //
 // "The command" is the program and what it was asked to do — go test, pnpm build, git
-// push — past a cd and the variables set in front of it. An agent rarely runs a failed
-// command again word for word: it narrows the test, adds a flag, pipes the output to
-// tail. Measured on a real history, the same command word for word came back in none of
-// 37 failures and the same program and subcommand in 28 of 40, all within three turns.
-// The match is loose, so what passed is shown whole beside it: the reader judges whether
-// "go test ./internal/x" passing says anything about "go test ./..." failing.
+// push — read past what prepares for it (see commandKey). An agent rarely runs a failed
+// command again word for word: it narrows the test, adds a flag. Measured on a real
+// history, the same command word for word came back in none of 37 failures and the same
+// program and subcommand in 28 of 40, all within three turns. The match is loose, so
+// what passed is shown whole beside it: the reader judges whether "go test ./internal/x"
+// passing says anything about "go test ./..." failing.
+//
+// Succeeded is taken strictly (see passed). A run begun before the failure was known —
+// beside it, in the same response — is not later than it.
 func (l *looker) later(ctx context.Context, f *index.Failure) *index.Later {
 	key := commandKey(f.Command)
 	if key == "" {
 		return nil
 	}
-	for _, turn := range l.turns(ctx, f.Session, f.Turn, f.Turn+laterTurns, false) {
+	turns := l.turns(ctx, f.Session, f.Turn, f.Turn+laterTurns)
+	call := 0 // the response the failed call was part of
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if turn.Index == f.Turn && item.Seq == f.Seq {
+				call = item.Call
+			}
+		}
+	}
+	for _, turn := range turns {
 		for _, item := range turn.Items {
 			t := item.Tool
 			if item.Seq <= f.Seq || t == nil || t.Name != f.Tool || commandKey(t.Command) != key {
 				continue
 			}
+			if turn.Index == f.Turn && call != 0 && item.Call == call {
+				continue // asked for in the same response: run beside the failure, not after it
+			}
+			if !f.At.IsZero() && !item.At.IsZero() && item.At.Before(f.At) {
+				continue // begun before the failure was known
+			}
 			if !t.Done {
 				return nil // run again, and never answered: nothing is known of it
 			}
-			if t.Failed() {
-				continue // failed again: the next run may be the one
+			if !passed(t) {
+				continue // failed again, or ended in a way that says nothing: the next run may be the one
 			}
 			return &index.Later{Turn: turn.Index, Seq: item.Seq, At: item.At, Command: oneSpace(t.Command)}
 		}
@@ -434,36 +515,36 @@ func (l *looker) later(ctx context.Context, f *index.Failure) *index.Later {
 	return nil
 }
 
-// commandKey is the program a command line runs and its first argument, when that is a
-// word and not a flag: "go test", "git push", "make", "./run.sh". A cd and variables
-// set in front are passed over; a flag, a pipe or a redirection ends it.
-func commandKey(command string) string {
-	words := strings.Fields(command)
-	for len(words) > 0 {
-		switch {
-		case words[0] == "cd" && len(words) > 2 && (words[2] == "&&" || words[2] == ";"):
-			words = words[3:]
-			continue
-		case words[0] == "cd" && len(words) > 1 && strings.HasSuffix(words[1], ";"):
-			words = words[2:] // cd /work/api; make lint
-			continue
-		case strings.Contains(words[0], "=") && !strings.HasPrefix(words[0], "-"):
-			words = words[1:] // FOO=1 go test
-			continue
+// passed reports whether a call says its command succeeded: it ended well — an exit
+// status of 0 where one was recorded, an "ok" where none was — the line's status was the
+// command's own (nothing after it on the line could hide a failure: see mainCommand),
+// and what came back was its end, not word that it is still running in the background.
+func passed(t *model.Tool) bool {
+	switch {
+	case t.Exit != nil:
+		if *t.Exit != 0 {
+			return false
 		}
-		break
+	case t.Status != model.StatusOK:
+		return false
 	}
-	var out []string
-	for _, w := range words {
-		if strings.HasPrefix(w, "-") || strings.ContainsAny(w, "|;&<>()$`") {
-			break
-		}
-		out = append(out, w)
-		if len(out) == 2 {
-			break
-		}
+	if _, decides := mainCommand(t.Command); !decides {
+		return false
 	}
-	return strings.Join(out, " ")
+	return !stillRunning(t)
+}
+
+// stillRunning reports whether a call's answer is that its command was started and runs
+// on: Claude Code's run_in_background, a Codex command that outlasted its wait.
+func stillRunning(t *model.Tool) bool {
+	var in struct {
+		Background bool `json:"run_in_background"`
+	}
+	if json.Unmarshal(t.Input, &in) == nil && in.Background {
+		return true
+	}
+	head := t.Output[:min(len(t.Output), 512)]
+	return strings.Contains(head, "Process running with session ID") || strings.Contains(head, "running in background")
 }
 
 func oneSpace(s string) string { return strings.Join(strings.Fields(s), " ") }

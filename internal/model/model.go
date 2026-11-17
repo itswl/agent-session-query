@@ -127,6 +127,21 @@ func TokensOf(f float64) int64 {
 	return int64(f)
 }
 
+// MaxDurMs is a hundred and fifteen days: longer than any model call or tool run lasts,
+// and far short of what a time.Duration holds. A duration past it, or not above zero, is a
+// number gone wrong, and not a duration.
+const MaxDurMs = 1e10
+
+// DurMs is a duration in milliseconds as an adapter worked it out, if it is one: the
+// duration, or 0. A call's end is its start plus its duration; one past what a
+// time.Duration holds would end before it began.
+func DurMs(ms int64) int64 {
+	if ms <= 0 || ms > MaxDurMs {
+		return 0
+	}
+	return ms
+}
+
 // Raise lifts each counter to o's where o's is larger: the rows of one response report
 // running figures, never less than a row before them.
 func (u *Usage) Raise(o Usage) {

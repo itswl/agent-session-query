@@ -93,21 +93,42 @@ match's `seq` is the step to open (`/items/{seq}`).
 
 A failure whose command later succeeded in the same session carries
 `"passedLater": {"turn", "seq", "at", "command"}`: the first later run, by the same tool, of the
-same program and subcommand — `go test`, `pnpm build`, `git push`, past a `cd` and variables set
-in front — in that turn or the three after it, that did not fail. The match is that loose on
-purpose: an agent rarely runs a failed command again word for word (it narrows the test, adds a
-flag, pipes the output to `tail`), so `command` is what was run then, and whether it is the same
-thing passing is for the reader to judge. The turns between are how it was got past. It is left
-out when there is none; another session is not looked in.
+same program and subcommand, in that turn or the three after it, that succeeded.
 
-A file's `now` is `{"state", "by"}`, or absent when nothing can be said — the file is not on
-the machine `asq` runs on. `state` is `same`, `changed`, `written` or `deleted`; `by` is the
-evidence. `content`: the text that turn's last write put in the file — what an edit inserted,
-the whole of a file it wrote, the lines a patch added — is all still there (`same`) or is not
-(`changed`). `time`: the file's modification time against the end of the turn — not written
-since (`same`), or written since (`written`), which a checkout or a formatter does as well as an
-edit. Content is used where the write recorded any; a turn that only read the file, or a write
-that only removed text, is judged by time. A file over 8 MB is judged by time.
+- *The same program and subcommand* — `go test`, `git push`, `npm run build`, `uv run pytest` —
+  is read from the line as a shell reads it, past what prepares for it (a `cd`, a `source` of an
+  environment, variables set in front) and past the programs that only run another (`sudo`,
+  `env`, `time`, `timeout`); a shell's `-c` is the script it runs. Code given inline
+  (`python -c`, `node -e`) is no command that comes back, and is not matched. The match is loose
+  on purpose — an agent rarely runs a failed command again word for word: it narrows the test,
+  adds a flag — so `command` is what was run then, and whether it is the same thing passing is
+  for the reader to judge.
+- *Succeeded* is taken strictly: an exit status of 0, or where none was recorded, an `ok`; with
+  nothing after the command on its line that could hide a failure (a pipe without
+  `pipefail`, a `;`, an `||`, an `&`); and an answer that is the command's end, not word that it
+  runs on in the background. A run asked for beside the failure, in the same response, or begun
+  before its answer came back, is not later than it.
+
+The turns between are how it was got past. It is left out when there is none; another session
+is not looked in.
+
+A file's `now` is `{"state", "by"}`: `state` is `same`, `changed`, `written` or `deleted`, and
+`by` the evidence it rests on. Two things are weighed: whether the text that turn's last write
+put in the file — what an edit inserted, the whole of a file it wrote, the lines a patch added —
+is all still there, and whether the file's modification time is after the turn ended.
+
+| | |
+|---|---|
+| `same` / `content` | the text is there, and nothing has written the file since — or the turn wrote it whole and it is that, to the byte |
+| `written` / `content` | written since, with the text still in it: what else changed is not known |
+| `changed` / `content` | written since, and the text is not all there |
+| `same` / `time` | not written since. Where the text is not all there, it changed within the turn — by the turn, or a formatter it ran — and the file is as the turn ended it |
+| `written` / `time` | written since, with no text to look for: a turn that only read the file, a write that only removed text, a file over 8 MB. A checkout or a formatter writes a file as well as an edit does |
+| `deleted` | gone, from a directory that is still here |
+
+`now` is absent when nothing can be said. Only the machine `asq` runs on is looked at: a file
+that is not on it, a session from a labelled store (`--path claude@box2=…`, as a rule another
+machine's), and a session whose directory is not here have none.
 
 All take the list's filters. A usage row is
 `{"key", "sessions", "calls", "usage": {"input", "output", "cacheRead", "cacheWrite", "reasoning"}, "total", "cacheHit"}`

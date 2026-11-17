@@ -441,6 +441,39 @@ func TestCountsHeldToWhatACountCanBe(t *testing.T) {
 	}
 }
 
+// A figure JSON holds that no int64 can — a count of 1e19, one past an int64, or one
+// written 12.0 — or a price written as a string, is no figure, and costs nothing else of
+// its row: the reply and its tool call are read. A row that does not decode at all is
+// said not to have been understood.
+func TestAFigureDoesNotCostItsRow(t *testing.T) {
+	for _, count := range []string{"9223372036854775808", "1e19", "12.0", `"7"`} {
+		raw := `{"type":"assistant","uuid":"a1","timestamp":"2026-10-01T10:00:01Z","message":{"id":"m1","role":"assistant","costUSD":"0.5",` +
+			`"content":[{"type":"text","text":"running make"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"make"}}],` +
+			`"usage":{"input_tokens":` + count + `,"output_tokens":7}}}`
+		root := t.TempDir()
+		var row M
+		if err := json.Unmarshal([]byte(raw), &row); err != nil {
+			t.Fatal(err)
+		}
+		sourcetest.Write(t, filepath.Join(root, "proj", "sess-1.jsonl"),
+			userRow("u1", "2026-10-01T10:00:00Z", "build it"),
+			json.RawMessage(raw),
+			userRow("r1", "2026-10-01T10:00:02Z", []M{{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}}),
+			json.RawMessage(`{"type":"assistant","uuid":"a2","timestamp":"2026-10-01T10:00:03Z","message":"not an object"}`))
+		s := sourcetest.One(t, Spec.Open(root))
+		turn := s.Turn(t, 1)
+		if len(sourcetest.Tools(turn)) != 1 || s.Stats.Usage.Output != 7 || s.Stats.Calls != 1 {
+			t.Errorf("input_tokens %s: tools %d, usage %+v, calls %d: the row was lost", count, len(sourcetest.Tools(turn)), s.Stats.Usage, s.Stats.Calls)
+		}
+		if want := map[string]int64{"12.0": 12}[count]; s.Stats.Usage.Input != want {
+			t.Errorf("input_tokens %s read as %d, want %d", count, s.Stats.Usage.Input, want)
+		}
+		if s.Unread["undecodable:row:assistant"] != 1 {
+			t.Errorf("a row that did not decode: unread %v", s.Unread)
+		}
+	}
+}
+
 // A cost is a row's word too. One past any response's, added to another, would make the
 // session's +Inf, which no JSON encoder writes: neither the session's figures nor the
 // turn's could be stored. A session total past any session's is no total either, and the

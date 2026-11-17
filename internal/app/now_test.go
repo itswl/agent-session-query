@@ -44,6 +44,15 @@ func TestFilesSayHowTheyStandNow(t *testing.T) {
 	result := func(ts, callID, text string, failed bool) {
 		user(ts, []map[string]any{{"type": "tool_result", "tool_use_id": callID, "content": text, "is_error": failed}})
 	}
+	// Calls asked for in one response, which run side by side: a row each, as Claude
+	// Code writes them, under the response's one id
+	together := func(msg, ts string, block map[string]any) {
+		n++
+		lines = append(lines, map[string]any{"type": "assistant", "uuid": "a" + itoa(n), "timestamp": ts, "sessionId": id,
+			"message": map[string]any{"id": msg, "role": "assistant", "model": "claude-opus-5", "stop_reason": "tool_use",
+				"usage":   map[string]any{"input_tokens": 1, "output_tokens": 1},
+				"content": []map[string]any{block}}})
+	}
 
 	user(at(0), "change the files")
 	// Two edits of one file: the first's text the second replaces, so only the last
@@ -68,7 +77,19 @@ func TestFilesSayHowTheyStandNow(t *testing.T) {
 	result(at(14), "t7", "lint failed", true)
 	use(at(15), "t8", "Bash", map[string]any{"command": "go  test   ./..."}) // the same command, spaced differently
 	result(at(16), "t8", "FAIL again", true)
+	// Two builds side by side: the one that passed did not pass after the one that failed
+	// (the second row written after the first call's answer came back)
+	together("msg_par", at(17), map[string]any{"type": "tool_use", "id": "p1", "name": "Bash", "input": map[string]any{"command": "cargo build -p core"}})
+	result(at(18), "p1", "error[E0308]: mismatched types", true)
+	together("msg_par", at(19), map[string]any{"type": "tool_use", "id": "p2", "name": "Bash", "input": map[string]any{"command": "cargo build -p cli"}})
+	result(at(20), "p2", "Finished", false)
 	user(at(30), "try again")
+	// Runs that end without saying the command passed: its status hidden by a pipe, and
+	// started in the background
+	use(at(30), "t8d", "Bash", map[string]any{"command": "go test ./... 2>&1 | tail -5"})
+	result(at(30), "t8d", "--- FAIL: TestX\nFAIL", false)
+	use(at(30), "t8e", "Bash", map[string]any{"command": "go test ./...", "run_in_background": true})
+	result(at(30), "t8e", "Command running in background with ID: bash_1", false)
 	use(at(31), "t8b", "Bash", map[string]any{"command": "go vet ./..."}) // another subcommand: not the same thing passing
 	result(at(31), "t8b", "ok", false)
 	use(at(31), "t8c", "run_shell_command", map[string]any{"command": "go test ./..."}) // another tool: not the same thing either
@@ -92,6 +113,29 @@ func TestFilesSayHowTheyStandNow(t *testing.T) {
 	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Another machine's sessions, which name paths that are here too: one in a labelled
+	// store, one whose directory is not on this machine
+	mine, theirs := filepath.Join(proj, "box2.go"), filepath.Join(proj, "other.go")
+	other := func(file, sid, cwd, target string) {
+		t.Helper()
+		row := func(v map[string]any) string { raw, _ := json.Marshal(v); return string(raw) }
+		text := row(map[string]any{"type": "user", "uuid": "o1", "timestamp": at(0), "sessionId": sid, "cwd": cwd,
+			"message": map[string]any{"role": "user", "content": "write it"}}) + "\n" +
+			row(map[string]any{"type": "assistant", "uuid": "o2", "timestamp": at(1), "sessionId": sid,
+				"message": map[string]any{"id": "msg_o", "role": "assistant", "model": "claude-opus-5", "stop_reason": "tool_use",
+					"content": []map[string]any{{"type": "tool_use", "id": "o", "name": "Write", "input": map[string]any{"file_path": target, "content": "theirs"}}}}}) + "\n" +
+			row(map[string]any{"type": "user", "uuid": "o3", "timestamp": at(2), "sessionId": sid,
+				"message": map[string]any{"role": "user", "content": []map[string]any{{"type": "tool_result", "tool_use_id": "o", "content": "ok"}}}}) + "\n"
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	box2 := filepath.Join(dir, "box2")
+	other(filepath.Join(box2, "-proj", "ffff6666-0000-4000-8000-000000000006.jsonl"), "ffff6666-0000-4000-8000-000000000006", proj, mine)
+	other(filepath.Join(store, "-gone", "aaaa7777-0000-4000-8000-000000000007.jsonl"), "aaaa7777-0000-4000-8000-000000000007", "/no/such/machine/proj", theirs)
 
 	// The files as the session left them, written while it ran
 	put := func(p, text string) {
@@ -106,9 +150,11 @@ func TestFilesSayHowTheyStandNow(t *testing.T) {
 	put(edited, "package x\n\nfunc brandNew() int { return 42 }\n")
 	put(written, "the whole file\r\nas written\r\n") // on disk with the line endings the input had
 	put(read, "package x\n")
+	put(mine, "theirs")
+	put(theirs, "theirs")
 
 	a, err := Open(Config{IndexPath: filepath.Join(dir, "index.db"),
-		Stores: catalog.Config{Only: []string{"claude"}, Paths: []catalog.Path{{Agent: "claude", Dir: store}}}})
+		Stores: catalog.Config{Only: []string{"claude"}, Paths: []catalog.Path{{Agent: "claude", Dir: store}, {Agent: "claude", Label: "box2", Dir: box2}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,11 +199,24 @@ func TestFilesSayHowTheyStandNow(t *testing.T) {
 		read:      "same/time",    // a file only read is judged by its time
 		gone:      "deleted/",     // written by the turn, never put on disk here
 		elsewhere: "-",            // not on this machine: nothing to say
+		mine:      "-",            // a labelled store's session: another machine's, whatever is here
+		theirs:    "-",            // a session whose directory is not here: likewise
 	})
 
-	// The files move on
-	put(edited, "package x\n\nfunc brandNew() int { return 43 }\n")
-	put(written, "the whole file\nas written\nand one more line\n")
+	// A formatter the turn ran changed what it wrote, while it ran: the file is as the
+	// turn ended it, though its text is not what the edit said
+	put(edited, "package x\n\nfunc brandNew() int {\n\treturn 42\n}\n")
+	expect("formatted within the turn", map[string]string{edited: "same/time"})
+
+	// The files move on, after the turn
+	since := func(p, text string) {
+		t.Helper()
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	since(edited, "package x\n\nfunc brandNew() int { return 43 }\n")
+	since(written, "the whole file\nas written\nand one more line\n")
 	now := time.Now()
 	if err := os.Chtimes(read, now, now); err != nil {
 		t.Fatal(err)
@@ -168,11 +227,12 @@ func TestFilesSayHowTheyStandNow(t *testing.T) {
 		read:    "written/time",
 	})
 
-	// A file put back as the turn left it reads as such, whatever its time says
-	if err := os.WriteFile(edited, []byte("package x\n\nfunc brandNew() int { return 42 }\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	expect("put back", map[string]string{edited: "same/content"})
+	// Written since, with what the edit put there still in it: that it is all there is
+	// known, and that nothing else changed is not — only a file the turn wrote whole, and
+	// that is that to the byte, is as the turn left it
+	since(edited, "package x\n\n// a comment added since\nfunc brandNew() int { return 42 }\n")
+	since(written, "the whole file\nas written\n")
+	expect("written since", map[string]string{edited: "written/content", written: "same/content"})
 
 	// Where the same command next succeeded: not the failure's own retry, which failed
 	// too; not a different command; the run of the next turn that passed
@@ -184,14 +244,18 @@ func TestFilesSayHowTheyStandNow(t *testing.T) {
 	for _, x := range rep.Failures {
 		later[x.Command+"@"+itoa(x.Seq)] = x.Later
 	}
-	if len(rep.Failures) != 3 {
-		t.Fatalf("%d failures, want 3", len(rep.Failures))
+	if len(rep.Failures) != 4 {
+		t.Fatalf("%d failures, want 4", len(rep.Failures))
 	}
 	for _, x := range rep.Failures {
 		switch {
 		case x.Command == "make lint":
 			if x.Later != nil {
 				t.Errorf("make lint never ran again, and passed later at %+v", x.Later)
+			}
+		case strings.HasPrefix(x.Command, "cargo"):
+			if x.Later != nil {
+				t.Errorf("a build beside the failed one passed later at %+v", x.Later)
 			}
 		case strings.Contains(x.Command, "go"):
 			// The first go test that passed: a narrower one than failed, and shown as it ran
@@ -259,13 +323,62 @@ func TestCommandKey(t *testing.T) {
 		"make":                                 "make",
 		"./run.sh --fast":                      "./run.sh",
 		"git push origin main":                 "git push",
-		"python3 -c 'print(1)'":                "python3",
+		"python3 -c 'print(1)'":                "", // inline code: the next is other code
 		"$(which go) test":                     "",
+		`cd "/x/My Project" && npm test`:       "npm test",
+		`cd ~/My\ Project && npm test`:         "npm test",
+		"cd /x\ngo test ./...":                 "go test",
+		`bash -lc "go test ./..."`:             "go test",
+		"zsh -lc 'cargo build'":                "cargo build",
+		"git -C /work/api push origin main":    "git push",
+		"git -C /work/api status":              "git status",
+		"git --no-pager log -5":                "git log",
+		"sudo -n systemctl restart nginx":      "systemctl restart",
+		"sudo -u deploy make release":          "make release",
+		"npm run build":                        "npm run build",
+		"npm run lint":                         "npm run lint",
+		"uv run pytest -x":                     "uv run pytest",
+		"uv run python -c 'print(2)'":          "",
+		"npx -y tsc --noEmit":                  "npx tsc",
+		"source .venv/bin/activate && pytest":  "pytest",
+		"timeout 60 go test ./...":             "go test",
+		"env FOO=1 go test ./...":              "go test",
+		"time go test ./...":                   "go test",
+		"go test ./... 2>&1 | tail -5":         "go test",
+		"python3 -m pytest tests/":             "python3 -m pytest",
+		"python3 script.py -c config":          "python3 script.py",
+		"/usr/bin/make check":                  "make check",
 		"":                                     "",
 		"   ":                                  "",
 	} {
 		if got := commandKey(in); got != want {
 			t.Errorf("commandKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Whether a line's exit status is its command's: what follows the command on the line
+// can hide that it failed.
+func TestTheLinesStatusIsTheCommands(t *testing.T) {
+	for in, want := range map[string]bool{
+		"go test ./...":                             true,
+		"go test ./... 2>&1":                        true,
+		"go test ./... &> log":                      true,
+		"cd x && make && echo ok":                   true,
+		"make && echo ok | tee log":                 true,
+		"set -o pipefail; go test ./... | tail -5":  true,
+		"go test ./... | tail -5":                   false,
+		"go test ./...; echo done":                  false,
+		"go test ./...\necho done":                  false,
+		"make || true":                              false,
+		"make && echo a || echo b":                  false,
+		"make &":                                    false,
+		`echo "a; b" && make`:                       true, // a quoted ";" is no operator
+		`go test -run 'A|B' ./...`:                  true,
+		"go test $(go list ./... | grep -v vendor)": true,
+	} {
+		if _, got := mainCommand(in); got != want {
+			t.Errorf("mainCommand(%q) decides = %v, want %v", in, got, want)
 		}
 	}
 }

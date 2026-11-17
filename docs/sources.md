@@ -123,11 +123,12 @@ files, and have not been checked against a live store.
 If a CLI changes how it writes, nothing fails. An adapter passes over a record it does not know —
 a new row type, a renamed block — and the session reads as less than it holds: a turn short, a
 cost missing. So each adapter counts what it passes over without knowing what it is (what it
-skips on purpose is not counted), and `asq doctor` reads the three newest conversations of each
-store and lists what they held that was not understood, most frequent first:
+skips on purpose is not counted), and `asq doctor` reads up to three of the newest
+conversations of each store and lists what they held that was not understood, most frequent
+first:
 
 ```text
-  ! not understood in the newest transcripts, and passed over: row:queue-operation ×4, block:server_tool_use ×1 — the CLI may have changed how it writes them; what is shown is what was understood
+  ! not understood in the newest transcripts, and passed over: block:server_tool_use ×3 — the CLI may have changed how it writes them; what is shown is what was understood
 ```
 
 It is a warning, not a failure: what is shown is still right as far as it goes. A format that

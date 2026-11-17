@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/itswl/agent-session-query/internal/model"
+	"github.com/itswl/agent-session-query/internal/txt"
 )
 
 // SyntheticModel is the model name Claude Code writes on a row it made itself — a resumed
@@ -62,6 +63,11 @@ const unreadKinds = 32
 // kind is "what:name" — "row:queue-operation", "block:server_tool_use". What an adapter
 // skips on purpose, knowing what it is, is not unread: it has a case of its own.
 func (w *Writer) Unread(kind string) {
+	// A kind is made from what the transcript calls the record, and is printed: it is held
+	// to one short line of text, with nothing in it a terminal would act on
+	if kind = txt.OneLine(kind, 80); kind == "" {
+		kind = "(blank)"
+	}
 	if w.unread == nil {
 		w.unread = map[string]int{}
 	}

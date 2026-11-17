@@ -654,3 +654,26 @@ func TestACostNoCallCouldHaveReadsAsNone(t *testing.T) {
 		t.Errorf("the session cost $%v, want $0.25", s.Stats.CostUSD)
 	}
 }
+
+// A response's time is its row's word, and a row can say anything: one that ends 9e18 ms
+// after it began would end before it began, once a time.Duration wrapped. A duration no
+// call could take is none (model.DurMs).
+func TestADurationNoCallCouldTakeIsNone(t *testing.T) {
+	src, _ := build(t, schemaV2, schemaV23,
+		`INSERT INTO session_v2 (id, slug, directory, version, time_created, time_updated) VALUES ('ses_d', 'd', '/w', '2.3.0', 1790000000000, 1790000000000)`,
+		`INSERT INTO session_message VALUES ('d1', 'ses_d', 'user', 1, 1790000001000, 1790000001000, '{"text":"time it"}')`,
+		`INSERT INTO session_message VALUES ('d2', 'ses_d', 'assistant', 2, 1790000002000, 1790000002000,
+			'{"time":{"created":1790000002000,"completed":9e18},"content":[{"type":"text","text":"a"}]}')`,
+		`INSERT INTO session_message VALUES ('d3', 'ses_d', 'assistant', 3, 1790000003000, 1790000003000,
+			'{"time":{"created":1790000003000,"completed":1790000004500},"content":[{"type":"text","text":"b"}]}')`,
+	)
+	s := sourcetest.One(t, src)
+	sourcetest.Invariants(t, s)
+	calls := s.Turn(t, 1).Calls
+	if len(calls) != 2 || calls[0].DurMs != 0 || calls[1].DurMs != 1500 {
+		t.Fatalf("calls = %+v", calls)
+	}
+	if !calls[0].EndAt.IsZero() && calls[0].EndAt.Before(calls[0].At) {
+		t.Errorf("a call ends at %v, before it began at %v", calls[0].EndAt, calls[0].At)
+	}
+}

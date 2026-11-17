@@ -641,6 +641,8 @@ func FileNowLine(n *index.FileNow) string {
 		return "now: not written since"
 	case n.State == index.FileChanged:
 		return "now: changed since — what this turn wrote is no longer all there"
+	case n.State == index.FileWritten && n.By == index.ByContent:
+		return "now: written since — what this turn wrote is still in it"
 	case n.State == index.FileWritten:
 		return "now: written since (by its time; the text was not compared)"
 	case n.State == index.FileDeleted:

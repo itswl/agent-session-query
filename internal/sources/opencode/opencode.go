@@ -354,7 +354,7 @@ func assistant(m *transcript.Message, data map[string]any, parts []any) {
 		return
 	}
 	if completed := kit.Int(tm["completed"]); completed > created {
-		m.DurMs = completed - created
+		m.DurMs = model.DurMs(completed - created)
 	}
 	first := kit.Int(tm["streamed"])
 	if first < created {
@@ -366,7 +366,7 @@ func assistant(m *transcript.Message, data map[string]any, parts []any) {
 		}
 	}
 	if first > created {
-		m.TTFTMs = first - created
+		m.TTFTMs = model.DurMs(first - created)
 	}
 }
 
@@ -439,7 +439,7 @@ func blocksOf(part map[string]any, unread func(kind string)) []transcript.Block 
 		}
 		if span := kit.Map(state["time"]); len(span) > 0 {
 			if start, end := kit.Int(span["start"]), kit.Int(span["end"]); start > 0 && end >= start {
-				outcome.DurMs = end - start
+				outcome.DurMs = model.DurMs(end - start)
 			}
 		} else if span := kit.Map(part["time"]); len(span) > 0 {
 			start := kit.Int(span["ran"])
@@ -447,7 +447,7 @@ func blocksOf(part map[string]any, unread func(kind string)) []transcript.Block 
 				start = kit.Int(span["created"])
 			}
 			if end := kit.Int(span["completed"]); start > 0 && end >= start {
-				outcome.DurMs = end - start
+				outcome.DurMs = model.DurMs(end - start)
 			}
 		}
 		return []transcript.Block{call, transcript.ResultOf(callID, name, text, outcome)}
@@ -602,7 +602,7 @@ FROM session_message m JOIN session_v2 s ON s.id = m.session_id WHERE m.session_
 			}
 			tm := kit.Map(data["time"])
 			if start, end := kit.Int(tm["created"]), kit.Int(tm["completed"]); start > 0 && end >= start {
-				outcome.DurMs = end - start
+				outcome.DurMs = model.DurMs(end - start)
 			}
 			out := kit.Str(kit.Map(data["output"])["output"])
 			if out == "" {

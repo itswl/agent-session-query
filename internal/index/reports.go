@@ -244,11 +244,15 @@ type FileTouch struct {
 //
 // State is one of:
 //
-//	same     By content: everything the turn's last write to it put there is still in it.
+//	same     By content: everything the turn's last write to it put there is still in it,
+//	         and it has not been written since — or the turn wrote it whole and it is that.
 //	         By time: it has not been written since the turn ended.
-//	changed  By content: some of what the turn's last write put there is no longer in it.
-//	written  By time: it has been written since the turn ended. What changed, if anything,
-//	         is not known: a checkout or a formatter writes a file as well as an edit does.
+//	changed  By content: written since, and some of what the turn's last write put there is
+//	         no longer in it.
+//	written  It has been written since the turn ended. By content: what the turn put there
+//	         is still in it. By time: there was nothing to look for. What changed, if
+//	         anything, is not known: a checkout or a formatter writes a file as well as an
+//	         edit does.
 //	deleted  It is gone, and the directory it was in is still here.
 //
 // By says which evidence: "content" compares the text the turn wrote with the file, and

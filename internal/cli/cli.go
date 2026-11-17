@@ -773,12 +773,17 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 		}
 		checks = append(checks, ck)
 	}
-	// A look that was stopped is not a pass, whatever it got through
-	if ctx.Err() != nil {
+	// A look that was stopped is not a pass, whatever it got through, and says so
+	stopped := ctx.Err() != nil
+	if stopped {
 		failed = true
 	}
 	if c.json {
-		if err := printJSON(io.out, map[string]any{"version": app.Version, "stores": checks, "ok": !failed}); err != nil {
+		report := map[string]any{"version": app.Version, "stores": checks, "ok": !failed}
+		if stopped {
+			report["stopped"] = true
+		}
+		if err := printJSON(io.out, report); err != nil {
 			return err
 		}
 	} else {
@@ -801,6 +806,9 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 			if len(ck.Unread) > 0 {
 				fmt.Fprintf(io.out, "  %s %s\n", st.Warn("!"), unreadLine(ck.Unread))
 			}
+		}
+		if stopped {
+			fmt.Fprintln(io.out, "✗ stopped before every store was looked at whole")
 		}
 	}
 	if failed {

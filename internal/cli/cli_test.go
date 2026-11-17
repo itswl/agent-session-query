@@ -515,3 +515,23 @@ func TestIndexRmTakesWhatEarlierVersionsLeft(t *testing.T) {
 		t.Errorf("an index at a path of its own took the earlier asq's with it: %v", err)
 	}
 }
+
+// A doctor stopped part of the way does not pass, and says it was stopped, in words and in
+// JSON: a failure with nothing said of it reads as a store that failed unseen.
+func TestAStoppedDoctorSaysSo(t *testing.T) {
+	h, indexPath := setup(t)
+	stopped, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, json := range []bool{false, true} {
+		args := []string{"--index", indexPath, "--only", "claude", "--path", "claude=" + h.Dir}
+		if json {
+			args = append(args, "--json")
+		}
+		var out, errs bytes.Buffer
+		err := cmdDoctor(stopped, args, &streams{in: strings.NewReader(""), out: &out, err: &errs})
+		said := out.String()
+		if err == nil || !(json && strings.Contains(said, `"stopped": true`) || !json && strings.Contains(said, "stopped before every store")) {
+			t.Errorf("a stopped doctor (json %v): %v\n%s", json, err, said)
+		}
+	}
+}

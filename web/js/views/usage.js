@@ -55,7 +55,8 @@ export function mount(main, route, ctx) {
       chart(r.byDay),
       section('By model', span(since), table(r.byModel, r.total, 'Model', (k) => k || '(not recorded)')),
       section('By store', span(since), table(r.bySource, r.total, 'Store', (k) => h('span', { class: 'store' }, mark(k), k))),
-      section('By project', span(since), table(r.byProject, r.total, 'Project', (k) => (k ? h('a', { href: '/' + qs({ project: k }), title: k }, f.shortPath(k)) : '(no directory)'))),
+      // a project's sessions, in the window its row is of
+      section('By project', span(since), table(r.byProject, r.total, 'Project', (k) => (k ? h('a', { href: '/' + qs({ project: k, since: since === 'all' ? '' : since }), title: k }, f.shortPath(k)) : '(no directory)'))),
     );
   }
 

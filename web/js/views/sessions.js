@@ -103,6 +103,8 @@ export function mount(main, route, ctx) {
       const on = q.get(key) === '1';
       return h('li', null, h('a', { href: hrefWith(v.route, { [key]: on ? '' : '1' }), class: 'opt flag', 'aria-current': on ? 'true' : null }, h('span', { class: 'box' }, on && icon('check')), label));
     };
+    const sinceNow = q.get('since') || '';
+    const oddSince = sinceNow && sinceNow !== 'all' && !WHEN.some(([k]) => k === sinceNow) ? sinceNow : '';
     const stores = (hl?.stores || []).filter((s) => s.found);
     const chosen = q.get('project');
     let shown = projects.slice(0, TOP_PROJECTS);
@@ -119,7 +121,10 @@ export function mount(main, route, ctx) {
       h('section', null, h('h2', null, 'Store'), h('ul', { class: 'opts' },
         option('source', '', 'All stores'),
         stores.map((s) => option('source', s.source, [mark(s.source), s.title || s.source], { n: s.sessions, title: `${f.plural(s.sessions, 'session')}, ${f.plural(s.transcripts, 'transcript')} with subagents and archived ones · ${s.location}` })))),
-      h('section', null, h('h2', null, 'Time'), h('ul', { class: 'opts seg' }, WHEN.map(([k, label]) => option('since', k, label)))),
+      h('section', null, h('h2', null, 'Time'), h('ul', { class: 'opts seg' }, WHEN.map(([k, label]) => option('since', k, label)),
+        // a window the address names that is none of these — an older link's "today", a
+        // date — is shown as the one in force, until another is chosen
+        oddSince && option('since', oddSince, oddSince === 'today' ? 'Today' : oddSince))),
       h('section', null, h('h2', null, 'Include'), h('ul', { class: 'opts' }, flag('archived', 'Archived'), !searching() && flag('agents', 'Subagent transcripts'))),
       projects.length > 0 && h('section', null, h('h2', null, 'Project'), h('ul', { class: 'opts' }, option('project', '', 'All projects'), shown.map(projectOpt)), restList, restBtn),
     );

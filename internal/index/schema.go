@@ -21,6 +21,10 @@ package index
 // Each removes from the index what it does not list, and the other reads it in again.
 // The same sessions read differently are not a new file: see sources.Spec.Reads.
 //
+// Only the default path carries the version. An index at a path of its own (ASQ_INDEX,
+// --index) is the same file from one version to the next, and is brought up to this one
+// in place when it is opened (see addColumn).
+//
 // 2: the reads column, and Gemini's subagents and Antigravity's conversations listed apart.
 const schemaVersion = 2
 

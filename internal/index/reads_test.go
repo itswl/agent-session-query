@@ -2,7 +2,9 @@ package index
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -209,5 +211,79 @@ func TestWhatIsNewIsReadBeforeWhatIsReadAgain(t *testing.T) {
 	within(g, 4, func() { newIn = count("key = '7'") })
 	if newIn != 1 {
 		t.Errorf("caught up with the new session in the index %d times, want once", newIn)
+	}
+}
+
+// An index at a path of its own is the one an older asq used, from before readings: it
+// gains them in place, however many processes open it at once, and every session in it is
+// read again, once.
+func TestAnIndexFromBeforeReadingsGainsThem(t *testing.T) {
+	const column = "  reads      INTEGER NOT NULL DEFAULT 0,   -- the adapter's reading it was read with (sources.Spec.Reads)\n"
+	if !strings.Contains(schema, column) {
+		t.Fatal("the reads column is not where the test looks for it")
+	}
+	older := func() string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "index.db")
+		old, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer old.Close()
+		// as the older asq left it: in WAL mode, as every asq opens its index
+		if _, err := old.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := old.Exec(strings.Replace(schema, column, "", 1)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := old.Exec(`INSERT INTO sessions (source, agent, key, stamp, id) VALUES ('claude', 'claude', '0', '1', 's0')`); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	// Opened by many at once, all let go together, time and again
+	var path string
+	for round := range 4 {
+		path = older()
+		start := make(chan struct{})
+		errs := make(chan error, 16)
+		for range cap(errs) {
+			go func() {
+				<-start
+				ix, err := Open(path)
+				if err == nil {
+					ix.Close()
+				}
+				errs <- err
+			}()
+		}
+		close(start)
+		for range cap(errs) {
+			if err := <-errs; err != nil {
+				t.Errorf("round %d, opened at once with others: %v", round, err)
+			}
+		}
+	}
+
+	ix, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ix.Close()
+	sync := func() int {
+		t.Helper()
+		res, err := ix.Sync(context.Background(), []Store{{Name: "claude", Spec: sources.Spec{Name: "claude", Reads: 1}, Source: many{n: 4}}}, SyncOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Read
+	}
+	if n := sync(); n != 4 {
+		t.Errorf("the first sync read %d, want 4: the one from before, again, and three new", n)
+	}
+	if n := sync(); n != 0 {
+		t.Errorf("and then %d", n)
 	}
 }

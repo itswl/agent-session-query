@@ -91,6 +91,36 @@ func (ix *Index) recount() {
 	ix.sourcesMu.Unlock()
 }
 
+// addColumn adds a column that a table an older asq made lacks. An index at a path of its
+// own — ASQ_INDEX, --index, a container's volume — is not named by schemaVersion: it is the
+// one the older asq used, and gains the column, every row at what the declaration gives.
+// The look is made again under the write lock: two processes opening such an index at once
+// would otherwise both find the column missing, and one fail to add it.
+func addColumn(db *sql.DB, table, column, decl string) error {
+	has := func(q interface {
+		QueryRow(string, ...any) *sql.Row
+	}) (bool, error) {
+		var n int
+		err := q.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&n)
+		return n > 0, err
+	}
+	if ok, err := has(db); err != nil || ok {
+		return err
+	}
+	tx, err := db.Begin() // BEGIN IMMEDIATE: see Open
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if ok, err := has(tx); err != nil || ok {
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + decl); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // DefaultPath is where the index lives unless told otherwise: the user's cache
 // directory, since everything in it can be rebuilt. ASQ_INDEX moves it.
 func DefaultPath() string {
@@ -123,6 +153,10 @@ func Open(path string) (*Index, error) {
 	}
 	rw.SetMaxOpenConns(1)
 	if _, err := rw.Exec(schema); err != nil {
+		rw.Close()
+		return nil, fmt.Errorf("index: %s: %w", path, err)
+	}
+	if err := addColumn(rw, "sessions", "reads", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		rw.Close()
 		return nil, fmt.Errorf("index: %s: %w", path, err)
 	}

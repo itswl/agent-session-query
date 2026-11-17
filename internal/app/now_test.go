@@ -353,6 +353,7 @@ func TestCommandKey(t *testing.T) {
 		"python3 -m pytest tests/":             "python3 -m pytest",
 		"python3 script.py -c config":          "python3 script.py",
 		"/usr/bin/make check":                  "make check",
+		`"C:\tools\make.exe" check`:            "make check", // quoted, as a Windows path must be to a shell
 		// Codex keeps its argv commands joined by spaces, the script unquoted
 		"bash -lc cd /p && go test ./...":   "go test",
 		"bash -lc go build ./...":           "go build",

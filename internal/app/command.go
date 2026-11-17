@@ -1,7 +1,6 @@
 package app
 
 import (
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -231,7 +230,7 @@ func resolve(line string, depth int) (words []string, decides bool) {
 		if len(words) == 0 {
 			return nil, false
 		}
-		prog, args := filepath.Base(words[0]), words[1:]
+		prog, args := progName(words[0]), words[1:]
 		switch prog {
 		case "sudo", "doas":
 			words = skipOptions(args, "ugCDhprtT")
@@ -297,8 +296,8 @@ func keyOf(words []string, depth int) string {
 			return "" // what it reads is a here-document: inline
 		}
 	}
-	if filepath.IsAbs(prog) {
-		prog = filepath.Base(prog) // /usr/bin/make is make
+	if pathed(prog) {
+		prog = progName(prog) // /usr/bin/make is make
 	}
 	args := words[1:]
 	switch prog {
@@ -357,6 +356,23 @@ func keyOf(words []string, depth int) string {
 		return prog + " -m " + args[1]
 	}
 	return prog
+}
+
+// pathed reports whether a program is named by an absolute path — /usr/bin/make,
+// C:\tools\make.exe — whatever machine this is: a command line is the machine's it ran on.
+func pathed(prog string) bool {
+	return strings.HasPrefix(prog, "/") || strings.HasPrefix(prog, `\`) ||
+		len(prog) > 2 && prog[1] == ':' && (prog[2] == '\\' || prog[2] == '/')
+}
+
+// progName is a program's name, past the directories of a path to it, either way they
+// are written, and a Windows .exe.
+func progName(prog string) string {
+	name := prog[strings.LastIndexAny(prog, `/\`)+1:]
+	if len(name) > 4 && strings.EqualFold(name[len(name)-4:], ".exe") {
+		name = name[:len(name)-4]
+	}
+	return name
 }
 
 // skipOptions passes over a program's options: "-x", "--long", "--long=value", and the

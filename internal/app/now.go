@@ -204,11 +204,13 @@ func (l *looker) fileNow(ctx context.Context, t *index.FileTouch) *index.FileNow
 		return nil
 	}
 	path := t.Path
-	if filepath.IsAbs(t.Cwd) {
+	if t.Cwd != "" {
+		// A directory this machine does not have — or names another way: a Unix path on
+		// Windows — is another machine's
 		if dir := l.stat(t.Cwd); dir.err != nil || !dir.info.IsDir() {
 			return nil
 		}
-		if !filepath.IsAbs(path) {
+		if !filepath.IsAbs(path) && filepath.IsAbs(t.Cwd) {
 			path = filepath.Join(t.Cwd, path)
 		}
 	}

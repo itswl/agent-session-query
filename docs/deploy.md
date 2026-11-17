@@ -183,11 +183,12 @@ launchctl bootout "gui/$(id -u)/io.github.itswl.asq"          # stop and unload
   without how they stand, says which folder is waiting, and judges them once the question is
   answered. Allowing that one folder is all it needs; Full Disk Access is far more, and not
   needed. Not allowing it costs only how those files stand.
-- macOS remembers the answer against the binary's signature, and each release is signed by Go
-  alone, as a hash of that one build: after an upgrade it asks again. Answer it at the Mac, or in
-  System Settings › Privacy & Security › Files and Folders, under `asq`. macOS asks about `asq`
-  itself only when launchd runs it, as here; run from a terminal or by an agent's app, it asks
-  about that app, and remembers it for that app.
+- macOS keeps the answer across upgrades: the released binaries are all signed with one
+  certificate, as `io.github.itswl.asq` (`codesign -d -r- ~/.local/bin/asq` shows it), and it
+  remembers the answer against that and against the binary's path — so install upgrades where
+  the first one went. A binary built from source is not signed so, and is asked again after each
+  build. macOS asks about `asq` itself only when launchd runs it, as here; run from a terminal or
+  by an agent's app, it asks about that app, and remembers it for that app.
 
 **Windows — a scheduled task at logon**
 

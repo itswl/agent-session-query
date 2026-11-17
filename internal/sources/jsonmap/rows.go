@@ -328,7 +328,7 @@ func nestedTool(m transcript.Message, msg *message, unread func(kind string)) (t
 	if !started.IsZero() {
 		m.At = started
 		if outcome.DurMs == 0 && ended.After(started) {
-			outcome.DurMs = ended.Sub(started).Milliseconds()
+			outcome.DurMs = model.DurMs(ended.Sub(started).Milliseconds())
 		}
 	}
 	output := partsText(d.Result.Content, unread)

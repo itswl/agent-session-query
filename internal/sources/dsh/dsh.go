@@ -290,7 +290,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 					}
 				}
 				if from, to := kit.Time(j.StartedAt), kit.Time(j.FinishedAt); !from.IsZero() && to.After(from) {
-					e.durMs = to.Sub(from).Milliseconds()
+					e.durMs = model.DurMs(to.Sub(from).Milliseconds())
 				}
 				jobs[j.ToolCall.CallID] = e
 			}

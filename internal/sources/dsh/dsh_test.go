@@ -647,3 +647,22 @@ func TestUsageOfKeysThatMeanOneCounter(t *testing.T) {
 		}
 	}
 }
+
+// A job's own times are a row's word: one that ran from the start of the calendar to its
+// end ran for no duration a call can have, and none is read.
+func TestTimesNoJobCouldSpan(t *testing.T) {
+	rows := currentRows()
+	for _, r := range rows {
+		if r["type"] == "job/settled" {
+			data := r["data"].(M)
+			data["startedAt"], data["finishedAt"] = "0001-01-01T00:00:01Z", "9999-12-31T23:59:59Z"
+		}
+	}
+	root := t.TempDir()
+	put(t, filepath.Join(root, "project", "session-real", "session.v4.jsonl"), encode(t, rows))
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.Invariants(t, s)
+	if tools := sourcetest.Tools(s.Turn(t, 1)); len(tools) != 2 || tools[1].DurMs != 0 || tools[1].Exit == nil {
+		t.Errorf("the job's call = %+v", tools[1])
+	}
+}

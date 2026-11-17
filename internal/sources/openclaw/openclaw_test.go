@@ -487,3 +487,20 @@ func TestFiguresNoExitCodeOrDurationCanBe(t *testing.T) {
 		t.Errorf("a crash on Windows = %+v", crash)
 	}
 }
+
+// A run's own times are a row's word too: one that began at the start of the calendar
+// and ended at its end ran for no duration a call can have, and none is read — a
+// duration past what a time.Duration holds would end the call before it began.
+func TestTimesNoRunCouldSpan(t *testing.T) {
+	state := t.TempDir()
+	agent(t, state, "main", schema,
+		`INSERT INTO session_windows VALUES ('ses_t', 'agent:main:main', 'done', 1789704223504, 1789704262019, 1789704262019, 1789704262019, 'deepseek', 'deepseek-chat', '')`,
+		`INSERT INTO transcript_events VALUES ('ses_t', 1, '{"type":"message","message":{"role":"user","content":"run it"}}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_t', 2, '{"type":"message","message":{"role":"custom","customType":"openclaw.nested-tool.v1","content":"","details":{"toolCallId":"n1","toolName":"exec","input":{"command":"run"},"result":{"content":[{"type":"text","text":"out"}]},"isError":false,"startedAt":"0001-01-01T00:00:01Z","timestamp":"9999-12-31T23:59:59Z"}}}', 0)`,
+	)
+	s := sourcetest.One(t, Spec.Open(state))
+	sourcetest.Invariants(t, s)
+	if tools := sourcetest.Tools(s.Turn(t, 1)); len(tools) != 1 || tools[0].DurMs != 0 {
+		t.Errorf("tools = %+v", tools)
+	}
+}

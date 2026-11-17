@@ -7,7 +7,7 @@ and whether each reads.
 |---|---|---|---|---|
 | `claude` | Claude Code | `~/.claude/projects` | `CLAUDE_CONFIG_DIR` | `claude --resume` |
 | `codex` | Codex | `~/.codex/sessions`, and `archived_sessions` beside it | `CODEX_HOME` | `codex resume` |
-| `gemini` | Gemini CLI | `~/.gemini/tmp` | — | — |
+| `gemini` | Gemini CLI | `~/.gemini/tmp` | — | `gemini --resume` |
 | `opencode` | OpenCode | `~/.local/share/opencode/opencode.db` (`%LOCALAPPDATA%\opencode` on Windows) | `XDG_DATA_HOME` | `opencode --session` |
 | `grok` | Grok CLI | `~/.grok/sessions`, and `archived_sessions` beside it | `GROK_HOME` | `grok -r` |
 | `antigravity` | Antigravity | `~/.gemini/antigravity-cli/brain` (the `agy` CLI) and `~/.gemini/antigravity/brain` (the IDE) | — | `agy --conversation` |
@@ -107,18 +107,33 @@ newest is read, a half-written last frame and all. The session's title is the ha
 harness marks a result an error only when the tool itself broke — but on the job that ran it,
 and is read from there: `ls` of a missing directory is a failed call.
 
-**Gemini CLI**, **Grok CLI**, **Antigravity** — each read from its own layout: Gemini's
-per-project chat files, Grok's update stream (or, while a session is still running, the
-messages it keeps beside it), Antigravity's transcripts and the summaries database that lists
-them.
+**Gemini CLI** — per-project chat files, the project's directory from the `.project_root`
+beside them, and subagents (`chats/<session>/<agent>.jsonl`) as sessions beneath the one that
+started them. A command that ran is "success" to Gemini CLI whatever it exited with: the exit
+code, or the signal that ended it, is read from what the shell tool told the model. A call
+cancelled with Esc is one call, interrupted, however many times the file writes it. What `@file`
+added to a question is context; the question is what was typed. Resumed from the session's
+project directory, as Gemini CLI requires.
+
+**Grok CLI** — the update stream, or, before a session's first line of it, the messages it keeps
+beside it. Input tokens include the cache reads, which are taken out; cache writes are read.
+A command's exit code is in its raw output, not its status, and is read from there — a search
+that matched nothing exits 1 and is not a failure. Times are the events' own, not the
+whole-second time each line was written.
+
+**Antigravity** — the transcripts, and the summaries database that lists them. A model step's
+calls carry no ids; the steps that answer them follow their order. A command's exit code is in
+the step that answers it.
 
 How far each adapter has been checked differs, and is worth knowing. Claude Code, Codex,
 OpenCode, Pi and Hermes were verified against real stores — some 1,300 transcripts in all —
-with their token totals matching independent sums exactly. OpenClaw (2026.11) and DeepSeek
-Harness (0.2.2) were verified against sessions run for the purpose on their current releases,
-likewise to the token; both turned out to write things the earlier samples did not show.
-Gemini CLI, Grok CLI and Antigravity are covered by tests built from samples of each CLI's
-files, and have not been checked against a live store.
+with their token totals matching independent sums exactly. OpenClaw (2026.11.3), DeepSeek
+Harness (0.2.2), Gemini CLI (0.68), Grok CLI (1.0.77) and Antigravity's `agy` (1.5.8) were
+verified against sessions run for the purpose on those releases — commands that failed, files
+written and edited, turns cancelled and killed, conversations resumed — and every one of them
+turned out to write things the earlier samples did not show; the tests keep trimmed copies of
+what they wrote. Antigravity was run against a model of its own (an API key's), not one Google
+hosts, which may write its steps differently.
 
 If a CLI changes how it writes, nothing fails. An adapter passes over a record it does not know —
 a new row type, a renamed block — and the session reads as less than it holds: a turn short, a

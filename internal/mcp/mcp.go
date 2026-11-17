@@ -87,7 +87,10 @@ func (s *Server) logf(format string, args ...any) {
 	}
 }
 
-// Serve answers requests from in on out until in ends or ctx does.
+// Serve answers requests from in on out until in ends or ctx does. When in ends, the
+// answers in flight are sent before it returns: the client may still be reading. When
+// ctx ends — a TERM, a Ctrl+C — they are given up, and it returns as soon as they have
+// stopped: whoever stops a server is not waiting for its answers.
 //
 // Each request runs on its own goroutine: a search that takes a second must not hold up
 // the ping behind it, and a request the client gives up on (notifications/cancelled) is

@@ -505,31 +505,51 @@ func TestGuessingIsThrottled(t *testing.T) {
 	var l limiter
 	now := time.Now()
 	one, other := allowance{key: "10.0.0.1", kind: "direct"}, allowance{key: "10.0.0.2", kind: "direct"}
-	for range attemptsMax {
-		l.failed(one, now)
+	blocked := func(a allowance, at time.Time) (bool, time.Duration) {
+		b, wait, _ := l.attempt(allowance{key: a.key}, true, at) // the right token, from nobody to remember
+		return b, wait
 	}
-	if blocked, _, _ := l.blocked(one, now); !blocked {
+	for range attemptsMax {
+		l.attempt(one, false, now)
+	}
+	if b, _ := blocked(one, now); !b {
 		t.Error("not blocked at the limit")
 	}
-	if blocked, _, _ := l.blocked(other, now); blocked {
+	if b, _ := blocked(other, now); b {
 		t.Error("one address's guesses are charged to another")
 	}
-	if blocked, _, _ := l.blocked(one, now.Add(attemptsWindow)); blocked {
+	if b, _ := blocked(one, now.Add(attemptsWindow)); b {
 		t.Error("still blocked when the window has passed")
 	}
 	// An entry that outlived its window starts over where it lies: the next minute's
 	// guesses are the next minute's, counted from one, sweep or no sweep
 	later := now.Add(attemptsWindow)
 	l.swept = later // no sweep is due: the old entry is still in the table
-	l.failed(one, later)
-	if blocked, _, _ := l.blocked(one, later); blocked {
+	l.attempt(one, false, later)
+	if b, _ := blocked(one, later); b {
 		t.Error("a guess in a new window was added to the old window's ten")
 	}
 	for range attemptsMax - 1 {
-		l.failed(one, later)
+		l.attempt(one, false, later)
 	}
-	if blocked, wait, _ := l.blocked(one, later.Add(time.Second)); !blocked || wait != attemptsWindow-time.Second {
-		t.Errorf("ten guesses in the new window: blocked %v, for %v", blocked, wait)
+	if b, wait := blocked(one, later.Add(time.Second)); !b || wait != attemptsWindow-time.Second {
+		t.Errorf("ten guesses in the new window: blocked %v, for %v", b, wait)
+	}
+
+	// Callers known are kept to a number, and a day: the one known longest ago goes first
+	l = limiter{}
+	for i := range knownKept + 1 {
+		l.attempt(allowance{key: fmt.Sprint(i), kind: "named"}, true, now.Add(time.Duration(i)*time.Second))
+	}
+	if len(l.known) != knownKept || l.knows("0", now.Add(time.Hour)) || !l.knows("1", now.Add(time.Hour)) {
+		t.Errorf("%d known; the first %v, the second %v", len(l.known), l.knows("0", now.Add(time.Hour)), l.knows("1", now.Add(time.Hour)))
+	}
+	if l.knows("1", now.Add(knownFor+time.Second)) {
+		t.Error("a caller is known past knownFor")
+	}
+	l.attempt(allowance{key: "local"}, true, now)
+	if _, ok := l.known["local"]; ok {
+		t.Error("this machine's programs were remembered: they need not be")
 	}
 }
 
@@ -591,10 +611,16 @@ func TestGuessesAreChargedToWhoMadeThem(t *testing.T) {
 			t.Errorf("a header no proxy means anything by = %d", c)
 		}
 		// The other way round: a program here with the token wrong is shut out by its own
-		// ten, and a page in a browser is not
+		// ten, and a page in a browser is not, nor what comes through a proxy
+		s, _, _ = build(t, Options{Token: token})
 		spend(t, s, local, same(nil))
 		if c := code(s, local, right, nil); c != http.StatusTooManyRequests {
 			t.Errorf("this machine's programs, after their own ten = %d", c)
+		}
+		for name, h := range map[string]map[string]string{"a page in a browser": browser, "a proxy": relayed} {
+			if c := code(s, local, right, h); c != http.StatusOK {
+				t.Errorf("%s here, after the programs' ten = %d", name, c)
+			}
 		}
 	})
 
@@ -632,8 +658,12 @@ func TestGuessesAreChargedToWhoMadeThem(t *testing.T) {
 
 	t.Run("callers who choose what the header says share their proxy's allowance", func(t *testing.T) {
 		s, _, _ := build(t, Options{Token: token, ProxyHeader: "CF-Connecting-IP"})
+		in := map[string]string{"CF-Connecting-IP": "203.0.113.100"}
+		if c := code(s, local, right, in); c != http.StatusOK {
+			t.Fatalf("a caller with the token, before anyone guessed = %d", c)
+		}
 		// Every guess names a new caller: a page that reaches the proxy's port, a device
-		// on the network. Ten callers' worth, and that proxy is shut
+		// on the network. Ten callers' worth, and that proxy is shut to newcomers
 		for i := range proxyMax {
 			if c := code(s, local, wrong, map[string]string{"CF-Connecting-IP": fmt.Sprintf("198.51.%d.%d", i/250, i%250+1)}); c != http.StatusUnauthorized {
 				t.Fatalf("guess %d through the proxy = %d", i+1, c)
@@ -643,12 +673,92 @@ func TestGuessesAreChargedToWhoMadeThem(t *testing.T) {
 		if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), "through this proxy") {
 			t.Errorf("a new caller through a proxy that has been guessed through = %d %s", rec.Code, rec.Body)
 		}
+		login := func(h map[string]string) int {
+			return call{method: http.MethodPost, path: "/api/login", body: `{"token":"` + token + `"}`, header: h, remote: local}.do(s).Code
+		}
+		if c := login(map[string]string{"CF-Connecting-IP": "203.0.113.201"}); c != http.StatusTooManyRequests {
+			t.Errorf("a new sign-in through it = %d", c)
+		}
+		// Nobody already in is shut out: a caller that has shown the token gets through,
+		// asking or signing in, and its wrong tokens are its own
+		if c := code(s, local, right, in); c != http.StatusOK {
+			t.Errorf("a caller that had shown the token, after others spent the proxy's allowance = %d", c)
+		}
+		if c := login(in); c != http.StatusOK {
+			t.Errorf("its sign-in = %d", c)
+		}
+		spend(t, s, local, same(in))
+		if c := code(s, local, right, in); c != http.StatusTooManyRequests {
+			t.Errorf("a caller known, after ten wrong tokens of its own = %d", c)
+		}
 		if c := code(s, local, right, nil); c != http.StatusOK {
 			t.Errorf("this machine's programs = %d", c)
 		}
 		// Another proxy, on the private network, has its own
-		if c := code(s, "10.1.2.3:40000", right, map[string]string{"CF-Connecting-IP": "203.0.113.201"}); c != http.StatusOK {
+		if c := code(s, "10.1.2.3:40000", right, map[string]string{"CF-Connecting-IP": "203.0.113.202"}); c != http.StatusOK {
 			t.Errorf("through another proxy = %d", c)
+		}
+	})
+
+	t.Run("a proxy on this machine is one, whichever loopback address it comes from", func(t *testing.T) {
+		s, _, _ := build(t, Options{Token: token, ProxyHeader: "CF-Connecting-IP"})
+		// On Linux a process may connect from any of 127.0.0.0/8
+		for i := range proxyMax {
+			remote := fmt.Sprintf("127.%d.%d.%d:50000", 1+i/250, i%250, 1+i%7)
+			if c := code(s, remote, wrong, map[string]string{"CF-Connecting-IP": fmt.Sprintf("198.51.%d.%d", i/250, i%250+1)}); c != http.StatusUnauthorized {
+				t.Fatalf("guess %d = %d", i+1, c)
+			}
+		}
+		if c := code(s, "127.9.9.9:50000", wrong, map[string]string{"CF-Connecting-IP": "198.51.9.9"}); c != http.StatusTooManyRequests {
+			t.Errorf("a guess from yet another loopback address, naming yet another caller = %d", c)
+		}
+		if c := code(s, local, right, map[string]string{"CF-Connecting-IP": "203.0.113.5"}); c != http.StatusTooManyRequests {
+			t.Errorf("a newcomer through the proxy at 127.0.0.1 = %d: the guesses were not its proxy's", c)
+		}
+	})
+
+	t.Run("naming a caller does not spend what it has when it calls directly", func(t *testing.T) {
+		s, _, _ := build(t, Options{Host: "0.0.0.0", Token: token, ProxyHeader: "X-Real-IP"})
+		spend(t, s, "192.168.1.30:40000", same(map[string]string{"X-Real-IP": "192.168.1.20"}))
+		if c := code(s, "192.168.1.20:40000", right, nil); c != http.StatusOK {
+			t.Errorf("the caller named, calling directly = %d", c)
+		}
+		if c := code(s, "192.168.1.31:40000", right, map[string]string{"X-Real-IP": "192.168.1.20"}); c != http.StatusTooManyRequests {
+			t.Errorf("the caller named, named again = %d", c)
+		}
+	})
+
+	t.Run("logins held open are counted as they are settled", func(t *testing.T) {
+		s, _, _ := build(t, Options{Token: token})
+		const held = 3 * attemptsMax
+		var reading, done sync.WaitGroup
+		release := make(chan struct{})
+		codes := make(chan int, held)
+		for range held {
+			reading.Add(1)
+			done.Add(1)
+			go func() {
+				defer done.Done()
+				body := &heldBody{rest: strings.NewReader(`{"token":"not-it"}`), first: reading.Done, release: release}
+				req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7717/api/login", body)
+				req.RemoteAddr = "198.51.100.7:40000"
+				rec := httptest.NewRecorder()
+				s.ServeHTTP(rec, req)
+				codes <- rec.Code
+			}()
+		}
+		reading.Wait() // every one of them is past whatever comes before its body
+		close(release)
+		done.Wait()
+		close(codes)
+		tried := 0
+		for c := range codes {
+			if c == http.StatusUnauthorized {
+				tried++
+			}
+		}
+		if tried != attemptsMax {
+			t.Errorf("%d of %d logins held open had their token compared; the allowance is %d", tried, held, attemptsMax)
 		}
 	})
 
@@ -697,6 +807,10 @@ func TestGuessesAreChargedToWhoMadeThem(t *testing.T) {
 
 	t.Run("a full table shuts out strangers, never this machine", func(t *testing.T) {
 		s, _, _ := build(t, Options{Host: "::", Token: token, ProxyHeader: "CF-Connecting-IP"})
+		const regular = "[2001:db8:ffff::1]:40000" // a caller from elsewhere that has shown the token before
+		if c := code(s, regular, right, nil); c != http.StatusOK {
+			t.Fatalf("a caller with the token, before the flood = %d", c)
+		}
 		// A flood of addresses straight at the port fills the table, and ten more fill
 		// the strangers' allowance
 		for i := range attemptsKept + attemptsMax {
@@ -715,6 +829,9 @@ func TestGuessesAreChargedToWhoMadeThem(t *testing.T) {
 		}
 		if c := code(s, local, right, map[string]string{"CF-Connecting-IP": "203.0.113.5"}); c != http.StatusOK {
 			t.Errorf("a caller through the proxy, whose strangers are counted apart = %d", c)
+		}
+		if c := code(s, regular, right, nil); c != http.StatusOK {
+			t.Errorf("a caller that had shown the token, once the table is full = %d", c)
 		}
 		if n := len(s.attempts.hits); n > attemptsKept+8 {
 			t.Errorf("the table holds %d entries", n)
@@ -846,13 +963,26 @@ func TestSignInsOutliveARestart(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(open, secretFile)); err == nil {
 			t.Error("a secret was kept in a directory anyone can write")
 		}
-		if !strings.Contains(said.String(), "not this user's alone") {
+		if !strings.Contains(said.String(), "not this user's to keep a secret in") {
 			t.Errorf("the refusal was not said: %q", &said)
 		}
 		if !takes(s, signIn(s, token)) {
 			t.Error("without a place for the secret nobody can sign in")
 		}
 		said.Reset()
+		// One its group may write is what mkdir makes where each user has a group of their
+		// own, under a umask of 002: the secret is kept there
+		mine := filepath.Join(t.TempDir(), "state")
+		if err := os.Mkdir(mine, 0o775); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(mine, 0o775); err != nil {
+			t.Fatal(err)
+		}
+		cookie = signIn(start(Options{Token: token, State: mine}), token)
+		if !takes(start(Options{Token: token, State: mine}), cookie) || said.Len() != 0 {
+			t.Errorf("a directory its group may write was refused: %q", &said)
+		}
 	}
 
 	// Servers that start in the same instant hold one secret, not one each
@@ -1174,4 +1304,19 @@ func TestLivePageDirUnderConcurrentRequests(t *testing.T) {
 	if rec := (call{path: "/js/a.js"}).do(s); !strings.Contains(rec.Body.String(), "a = 3") {
 		t.Errorf("an edited file is served stale: %s", rec.Body)
 	}
+}
+
+// heldBody is a request body whose sender is slow: it says when it is first read from,
+// and gives nothing until released.
+type heldBody struct {
+	rest    io.Reader
+	first   func()
+	once    sync.Once
+	release chan struct{}
+}
+
+func (b *heldBody) Read(p []byte) (int, error) {
+	b.once.Do(b.first)
+	<-b.release
+	return b.rest.Read(p)
 }

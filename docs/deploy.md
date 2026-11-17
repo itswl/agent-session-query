@@ -32,7 +32,7 @@ refused with `403` before anything is read.
   retires every one, and so do deleting that file and restarting the server, which reads it
   when it starts; and a cookie forged from a guess at the token is refused whether or not the
   guess was right — it is not a way to try tokens. A `session.key` others can read is replaced,
-  and a state directory others can write is not used. Where there is no directory to keep the
+  and a state directory that is not yours, or that anyone may write, is not used. Where there is no directory to keep the
   secret in, the server makes one for the run and says that sign-ins will end with it.
 
 Ten wrong tokens from one caller in a minute, by either route, and that caller is answered `429`
@@ -64,7 +64,14 @@ is right only behind a proxy that appends to it — nginx with
 Whatever the header says, every caller it names draws on one more allowance as well, the
 proxy's: ten callers' worth of wrong tokens a minute, together. A caller who can choose what the
 header says — a page that reaches the proxy's port, a device on the network — gets that and no
-more, instead of a fresh allowance with every guess.
+more, instead of a fresh allowance with every guess. A caller the header names is counted apart
+from the same address calling the port directly, so naming a machine does not shut it out.
+
+When the proxy's allowance is spent, the proxy is shut for the rest of the minute to callers that
+have not shown the right token in the last day, sign-ins included. A caller that has — an agent
+asking with its token, a browser that signed in — is held back only by its own wrong tokens, and
+a browser holding its cookie is never held back at all. So callers guessing at ten addresses can
+keep newcomers out for as long as they keep at it, and nobody who is already in.
 
 The server remembers 4,096 callers at once. Past that, during a flood of addresses, the callers it
 does not know share one allowance of their kind; the callers on this machine are always known.

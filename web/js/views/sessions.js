@@ -40,7 +40,7 @@ function hrefWith(route, changes) {
 }
 
 export function mount(main, route, ctx) {
-  const v = { route, items: [], total: 0, sessions: 0, end: false, sel: null, busy: null, rows: new Map(), renew: false };
+  const v = { route, items: [], total: 0, sessions: 0, end: false, sel: null, busy: null, rows: new Map(), renew: false, failed: false };
   const aside = h('aside', { class: 'filters', id: 'filters', 'aria-label': 'Filters' });
   const toggle = h('button', { type: 'button', class: 'btn filters-toggle', 'aria-expanded': 'false', 'aria-controls': 'filters' }, icon('filter'), 'Filters');
   toggle.addEventListener('click', () => {
@@ -204,9 +204,11 @@ export function mount(main, route, ctx) {
         v.total = r.total;
         v.end = r.sessions.length < PAGE;
       }
+      v.failed = false;
       renderList();
     } catch (e) {
       if (isAbort(e)) return;
+      if (reset) v.failed = true;
       (reset ? list : more).replaceChildren(errorBox(e, () => load(reset)));
     } finally {
       if (v.busy === c) v.busy = null;
@@ -215,11 +217,13 @@ export function mount(main, route, ctx) {
 
   // A change refetches the first page and folds it into what is shown: rows already
   // on screen are patched where they stand, so neither the scroll nor the selection moves.
-  // A list come back to by a link rather than by Back is shown from its top, and there the
-  // first page simply replaces it: what was kept below may no longer match ("today" was
-  // yesterday) or be gone, and is not shown as if it did. An empty first page is an
-  // empty list, however it was come to — and an empty list is asked again like any other,
-  // so that a session appears in it as soon as an agent writes one.
+  // It is folded only where it joins what is shown — its last row is one shown already,
+  // unchanged — so that nothing can lie unseen between the two. Otherwise the first page
+  // replaces the list: a list come back to by a link rather than by Back, where what was
+  // kept below may no longer match ("today" was yesterday) or be gone; a page that is the
+  // whole list; and one of rows all new, past which there may be more. An empty list is
+  // asked again like any other, so that a session appears in it as soon as an agent
+  // writes one; and one whose first load failed shows the new error, not two.
   async function refresh() {
     if (searching()) return;
     if (v.busy) return changes();
@@ -227,21 +231,25 @@ export function mount(main, route, ctx) {
     v.busy = c;
     try {
       const r = await api('/api/sessions' + qs({ ...apiFilters(v.route.query), agents: v.route.query.get('agents') === '1', limit: PAGE }), { signal: AbortSignal.any([ctx.signal, c.signal]) });
-      if (v.renew || !r.sessions.length) {
+      const last = r.sessions.at(-1);
+      const joins = r.sessions.length >= PAGE && v.items.some((s) => s.ref === last.ref && s.updatedAt === last.updatedAt);
+      if (v.renew || !joins) {
         v.items = r.sessions;
         v.end = r.sessions.length < PAGE;
       } else {
         const fresh = new Set(r.sessions.map((s) => s.ref));
-        const floor = f.when(r.sessions.at(-1).updatedAt);
+        const floor = f.when(last.updatedAt);
         v.items = [...r.sessions, ...v.items.filter((s) => !fresh.has(s.ref) && f.when(s.updatedAt) <= floor)];
       }
-      v.renew = false;
+      v.renew = v.failed = false;
       v.total = r.total;
       note.say();
       renderList();
     } catch (e) {
       // What is drawn stays, and says it is from earlier; the next change asks again
-      if (!isAbort(e)) note.say(e, refresh);
+      if (isAbort(e)) return;
+      if (v.failed) list.replaceChildren(errorBox(e, () => load(true)));
+      else note.say(e, refresh);
     } finally {
       if (v.busy === c) v.busy = null;
     }

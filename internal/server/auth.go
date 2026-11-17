@@ -63,6 +63,10 @@ const (
 	// attemptsKept callers are remembered at once; past it the rest share an allowance of
 	// their kind. A flood of addresses costs the server a table of this size and no more.
 	attemptsKept = 4096
+	// knownFor is how long a caller that has shown the right token is known: neither a
+	// spent proxy allowance nor a full table holds it back. knownKept of them at once.
+	knownFor  = 24 * time.Hour
+	knownKept = 256
 
 	secretFile = "session.key"
 	secretSize = 32
@@ -87,18 +91,20 @@ func signKey(secret []byte, token string) []byte {
 // a file only its owner reads. Servers that start together end up holding the same one,
 // whichever was written first.
 //
-// The directory and the file must be this user's alone. A secret another user could
-// read, or a directory another user could write a secret of their choosing into — a
-// state directory that fell back to a shared temporary one — is no secret: the
-// directory is refused, and the file is replaced.
+// The file must be this user's alone, and the directory this user's. A secret another
+// user could read, or a directory anyone could write a secret of their choosing into — a
+// state directory that fell back to a shared temporary one — is no secret: the file is
+// replaced, and the directory refused. A directory its group may write is not refused:
+// that is what `mkdir` makes under the umask of a system that gives each user a group
+// of their own.
 func loadSecret(dir string) ([]byte, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	if info, err := os.Stat(dir); err != nil {
 		return nil, err
-	} else if owned, known := ownedHere(info); known && (!owned || info.Mode().Perm()&0o022 != 0) {
-		return nil, fmt.Errorf("%s is not this user's alone (mode %v)", dir, info.Mode().Perm())
+	} else if owned, known := ownedHere(info); known && (!owned || info.Mode().Perm()&0o002 != 0) {
+		return nil, fmt.Errorf("%s is not this user's to keep a secret in (mode %v)", dir, info.Mode().Perm())
 	}
 	path := filepath.Join(dir, secretFile)
 	for try := 0; try < 40; try++ {
@@ -208,11 +214,17 @@ func signed(key []byte, value string, now time.Time) bool {
 //     such a page. Node's fetch, which MCP clients use, sends neither.
 //   - What a proxy relays is charged apart from what reached the port directly. When
 //     the proxy says who is calling (Options.ProxyHeader), and is one to believe, each
-//     caller behind it has an allowance of its own; all of them together also draw on
-//     one larger allowance per proxy. A caller who can choose what the header says — a
-//     page that reaches the proxy's port, a device on the network — would otherwise
-//     take a fresh allowance with every guess.
+//     caller behind it has an allowance of its own, apart from the one the same address
+//     has when it calls directly; all of them together also draw on one larger allowance
+//     per proxy. A caller who can choose what the header says — a page that reaches the
+//     proxy's port, a device on the network — would otherwise take a fresh allowance
+//     with every guess. A proxy on this machine is one proxy whichever loopback address
+//     it connects from: on Linux a process may connect from any of 127.0.0.0/8.
 //   - An IPv6 caller holds a /64, and is charged as one.
+//   - A caller that has shown the right token is known for a while (knownFor), and what
+//     others spend does not hold it back: neither its proxy's allowance nor a full
+//     table, only its own allowance. Callers guessing through a proxy can keep newcomers
+//     out for as long as they keep at it, and nobody who is already in.
 //   - The table of callers is bounded. Past attemptsKept, the callers it does not know
 //     share one allowance of their kind. The callers on this machine are always known by
 //     name, and never share it.
@@ -222,14 +234,15 @@ type allowance struct {
 	proxy string // the allowance it also draws on, with every caller behind the same proxy
 }
 
-// limiter counts wrong tokens per allowance in a fixed window. It needs no goroutine of
-// its own: an entry that has outlived its window counts for nothing wherever it is read,
-// and the table is swept as attempts come in — once a window, or once a second while it
-// is full.
+// limiter counts wrong tokens per allowance in a fixed window, and remembers the callers
+// that showed the right one. It needs no goroutine of its own: an entry that has
+// outlived its window counts for nothing wherever it is read, and the table is swept as
+// attempts come in — once a window, or once a second while it is full.
 type limiter struct {
 	mu    sync.Mutex
 	hits  map[string]hit
 	swept time.Time
+	known map[string]time.Time // when each caller known last showed the right token
 }
 
 type hit struct {
@@ -244,13 +257,54 @@ const (
 	byProxy  = "proxy"
 )
 
-// slot is the entry an allowance's attempts are kept under: its own, while there is
-// room or when it is one of this machine's.
+// attempt settles one token a caller offers, in one step: refused, whatever the token,
+// when the caller's allowance or its proxy's is used up; otherwise counted against both
+// when it is wrong, and its caller known when it is right.
+//
+// One step, so that tokens offered at once are counted at once. Were the allowance
+// checked before a login's body is read and charged after, a caller could hold a hundred
+// logins open past the check, and spend its proxy's allowance alone.
+func (l *limiter) attempt(a allowance, right bool, now time.Time) (bool, time.Duration, string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.hits == nil {
+		l.hits, l.known = map[string]hit{}, map[string]time.Time{}
+	}
+	if now.Sub(l.swept) >= attemptsWindow {
+		l.sweep(now)
+	}
+	key, whose := l.slot(a, now)
+	if b, wait := l.over(key, attemptsMax, now); b {
+		return true, wait, whose
+	}
+	proxy := a.proxy
+	if l.knows(a.key, now) {
+		proxy = ""
+	}
+	if proxy != "" {
+		if b, wait := l.over(proxy, proxyMax, now); b {
+			return true, wait, byProxy
+		}
+	}
+	switch {
+	case right && a.kind != "":
+		l.know(a.key, now)
+	case !right:
+		l.add(key, now)
+		if proxy != "" {
+			l.add(proxy, now)
+		}
+	}
+	return false, 0, ""
+}
+
+// slot is the entry an allowance's attempts are kept under: its own while there is
+// room, or when it is one of this machine's, or a caller known.
 func (l *limiter) slot(a allowance, now time.Time) (string, string) {
 	if a.kind == "" {
 		return a.key, byCaller
 	}
-	if _, ok := l.hits[a.key]; ok {
+	if _, ok := l.hits[a.key]; ok || l.knows(a.key, now) {
 		return a.key, byCaller
 	}
 	if len(l.hits) >= attemptsKept && now.Sub(l.swept) >= time.Second {
@@ -279,39 +333,6 @@ func (l *limiter) over(key string, most int, now time.Time) (bool, time.Duration
 	return true, h.started.Add(attemptsWindow).Sub(now)
 }
 
-// blocked reports whether an allowance is used up, for how long, and whose it is.
-func (l *limiter) blocked(a allowance, now time.Time) (bool, time.Duration, string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	key, whose := l.slot(a, now)
-	if b, wait := l.over(key, attemptsMax, now); b {
-		return true, wait, whose
-	}
-	if a.proxy != "" {
-		if b, wait := l.over(a.proxy, proxyMax, now); b {
-			return true, wait, byProxy
-		}
-	}
-	return false, 0, ""
-}
-
-// failed records one wrong token against an allowance, and its proxy's.
-func (l *limiter) failed(a allowance, now time.Time) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.hits == nil {
-		l.hits = map[string]hit{}
-	}
-	if now.Sub(l.swept) >= attemptsWindow {
-		l.sweep(now)
-	}
-	key, _ := l.slot(a, now)
-	l.add(key, now)
-	if a.proxy != "" {
-		l.add(a.proxy, now)
-	}
-}
-
 // add counts one attempt; an entry past its window starts over where it lies.
 func (l *limiter) add(key string, now time.Time) {
 	h := l.hits[key]
@@ -320,6 +341,26 @@ func (l *limiter) add(key string, now time.Time) {
 	}
 	h.count++
 	l.hits[key] = h
+}
+
+func (l *limiter) knows(key string, now time.Time) bool {
+	at, ok := l.known[key]
+	return ok && now.Sub(at) < knownFor
+}
+
+// know remembers a caller that showed the right token. With knownKept remembered, the
+// one that showed it longest ago is forgotten.
+func (l *limiter) know(key string, now time.Time) {
+	if _, ok := l.known[key]; !ok && len(l.known) >= knownKept {
+		oldest := ""
+		for k, at := range l.known {
+			if oldest == "" || at.Before(l.known[oldest]) {
+				oldest = k
+			}
+		}
+		delete(l.known, oldest)
+	}
+	l.known[key] = now
 }
 
 // relayHeaders are what a proxy adds to a request it passes on.
@@ -354,7 +395,11 @@ func (s *Server) caller(r *http.Request) allowance {
 	}
 	if header != "" && (local || peer.IsPrivate() || peer.IsLinkLocalUnicast()) {
 		if said, ok := lastAddr(r.Header.Values(header)); ok {
-			return allowance{key: network(said), kind: "named", proxy: "proxy " + network(peer)}
+			proxy := "proxy " + network(peer)
+			if local {
+				proxy = "proxy local"
+			}
+			return allowance{key: "named " + network(said), kind: "named", proxy: proxy}
 		}
 	}
 	if local {
@@ -429,14 +474,13 @@ func (s *Server) authorize(r *http.Request) (verdict, time.Duration, string) {
 	if !ok {
 		return unauthorized, 0, ""
 	}
-	who := s.caller(r)
-	if blocked, wait, whose := s.attempts.blocked(who, now); blocked {
-		return throttled, wait, whose
+	right := subtle.ConstantTimeCompare([]byte(given), []byte(s.opts.Token)) == 1
+	if blocked, wait, whose := s.attempts.attempt(s.caller(r), right, now); blocked {
+		return throttled, wait, whose // right or not: past the limit the answer does not say
 	}
-	if subtle.ConstantTimeCompare([]byte(given), []byte(s.opts.Token)) == 1 {
+	if right {
 		return allowed, 0, ""
 	}
-	s.attempts.failed(who, now)
 	return unauthorized, 0, ""
 }
 
@@ -534,11 +578,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusConflict, "this server has no token: there is nothing to sign in to")
 		return
 	}
-	who, now := s.caller(r), time.Now()
-	if blocked, wait, whose := s.attempts.blocked(who, now); blocked {
-		tooMany(w, r, wait, whose)
-		return
-	}
 	var body struct {
 		Token string `json:"token"`
 	}
@@ -551,8 +590,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, `send the token as JSON: {"token": "…"}`)
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(body.Token), []byte(s.opts.Token)) != 1 {
-		s.attempts.failed(who, now)
+	// Counted once the body is in, with the token it brings: see limiter.attempt
+	now := time.Now()
+	right := subtle.ConstantTimeCompare([]byte(body.Token), []byte(s.opts.Token)) == 1
+	if blocked, wait, whose := s.attempts.attempt(s.caller(r), right, now); blocked {
+		tooMany(w, r, wait, whose)
+		return
+	}
+	if !right {
 		writeError(w, r, http.StatusUnauthorized, "that is not the token")
 		return
 	}

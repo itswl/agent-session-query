@@ -30,6 +30,7 @@ import (
 
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/sources"
+	"github.com/itswl/agent-session-query/internal/sources/jsonmap"
 	"github.com/itswl/agent-session-query/internal/sources/kit"
 	"github.com/itswl/agent-session-query/internal/transcript"
 )
@@ -260,15 +261,15 @@ func sessionOf(row map[string]any, sess *model.Session) {
 	// 2.3: not its subagents', and for a fork not the rows it copied — and they hold what
 	// no message does: the call that gave the session its title.
 	if _, kept := kit.Num(row["tokens_input"]); kept {
-		reasoning := count(row["tokens_reasoning"])
+		reasoning := kit.Count(row["tokens_reasoning"])
 		u := model.Usage{
-			Input:      count(row["tokens_input"]),
-			Output:     count(row["tokens_output"]) + reasoning,
-			CacheRead:  count(row["tokens_cache_read"]),
-			CacheWrite: count(row["tokens_cache_write"]),
+			Input:      kit.Count(row["tokens_input"]),
+			Output:     kit.Count(row["tokens_output"]) + reasoning,
+			CacheRead:  kit.Count(row["tokens_cache_read"]),
+			CacheWrite: kit.Count(row["tokens_cache_write"]),
 			Reasoning:  reasoning,
 		}
-		cost := price(row["cost"])
+		cost := jsonmap.Cost(row["cost"])
 		if !u.IsZero() || cost > 0 {
 			sess.Recorded = &model.Recorded{Usage: &u, CostUSD: cost}
 		}
@@ -324,40 +325,18 @@ func usageOf(data map[string]any) *model.Usage {
 		return nil
 	}
 	cache := kit.Map(tokens["cache"])
-	reasoning := count(tokens["reasoning"])
+	reasoning := kit.Count(tokens["reasoning"])
 	u := model.Usage{
-		Input:      count(tokens["input"]),
-		Output:     count(tokens["output"]) + reasoning,
-		CacheRead:  count(cache["read"]),
-		CacheWrite: count(cache["write"]),
+		Input:      kit.Count(tokens["input"]),
+		Output:     kit.Count(tokens["output"]) + reasoning,
+		CacheRead:  kit.Count(cache["read"]),
+		CacheWrite: kit.Count(cache["write"]),
 		Reasoning:  reasoning,
 	}
 	if u.IsZero() {
 		return nil
 	}
 	return &u
-}
-
-// maxCount bounds a token counter: no model call has read or written a trillion tokens,
-// and counts below it add up over any session without overflowing.
-const maxCount = 1 << 40
-
-// count reads a token counter. A value no counter holds — below zero, or past maxCount —
-// was not written by OpenCode as a count and reads as none: summed with the rest, it would
-// carry a session's totals below zero.
-func count(v any) int64 {
-	if n, _ := kit.Num(v); n > 0 && n <= maxCount {
-		return int64(n)
-	}
-	return 0
-}
-
-// price reads a cost in dollars; one below zero is not a price and reads as none.
-func price(v any) float64 {
-	if n, _ := kit.Num(v); n > 0 {
-		return n
-	}
-	return 0
 }
 
 // assistant fills in what an assistant message says about the model call it is: which
@@ -367,7 +346,7 @@ func price(v any) float64 {
 func assistant(m *transcript.Message, data map[string]any, parts []any) {
 	m.Model = messageModel(data)
 	m.Usage = usageOf(data)
-	m.CostUSD = price(data["cost"])
+	m.CostUSD = jsonmap.Cost(data["cost"])
 	m.Stop = kit.Str(data["finish"])
 	tm := kit.Map(data["time"])
 	created := kit.Int(tm["created"])
@@ -403,9 +382,10 @@ func errorText(v any) string {
 	return ""
 }
 
-// blocksOf maps one part onto blocks. The parts 1.x wrote beside the content — where a
-// step began and ended, what it changed — yield nothing; unread is told of a part of a
-// type neither layout writes.
+// blocksOf maps one part — a 1.x part row, or a part inline in a 2.x response — onto
+// blocks. Both layouts write the same three kinds of content; unread is told of a part of
+// any other type. The parts 1.x wrote beside the content are left aside before this (see
+// besideV1): in a 2.x response a part of one of their types is one this does not know.
 func blocksOf(part map[string]any, unread func(kind string)) []transcript.Block {
 	switch kind := kit.Str(part["type"]); kind {
 	case "text":
@@ -471,26 +451,37 @@ func blocksOf(part map[string]any, unread func(kind string)) []transcript.Block 
 			}
 		}
 		return []transcript.Block{call, transcript.ResultOf(callID, name, text, outcome)}
-	case "step-start", "step-finish":
-		// 1.x: where a model call began and ended — boundaries, not content; the message
-		// carries the call's usage
-	case "snapshot", "patch":
-		// 1.x: the worktree's snapshot hash, and the files a step changed under it —
-		// OpenCode's bookkeeping for undo; the tools that changed them are read
-	case "file", "agent":
-		// 1.x: a file the person attached to a prompt, an agent they @-mentioned in it —
-		// what the prompt's text names; 2.x keeps both on the user row, not read there either
-	case "subtask":
-		// 1.x: a command handing a prompt to a subagent, whose session is listed on its own
-	case "retry":
-		// 1.x: a model call that failed and was made again; the call that answered is read
-	case "compaction":
-		// 1.x: the marker on a prompt that asked for the context to be compacted; the
-		// summary is the assistant message that follows
 	default:
 		unread(unknown("part", kind))
 	}
 	return nil
+}
+
+// besideV1 reports whether a 1.x part row is one 1.x wrote beside the content, which is
+// left aside knowing what it is. 2.x writes none of these in a response, so they are not
+// left aside there.
+func besideV1(kind string) bool {
+	switch kind {
+	case "step-start", "step-finish":
+		// Where a model call began and ended — boundaries, not content; the message
+		// carries the call's usage
+	case "snapshot", "patch":
+		// The worktree's snapshot hash, and the files a step changed under it —
+		// OpenCode's bookkeeping for undo; the tools that changed them are read
+	case "file", "agent":
+		// A file the person attached to a prompt, an agent they @-mentioned in it — what
+		// the prompt's text names; 2.x keeps both on the user row, not read there either
+	case "subtask":
+		// A command handing a prompt to a subagent, whose session is listed on its own
+	case "retry":
+		// A model call that failed and was made again; the call that answered is read
+	case "compaction":
+		// The marker on a prompt that asked for the context to be compacted; the summary
+		// is the assistant message that follows
+	default:
+		return false
+	}
+	return true
 }
 
 // toolOutput is what a finished tool returned: a plain string in 1.x (state.output), a
@@ -747,7 +738,10 @@ WHERE m.session_id = ? ORDER BY m.time_created, m.id, p.time_created, p.id`, id)
 				role = transcript.Assistant
 			default:
 				// 1.x writes no other role: a message of one is passed over with its parts,
-				// once, as one that will not parse is
+				// once, as one that will not parse is. The role is what says whose its parts
+				// are — a tool part is a call the model made because the message is the
+				// assistant's — so read under a role guessed for it, its tools would be
+				// counted as this session's runs and failures on no evidence
 				unread(unknown("role", r))
 				continue
 			}
@@ -757,7 +751,7 @@ WHERE m.session_id = ? ORDER BY m.time_created, m.id, p.time_created, p.id`, id)
 			continue
 		}
 		var part map[string]any
-		if json.Unmarshal([]byte(partRaw.String), &part) == nil && part != nil {
+		if json.Unmarshal([]byte(partRaw.String), &part) == nil && part != nil && !besideV1(kit.Str(part["type"])) {
 			cur.Blocks = append(cur.Blocks, blocksOf(part, unread)...)
 		}
 	}

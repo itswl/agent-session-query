@@ -461,7 +461,7 @@ func TestAStepWithAnOddlyTypedField(t *testing.T) {
 
 // A step of a type agy had not written when this reader was made is shown under its type and
 // counted as unread, once however often it was rewritten; the steps around it, and a tool
-// step agy does write, read as they always have.
+// step of a type this reader knows, read as they always have.
 func TestAStepOfAnUnknownTypeIsCounted(t *testing.T) {
 	root := t.TempDir()
 	writeSteps(t, root, "antigravity-cli", "sess-new",
@@ -491,21 +491,63 @@ func TestAStepOfAnUnknownTypeIsCounted(t *testing.T) {
 	}
 }
 
-// A counter no model call could have spent is not a count: taken as one, two of them sum
-// past the largest total and wrap it below zero. The rest of the step is read as it is.
+// A counter no model call could have spent is not a count, and counts 0 — not the most a
+// count can be: taken as it is, two of them sum past the largest total and wrap it below
+// zero, and one below zero takes a total down. A counter at model.MaxTokens is still one.
+// The rest of the step is read as it is.
 func TestACounterPastAnyCountIsNotCounted(t *testing.T) {
 	root := t.TempDir()
 	writeSteps(t, root, "antigravity-cli", "sess-huge",
 		`{"step_index":0,"type":"USER_INPUT","content":"<USER_REQUEST>go</USER_REQUEST>"}`,
 		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","content":"one","input_tokens":9e18,"output_tokens":7}`,
 		`{"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","content":"two","input_tokens":1e300,"output_tokens":5,"cache_read_tokens":3}`,
+		`{"step_index":3,"type":"PLANNER_RESPONSE","status":"DONE","content":"three","input_tokens":-40,"output_tokens":1099511627777,"cache_write_tokens":1099511627776}`,
+		`{"step_index":4,"type":"PLANNER_RESPONSE","status":"DONE","content":"four","input_tokens":-1e300,"output_tokens":-2}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
 	sourcetest.Invariants(t, s)
-	if want := (model.Usage{Output: 12, CacheRead: 3}); s.Stats.Usage != want {
+	sourcetest.NothingUnread(t, s)
+	if want := (model.Usage{Output: 12, CacheRead: 3, CacheWrite: model.MaxTokens}); s.Stats.Usage != want {
 		t.Errorf("usage = %+v, want %+v", s.Stats.Usage, want)
 	}
-	if turn := s.Turn(t, 1); turn.Answer != "two" || len(turn.Calls) != 2 {
-		t.Errorf("answer %q, calls %d: the steps are still there", turn.Answer, len(turn.Calls))
+	turn := s.Turn(t, 1)
+	if turn.Answer != "four" || len(turn.Calls) != 4 {
+		t.Fatalf("answer %q, calls %d: the steps are still there", turn.Answer, len(turn.Calls))
+	}
+	if turn.Calls[3].Usage != nil {
+		t.Errorf("a step with nothing it could have spent has no usage: %+v", turn.Calls[3].Usage)
+	}
+}
+
+// NOTIFY_USER and ERROR_MESSAGE are, by their names, agy's word to the person and a failure
+// of its own, and neither has been seen in a transcript. Shown as an event like a tool's
+// step, either would be misread with nothing to say so; each is shown under its type and
+// counted as unread until what it holds is known. Neither is passed off as the reply.
+func TestNoticesAndErrorsAreCounted(t *testing.T) {
+	root := t.TempDir()
+	writeSteps(t, root, "antigravity-cli", "sess-task",
+		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-12T10:00:00Z","content":"<USER_REQUEST>ship it</USER_REQUEST>"}`,
+		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-12T10:00:01Z","content":"working","input_tokens":30,"output_tokens":3}`,
+		`{"step_index":2,"source":"MODEL","type":"ERROR_MESSAGE","status":"DONE","created_at":"2026-10-12T10:00:02Z","content":"quota exceeded"}`,
+		`{"step_index":3,"source":"MODEL","type":"NOTIFY_USER","status":"GENERATING","created_at":"2026-10-12T10:00:03Z","content":"Shipped"}`,
+		`{"step_index":3,"source":"MODEL","type":"NOTIFY_USER","status":"DONE","created_at":"2026-10-12T10:00:04Z","content":"Shipped; the plan is ready for review."}`,
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.Invariants(t, s)
+	if len(s.Unread) != 2 || s.Unread["step:NOTIFY_USER"] != 1 || s.Unread["step:ERROR_MESSAGE"] != 1 {
+		t.Errorf("unread = %v, want step:NOTIFY_USER and step:ERROR_MESSAGE once each", s.Unread)
+	}
+	turn := s.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt reply event event" {
+		t.Fatalf("items = %s", got)
+	}
+	if ev := turn.Items[2]; ev.Event != "ERROR_MESSAGE" || ev.Text != "quota exceeded" {
+		t.Errorf("error step = %+v", ev)
+	}
+	if ev := turn.Items[3]; ev.Event != "NOTIFY_USER" || ev.Text != "Shipped; the plan is ready for review." {
+		t.Errorf("notice step = %+v, want it at its latest line", ev)
+	}
+	if turn.Answer != "working" {
+		t.Errorf("answer %q", turn.Answer)
 	}
 }

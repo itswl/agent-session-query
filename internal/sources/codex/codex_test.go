@@ -566,8 +566,8 @@ func TestRowsCodexWritesAndPassesOver(t *testing.T) {
 }
 
 // What the adapter has never heard of — a row, a response item, an event, a role, an
-// entry of a content list — is counted under its kind, and everything around it reads as
-// it would without it.
+// entry of a content list — is counted under its kind, and so is a record that will not
+// decode, known or not; everything around them reads as it would without them.
 func TestUnknownKindsAreCounted(t *testing.T) {
 	lines := func(unknown bool) []any {
 		var out []any
@@ -598,6 +598,16 @@ func TestUnknownKindsAreCounted(t *testing.T) {
 			also(`,{"type":"input_hologram","hologram_id":"h2"}`)+`]}}`, false)
 		add(`{"timestamp":"2026-11-06T10:00:06Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Built."}]}}`, false)
 		add(`{"timestamp":"2026-11-06T10:00:06Z","type":"token_usage_record","payload":{"response_id":"resp_2","usage":{"input_tokens":60,"output_tokens":2}}}`, false)
+		// Records with a field of another type than the adapter reads it as: unknown kinds,
+		// and known ones whose shape has moved on. Each is passed over whole, and counted
+		add(`{"timestamp":"2026-11-06T10:00:07Z","type":"hologram_log","payload":{"id":42}}`, true)
+		add(`{"timestamp":"2026-11-06T10:00:07Z","type":"event_msg","payload":{"type":"telepathy_end","status":{"completed":"done"}}}`, true)
+		add(`{"timestamp":"2026-11-06T10:00:07Z","type":"response_item","payload":{"type":"hologram_call","name":{"tool":"projector"}}}`, true)
+		add(`{"timestamp":"2026-11-06T10:00:07Z","type":"event_msg","payload":{"type":"turn_aborted","reason":{"kind":"interrupted"}}}`, true)
+		add(`{"timestamp":"2026-11-06T10:00:07Z","type":"token_usage_record","payload":{"response_id":"resp_3","usage":{"input_tokens":"fifty","output_tokens":1}}}`, true)
+		// A line that is not JSON says nothing of what it was, such as the end of a rollout
+		// still being written: it is not counted
+		add(`{"timestamp":"2026-11-06T10:00:08Z","type":"response_item","payload":{"type":"mess`, true)
 		return out
 	}
 	read := func(unknown bool) sourcetest.Session {
@@ -607,7 +617,9 @@ func TestUnknownKindsAreCounted(t *testing.T) {
 	}
 	plain, strange := read(false), read(true)
 	sourcetest.NothingUnread(t, plain)
-	want := map[string]int{"row:hologram_state": 1, "role:oracle": 1, "event:telepathy_begin": 1, "item:telepathy_call": 1, "part:input_hologram": 2}
+	want := map[string]int{"row:hologram_state": 1, "role:oracle": 1, "event:telepathy_begin": 1, "item:telepathy_call": 1, "part:input_hologram": 2,
+		"undecodable:row:hologram_log": 1, "undecodable:event:telepathy_end": 1, "undecodable:item:hologram_call": 1,
+		"undecodable:event:turn_aborted": 1, "undecodable:row:token_usage_record": 1}
 	if fmt.Sprint(strange.Unread) != fmt.Sprint(want) {
 		t.Errorf("unread = %v, want %v", strange.Unread, want)
 	}
@@ -636,11 +648,36 @@ func TestCountsThatAreNotCounts(t *testing.T) {
 		// a cache read past the input it is part of must not wrap the input round to the top
 		`{"type":"token_usage_record","payload":{"response_id":"r4","usage":{"input_tokens":-9223372036854775808,"cached_input_tokens":1,"output_tokens":1}}}`,
 		`{"type":"token_usage_record","payload":{"response_id":"r5","usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":9}}}`,
+		// numbers past what an int64, or even a float64, holds: none is a count, and the
+		// counters beside them still are
+		`{"type":"token_usage_record","payload":{"response_id":"r6","usage":{"input_tokens":1e400,"cached_input_tokens":1e19,"output_tokens":2}}}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
 	sourcetest.Invariants(t, s)
-	if want := (model.Usage{Input: 60, Output: 10, CacheRead: 41}); s.Stats.Usage != want {
+	sourcetest.NothingUnread(t, s)
+	if want := (model.Usage{Input: 60, Output: 12, CacheRead: 41}); s.Stats.Usage != want {
 		t.Errorf("usage = %+v, want %+v: only the counts that are counts", s.Stats.Usage, want)
+	}
+}
+
+// A running total no session could reach is not a count either, and does not become the
+// highest total the snapshots after it are measured against: they still add up.
+func TestATotalThatIsNotACount(t *testing.T) {
+	total := func(ts string, in, cached, out int64) string {
+		return fmt.Sprintf(`{"timestamp":"2026-07-01T10:00:%sZ","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%d,"cached_input_tokens":%d,"output_tokens":%d}}}}`, ts, in, cached, out)
+	}
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "2026", "07", "01", "rollout-2026-07-01T10-00-00-corrupt.jsonl"),
+		`{"timestamp":"2026-07-01T10:00:00Z","type":"session_meta","payload":{"id":"codex-corrupt","cwd":"/p"}}`,
+		`{"timestamp":"2026-07-01T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"start"}]}}`,
+		total("05", 100, 40, 9),
+		total("10", 1<<50, 140, 20),
+		total("20", 400, 240, 31),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	if want := (model.Usage{Input: 160, Output: 31, CacheRead: 240}); s.Stats.Usage != want || s.Stats.Calls != 2 {
+		t.Errorf("usage = %+v in %d calls, want %+v in 2", s.Stats.Usage, s.Stats.Calls, want)
 	}
 }
 

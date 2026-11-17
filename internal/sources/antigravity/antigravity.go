@@ -340,20 +340,28 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			"LIST_DIRECTORY", "FIND", "GREP_SEARCH", "CODE_ACTION",
 			"READ_URL_CONTENT", "SEARCH_WEB", "MCP_TOOL", "LIST_RESOURCES", "READ_RESOURCE",
 			"BROWSER_SUBAGENT", "GENERATE_IMAGE",
-			"CHECKPOINT", "TASK_BOUNDARY", "NOTIFY_USER", "EPHEMERAL_MESSAGE", "ERROR_MESSAGE",
+			"CHECKPOINT", "TASK_BOUNDARY", "EPHEMERAL_MESSAGE",
 			"CONVERSATION_HISTORY", "KNOWLEDGE_ARTIFACTS":
 			// The steps of agy's tools — a command and its status, input and terminal; a file
 			// viewed, listed, found, searched or edited; a page read, a web search; an MCP tool
 			// or resource; the browser subagent; an image made — and of agy itself: a
-			// checkpoint, a task's boundary and its notice to the person, a message or an error
-			// of its own, the history and knowledge it brings in. Each is shown under its type
-			// as what the step says, not taken apart into a call and its result
+			// checkpoint, a task's boundary, a message it puts before the model, the history
+			// and knowledge it brings in. Each is shown under its type as what the step says,
+			// not taken apart into a call and its result.
+			//
+			// Only RUN_COMMAND and CHECKPOINT are in the samples of agy's transcripts this
+			// reader was built from; the rest are the Cascade step types agy's names come from.
+			// An event is what each of these is, so a name agy never writes costs nothing.
+			// NOTIFY_USER, by its name agy's word to the person in task mode, and ERROR_MESSAGE,
+			// by its name a failure, are not among them: shown as an event, either would be
+			// misread, so each is counted below until what it holds has been seen
 			m.Role = transcript.System
 			m.Blocks = []transcript.Block{transcript.EventOf(st.Type, text)}
 		default:
-			// A step of a type agy had not written when this reader was made. It stays visible
-			// under that name, neither dropped nor passed off as the model's reply, and it is
-			// counted: a reply renamed would otherwise read as an event with nothing to say so
+			// A step of a type agy had not written when this reader was made, or one this
+			// reader does not yet read as what it is. It stays visible under that name,
+			// neither dropped nor passed off as the model's reply, and it is counted: a reply
+			// renamed would otherwise read as an event with nothing to say so
 			w.Unread("step:" + st.Type)
 			m.Role = transcript.System
 			m.Blocks = []transcript.Block{transcript.EventOf(st.Type, text)}
@@ -372,35 +380,24 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 // rather than guessed at.
 //
 // A step that is not DONE is the CLI's work in progress: its counters are provisional, and
-// the line that finishes the step carries the real ones. A counter past maxTokens is not a
-// count and is left out, as one never recorded.
+// the line that finishes the step carries the real ones. A counter is read by the one rule
+// for what a count is (kit.Count): one below zero or past model.MaxTokens counts 0, as one
+// never recorded, and a step with nothing counted has no usage.
 func (st *step) usage() *model.Usage {
 	if st.Status != "DONE" {
 		return nil
 	}
-	var u model.Usage
-	found := false
-	for _, c := range []struct {
-		v  any
-		to *int64
-	}{
-		{st.InputTokens, &u.Input}, {st.OutputTokens, &u.Output},
-		{st.CacheReadTokens, &u.CacheRead}, {st.CacheWriteTokens, &u.CacheWrite},
-	} {
-		if n, ok := kit.Num(c.v); ok && n <= maxTokens {
-			*c.to, found = max(int64(n), 0), true
-		}
+	u := model.Usage{
+		Input:      kit.Count(st.InputTokens),
+		Output:     kit.Count(st.OutputTokens),
+		CacheRead:  kit.Count(st.CacheReadTokens),
+		CacheWrite: kit.Count(st.CacheWriteTokens),
 	}
-	if !found {
+	if u.IsZero() {
 		return nil
 	}
 	return &u
 }
-
-// maxTokens bounds one step's counter. A model's window is some millions of tokens; a number
-// a million times that is not what a step spent, and taken as one it would be summed into a
-// session's total until the total wrapped below zero.
-const maxTokens = 1 << 40
 
 // userRequest is what the person typed: agy wraps it in <USER_REQUEST> and appends context
 // blocks of its own (metadata, settings changes) after it.

@@ -31,6 +31,7 @@ import (
 
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/sources"
+	"github.com/itswl/agent-session-query/internal/sources/jsonmap"
 	"github.com/itswl/agent-session-query/internal/sources/kit"
 	"github.com/itswl/agent-session-query/internal/transcript"
 )
@@ -152,41 +153,26 @@ type usage struct {
 	} `json:"cost"`
 }
 
+// canonical is the call's counters, each read by model.Tokens: one below zero or past
+// what any response counts is damage and counts 0, and the rest of the call is kept.
 func (u *usage) canonical() *model.Usage {
-	return &model.Usage{Input: tokens(u.Input), Output: tokens(u.Output), CacheRead: tokens(u.CacheRead),
-		CacheWrite: tokens(u.CacheWrite), Reasoning: tokens(u.Reasoning)}
+	return &model.Usage{Input: model.Tokens(u.Input), Output: model.Tokens(u.Output), CacheRead: model.Tokens(u.CacheRead),
+		CacheWrite: model.Tokens(u.CacheWrite), Reasoning: model.Tokens(u.Reasoning)}
 }
 
-// costUSD is what the call cost, read as tokens are.
-func (u *usage) costUSD() float64 {
-	if !(u.Cost.Total >= 0) || u.Cost.Total > maxCostUSD {
-		return 0
-	}
-	return u.Cost.Total
-}
+// costUSD is what the call cost, read by jsonmap.Cost — the rule for a price in pi-ai's
+// shape wherever it is written: one below zero, or past what any response has cost, is
+// damage and is none.
+func (u *usage) costUSD() float64 { return jsonmap.Cost(u.Cost.Total) }
 
-// What one model call or tool run can count. A number below zero, or past anything one
-// has read, written, cost or lasted, is not a count but damage, and is read as none:
-// added into a session's totals, one would take them below zero and two near the top of
-// an int64 would wrap them there. A trillion tokens is a thousand times any model's
-// context.
-const (
-	maxTokens  = 1 << 40
-	maxCostUSD = 1e6
-	maxDurMs   = 1e10 // a hundred and fifteen days
-)
-
-// tokens is one of a call's token counters.
-func tokens(n int64) int64 {
-	if n < 0 || n > maxTokens {
-		return 0
-	}
-	return n
-}
+// maxDurMs is a hundred and fifteen days, longer than any model call or tool run lasts.
+// A duration below zero, or past it, is not a measure but damage, and is read as none:
+// added into a session's totals it would take them out of all proportion.
+const maxDurMs = 1e10
 
 // millis is a duration in milliseconds, which pi writes as a number that need not be whole.
 func millis(ms float64) int64 {
-	if !(ms > 0) || ms > maxDurMs {
+	if !(ms > 0 && ms <= maxDurMs) { // NaN fails both
 		return 0
 	}
 	return int64(ms)
@@ -406,10 +392,16 @@ func idOf(stem string) string {
 	return stem
 }
 
-// decode reads a line into v. A field whose value is not of the type expected is left
-// empty and the rest of the row is still read: one odd field does not cost a message.
-func decode(line []byte, v any) bool {
-	err := json.Unmarshal(line, v)
+// decode reads a record — a line, or a block of a message's content — into v. A field
+// whose value is not of the type expected is left empty and the rest of the record is
+// still read: one odd field does not cost a message. A value that is not a JSON object
+// at all (null, a number, a string, an array) is not a record of any kind, known or
+// not: it is damage, and is passed over as a line that is not JSON is.
+func decode(data []byte, v any) bool {
+	if data = bytes.TrimLeft(data, " \t\r\n"); len(data) == 0 || data[0] != '{' {
+		return false
+	}
+	err := json.Unmarshal(data, v)
 	var mismatch *json.UnmarshalTypeError
 	return err == nil || errors.As(err, &mismatch)
 }
@@ -439,7 +431,30 @@ func parts(raw json.RawMessage) []part {
 	}
 	var list []part
 	_ = json.Unmarshal(raw, &list)
+	for _, p := range list {
+		if p.Type == "" {
+			// A block that does not say what it is may be no block at all — null, a
+			// string, a number where an object belongs — which is damage, not a kind. pi
+			// types every block it writes, so only then is the content read again, block
+			// by block, to keep the objects and pass over the rest.
+			return objects(raw)
+		}
+	}
 	return list
+}
+
+// objects is the blocks of a content array that are JSON objects, each read by decode.
+func objects(raw json.RawMessage) []part {
+	var list []json.RawMessage
+	_ = json.Unmarshal(raw, &list)
+	out := make([]part, 0, len(list))
+	for _, el := range list {
+		var p part
+		if decode(el, &p) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // textOf is the text of a message's content, its blocks joined. unread is told of every

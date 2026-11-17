@@ -636,22 +636,100 @@ func TestUnknownKindsAreCounted(t *testing.T) {
 	}
 }
 
-// A counter no turn could reach is not a count. On arm64 a float past the int64 range
-// converts to the largest int64, and two such turns added up wrapped the session's input
-// below zero.
+// The protocol's updates that say nothing of the conversation — the agent's plan, a mode
+// or setting changed, the commands on offer, the session's info, how full the context is —
+// are kinds this adapter knows and passes over on purpose, under either method: none is
+// counted as unread, and the session reads as it would without them. A chunk under Grok's
+// own method is no update this adapter knows there, and is still counted.
+func TestKnownKindsArePassedOverUnderEitherMethod(t *testing.T) {
+	root, dir := fixture(t)
+	want := sourcetest.One(t, Spec.Open(root))
+
+	stream, err := os.ReadFile(filepath.Join(dir, "updates.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(stream)), "\n")
+	var known []string
+	for _, method := range []string{"session/update", "_x.ai/session/update"} {
+		for _, update := range []string{
+			`"sessionUpdate":"plan","entries":[{"content":"read the file","priority":"high","status":"in_progress"}]`,
+			`"sessionUpdate":"current_mode_update","currentModeId":"plan"`,
+			`"sessionUpdate":"config_option_update","configOptions":[]`,
+			`"sessionUpdate":"available_commands_update","availableCommands":[{"name":"compact","description":"Compact the context"}]`,
+			`"sessionUpdate":"session_info_update","title":"Reading sample.txt"`,
+			`"sessionUpdate":"usage_update","used":31344,"size":256000,"cost":{"amount":0.02,"currency":"USD"}`,
+		} {
+			known = append(known, `{"timestamp":1790128665,"method":"`+method+`","params":{"update":{`+update+`}}}`)
+		}
+	}
+	// Between the reply's two chunks, which still join into one block
+	var mixed []string
+	mixed = append(mixed, lines[:7]...)
+	mixed = append(mixed, known...)
+	mixed = append(mixed, lines[7:]...)
+	if err := os.WriteFile(filepath.Join(dir, "updates.jsonl"), []byte(strings.Join(mixed, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, got)
+	if !reflect.DeepEqual(got.Turns, want.Turns) || got.Stats != want.Stats {
+		t.Errorf("with updates passed over, the session reads otherwise:\n%+v\n%+v", got.Turns, want.Turns)
+	}
+
+	// A chunk under Grok's own method, before the row that closes the turn: counted, and
+	// not added to the reply
+	closing := mixed[len(mixed)-1]
+	mixed = append(mixed[:len(mixed)-1], `{"timestamp":1790128666,"method":"_x.ai/session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" again"}}}}`, closing)
+	if err := os.WriteFile(filepath.Join(dir, "updates.jsonl"), []byte(strings.Join(mixed, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got = sourcetest.One(t, Spec.Open(root))
+	if !reflect.DeepEqual(got.Unread, map[string]int{"event:agent_message_chunk": 1}) {
+		t.Errorf("unread = %v", got.Unread)
+	}
+	if !reflect.DeepEqual(got.Turns, want.Turns) || got.Stats != want.Stats {
+		t.Errorf("with a chunk under Grok's own method, the session reads otherwise:\n%+v\n%+v", got.Turns, want.Turns)
+	}
+}
+
+// A counter no turn could reach is not a count, and counts nothing: not the most a count
+// can be, and not part of a total. 5e18 is an int64 on every machine, and two of them
+// added up once wrapped the session's input below zero; 1e19 is past what an int64 holds.
+// One past model.MaxTokens is dropped, and MaxTokens itself is a count.
 func TestCountersPastAnyTurnAreNotRead(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "%2Fw", "sid-huge")
 	sourcetest.Write(t, filepath.Join(dir, "summary.json"), `{"info":{"id":"sid-huge"}}`)
 	sourcetest.Write(t, filepath.Join(dir, "updates.jsonl"),
 		chunk(1790000000, "user_message_chunk", "one"),
-		turnCompleted(1790000001, M{"inputTokens": 1e19, "outputTokens": 5}),
+		turnCompleted(1790000001, M{"inputTokens": 5e18, "outputTokens": 5}),
 		chunk(1790000002, "user_message_chunk", "two"),
-		turnCompleted(1790000003, M{"inputTokens": 1e19, "outputTokens": 7, "cachedReadTokens": -3}),
+		turnCompleted(1790000003, M{"inputTokens": 5e18, "outputTokens": 7, "cachedReadTokens": -3}),
+		chunk(1790000004, "user_message_chunk", "three"),
+		turnCompleted(1790000005, M{"inputTokens": 1e19, "outputTokens": model.MaxTokens + 1, "cacheWriteTokens": model.MaxTokens}),
 	)
 	s := sourcetest.One(t, Spec.Open(root))
 	sourcetest.Invariants(t, s)
-	if s.Stats.Usage != (model.Usage{Output: 12}) {
+	if s.Stats.Usage != (model.Usage{Output: 12, CacheWrite: model.MaxTokens}) {
+		t.Errorf("usage = %+v, want the counters that are counts", s.Stats.Usage)
+	}
+	for i, want := range []model.Usage{{Output: 5}, {Output: 7}, {CacheWrite: model.MaxTokens}} {
+		if got := s.Turn(t, i+1).Usage; got != want {
+			t.Errorf("turn %d usage = %+v, want %+v", i+1, got, want)
+		}
+	}
+
+	// usage.json, the counters of a session still running, likewise
+	root, dir = fixture(t)
+	if err := os.Remove(filepath.Join(dir, "updates.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	sourcetest.Write(t, filepath.Join(dir, "chat_history.jsonl"), chatHistory...)
+	sourcetest.Write(t, filepath.Join(dir, "usage.json"), `{"session":{"inputTokens":5e18,"outputTokens":74,"cachedReadTokens":-1,"cacheReadTokens":9}}`)
+	s = sourcetest.One(t, Spec.Open(root))
+	sourcetest.Invariants(t, s)
+	if s.Stats.Usage != (model.Usage{Output: 74, CacheRead: 9}) {
 		t.Errorf("usage = %+v, want the counters that are counts", s.Stats.Usage)
 	}
 }

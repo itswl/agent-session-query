@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 
 	"github.com/itswl/agent-session-query/internal/model"
@@ -34,7 +35,7 @@ type row struct {
 
 	Provider string `json:"provider"` // a model_change row
 	ModelID  string `json:"modelId"`
-	Summary  string `json:"summary"` // a compaction row
+	Summary  string `json:"summary"` // a compaction or branch_summary row
 
 	Message *message `json:"message"`
 	message
@@ -164,10 +165,13 @@ func (r *Reader) Row(line []byte) (transcript.Message, bool) {
 	}
 	switch x.Type {
 	case "message":
-		// One whose message is missing has nothing to read, though what it is is known
 		if x.Message != nil {
 			return r.typed(&x)
 		}
+		// One that holds its message beside the type rather than under it — a role and a
+		// content, the flat shape — is read as that shape is; one that holds no message
+		// at all names no role, and flat counts it as such rather than let it vanish
+		return r.flat(&x)
 	case "session":
 		// The header, wherever it turns up — and only the first: other rows carry an id
 		// of their own, which is theirs and not the session's
@@ -188,6 +192,10 @@ func (r *Reader) Row(line []byte) (transcript.Message, bool) {
 		// The context the model sees was rewritten here; the row carries the summary that
 		// took the place of what was folded away
 		return r.event(&x, model.EventCompaction, kit.First(x.Summary, "Context compacted")), true
+	case "branch_summary":
+		// The conversation moved to another branch, and this is what the one left behind
+		// came to — read as pi reads it
+		return r.event(&x, x.Type, x.Summary), true
 	case "custom":
 		// An extension's own state, kept for it to rebuild from (OpenClaw's model
 		// snapshot); it never reaches the model
@@ -341,18 +349,27 @@ func nestedTool(m transcript.Message, msg *message, unread func(kind string)) (t
 
 // outcomeOf reads how a tool went from its error flag and from what its result details
 // say: a command that exited non-zero failed, whether or not anything flagged it.
+//
+// A figure no exit code or duration can be is not read: Go leaves the conversion of a
+// float64 past an integer's range to the platform, so 1e300 would read as one code on
+// arm64 and another on amd64 — and as a negative duration on the second. An exit code is
+// a 32-bit figure, signed where a process returns one and unsigned on Windows, whose
+// codes for a crash run past 2^31.
 func outcomeOf(failed bool, details map[string]any) transcript.Outcome {
 	o := transcript.Outcome{}
-	if code, ok := kit.Num(details["exitCode"]); ok {
+	if code, ok := kit.Num(details["exitCode"]); ok && code >= math.MinInt32 && code <= math.MaxUint32 {
 		o.Exit = transcript.ExitOf(int(code))
 		failed = failed || code != 0
 	}
-	if ms, ok := kit.Num(details["durationMs"]); ok && ms > 0 {
+	if ms, ok := kit.Num(details["durationMs"]); ok && ms > 0 && ms <= maxDurMs {
 		o.DurMs = int64(ms)
 	}
 	o.Status = transcript.StatusOf(failed)
 	return o
 }
+
+// maxDurMs is a hundred and fifteen days: longer than any call runs.
+const maxDurMs = 1e10
 
 // flat reads Hermes's row: the message itself. Only the two sides' rows and the tools'
 // are conversation; the system prompt and the session's own bookkeeping are not.
@@ -488,45 +505,46 @@ func Answered(path string) bool {
 // inputTokens and input_tokens are one counter. A prompt or completion count is not
 // read: those are the other shape, whose prompt count holds the cache, and taken as
 // apart they would count it twice.
+//
+// Each counter is a count by model.TokensOf's rule (kit.Count), and the cost a price by
+// Cost's. Two keys that fold to one counter — input beside input_tokens — give the larger:
+// the map is walked in no fixed order, and the same row must read the same every time.
 func Usage(raw map[string]any) (u model.Usage, cost float64) {
 	for key, v := range raw {
 		switch strings.ReplaceAll(strings.ToLower(key), "_", "") {
 		case "input", "inputtokens":
-			u.Input = Count(v)
+			u.Input = max(u.Input, kit.Count(v))
 		case "output", "outputtokens":
-			u.Output = Count(v)
+			u.Output = max(u.Output, kit.Count(v))
 		case "cacheread", "cachereadtokens", "cachereadinputtokens":
-			u.CacheRead = Count(v)
+			u.CacheRead = max(u.CacheRead, kit.Count(v))
 		case "cachewrite", "cachewritetokens", "cachecreationinputtokens":
-			u.CacheWrite = Count(v)
+			u.CacheWrite = max(u.CacheWrite, kit.Count(v))
 		case "reasoning", "reasoningtokens":
-			u.Reasoning = Count(v)
+			u.Reasoning = max(u.Reasoning, kit.Count(v))
 		case "cost":
 			// {"cost": {"total": 0.0021, …}}; a writer that gives the number alone is read too
 			if nested, ok := v.(map[string]any); ok {
 				v = nested["total"]
 			}
-			if f, ok := kit.Num(v); ok && f > 0 {
-				cost = f // a price below zero is not one
-			}
+			cost = max(cost, Cost(v))
 		}
 	}
 	return u, cost
 }
 
-// maxCount bounds a counter that is read. No response or session comes near a trillion
-// tokens, and counts that large, added together, would run past what an int64 holds and
-// turn negative.
-const maxCount = 1 << 40
+// maxCost is more than any response, or any session, has cost by far: a price past it is
+// a number gone wrong — a doctored or damaged record — and not a price.
+const maxCost = 1e9
 
-// Count reads a token counter. One below zero, or past what any session could spend, is
-// not a count of anything and is read as none.
-func Count(v any) int64 {
-	n := kit.Int(v)
-	if n < 0 || n > maxCount {
-		return 0
+// Cost reads a price in dollars, from a response or from a session's totals. One that is
+// not a number, is below zero, is not finite, or is past maxCost is not a price, and is
+// read as none: added to others it would take a total below zero or to infinity.
+func Cost(v any) float64 {
+	if f, ok := kit.Num(v); ok && f > 0 && f <= maxCost { // NaN fails both
+		return f
 	}
-	return n
+	return 0
 }
 
 // decode reads one line into v. A field of the wrong type is left empty and the rest of

@@ -590,9 +590,9 @@ func TestUnknownKindsAreCounted(t *testing.T) {
 }
 
 // TestCountsThatAreNoCounts: a token count below zero, or past anything one response could
-// use, is no count and is read as none — taken as it is, the one would take a session's
-// total below zero, and two of the other would add up past what the total can hold and
-// wrap below it.
+// use (model.MaxTokens), is no count and is read as none — not as the most a count can be.
+// Taken as it is, the one would take a session's total below zero, and two of the other
+// would add up past what the total can hold and wrap below it.
 func TestCountsThatAreNoCounts(t *testing.T) {
 	root := t.TempDir()
 	put(t, filepath.Join(sessionDir(root), "session.v1.jsonl"), encode(t, []M{
@@ -601,10 +601,39 @@ func TestCountsThatAreNoCounts(t *testing.T) {
 		assistantRow("a1", time.Second, M{"inputTokens": -5, "outputTokens": 3}, M{"type": "text", "text": "one"}),
 		assistantRow("a2", 2*time.Second, M{"inputTokens": 9e18, "outputTokens": 1e300, "cacheReadTokens": 7}, M{"type": "text", "text": "two"}),
 		assistantRow("a3", 3*time.Second, M{"inputTokens": 9e18, "outputTokens": 4}, M{"type": "text", "text": "three"}),
+		// the bound itself is a count; one past it is not
+		assistantRow("a4", 4*time.Second, M{"reasoningTokens": model.MaxTokens, "cacheWriteTokens": model.MaxTokens + 1}, M{"type": "text", "text": "four"}),
 	}))
 	s := sourcetest.One(t, Spec.Open(root))
 	sourcetest.Invariants(t, s)
-	if want := (model.Usage{Output: 7, CacheRead: 7}); s.Stats.Usage != want || s.Stats.Calls != 3 {
-		t.Errorf("usage = %+v in %d calls, want %+v in 3", s.Stats.Usage, s.Stats.Calls, want)
+	if want := (model.Usage{Output: 7, CacheRead: 7, Reasoning: model.MaxTokens}); s.Stats.Usage != want || s.Stats.Calls != 4 {
+		t.Errorf("usage = %+v in %d calls, want %+v in 4", s.Stats.Usage, s.Stats.Calls, want)
+	}
+}
+
+// TestARepeatIsCountedOnceEvenWhenTheFirstCopyAddedNothing: a message whose content is
+// only a part the adapter does not know adds nothing to the transcript, and the copies of
+// it written after are still the same message — the part is counted once, not once a copy.
+// A later copy that does hold something is the one read, and its part is not counted again.
+func TestARepeatIsCountedOnceEvenWhenTheFirstCopyAddedNothing(t *testing.T) {
+	root := t.TempDir()
+	image := M{"type": "image", "mediaType": "image/png", "data": "iVBORw0KGgo="}
+	put(t, filepath.Join(sessionDir(root), "session.v1.jsonl"), encode(t, []M{
+		headerRow("dsh-repeat", "/w"),
+		userRow("u1", 0, text("look at this")),
+		userRow("u2", time.Second, []M{image}),
+		userRow("u2", time.Second, []M{image}),
+		assistantRow("a1", 2*time.Second, nil, image),
+		assistantRow("a1", 2*time.Second, nil, image),
+		assistantRow("a1", 3*time.Second, M{"inputTokens": 4, "outputTokens": 2}, image, M{"type": "text", "text": "seen it"}),
+		assistantRow("a1", 4*time.Second, M{"inputTokens": 40, "outputTokens": 20}, image, M{"type": "text", "text": "again"}),
+	}))
+	s := sourcetest.One(t, Spec.Open(root))
+	if want := map[string]int{"part:image": 2}; !maps.Equal(s.Unread, want) {
+		t.Errorf("unread = %v, want %v", s.Unread, want)
+	}
+	turn := s.Turn(t, 1)
+	if turn.Answer != "seen it" || s.Stats.Calls != 1 || s.Stats.Usage != (model.Usage{Input: 4, Output: 2}) {
+		t.Errorf("answer %q, usage %+v in %d calls; want \"seen it\", 4 in and 2 out in 1", turn.Answer, s.Stats.Usage, s.Stats.Calls)
 	}
 }

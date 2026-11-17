@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -389,9 +390,10 @@ func TestUnknownKindsAreCounted(t *testing.T) {
 	}
 }
 
-// A counter below zero, or past anything a session could spend, is not a count: read as
-// one it would take a session's totals below zero, or, added to another as large, past
-// what an int64 holds. Such a counter, and a price below zero, are read as none.
+// A counter is a count by model.TokensOf's rule: one below zero, or past model.MaxTokens,
+// would take a session's totals below zero or, added to another as large, past what an
+// int64 holds, and is read as none — not as the bound, which is a count itself. A price
+// below zero, or past any response's, is none too.
 func TestCountsThatAreNotCounts(t *testing.T) {
 	state := t.TempDir()
 	agent(t, state, "main", schema,
@@ -399,11 +401,89 @@ func TestCountsThatAreNotCounts(t *testing.T) {
 		`INSERT INTO transcript_events VALUES ('ses_n', 1, '{"type":"message","message":{"role":"user","content":"summarise the logs"}}', 0)`,
 		`INSERT INTO transcript_events VALUES ('ses_n', 2, '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"summarize","arguments":{}}],"stopReason":"toolUse","usage":{"input":-5,"output":7,"cacheRead":9e18,"cost":{"total":-0.5}}}}', 0)`,
 		`INSERT INTO transcript_events VALUES ('ses_n', 3, '{"type":"message","message":{"role":"toolResult","toolCallId":"c1","toolName":"summarize","content":"a summary","usage":{"input":10,"cacheRead":9e18,"cost":-1}}}', 0)`,
-		`INSERT INTO transcript_events VALUES ('ses_n', 4, '{"type":"message","message":{"role":"assistant","content":"done","stopReason":"stop","usage":{"input":3,"output":1,"cost":{"total":0.25}}}}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_n', 4, '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"c2","name":"summarize","arguments":{}}],"stopReason":"toolUse","usage":{"input":`+strconv.Itoa(model.MaxTokens)+`,"cacheWrite":`+strconv.Itoa(model.MaxTokens+1)+`,"cost":{"total":1e300}}}}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_n', 5, '{"type":"message","message":{"role":"toolResult","toolCallId":"c2","toolName":"summarize","content":"another"}}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_n', 6, '{"type":"message","message":{"role":"assistant","content":"done","stopReason":"stop","usage":{"input":3,"output":1,"cost":{"total":0.25}}}}', 0)`,
 	)
 	s := sourcetest.One(t, Spec.Open(state))
 	sourcetest.Invariants(t, s)
-	if want := (model.Usage{Input: 13, Output: 8}); s.Stats.Usage != want || s.Stats.CostUSD != 0.25 {
+	if want := (model.Usage{Input: 13 + model.MaxTokens, Output: 8}); s.Stats.Usage != want || s.Stats.CostUSD != 0.25 {
 		t.Errorf("usage = %+v, cost %v; want %+v and 0.25", s.Stats.Usage, s.Stats.CostUSD, want)
+	}
+}
+
+// A message row that holds its message beside its type rather than under it — the flat
+// shape — is read as that shape is, and one that holds no message at all is counted as a
+// row of no role rather than dropped unseen.
+func TestAMessageRowWithoutItsMessageObject(t *testing.T) {
+	state := t.TempDir()
+	agent(t, state, "main", schema,
+		`INSERT INTO session_windows VALUES ('ses_f', 'agent:main:main', 'done', 1789704223504, 1789704262019, 1789704262019, 1789704262019, 'deepseek', 'deepseek-chat', '')`,
+		`INSERT INTO transcript_events VALUES ('ses_f', 1, '{"type":"message","timestamp":"2026-09-18T04:03:44.021Z","role":"user","content":"the proxy returns 502"}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_f', 2, '{"type":"message","id":"m2","timestamp":"2026-09-18T04:03:45.000Z"}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_f', 3, '{"type":"message","timestamp":"2026-09-18T04:03:46.000Z","message":{"role":"assistant","content":[{"type":"text","text":"The upstream block pointed at the wrong port."}],"stopReason":"stop"}}', 0)`,
+	)
+	s := sourcetest.One(t, Spec.Open(state))
+	if len(s.Unread) != 1 || s.Unread["role:(untyped)"] != 1 {
+		t.Errorf("unread = %v, want the one row with no message", s.Unread)
+	}
+	turn := s.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt reply" || turn.Ask != "the proxy returns 502" {
+		t.Errorf("items = %s, ask %q", got, turn.Ask)
+	}
+}
+
+// A branch_summary row is what a branch of the conversation that was left came to: an
+// event, read as pi reads it, and not a row of a kind unknown.
+func TestBranchSummary(t *testing.T) {
+	state := t.TempDir()
+	agent(t, state, "main", schema,
+		`INSERT INTO session_windows VALUES ('ses_b', 'agent:main:main', 'done', 1789704223504, 1789704262019, 1789704262019, 1789704262019, 'deepseek', 'deepseek-chat', '')`,
+		`INSERT INTO transcript_events VALUES ('ses_b', 1, '{"type":"message","timestamp":"2026-09-18T04:03:44.021Z","message":{"role":"user","content":"the proxy returns 502"}}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_b', 2, '{"type":"branch_summary","id":"b1","fromId":"m1","timestamp":"2026-09-18T04:03:45.000Z","summary":"tried port 8080 first; it was closed"}', 0)`,
+		`INSERT INTO transcript_events VALUES ('ses_b', 3, '{"type":"message","timestamp":"2026-09-18T04:03:46.000Z","message":{"role":"assistant","content":[{"type":"text","text":"The upstream block pointed at the wrong port."}],"stopReason":"stop"}}', 0)`,
+	)
+	s := sourcetest.One(t, Spec.Open(state))
+	sourcetest.NothingUnread(t, s)
+	turn := s.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt event reply" || turn.Items[1].Event != "branch_summary" || turn.Items[1].Text != "tried port 8080 first; it was closed" {
+		t.Errorf("items = %s %+v", got, turn.Items)
+	}
+}
+
+// What a command's result says of how it ended is read where it is an exit code and a
+// duration, and passed over where no exit code or duration can be: a figure far past any
+// would read as one code on one platform and another on the next. The duration then
+// comes from the run's own times. A Windows crash's code runs past 2^31, and is one.
+func TestFiguresNoExitCodeOrDurationCanBe(t *testing.T) {
+	state := t.TempDir()
+	nested := func(seq int, id, details string) string {
+		return `INSERT INTO transcript_events VALUES ('ses_e', ` + strconv.Itoa(seq) + `, '{"type":"message","message":{"role":"custom","customType":"openclaw.nested-tool.v1","content":"","details":{"toolCallId":"` + id +
+			`","toolName":"exec","input":{"command":"run"},"result":{"content":[{"type":"text","text":"out"}],"details":` + details + `},"isError":false,"startedAt":1794568034704,"timestamp":1794568035399}}}', 0)`
+	}
+	agent(t, state, "main", schema,
+		`INSERT INTO session_windows VALUES ('ses_e', 'agent:main:main', 'done', 1789704223504, 1789704262019, 1789704262019, 1789704262019, 'deepseek', 'deepseek-chat', '')`,
+		`INSERT INTO transcript_events VALUES ('ses_e', 1, '{"type":"message","message":{"role":"user","content":"run them"}}', 0)`,
+		nested(2, "n1", `{"exitCode":1e300,"durationMs":1e300}`),
+		nested(3, "n2", `{"exitCode":-1e300,"durationMs":-5}`),
+		nested(4, "n3", `{"exitCode":3221225477,"durationMs":467}`),
+	)
+	s := sourcetest.One(t, Spec.Open(state))
+	sourcetest.NothingUnread(t, s)
+	tools := sourcetest.Tools(s.Turn(t, 1))
+	if len(tools) != 3 {
+		t.Fatalf("tools = %d", len(tools))
+	}
+	for _, tool := range tools[:2] {
+		if tool.Exit != nil || tool.DurMs != 695 || tool.Status != model.StatusOK {
+			exit := "none"
+			if tool.Exit != nil {
+				exit = strconv.Itoa(*tool.Exit)
+			}
+			t.Errorf("%s: exit %s, %d ms, status %q; want no exit code and the run's own 695 ms", tool.CallID, exit, tool.DurMs, tool.Status)
+		}
+	}
+	if crash := tools[2]; crash.Exit == nil || *crash.Exit != 3221225477 || crash.DurMs != 467 || crash.Status != model.StatusError {
+		t.Errorf("a crash on Windows = %+v", crash)
 	}
 }

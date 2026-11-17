@@ -260,27 +260,37 @@ func TestUsageIsConvertedToTheCanonicalShape(t *testing.T) {
 	}
 }
 
-// A counter no model could reach is no count: added up as it stands, two of them wrap the
-// session's totals round to below zero. Each is bounded before it is added.
-func TestTokenCountsPastAnyModelAreBounded(t *testing.T) {
+// A counter below zero or past any model's reach is no count: as it stands, it puts a
+// figure no session could reach in the totals, and two of them, added together as output
+// and thoughts are, wrap round to below zero. It counts 0 (model.TokensOf) — not the bound,
+// which would add a trillion tokens — and the row's other counters stand.
+func TestTokenCountsPastAnyModelCountNothing(t *testing.T) {
 	root := t.TempDir()
 	sourcetest.Write(t, filepath.Join(root, "p", "chats", "session-2026-10-01T10-00-00.jsonl"),
 		`{"sessionId":"g-8"}`,
 		`{"type":"user","id":"u","content":[{"text":"q"}]}`,
 		`{"type":"gemini","id":"a","content":"x","tokens":{"input":9e18,"output":9e18,"thoughts":9e18,"tool":9e18}}`,
 		`{"type":"gemini","id":"b","content":"y","tokens":{"input":1e30,"output":-1e30,"cached":5}}`,
+		// the most a count can be, and one past it
+		`{"type":"gemini","id":"c","content":"z","tokens":{"input":1099511627776,"output":1099511627777,"thoughts":-1,"cached":0}}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
 	sourcetest.Invariants(t, s)
 	calls := s.Turn(t, 1).Calls
-	if len(calls) != 2 || calls[0].Usage == nil || calls[1].Usage == nil {
-		t.Fatalf("calls = %+v", calls)
+	if len(calls) != 3 {
+		t.Fatalf("calls = %+v, want one per gemini row", calls)
 	}
-	if got, want := *calls[0].Usage, (model.Usage{Input: 2 * maxTokens, Output: 2 * maxTokens, Reasoning: maxTokens}); got != want {
-		t.Errorf("usage = %+v, want %+v", got, want)
+	// Nothing left of the first row's counters: the call is still a call, with no usage
+	if calls[0].Usage != nil {
+		t.Errorf("usage = %+v, want none", *calls[0].Usage)
 	}
-	if got, want := *calls[1].Usage, (model.Usage{Input: maxTokens - 5, CacheRead: 5}); got != want {
-		t.Errorf("usage = %+v, want %+v", got, want)
+	for i, want := range []model.Usage{{CacheRead: 5}, {Input: model.MaxTokens}} {
+		if got := calls[i+1].Usage; got == nil || *got != want {
+			t.Errorf("call %d usage = %+v, want %+v", i+1, got, want)
+		}
+	}
+	if got, want := s.Stats.Usage, (model.Usage{Input: model.MaxTokens, CacheRead: 5}); got != want {
+		t.Errorf("session usage = %+v, want %+v", got, want)
 	}
 }
 
@@ -619,5 +629,117 @@ func TestUnknownKindsAreCounted(t *testing.T) {
 	if len(got.Turns) != len(want.Turns) || sourcetest.Kinds(got.Turn(t, 1)) != sourcetest.Kinds(want.Turn(t, 1)) ||
 		got.Turn(t, 1).Ask != "run the tests" || got.Turn(t, 1).Answer != "all green" || got.Stats.Usage != want.Stats.Usage {
 		t.Errorf("the session read differently beside what it did not know: %+v, want %+v", got.Turns, want.Turns)
+	}
+}
+
+// Gemini CLI reads a row's content leniently: a lone part stands for a list of one, and a
+// string among the parts is a text part. A row written so — by an earlier version, or
+// converted from the older .json files — reads as the same row with its parts in a list.
+func TestContentAsGeminiCLIReadsIt(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "p", "chats", "session-2026-11-03T10-00-a.jsonl"),
+		`{"sessionId":"g-10"}`,
+		`{"id":"u1","timestamp":"2026-11-03T10:00:01Z","type":"user","content":{"text":"what is in a.go?"}}`,
+		`{"id":"g1","timestamp":"2026-11-03T10:00:02Z","type":"gemini","content":"","toolCalls":[{"id":"r-1","name":"read_file","args":{"file_path":"a.go"}}]}`,
+		`{"id":"u2","timestamp":"2026-11-03T10:00:03Z","type":"user","content":{"functionResponse":{"id":"r-1","name":"read_file","response":{"output":"package a"}}}}`,
+		`{"id":"g2","timestamp":"2026-11-03T10:00:04Z","type":"gemini","content":["It declares", {"text":"package a."}]}`,
+		`{"id":"u3","timestamp":"2026-11-03T10:00:05Z","type":"user","content":["and b.go?"]}`,
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	if len(s.Turns) != 2 {
+		t.Fatalf("turns = %+v", s.Turns)
+	}
+	turn := s.Turn(t, 1)
+	if turn.Ask != "what is in a.go?" || turn.Answer != "It declares\npackage a." {
+		t.Errorf("ask %q answer %q", turn.Ask, turn.Answer)
+	}
+	tools := sourcetest.Tools(turn)
+	if len(tools) != 1 || tools[0].CallID != "r-1" || !tools[0].Done || tools[0].Output != "package a" {
+		t.Errorf("tools = %+v", tools)
+	}
+	if got := s.Turn(t, 2).Ask; got != "and b.go?" {
+		t.Errorf("second ask = %q", got)
+	}
+}
+
+// A gemini row Gemini CLI made from the model's history alone has its calls as
+// functionCall parts and no toolCalls. Those parts are the calls, answered by the user row
+// that follows; a part that a toolCalls entry has — on its own row by id or, without one,
+// by name, or on an earlier row by id — is that entry, and is not a second call.
+func TestCallsOnlyInTheHistoryAreRead(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "p", "chats", "session-2026-11-04T10-00-a.jsonl"),
+		`{"sessionId":"g-11"}`,
+		`{"id":"u1","timestamp":"2026-11-04T10:00:01Z","type":"user","content":[{"text":"look at a.go and b.go"}]}`,
+		// an ordinary row: the call part and the toolCalls entry are one call, matched by
+		// id, and by name where the part or the entry has no id
+		`{"id":"g1","timestamp":"2026-11-04T10:00:02Z","type":"gemini","content":[{"functionCall":{"id":"t-1","name":"read_file","args":{"file_path":"a.go"}}},{"functionCall":{"name":"glob","args":{"pattern":"*.go"}}},{"functionCall":{"id":"l-1","name":"list_directory","args":{"dir_path":"."}}}],`+
+			`"toolCalls":[{"id":"t-1","name":"read_file","args":{"file_path":"a.go"},"status":"success","resultDisplay":"package a"},{"id":"t-2","name":"glob","args":{"pattern":"*.go"},"status":"success","resultDisplay":"a.go b.go"},{"name":"list_directory","args":{"dir_path":"."},"status":"success","resultDisplay":"a.go b.go"}]}`,
+		// made from the history: one call already issued above, one new, one never answered
+		`{"id":"h1","timestamp":"2026-11-04T10:00:03Z","type":"gemini","content":[{"text":"Now b.go."},{"functionCall":{"id":"t-1","name":"read_file","args":{"file_path":"a.go"}}},{"functionCall":{"id":"h-1","name":"read_file","args":{"file_path":"b.go"}}},{"functionCall":{"id":"h-2","name":"read_file","args":{"file_path":"c.go"}}}]}`,
+		`{"id":"u2","timestamp":"2026-11-04T10:00:04Z","type":"user","content":[{"functionResponse":{"id":"h-1","name":"read_file","response":{"output":"package b"}}}]}`,
+		`{"id":"g2","timestamp":"2026-11-04T10:00:05Z","type":"gemini","content":"Both are one-line packages."}`,
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	turn := s.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt tool tool tool reply tool tool reply" {
+		t.Errorf("items = %s", got)
+	}
+	var calls []string
+	for _, tool := range sourcetest.Tools(turn) {
+		calls = append(calls, tool.Name+":"+tool.CallID)
+	}
+	if got := strings.Join(calls, " "); got != "read_file:t-1 glob:t-2 list_directory: read_file:h-1 read_file:h-2" {
+		t.Fatalf("calls = %s, want each once", got)
+	}
+	tools := sourcetest.Tools(turn)
+	if b := tools[3]; !b.Done || b.Output != "package b" || b.Status != model.StatusOK || !strings.Contains(string(b.Input), "b.go") || turn.Items[5].Call == 0 {
+		t.Errorf("the call made in the history = %+v (call %d)", b, turn.Items[5].Call)
+	}
+	if c := tools[4]; c.Done || !strings.Contains(string(c.Input), "c.go") {
+		t.Errorf("the call never answered = %+v", c)
+	}
+	if s.Stats.Tools != 5 {
+		t.Errorf("tools = %d", s.Stats.Tools)
+	}
+}
+
+// A row's call parts are looked up among its toolCalls entries, not compared with each of
+// them: read so, a row grows the read with its size and not with its square. This one is a
+// megabyte of little else, which took twenty seconds part by part and takes a fraction of
+// one; the bound leaves room for a slow or busy machine and none for the square.
+func TestARowOfManyCallsReadsInTimeWithItsSize(t *testing.T) {
+	const parts, entries = 16000, 160000
+	var row strings.Builder
+	row.WriteString(`{"id":"g1","timestamp":"2026-11-04T10:00:02Z","type":"gemini","content":[`)
+	for i := range parts {
+		if i > 0 {
+			row.WriteByte(',')
+		}
+		row.WriteString(`{"functionCall":{"name":"a"}}`)
+	}
+	row.WriteString(`],"toolCalls":[`)
+	for i := range entries {
+		if i > 0 {
+			row.WriteByte(',')
+		}
+		row.WriteString(`{}`)
+	}
+	row.WriteString(`]}`)
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "p", "chats", "session-2026-11-04T10-00-a.jsonl"),
+		`{"sessionId":"g-12"}`,
+		`{"id":"u1","timestamp":"2026-11-04T10:00:01Z","type":"user","content":[{"text":"go"}]}`,
+		row.String(),
+	)
+	start := time.Now()
+	s := sourcetest.One(t, Spec.Open(root))
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("reading took %s", took)
+	}
+	if s.Stats.Tools != parts+entries {
+		t.Errorf("tools = %d, want %d", s.Stats.Tools, parts+entries)
 	}
 }

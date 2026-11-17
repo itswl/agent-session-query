@@ -244,9 +244,10 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 
 	var headerID string
 	sawHeader := false
-	seen := map[string]bool{}
-	jobs := map[string]ended{} // by call id
-	title, titled := "", false // the harness's own title; one a model wrote outranks the stopgap
+	seen := map[string]bool{}   // ids of messages added
+	looked := map[string]bool{} // ids of messages whose content was looked at, added or not
+	jobs := map[string]ended{}  // by call id
+	title, titled := "", false  // the harness's own title; one a model wrote outranks the stopgap
 	n := 0
 	// kit.Lines walks a .zstd transcript's chain of frames in order, hands over every line
 	// that was completed, and ends without an error where the half-written last frame
@@ -316,9 +317,12 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		if !decode(r.Data, &d) {
 			return true
 		}
-		// A repeated id is the same message written twice: the first stands, and so does its
-		// usage. It is passed over before its content is looked at, so that a part in it the
-		// adapter does not know is counted once, not once for every copy
+		// A repeated id is the same message written again: the first copy that adds something
+		// stands, and so does its usage, and the copies after it are passed over before their
+		// content is looked at. A copy that adds nothing leaves the next one to stand, but its
+		// content was looked at all the same, so a part in it the adapter does not know is not
+		// counted again for the copies after it: one message is counted once, however many
+		// times it was written
 		id := d.Message.ID
 		if r.Type == "user/message" {
 			id = d.ID
@@ -326,9 +330,16 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		if id != "" && seen[id] {
 			return true
 		}
-		if m, ok := messageOf(&r, &d, jobs, w.Unread); ok {
-			if m.ID != "" {
-				seen[m.ID] = true
+		unread := w.Unread
+		if id != "" {
+			if looked[id] {
+				unread = func(string) {}
+			}
+			looked[id] = true
+		}
+		if m, ok := messageOf(&r, &d, jobs, unread); ok {
+			if id != "" {
+				seen[id] = true
 			}
 			w.Add(m)
 		}
@@ -483,35 +494,23 @@ func resultText(raw json.RawMessage, unread func(kind string)) string {
 // cache — cacheReadTokens and cacheWriteTokens are counted apart, and totalTokens is the
 // four added up — so it is the canonical Input as it stands.
 //
-// Keys are folded to lowercase without underscores before they are matched.
+// Keys are folded to lowercase without underscores before they are matched. A counter is
+// read by the one rule for a token count (kit.Count): a figure below zero, or past what one
+// response could use, is no count and is read as none.
 func usageOf(raw map[string]any) (u model.Usage) {
 	for key, v := range raw {
 		switch strings.ReplaceAll(strings.ToLower(key), "_", "") {
 		case "inputtokens", "input", "prompttokens":
-			u.Input = count(v)
+			u.Input = kit.Count(v)
 		case "outputtokens", "output", "completiontokens":
-			u.Output = count(v)
+			u.Output = kit.Count(v)
 		case "cachereadtokens", "cacheread", "cachereadinputtokens":
-			u.CacheRead = count(v)
+			u.CacheRead = kit.Count(v)
 		case "cachewritetokens", "cachewrite", "cachecreationinputtokens":
-			u.CacheWrite = count(v)
+			u.CacheWrite = kit.Count(v)
 		case "reasoningtokens", "reasoning":
-			u.Reasoning = count(v)
+			u.Reasoning = kit.Count(v)
 		}
 	}
 	return u
-}
-
-// maxCount bounds a counter of one response. A trillion tokens is a thousand times any
-// context a model is given, so a number past it is no count — and with it kept out, the
-// counts of eight million responses add up to less than an int64 holds.
-const maxCount = 1 << 40
-
-// count reads a counter of tokens. A number below zero is none, and so is one past
-// maxCount: summed, either would take a session's total below zero.
-func count(v any) int64 {
-	if n := kit.Int(v); n >= 0 && n <= maxCount {
-		return n
-	}
-	return 0
 }

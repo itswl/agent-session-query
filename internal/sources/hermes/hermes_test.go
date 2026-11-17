@@ -3,6 +3,7 @@ package hermes
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/sources"
+	"github.com/itswl/agent-session-query/internal/sources/kit"
 	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
 )
 
@@ -42,7 +44,7 @@ func home(t *testing.T, statements ...string) (sources.Source, string) {
 
 func exec(t *testing.T, path string, statements ...string) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	db, err := sql.Open("sqlite", kit.FileURI(path)) // a home's path may hold a #
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,31 +322,93 @@ func TestUnknownKindsAreCounted(t *testing.T) {
 	}
 }
 
-// The totals Hermes keeps for a session are read as counts: one below zero, or past what
-// any session could spend, is none, and so is a price below zero — in the database's
-// session row and in the older index alike.
+// The totals Hermes keeps for a session are read as counts, by model.Tokens's rule: one
+// below zero, or past model.MaxTokens, is none — not the bound — while the bound itself is
+// a count. A price below zero, past any session's, or infinite is none too — in the
+// database's session row and in the older index alike. Where what was billed is not a
+// price, what was estimated stands.
 func TestTotalsThatAreNotCounts(t *testing.T) {
 	src, dir := home(t, schema,
-		`INSERT INTO sessions (id, source, started_at, input_tokens, output_tokens, cache_read_tokens, actual_cost_usd, estimated_cost_usd)
-		 VALUES ('db', 'tui', 1790000000, -1200, 300, 9e18, -0.5, -0.25)`,
+		`INSERT INTO sessions (id, source, started_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, actual_cost_usd, estimated_cost_usd)
+		 VALUES ('db', 'tui', 1790000000, -1200, 300, 9e18, `+strconv.Itoa(model.MaxTokens+1)+`, `+strconv.Itoa(model.MaxTokens)+`, -0.5, -0.25)`,
+		`INSERT INTO sessions (id, source, started_at, output_tokens, actual_cost_usd, estimated_cost_usd) VALUES ('inf', 'tui', 1790000000, 1, 1e999, 2e9)`,
+		`INSERT INTO sessions (id, source, started_at, output_tokens, actual_cost_usd, estimated_cost_usd) VALUES ('est', 'tui', 1790000000, 1, 5e300, 0.75)`,
 		msg("db", "user", "hello", 1790000001, ""),
 		msg("db", "assistant", "hi", 1790000002, ""),
+		msg("inf", "user", "hello", 1790000001, ""),
+		msg("est", "user", "hello", 1790000001, ""),
 	)
 	sessions := filepath.Join(dir, "sessions")
 	sourcetest.Write(t, filepath.Join(sessions, "sessions.json"), map[string]any{
 		"agent:main:file": map[string]any{"session_id": "file", "input_tokens": -700, "output_tokens": 70, "cache_read_tokens": 9e18, "estimated_cost_usd": -0.5},
+		"agent:main:big":  map[string]any{"session_id": "big", "output_tokens": 70, "cache_write_tokens": model.MaxTokens + 1, "estimated_cost_usd": 1e300},
 	})
 	sourcetest.Write(t, filepath.Join(sessions, "file.jsonl"),
 		map[string]any{"role": "user", "content": "hello"},
 		map[string]any{"role": "assistant", "content": "hi", "usage": map[string]any{"input_tokens": -3, "output_tokens": 2}})
+	sourcetest.Write(t, filepath.Join(sessions, "big.jsonl"), map[string]any{"role": "user", "content": "hello"})
 	all := sourcetest.All(t, src)
 	for _, s := range all {
 		sourcetest.Invariants(t, s)
 	}
-	if db := sourcetest.ByID(t, all, "db"); db.Stats.Usage != (model.Usage{Output: 300}) || db.Stats.CostUSD != 0 {
+	if db := sourcetest.ByID(t, all, "db"); db.Stats.Usage != (model.Usage{Output: 300, Reasoning: model.MaxTokens}) || db.Stats.CostUSD != 0 {
 		t.Errorf("db: usage = %+v, cost %v", db.Stats.Usage, db.Stats.CostUSD)
+	}
+	if inf := sourcetest.ByID(t, all, "inf"); inf.Stats.CostUSD != 0 {
+		t.Errorf("inf: cost %v, want none for a price that is infinite or past any session's", inf.Stats.CostUSD)
+	}
+	if est := sourcetest.ByID(t, all, "est"); est.Stats.CostUSD != 0.75 {
+		t.Errorf("est: cost %v, want what was estimated where what was billed is not a price", est.Stats.CostUSD)
 	}
 	if file := sourcetest.ByID(t, all, "file"); file.Stats.Usage != (model.Usage{Output: 70}) || file.Stats.CostUSD != 0 {
 		t.Errorf("file: usage = %+v, cost %v", file.Stats.Usage, file.Stats.CostUSD)
+	}
+	if big := sourcetest.ByID(t, all, "big"); big.Stats.Usage != (model.Usage{Output: 70}) || big.Stats.CostUSD != 0 {
+		t.Errorf("big: usage = %+v, cost %v", big.Stats.Usage, big.Stats.CostUSD)
+	}
+}
+
+// A home whose path holds a # is read like any other: the database's sessions are named by
+// the database's path and the id after it, and that path is not cut at its own #.
+func TestAHomeWhosePathHoldsAHash(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "with#hash")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, filepath.Join(dir, "state.db"), schema,
+		`INSERT INTO sessions (id, source, started_at) VALUES ('a#1', 'tui', 1790000000)`,
+		msg("a#1", "user", "the proxy returns 502", 1790000001, ""),
+		msg("a#1", "assistant", "The upstream block pointed at the wrong port.", 1790000002, `finish_reason=>'stop'`))
+	s := sourcetest.One(t, Spec.Open(dir))
+	sourcetest.NothingUnread(t, s)
+	if s.Session.ID != "a#1" || s.Session.Path != filepath.Join(dir, "state.db") || s.Stats.Turns != 1 ||
+		s.Turn(t, 1).Answer != "The upstream block pointed at the wrong port." {
+		t.Errorf("session = %+v, %d turns", s.Session, s.Stats.Turns)
+	}
+}
+
+// A column holds a value of any type in SQLite. One row's figure of a type it should not
+// be — a message's timestamp written as text, which MAX hands back over every number; a
+// count with a fraction; a time that is a word — is read as none: it does not make the
+// whole store look unreadable, and every session is still listed and read.
+func TestAFigureOfTheWrongTypeDoesNotHideTheStore(t *testing.T) {
+	src, _ := home(t, schema,
+		`INSERT INTO sessions (id, source, started_at, ended_at, message_count, last_activity_at) VALUES ('a', 'tui', 1790000000, 'later', 2.5, x'00')`,
+		`INSERT INTO sessions (id, source, started_at) VALUES ('b', 'tui', 1790000100)`,
+		msg("a", "user", "the proxy returns 502", 1790000001, ""),
+		`INSERT INTO messages (session_id, role, content, timestamp) VALUES ('a', 'assistant', 'The upstream block pointed at the wrong port.', 'yesterday')`,
+		msg("b", "user", "another session", 1790000101, ""),
+	)
+	all := sourcetest.All(t, src)
+	if len(all) != 2 {
+		t.Fatalf("sessions = %d, want both", len(all))
+	}
+	sourcetest.NothingUnread(t, all...)
+	a := sourcetest.ByID(t, all, "a")
+	if a.Stats.Turns != 1 || a.Turn(t, 1).Answer != "The upstream block pointed at the wrong port." || a.Session.StartedAt.Unix() != 1790000000 {
+		t.Errorf("a = %+v, %d turns", a.Session, a.Stats.Turns)
+	}
+	if b := sourcetest.ByID(t, all, "b"); b.Stats.Turns != 1 || b.Turn(t, 1).Ask != "another session" {
+		t.Errorf("b = %+v", b.Session)
 	}
 }

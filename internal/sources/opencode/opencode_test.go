@@ -559,9 +559,14 @@ func TestWhatIsNotUnderstoodIsCounted(t *testing.T) {
 			`INSERT INTO session_message VALUES ('x1', 'ses_2', 'hologram', 13, 1790000019000, 1790000019000, '{"text":"from a later OpenCode"}')`,
 			`UPDATE session_message SET data = json_insert(data, '$.content[#]', json('{"type":"hologram","text":"?"}'), '$.content[#]', json('{"text":"no type"}')) WHERE id = 'm3'`,
 			`UPDATE session_message SET data = json_insert(data, '$.content[1].state.content[#]', json('{"type":"hologram"}')) WHERE id = 'm3'`,
+			// What 1.x wrote beside the content is 1.x's: 2.x writes none of it in a
+			// response, and one that does is a 2.x that has moved on
+			`UPDATE session_message SET data = json_insert(data, '$.content[#]', json('{"type":"file","mime":"image/png","url":"file:///w/two/plot.png"}'),
+				'$.content[#]', json('{"type":"patch","hash":"abc","files":["/w/two/a.go"]}'), '$.content[#]', json('{"type":"step-finish"}')) WHERE id = 'm3'`,
 		)
 		after := sourcetest.ByID(t, sourcetest.All(t, src), "ses_2")
-		want := map[string]int{"row:hologram": 1, "part:hologram": 1, "part:(untyped)": 1, "output:hologram": 1}
+		want := map[string]int{"row:hologram": 1, "part:hologram": 1, "part:(untyped)": 1, "output:hologram": 1,
+			"part:file": 1, "part:patch": 1, "part:step-finish": 1}
 		if !reflect.DeepEqual(after.Unread, want) {
 			t.Errorf("unread = %v, want %v", after.Unread, want)
 		}
@@ -574,6 +579,11 @@ func TestWhatIsNotUnderstoodIsCounted(t *testing.T) {
 			`INSERT INTO message VALUES ('msg_x', 'ses_live', 1789697128710, 1789697128710, '{"role":"moderator","time":{"created":1789697128710}}')`,
 			`INSERT INTO part VALUES ('px1', 'msg_x', 'ses_live', 1, 1, '{"type":"text","text":"a word from the moderator"}')`,
 			`INSERT INTO part VALUES ('px2', 'msg_x', 'ses_live', 2, 2, '{"type":"text","text":"and another"}')`,
+			// A message with no role at all, carrying tool parts: whose calls they are is not
+			// known, so none of them is a tool run or a failure of this session's
+			`INSERT INTO message VALUES ('msg_y', 'ses_live', 1789697128715, 1789697128715, '{"time":{"created":1789697128715}}')`,
+			`INSERT INTO part VALUES ('py1', 'msg_y', 'ses_live', 1, 1, '{"type":"tool","tool":"bash","callID":"cy1","state":{"status":"completed","input":{"command":"make"},"output":"","metadata":{"exit":2}}}')`,
+			`INSERT INTO part VALUES ('py2', 'msg_y', 'ses_live', 2, 2, '{"type":"tool","tool":"read","callID":"cy2","state":{"status":"error","error":"no such file"}}')`,
 			`INSERT INTO part VALUES ('p10', 'msg_a1', 'ses_live', 10, 10, '{"type":"hologram"}')`,
 			// What 1.x wrote beside the content
 			`INSERT INTO part VALUES ('pk1', 'msg_u1', 'ses_live', 11, 11, '{"type":"file","mime":"text/plain","filename":"notes.txt","url":"file:///w/proj/notes.txt"}')`,
@@ -585,7 +595,7 @@ func TestWhatIsNotUnderstoodIsCounted(t *testing.T) {
 			`INSERT INTO part VALUES ('pk7', 'msg_a1', 'ses_live', 17, 17, '{"type":"retry","attempt":1,"error":{"name":"APIError"}}')`,
 		)
 		after := sourcetest.ByID(t, sourcetest.All(t, src), "ses_live")
-		want := map[string]int{"role:moderator": 1, "part:hologram": 1}
+		want := map[string]int{"role:moderator": 1, "role:(untyped)": 1, "part:hologram": 1}
 		if !reflect.DeepEqual(after.Unread, want) {
 			t.Errorf("unread = %v, want %v", after.Unread, want)
 		}
@@ -593,13 +603,14 @@ func TestWhatIsNotUnderstoodIsCounted(t *testing.T) {
 	})
 }
 
-// A counter OpenCode could not have written — below zero, or past any call's size — reads
+// A counter OpenCode could not have written — below zero, or past model.MaxTokens — reads
 // as none, in a message and in the session row alike, and so does a cost below zero: the
-// session's totals are sums, and one such value would carry them below zero.
+// session's totals are sums, and one such value would carry them below zero. A count at
+// the bound itself is a count.
 func TestACounterNoCallCouldHaveReadsAsNone(t *testing.T) {
 	src, _ := build(t, schemaV2, schemaV23,
-		`INSERT INTO session_v2 (id, slug, directory, version, time_created, time_updated, cost, tokens_input, tokens_output, tokens_reasoning)
-			VALUES ('ses_n', 'n', '/w', '2.3.0', 1790000000000, 1790000000000, -1, -5, 7, 9000000000000000000)`,
+		`INSERT INTO session_v2 (id, slug, directory, version, time_created, time_updated, cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write)
+			VALUES ('ses_n', 'n', '/w', '2.3.0', 1790000000000, 1790000000000, -1, -5, 7, 9000000000000000000, 1099511627776, 1099511627777)`,
 		`INSERT INTO session_message VALUES ('n1', 'ses_n', 'user', 1, 1790000001000, 1790000001000, '{"text":"count"}')`,
 		`INSERT INTO session_message VALUES ('n2', 'ses_n', 'assistant', 2, 1790000002000, 1790000002000,
 			'{"cost":-0.5,"tokens":{"input":-5,"output":3,"reasoning":9e18,"cache":{"read":1e300,"write":-1e300}},"content":[{"type":"text","text":"done"}]}')`,
@@ -609,7 +620,37 @@ func TestACounterNoCallCouldHaveReadsAsNone(t *testing.T) {
 	if call := s.Turn(t, 1).Calls[0]; call.Usage == nil || *call.Usage != (model.Usage{Output: 3}) || call.CostUSD != 0 {
 		t.Errorf("call = %+v usage %+v", call, call.Usage)
 	}
-	if rec := s.Session.Recorded; rec == nil || *rec.Usage != (model.Usage{Output: 7}) || rec.CostUSD != 0 {
+	if rec := s.Session.Recorded; rec == nil || *rec.Usage != (model.Usage{Output: 7, CacheRead: model.MaxTokens}) || rec.CostUSD != 0 {
 		t.Errorf("recorded = %+v", rec)
+	}
+}
+
+// A cost no response could have run up — past a billion dollars, or one the session row
+// holds as infinite — reads as none too: the session's cost is a sum, and two such values
+// carry it to +Inf. A cost of the size calls have is read as it is.
+func TestACostNoCallCouldHaveReadsAsNone(t *testing.T) {
+	src, _ := build(t, schemaV2, schemaV23,
+		`INSERT INTO session_v2 (id, slug, directory, version, time_created, time_updated, cost, tokens_input)
+			VALUES ('ses_c', 'c', '/w', '2.3.0', 1790000000000, 1790000000000, 9e999, 10)`,
+		`INSERT INTO session_message VALUES ('c1', 'ses_c', 'user', 1, 1790000001000, 1790000001000, '{"text":"spend"}')`,
+		`INSERT INTO session_message VALUES ('c2', 'ses_c', 'assistant', 2, 1790000002000, 1790000002000, '{"cost":1.7e308,"content":[{"type":"text","text":"a"}]}')`,
+		`INSERT INTO session_message VALUES ('c3', 'ses_c', 'assistant', 3, 1790000003000, 1790000003000, '{"cost":1.7e308,"content":[{"type":"text","text":"b"}]}')`,
+		`INSERT INTO session_message VALUES ('c4', 'ses_c', 'assistant', 4, 1790000004000, 1790000004000, '{"cost":2e9,"content":[{"type":"text","text":"c"}]}')`,
+		`INSERT INTO session_message VALUES ('c5', 'ses_c', 'assistant', 5, 1790000005000, 1790000005000, '{"cost":0.25,"content":[{"type":"text","text":"d"}]}')`,
+	)
+	s := sourcetest.One(t, src)
+	sourcetest.Invariants(t, s)
+	var costs []float64
+	for _, call := range s.Turn(t, 1).Calls {
+		costs = append(costs, call.CostUSD)
+	}
+	if !reflect.DeepEqual(costs, []float64{0, 0, 0, 0.25}) {
+		t.Errorf("costs = %v", costs)
+	}
+	if rec := s.Session.Recorded; rec == nil || rec.CostUSD != 0 {
+		t.Errorf("recorded = %+v", rec)
+	}
+	if s.Stats.CostUSD != 0.25 {
+		t.Errorf("the session cost $%v, want $0.25", s.Stats.CostUSD)
 	}
 }

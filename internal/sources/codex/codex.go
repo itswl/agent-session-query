@@ -183,36 +183,42 @@ type row struct {
 }
 
 // usage is Codex's token counters: OpenAI's shape, where the input counts the cached
-// tokens and the output counts the reasoning.
+// tokens and the output counts the reasoning. Each is a count by the one rule for what a
+// count is from the moment it is read: see UnmarshalJSON.
 type usage struct {
-	Input      int64 `json:"input_tokens"`
-	Cached     int64 `json:"cached_input_tokens"`
-	CacheWrite int64 `json:"cache_write_input_tokens"`
-	Output     int64 `json:"output_tokens"`
-	Reasoning  int64 `json:"reasoning_output_tokens"`
+	Input, Cached, CacheWrite, Output, Reasoning int64
 }
 
-// mostTokens is far more than any one model response has spent: a counter past it, like
-// one below zero, is not a count.
-const mostTokens = 1 << 40
+// UnmarshalJSON reads the counters of a usage object. A number that is not a count —
+// below zero, past model.MaxTokens, or too large for a float64 — is 0 and the rest of the
+// row is read: a corrupt counter adds nothing, and moves no high mark a later snapshot is
+// measured against (see spentAt). A counter that is not a number at all, like a usage
+// that is not an object, is a shape the adapter does not know, and fails the row.
+func (u *usage) UnmarshalJSON(data []byte) error {
+	var counts struct {
+		Input      json.Number `json:"input_tokens"`
+		Cached     json.Number `json:"cached_input_tokens"`
+		CacheWrite json.Number `json:"cache_write_input_tokens"`
+		Output     json.Number `json:"output_tokens"`
+		Reasoning  json.Number `json:"reasoning_output_tokens"`
+	}
+	if err := json.Unmarshal(data, &counts); err != nil {
+		return err
+	}
+	*u = usage{Input: kit.Count(counts.Input), Cached: kit.Count(counts.Cached), CacheWrite: kit.Count(counts.CacheWrite),
+		Output: kit.Count(counts.Output), Reasoning: kit.Count(counts.Reasoning)}
+	return nil
+}
 
 // canonical takes the cached tokens back out of the input, so the parts do not overlap.
-// A counter that is not a count reads as none: one corrupt record must not take a
-// session's tokens below zero, or carry their sum past what an int64 holds.
+// The counters are counts already, so none of this can go below zero or wrap.
 func (u usage) canonical() *model.Usage {
-	count := func(n int64) int64 {
-		if n < 0 || n > mostTokens {
-			return 0
-		}
-		return n
-	}
-	in, cached, written := count(u.Input), count(u.Cached), count(u.CacheWrite)
 	return &model.Usage{
-		Input:      max(in-cached-written, 0),
-		Output:     count(u.Output),
-		CacheRead:  cached,
-		CacheWrite: written,
-		Reasoning:  count(u.Reasoning),
+		Input:      max(u.Input-u.Cached-u.CacheWrite, 0),
+		Output:     u.Output,
+		CacheRead:  u.Cached,
+		CacheWrite: u.CacheWrite,
+		Reasoning:  u.Reasoning,
 	}
 }
 
@@ -354,6 +360,11 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		}
 		var r row
 		if json.Unmarshal(line, &r) != nil {
+			// A row with a field of another type than the adapter reads it as is passed
+			// over whole, and counted, so that a change in the format shows
+			if kind := undecodable(line); kind != "" {
+				w.Unread(kind)
+			}
 			return true
 		}
 		p := &r.Payload
@@ -590,6 +601,38 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		}
 	}
 	return nil
+}
+
+// undecodable is the kind, for Writer.Unread, of a line that is JSON but will not decode
+// as a row: "undecodable:" and the kind it would be counted as if it were unknown —
+// row:<type>, or event:<type> and item:<type> for an event_msg's or a response_item's
+// payload. Known or not, a record that cannot be decoded is passed over. "" for a line
+// that does not say what it is, or is not JSON at all, such as the end of a rollout that
+// is still being written.
+func undecodable(line []byte) string {
+	var envelope struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Type string `json:"type"`
+		} `json:"payload"`
+	}
+	// A field of the wrong type is left empty and the rest decoded: a payload that is not
+	// an object still leaves the row's type
+	err := json.Unmarshal(line, &envelope)
+	var mistyped *json.UnmarshalTypeError
+	if (err != nil && !errors.As(err, &mistyped)) || envelope.Type == "" {
+		return ""
+	}
+	kind := "row:" + envelope.Type
+	if p := envelope.Payload.Type; p != "" {
+		switch envelope.Type {
+		case "event_msg":
+			kind = "event:" + p
+		case "response_item":
+			kind = "item:" + p
+		}
+	}
+	return "undecodable:" + kind
 }
 
 // sessionIDOf is the id of the session a rollout holds.

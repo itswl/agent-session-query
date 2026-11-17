@@ -397,10 +397,13 @@ func readUpdates(ctx context.Context, path string, f *folder) error {
 			f.update(u, at)
 		case l.Method == "_x.ai/session/update":
 			// Grok's own events, beside the turn_completed row read above
-			switch u.Kind {
-			case "hook_execution":
+			switch {
+			case u.Kind == "hook_execution":
 				// A hook Grok ran at a point of the session, and what it returned: Grok's
 				// own plumbing, not conversation
+			case aside(u.Kind):
+				// One of the protocol's updates that say nothing of the conversation, which
+				// is no more conversation for being written under Grok's own method
 			default:
 				f.unread("event", u.Kind)
 			}
@@ -441,6 +444,22 @@ func (f *folder) update(u *update, at time.Time) {
 		default:
 			f.unread("status", u.Status)
 		}
+	default:
+		if !aside(u.Kind) {
+			f.unread("event", u.Kind)
+		}
+	}
+}
+
+// aside reports whether kind is one of the Agent Client Protocol's updates that say
+// nothing of the conversation, each of which is passed over on purpose.
+//
+// They are passed over under either method. The protocol sends them as session/update,
+// but this adapter was first written taking Grok to put plan and mode changes among its
+// own events, and which of the two it uses has not been checked against a session. A
+// kind known under one method is no news under the other.
+func aside(kind string) bool {
+	switch kind {
 	case "plan":
 		// The agent's list of steps, restated whole each time one changes: its working
 		// notes, which the calls and replies around it carry out
@@ -451,9 +470,15 @@ func (f *folder) update(u *update, at time.Time) {
 		// The slash commands on offer, announced whenever they change
 	case "session_info_update":
 		// The session's title and times, which summary.json keeps
+	case "usage_update":
+		// How much of the context window is in use, of how much, and perhaps what the
+		// session has cost so far. The tokens a turn spent are turn_completed's to say.
+		// The window's fill and the running cost would be worth reading once a Grok
+		// session is seen to write them.
 	default:
-		f.unread("event", u.Kind)
+		return false
 	}
+	return true
 }
 
 // unread notes a record of a kind this adapter has never heard of, as what:kind. A line
@@ -500,12 +525,12 @@ func resultText(content any) string {
 // spelling; no counter for cache writes has been seen, and the names read beside Grok's
 // are the ones the same shape goes by elsewhere.
 //
-// A counter past maxTokens is not read: it is a number gone wrong, not a count, and two
-// of them added up would wrap a session's total below zero.
+// A counter is read by the one rule for what a count is (kit.Count): one below zero or
+// past model.MaxTokens is a number gone wrong, and reads as no counter at all.
 func usageOf(raw map[string]any) *model.Usage {
 	count := func(names ...string) int64 {
 		for _, name := range names {
-			if n := kit.Int(raw[name]); n > 0 && n <= maxTokens {
+			if n := kit.Count(raw[name]); n > 0 {
 				return n
 			}
 		}
@@ -523,11 +548,6 @@ func usageOf(raw map[string]any) *model.Usage {
 	}
 	return &u
 }
-
-// maxTokens is more tokens than any session has spent, by a thousand times and more. A
-// float too large for an int64 converts to whatever the machine makes of it — on arm64
-// the largest int64 — so the bound is what keeps a sum of counters from overflowing.
-const maxTokens = 1 << 40
 
 // historyLine is one line of chat_history.jsonl: a whole message.
 type historyLine struct {

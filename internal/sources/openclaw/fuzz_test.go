@@ -92,5 +92,8 @@ func attempt(t *testing.T, data []byte) {
 		t.Fatal(err)
 	}
 	db.Close()
-	sourcetest.Attempt(t, Spec.Open(state))
+	// The session's own row is fixed and every event is read as JSON or not, so no input
+	// is a reason for the database to be unlistable or the session unreadable: it is
+	// listed and read, or the run fails, rather than pass while reading nothing
+	sourcetest.Invariants(t, sourcetest.One(t, Spec.Open(state)))
 }

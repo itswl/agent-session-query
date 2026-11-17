@@ -277,8 +277,10 @@ func unknownRow(line []byte) string {
 
 // message is a user or gemini row. content is an array of Gemini API parts ({text},
 // {functionResponse}, {inlineData} …) on a user row and a string on a gemini row — parts
-// too, where the row was rewritten from the model's history; thoughts, tokens and
-// toolCalls have changed shape between Gemini CLI's versions and are read loosely.
+// too, where the row was rewritten from the model's history. Gemini CLI also takes a lone
+// part for the array, and a string among the parts for a text part, and so does Read.
+// thoughts, tokens and toolCalls have changed shape between Gemini CLI's versions and are
+// read loosely.
 type message struct {
 	Type      string `json:"type"`
 	ID        string `json:"id"`
@@ -302,7 +304,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	// directory, the one grouping the files give.
 	w.S.Cwd = project(files[0])
 
-	rd := &reader{w: w, answered: map[string]bool{}, statuses: map[string]string{}}
+	rd := &reader{w: w, answered: map[string]bool{}, issued: map[string]bool{}, statuses: map[string]string{}}
 	var meta time.Time // the latest time the metadata lines claim, the last resort for "updated"
 	// The file is a log of writes, and a message can be written more than once: a patch
 	// that sets the messages again, a row rewritten when its tool call finishes. A
@@ -409,7 +411,7 @@ func laterOf(a, b time.Time) time.Time {
 }
 
 // reader folds a conversation's rows into messages. What it remembers across rows — and
-// across the files of one conversation — is which calls have been answered.
+// across the files of one conversation — is which calls have been issued and answered.
 //
 // Tool-driven sessions carry very little prose: when a call is issued, content is the
 // empty string and the substance sits in toolCalls (id, name, args). Where the result
@@ -424,6 +426,7 @@ func laterOf(a, b time.Time) time.Time {
 type reader struct {
 	w        *transcript.Writer
 	answered map[string]bool   // call id → answered on the call itself
+	issued   map[string]bool   // call id → its call is in the transcript already
 	statuses map[string]string // call id → a status that came without its output
 	last     time.Time         // the time on the latest row that had one
 }
@@ -454,13 +457,16 @@ func (rd *reader) add(m *message) {
 }
 
 // blocks lays a row out in the order it happened: the thinking that came first, the
-// words, then each call with the answer it carries.
+// words — with any call only the model's history holds, where it stands among them — then
+// each call with the answer it carries.
 func (rd *reader) blocks(m *message) []transcript.Block {
 	var out []transcript.Block
 	thoughts := thoughtText(m.Thoughts)
 	if thoughts != "" {
 		out = append(out, transcript.ThinkingOf(thoughts))
 	}
+	var listed *entries // the row's toolCalls, once a call part asks after them
+	var parts []any
 	switch content := m.Content.(type) {
 	case string:
 		if content != "" {
@@ -469,42 +475,72 @@ func (rd *reader) blocks(m *message) []transcript.Block {
 	case []any:
 		// An array is a list of Gemini API parts: what the person sent, or a row Gemini CLI
 		// rewrote from the model's own history after compressing or trimming it
-		for _, item := range content {
-			entry := kit.Map(item)
-			switch kind := partKind(entry); kind {
-			case "text":
-				text := kit.Str(entry["text"])
-				switch {
-				case text == "":
-				case entry["thought"] != true:
-					out = append(out, transcript.TextOf(text))
-				case thoughts == "":
-					// The model's thinking as the API returned it. A row with thoughts of
-					// its own says the same there, and is read from them instead
-					out = append(out, transcript.ThinkingOf(text))
-				}
-			case "functionResponse":
-				fr, ok := entry["functionResponse"].(map[string]any)
-				if !ok {
-					continue
-				}
-				id := kit.Str(fr["id"])
-				if id != "" && rd.answered[id] {
-					continue // already answered on the call itself
-				}
-				out = append(out, result(id, kit.Str(fr["name"]), kit.Map(fr["response"]), "", rd.statuses[id]))
-			case "functionCall":
-				// A call as the model's history holds it, in a row rewritten from that
-				// history: the row's toolCalls entry is the same call, with its outcome
-			case "inlineData", "fileData":
-				// An image, a PDF or another file sent with the message, by value or by
-				// reference: there is no text in it to read
-			case "":
-				// Nothing but what qualifies a part — a thought signature on its own — or
-				// nothing at all
-			default:
-				rd.w.Unread("part:" + kind)
+		parts = content
+	case map[string]any:
+		// One part on its own, which Gemini CLI reads as a list of one
+		parts = []any{content}
+	}
+	for _, item := range parts {
+		entry := kit.Map(item)
+		if text, ok := item.(string); ok {
+			// A string among the parts is a text part, as Gemini CLI reads it
+			entry = map[string]any{"text": text}
+		}
+		switch kind := partKind(entry); kind {
+		case "text":
+			text := kit.Str(entry["text"])
+			switch {
+			case text == "":
+			case entry["thought"] != true:
+				out = append(out, transcript.TextOf(text))
+			case thoughts == "":
+				// The model's thinking as the API returned it. A row with thoughts of
+				// its own says the same there, and is read from them instead
+				out = append(out, transcript.ThinkingOf(text))
 			}
+		case "functionResponse":
+			fr, ok := entry["functionResponse"].(map[string]any)
+			if !ok {
+				continue
+			}
+			id := kit.Str(fr["id"])
+			if id != "" && rd.answered[id] {
+				continue // already answered on the call itself
+			}
+			out = append(out, result(id, kit.Str(fr["name"]), kit.Map(fr["response"]), "", rd.statuses[id]))
+		case "functionCall":
+			// A call as the model's history holds it, in a row rewritten from that
+			// history. Where the row's toolCalls has it, that entry is the same call
+			// with its outcome, and is read instead, and a call an earlier row issued
+			// under the same id is not issued twice. A row Gemini CLI made from the
+			// history alone has no toolCalls: the part is the only record of the call
+			fc, ok := entry["functionCall"].(map[string]any)
+			if !ok {
+				continue
+			}
+			id, name := kit.Str(fc["id"]), kit.Str(fc["name"])
+			if listed == nil {
+				listed = entriesOf(m.ToolCalls)
+			}
+			if listed.has(id, name) || id != "" && rd.issued[id] {
+				continue
+			}
+			args, ok := fc["args"]
+			if !ok {
+				args = map[string]any{}
+			}
+			out = append(out, transcript.CallOf(id, name, args))
+			if id != "" {
+				rd.issued[id] = true
+			}
+		case "inlineData", "fileData":
+			// An image, a PDF or another file sent with the message, by value or by
+			// reference: there is no text in it to read
+		case "":
+			// Nothing but what qualifies a part — a thought signature on its own — or
+			// nothing that is a part at all: an empty object, a null, a number
+		default:
+			rd.w.Unread("part:" + kind)
 		}
 	}
 	for _, tc := range kit.List(m.ToolCalls) {
@@ -515,6 +551,9 @@ func (rd *reader) blocks(m *message) []transcript.Block {
 			args = map[string]any{}
 		}
 		out = append(out, transcript.CallOf(id, name, args))
+		if id != "" {
+			rd.issued[id] = true
+		}
 
 		// The newer shape answers the call in place
 		status := kit.Str(call["status"])
@@ -551,6 +590,39 @@ func (rd *reader) blocks(m *message) []transcript.Block {
 		}
 	}
 	return out
+}
+
+// entries is what a row's toolCalls say of the calls in it: the ids of the entries that
+// have one, the names of those that have none, and every entry's name. It is gathered once
+// a row and each call part is looked up in it: a part compared with every entry in turn
+// makes a read grow with the square of the row (measured: twenty seconds for a row of a
+// megabyte made of little else).
+type entries struct {
+	ids, idless, names map[string]bool
+}
+
+func entriesOf(toolCalls any) *entries {
+	e := &entries{ids: map[string]bool{}, idless: map[string]bool{}, names: map[string]bool{}}
+	for _, tc := range kit.List(toolCalls) {
+		call := kit.Map(tc)
+		id, name := kit.Str(call["id"]), kit.Str(call["name"])
+		if id != "" {
+			e.ids[id] = true
+		} else {
+			e.idless[name] = true
+		}
+		e.names[name] = true
+	}
+	return e
+}
+
+// has says whether a call part is one of the entries: the entry with its id, or, where the
+// part or the entry has none, one of its name.
+func (e *entries) has(id, name string) bool {
+	if id == "" {
+		return e.names[name]
+	}
+	return e.ids[id] || e.idless[name]
 }
 
 // partKind is what a content part is: the one field of a Gemini API part that holds its
@@ -624,11 +696,6 @@ func thoughtText(v any) string {
 	return ""
 }
 
-// maxTokens bounds one counter of one response. No model reads or writes anywhere near it
-// (a million tokens is a large context window), and the sum of a session's responses
-// bounded so stays far from overflowing.
-const maxTokens = 1 << 40
-
 // usageOf converts a gemini row's tokens to the canonical shape. The counters are the API's
 // usage metadata under short names, and they overlap in two ways the canonical shape does
 // not allow:
@@ -649,9 +716,9 @@ func usageOf(tokens any) *model.Usage {
 	counters := map[string]int64{}
 	for key, v := range kit.Map(tokens) {
 		if n, ok := kit.Num(v); ok {
-			// Bounded before it is a count: a figure past any model's reach, added to the
-			// others, would wrap the totals round to below zero
-			counters[strings.ToLower(strings.ReplaceAll(key, "_", ""))] = int64(min(max(n, 0), maxTokens))
+			// A figure below zero or past any model's reach is no count, and counts 0
+			// (model.TokensOf): added to the others, it would take the totals with it
+			counters[strings.ToLower(strings.ReplaceAll(key, "_", ""))] = model.TokensOf(n)
 		}
 	}
 	found := false

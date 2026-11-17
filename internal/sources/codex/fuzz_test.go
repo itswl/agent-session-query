@@ -11,7 +11,7 @@ import (
 
 // seeds are rollouts in the shapes the tests are built from: a session with records, the
 // tool rows, a fork of itself, a subagent, a rollout with only snapshots, and the rows
-// Codex writes that the adapter passes over.
+// Codex writes that the adapter passes over, or cannot decode.
 var seeds = [][]string{
 	{
 		`{"type":"session_meta","payload":{"session_id":"codex-1","cwd":"/home/u/x","cli_version":"0.154.0","git":{"branch":"main"}}}`,
@@ -87,6 +87,8 @@ var seeds = [][]string{
 		`{"timestamp":"2026-11-05T10:00:10Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"A cat."}]}}`,
 		`{"timestamp":"2026-11-05T10:00:10Z","type":"token_usage_record","payload":{"response_id":"resp_2","usage":{"input_tokens":120,"output_tokens":3}}}`,
 		`{"timestamp":"2026-11-05T10:00:11Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":"A cat."}}`,
+		`{"timestamp":"2026-11-05T10:00:12Z","type":"event_msg","payload":{"type":"turn_aborted","reason":{"kind":"interrupted"}}}`,
+		`{"timestamp":"2026-11-05T10:00:12Z","type":"token_usage_record","payload":{"response_id":"resp_3","usage":{"input_tokens":1e400,"output_tokens":-1}}}`,
 	},
 }
 

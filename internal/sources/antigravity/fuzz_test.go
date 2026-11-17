@@ -14,8 +14,8 @@ import (
 
 // fuzzSeeds are transcripts as agy writes them, taken from the tests: a turn with a step
 // rewritten and a tool step, a model step still generating, agy's own context in the
-// user's seat with lines that are not steps, fields of odd types, and a step of a type
-// this reader does not know.
+// user's seat with lines that are not steps, fields of odd types, steps of types this
+// reader does not know or does not yet read, and counters that are not counts.
 var fuzzSeeds = [][]string{
 	{
 		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-12T10:00:00Z","content":"<USER_REQUEST>fix the build</USER_REQUEST><ADDITIONAL_METADATA>noise</ADDITIONAL_METADATA>"}`,
@@ -47,6 +47,13 @@ var fuzzSeeds = [][]string{
 		`{"step_index":2,"source":"MODEL","type":"HOLOGRAM_PROJECTION","status":"RUNNING","created_at":"2026-10-12T10:00:02Z","content":"warming up"}`,
 		`{"step_index":3,"source":"MODEL","type":"VIEW_FILE","status":"DONE","created_at":"2026-10-12T10:00:03Z","content":"package main"}`,
 		`{"step_index":4,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-12T10:00:05Z","content":"tidied","input_tokens":50,"output_tokens":6}`,
+		`{"step_index":5,"source":"MODEL","type":"ERROR_MESSAGE","status":"DONE","created_at":"2026-10-12T10:00:06Z","content":"quota exceeded"}`,
+		`{"step_index":6,"source":"MODEL","type":"NOTIFY_USER","status":"DONE","created_at":"2026-10-12T10:00:07Z","content":"Tidied; the plan is ready for review."}`,
+	},
+	{
+		`{"step_index":0,"type":"USER_INPUT","content":"<USER_REQUEST>go</USER_REQUEST>"}`,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","content":"one","input_tokens":9e18,"output_tokens":7}`,
+		`{"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","content":"two","input_tokens":-40,"output_tokens":1099511627777,"cache_write_tokens":1099511627776}`,
 	},
 }
 

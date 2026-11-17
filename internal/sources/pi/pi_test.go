@@ -329,9 +329,10 @@ func TestWhatPiKeepsForItself(t *testing.T) {
 	}
 }
 
-// TestCountsThatCannotBe: a counter below zero, or so large that two of them wrap an
-// int64 when the session is totalled, is damage and is read as none; the counters beside
-// it in the same response are kept.
+// TestCountsThatCannotBe: a counter below zero, or past what any response counts, is
+// damage and is read as none — not cut down to the bound, which would keep a number that
+// was never a count; the counters beside it in the same response are kept. A cost or a
+// duration is read the same way.
 func TestCountsThatCannotBe(t *testing.T) {
 	root := t.TempDir()
 	huge := int64(5_000_000_000_000_000_000)
@@ -343,10 +344,14 @@ func TestCountsThatCannotBe(t *testing.T) {
 			"usage": M{"input": huge, "output": 2, "cacheRead": 0, "cacheWrite": 0, "cost": M{"total": 0.5}}}),
 		M{"type": "compaction", "id": "cp", "timestamp": "2026-10-06T18:40:03Z", "summary": "s",
 			"usage": M{"input": huge, "output": 3, "cacheRead": 0, "cacheWrite": 0}},
+		// One past what any response counts is dropped, not cut to the bound; the bound
+		// itself is a count. A cost past what any response has cost is none.
+		msgRow("m4", "2026-10-06T18:40:04Z", M{"role": "assistant", "content": text("c"),
+			"usage": M{"input": model.MaxTokens + 1, "output": 4, "cacheRead": model.MaxTokens, "cacheWrite": 0, "cost": M{"total": 2e9}}}),
 	)
 	s := sourcetest.One(t, Spec.Open(root))
 	sourcetest.Invariants(t, s)
-	if s.Stats.Usage != (model.Usage{Output: 6}) || s.Stats.CostUSD != 0.5 {
+	if s.Stats.Usage != (model.Usage{Output: 10, CacheRead: model.MaxTokens}) || s.Stats.CostUSD != 0.5 {
 		t.Errorf("stats = %+v", s.Stats)
 	}
 	for _, call := range s.Turn(t, 1).Calls {
@@ -403,10 +408,11 @@ func TestWhatIsNotKnownIsCounted(t *testing.T) {
 		// a role pi has not written, holding no content: nothing of it can be read
 		msgRow("m9", "2026-10-06T18:40:01Z", M{"role": "artifact", "timestamp": ms(500 * time.Millisecond), "title": "a chart"}),
 		msgRow("m2", "2026-10-06T18:40:02Z", M{"role": "assistant", "timestamp": ms(time.Second), "model": "m", "stopReason": "stop",
-			"usage":   M{"input": 10, "output": 5, "cacheRead": 0, "cacheWrite": 0, "cost": M{"total": 0.01}},
-			"content": []M{{"type": "citation", "url": "https://example.com"}, {"type": "text", "text": "done"}}}),
+			"usage": M{"input": 10, "output": 5, "cacheRead": 0, "cacheWrite": 0, "cost": M{"total": 0.01}},
+			// a block that does not say what it is is counted; a null, which is no block, is not
+			"content": []any{M{"type": "citation", "url": "https://example.com"}, M{}, nil, M{"type": "text", "text": "done"}}}),
 	)
-	want := map[string]int{"row:checkpoint": 1, "row:(untyped)": 1, "role:artifact": 1, "block:citation": 1}
+	want := map[string]int{"row:checkpoint": 1, "row:(untyped)": 1, "role:artifact": 1, "block:citation": 1, "block:(untyped)": 1}
 	if !reflect.DeepEqual(after.Unread, want) {
 		t.Errorf("unread = %v, want %v", after.Unread, want)
 	}
@@ -544,14 +550,23 @@ func TestBrokenLinesAreSkipped(t *testing.T) {
 		header("pi-b", "/w"),
 		`{"type":"message","id":"half","message":{"role":"user","content":[{"type":"te`, // cut off mid-write
 		`not json at all`,
+		// JSON, but not an object: no record of any kind
+		`null`, ` []`, `1`, `"x"`, `true`, `[{"type":"checkpoint"}]`,
 		msgRow("m1", "2026-10-06T18:40:00Z", M{"role": "user", "content": text("after the damage")}),
 		// a field of an unexpected type loses that field, not the message
 		msgRow("m2", "2026-10-06T18:40:01Z", M{"role": "assistant", "durationMs": "slow", "usage": "none", "content": text("still here")}),
+		// and a block that is not an object is no block, beside ones that are
+		msgRow("m3", "2026-10-06T18:40:02Z", M{"role": "user", "content": []any{"a", nil, 5, []any{}, M{"type": "text", "text": "next"}}}),
+		msgRow("m4", "2026-10-06T18:40:03Z", M{"role": "assistant", "content": []any{nil, M{"type": "text", "text": "fine"}, true}}),
 	)
 	s := sourcetest.One(t, Spec.Open(root))
-	// A line that is not JSON says nothing of what it was: it is damage, not a kind
+	// A line that is not JSON, or not a JSON object, says nothing of what it was: it is
+	// damage, not a kind
 	sourcetest.NothingUnread(t, s)
 	if !strings.HasPrefix(s.Turn(t, 1).Ask, "after the damage") || s.Turn(t, 1).Answer != "still here" {
 		t.Errorf("turn = %+v", s.Turn(t, 1))
+	}
+	if s.Turn(t, 2).Ask != "next" || s.Turn(t, 2).Answer != "fine" {
+		t.Errorf("turn = %+v", s.Turn(t, 2))
 	}
 }

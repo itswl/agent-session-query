@@ -1,6 +1,9 @@
 package claude
 
 import (
+	"encoding/json"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -394,26 +397,89 @@ func TestUnknownKindsAreCounted(t *testing.T) {
 }
 
 // A row can say anything of its counts. One below zero, or past what any response could
-// count, is no count: added up, the first takes from the session's and the second wraps
-// it around to below zero. A duration no clock could measure is none either.
+// count (model.MaxTokens), is no count and counts nothing, not the most a count can be:
+// added up, the first takes from the session's total and the second swamps it. A duration
+// no clock could measure is none either, and nor is one longer than any call runs: past
+// 292 years a duration in milliseconds overflows a time.Duration, and wraps around
+// wherever a call's duration is shown.
 func TestCountsHeldToWhatACountCanBe(t *testing.T) {
+	durations := []float64{1e300, 1e15, 1e13, 2e10, 86_400_000}
+	calls := make([]M, len(durations))
+	rows := []any{userRow("u1", "2026-10-01T10:00:00Z", "count")}
+	for i := range durations {
+		calls[i] = M{"type": "tool_use", "id": fmt.Sprintf("t%d", i), "name": "Bash", "input": M{"command": "true"}}
+	}
+	rows = append(rows, M{"type": "assistant", "uuid": "a1", "timestamp": "2026-10-01T10:00:01Z", "message": M{"id": "m1", "role": "assistant", "costUSD": -2,
+		"content": calls,
+		"usage":   M{"input_tokens": -5, "output_tokens": 3, "cache_read_input_tokens": int64(math.MaxInt64), "cache_creation_input_tokens": model.MaxTokens + 1}}})
+	for i, ms := range durations {
+		rows = append(rows, userRow(fmt.Sprintf("r%d", i), "2026-10-01T10:00:02Z", []M{{"type": "tool_result", "tool_use_id": fmt.Sprintf("t%d", i), "content": "ok"}},
+			M{"toolUseResult": M{"durationMs": ms}}))
+	}
+	rows = append(rows, M{"type": "assistant", "uuid": "a2", "timestamp": "2026-10-01T10:00:03Z", "message": M{"id": "m2", "role": "assistant",
+		"content": []M{{"type": "text", "text": "done"}},
+		"usage":   M{"input_tokens": 4, "cache_read_input_tokens": int64(math.MaxInt64), "cache_creation_input_tokens": model.MaxTokens}}})
 	root := t.TempDir()
-	sourcetest.Write(t, filepath.Join(root, "proj", "sess-1.jsonl"),
-		userRow("u1", "2026-10-01T10:00:00Z", "count"),
-		M{"type": "assistant", "uuid": "a1", "timestamp": "2026-10-01T10:00:01Z", "message": M{"id": "m1", "role": "assistant", "costUSD": -2,
-			"content": []M{{"type": "tool_use", "id": "t1", "name": "Bash", "input": M{"command": "true"}}},
-			"usage":   M{"input_tokens": -5, "output_tokens": 3, "cache_read_input_tokens": int64(9223372036854775807)}}},
-		userRow("u2", "2026-10-01T10:00:02Z", []M{{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}}, M{"toolUseResult": M{"durationMs": 1e300}}),
-		M{"type": "assistant", "uuid": "a2", "timestamp": "2026-10-01T10:00:03Z", "message": M{"id": "m2", "role": "assistant",
-			"content": []M{{"type": "text", "text": "done"}},
-			"usage":   M{"input_tokens": 4, "cache_read_input_tokens": int64(9223372036854775807)}}},
-	)
+	sourcetest.Write(t, filepath.Join(root, "proj", "sess-1.jsonl"), rows...)
 	s := sourcetest.One(t, Spec.Open(root))
 	sourcetest.Invariants(t, s)
-	if want := (model.Usage{Input: 4, Output: 3}); s.Stats.Usage != want || s.Stats.CostUSD != 0 {
+	sourcetest.NothingUnread(t, s)
+	if want := (model.Usage{Input: 4, Output: 3, CacheWrite: model.MaxTokens}); s.Stats.Usage != want || s.Stats.CostUSD != 0 {
 		t.Errorf("usage = %+v cost %v, want %+v and no cost", s.Stats.Usage, s.Stats.CostUSD, want)
 	}
-	if tool := sourcetest.Tools(s.Turn(t, 1))[0]; tool.DurMs != 0 {
-		t.Errorf("duration = %d ms, want none", tool.DurMs)
+	tools := sourcetest.Tools(s.Turn(t, 1))
+	if len(tools) != len(durations) {
+		t.Fatalf("%d tools, want %d", len(tools), len(durations))
+	}
+	for i, tool := range tools[:len(tools)-1] {
+		if tool.DurMs != 0 {
+			t.Errorf("durationMs %g read as %d ms, want none", durations[i], tool.DurMs)
+		}
+	}
+	if tool := tools[len(tools)-1]; tool.DurMs != 86_400_000 {
+		t.Errorf("a call of a day read as %d ms", tool.DurMs)
+	}
+}
+
+// A cost is a row's word too. One past any response's, added to another, would make the
+// session's +Inf, which no JSON encoder writes: neither the session's figures nor the
+// turn's could be stored. A session total past any session's is no total either, and the
+// session's cost is then what its responses cost.
+func TestCostsHeldToWhatACostCanBe(t *testing.T) {
+	root := t.TempDir()
+	reply := func(uuid, response string, cost float64) M {
+		return M{"type": "assistant", "uuid": uuid, "timestamp": "2026-10-01T10:00:01Z", "message": M{"id": response, "role": "assistant", "costUSD": cost,
+			"content": []M{{"type": "text", "text": "spent"}}, "usage": M{"input_tokens": 1}}}
+	}
+	rows := func(id string) []any {
+		return []any{
+			userRow("u1", "2026-10-01T10:00:00Z", "spend", M{"sessionId": id}),
+			reply("a1", "m1", 1.7e308),
+			reply("a2", "m2", 1.7e308),
+			reply("a3", "m3", 2e9),
+			reply("a4", "m4", 0.25),
+		}
+	}
+	sourcetest.Write(t, filepath.Join(root, "proj", "sess-1.jsonl"), rows("sess-1")...)
+	sourcetest.Write(t, filepath.Join(root, "proj", "sess-2.jsonl"), append(rows("sess-2"), M{"type": "cost-state", "totalCostUSD": 1.7e308})...)
+	all := sourcetest.All(t, Spec.Open(root))
+	if len(all) != 2 {
+		t.Fatalf("%d sessions, want 2", len(all))
+	}
+	for _, s := range all {
+		sourcetest.Invariants(t, s)
+		sourcetest.NothingUnread(t, s)
+		if s.Session.Recorded != nil {
+			t.Errorf("%s: recorded = %+v, want none", s.Session.ID, *s.Session.Recorded)
+		}
+		if s.Stats.CostUSD != 0.25 || s.Turn(t, 1).CostUSD != 0.25 {
+			t.Errorf("%s: cost = %v, turn's %v, want 0.25", s.Session.ID, s.Stats.CostUSD, s.Turn(t, 1).CostUSD)
+		}
+		if _, err := json.Marshal(s.Stats); err != nil {
+			t.Errorf("%s: stats: %v", s.Session.ID, err)
+		}
+		if _, err := json.Marshal(s.Turns); err != nil {
+			t.Errorf("%s: turns: %v", s.Session.ID, err)
+		}
 	}
 }

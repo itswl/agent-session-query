@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
 )
 
@@ -47,15 +48,20 @@ func FuzzRead(f *testing.F) {
 		`{"timestamp":1790000002,"method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"cancelled"}}}`,
 		`{"timestamp":1790000003,"method":"_x.ai/session/update","params":{"update":{"sessionUpdate":"memory_written"}}}`,
 		`{"timestamp":1790000003,"method":"_x.ai/session/compacted","params":{"update":{}}}`,
+		`{"timestamp":1790000003,"method":"_x.ai/session/update","params":{"update":{"sessionUpdate":"plan","entries":[]}}}`,
+		`{"timestamp":1790000003,"method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":31344,"size":256000}}}`,
 		`{"timestamp":1790000003,"method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"completed"}}}`,
 	), false, []byte(nil))
 
-	// Counters past what any turn could spend, which once added up to below zero
+	// Counters past what any turn could spend — two that an int64 holds but their sum does
+	// not, which once added up to below zero, and one past what an int64 holds at all
 	f.Add([]byte(`{"info":{"id":"sid-huge"}}`), jsonl(f,
 		chunk(1790000000, "user_message_chunk", "one"),
-		turnCompleted(1790000001, M{"inputTokens": 1e19, "outputTokens": 5}),
+		turnCompleted(1790000001, M{"inputTokens": 5e18, "outputTokens": 5}),
 		chunk(1790000002, "user_message_chunk", "two"),
-		turnCompleted(1790000003, M{"inputTokens": 1e19, "outputTokens": -7}),
+		turnCompleted(1790000003, M{"inputTokens": 5e18, "outputTokens": -7}),
+		chunk(1790000004, "user_message_chunk", "three"),
+		turnCompleted(1790000005, M{"inputTokens": 1e19, "outputTokens": model.MaxTokens + 1}),
 	), false, []byte(nil))
 
 	// A log with a second prompt, calls with arguments that are not JSON, and reasoning

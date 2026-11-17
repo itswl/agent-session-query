@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,6 +27,7 @@ import (
 
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/sources"
+	"github.com/itswl/agent-session-query/internal/sources/jsonmap"
 	"github.com/itswl/agent-session-query/internal/sources/kit"
 	"github.com/itswl/agent-session-query/internal/transcript"
 )
@@ -139,18 +139,19 @@ type row struct {
 	} `json:"attachment"`
 }
 
-// maxTokens is more than any one response could count, and little enough that adding up
-// every response a transcript could hold stays far from wrapping around.
-const maxTokens = 1 << 32
+// maxDurMs is a hundred and fifteen days: longer than any call runs, and far short of the
+// 292 years past which a duration in milliseconds overflows a time.Duration.
+const maxDurMs = 1e10
 
-// tokens is a token count as a row gives it, held to what a count can be: a damaged or
-// doctored row can say anything, and a figure below zero, or past maxTokens, counts
-// nothing.
-func tokens(n int64) int64 {
-	if n < 0 || n > maxTokens {
+// millis is a call's duration in milliseconds as a row gives it, or 0 when it is not one:
+// a damaged or doctored row can say anything, and a figure below zero, or past maxDurMs,
+// is no duration. Go leaves the conversion of a float64 past an int64's range to the
+// platform, so the figure is checked before it is converted.
+func millis(ms float64) int64 {
+	if !(ms > 0 && ms <= maxDurMs) {
 		return 0
 	}
-	return n
+	return int64(ms)
 }
 
 // part is one block of a message's content.
@@ -255,9 +256,9 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			return true
 		case "cost-state":
 			// The closing row carries the session's own cost total, which no assistant row
-			// knows; it is the authoritative number when it is there
-			if r.TotalCostUSD > 0 {
-				w.S.Recorded = &model.Recorded{CostUSD: r.TotalCostUSD}
+			// knows; it is the authoritative number when it is there and is a price
+			if total := jsonmap.Cost(r.TotalCostUSD); total > 0 {
+				w.S.Recorded = &model.Recorded{CostUSD: total}
 			}
 			return true
 
@@ -361,11 +362,14 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			w.Add(m)
 		case "assistant":
 			release(false)
+			// A row can say anything of its cost and its counts: each is read by the rule
+			// every adapter's is (jsonmap.Cost, model.Tokens), so that no transcript can
+			// take a session's totals below zero, or its cost to infinity
 			m := transcript.Message{ID: r.UUID, Role: transcript.Assistant, At: at, Inherited: inherited,
 				Response: r.Message.ID, Model: r.Message.Model, Stop: r.Message.StopReason,
-				CostUSD: max(r.Message.CostUSD, 0), Blocks: assistantBlocks(&r, w.Unread)}
+				CostUSD: jsonmap.Cost(r.Message.CostUSD), Blocks: assistantBlocks(&r, w.Unread)}
 			if u := r.Message.Usage; u != nil && !inherited {
-				m.Usage = &model.Usage{Input: tokens(u.Input), Output: tokens(u.Output), CacheRead: tokens(u.CacheRead), CacheWrite: tokens(u.CacheWrite)}
+				m.Usage = &model.Usage{Input: model.Tokens(u.Input), Output: model.Tokens(u.Output), CacheRead: model.Tokens(u.CacheRead), CacheWrite: model.Tokens(u.CacheWrite)}
 			}
 			w.Add(m)
 		case "":
@@ -698,8 +702,8 @@ func (s *Source) userBlocks(r *row, unread func(kind string)) []transcript.Block
 				outcome.Status = model.StatusInterrupted
 			}
 			// The row-level record speaks for the row's one result
-			if results == 1 && use.DurationMs > 0 && use.DurationMs < math.MaxInt64 {
-				outcome.DurMs = int64(use.DurationMs)
+			if results == 1 {
+				outcome.DurMs = millis(use.DurationMs)
 			}
 			// An output too large for the transcript is saved beside it, and the row keeps
 			// a stub: a line naming the file and a 2 KB preview. The output is what the

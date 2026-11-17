@@ -148,10 +148,12 @@ FROM sessions s`)
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var id sql.NullString
-			var maxID, count, archived, hidden, in, outTok, rev sql.NullInt64
-			var last, started, ended, activity sql.NullFloat64
-			var title, name sql.NullString
+			// The figures are read as whatever SQLite holds, since a column takes a value of
+			// any type: one row's timestamp written as text — which MAX then returns, text
+			// sorting above every number — or a count with a fraction is read as none, and
+			// does not make the store look unreadable
+			var id, title, name sql.NullString
+			var maxID, last, count, started, ended, activity, archived, hidden, in, outTok, rev any
 			if err := rows.Scan(&id, &maxID, &last, &count, &started, &ended, &activity, &title, &name,
 				&archived, &hidden, &in, &outTok, &rev); err != nil {
 				return err
@@ -159,14 +161,14 @@ FROM sessions s`)
 			if id.String == "" {
 				continue
 			}
-			at := max(last.Float64, activity.Float64, ended.Float64, started.Float64)
+			at := max(number(last), number(activity), number(ended), number(started))
 			out = append(out, listed{
 				id: id.String,
 				stamp: strings.Join([]string{
-					strconv.FormatInt(maxID.Int64, 36), strconv.FormatInt(count.Int64, 36),
-					strconv.FormatInt(int64(ended.Float64), 36), strconv.FormatInt(int64(activity.Float64), 36),
-					strconv.FormatInt(archived.Int64*2+hidden.Int64, 36), strconv.FormatInt(in.Int64+outTok.Int64, 36),
-					strconv.FormatInt(rev.Int64, 36), jsonmap.StampOf(title.String, name.String),
+					strconv.FormatInt(kit.Int(maxID), 36), strconv.FormatInt(kit.Int(count), 36),
+					strconv.FormatInt(kit.Int(ended), 36), strconv.FormatInt(kit.Int(activity), 36),
+					strconv.FormatInt(kit.Int(archived)*2+kit.Int(hidden), 36), strconv.FormatInt(kit.Int(in)+kit.Int(outTok), 36),
+					strconv.FormatInt(kit.Int(rev), 36), jsonmap.StampOf(title.String, name.String),
 				}, "."),
 				at: kit.Epoch(at),
 			})
@@ -176,10 +178,19 @@ FROM sessions s`)
 	return out, err
 }
 
+// number reads a figure of a column scanned as whatever it held: a number as itself, and
+// anything else — text, a blob, NULL — as 0.
+func number(v any) float64 {
+	n, _ := kit.Num(v)
+	return n
+}
+
 // Read parses one session: from its transcript file when it has one, from the database
 // otherwise.
 func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer) error {
-	if db, id, ok := strings.Cut(ref.Key, "#"); ok && db == s.db {
+	// The session id is what follows the database's path and a #: the home's path may
+	// hold a # of its own, and so may an id
+	if id, ok := strings.CutPrefix(ref.Key, s.db+"#"); ok {
 		w.S.ID, w.S.Path = id, s.db
 		var msgs []transcript.Message
 		var unread []string
@@ -222,10 +233,9 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		w.S.StartedAt, w.S.UpdatedAt = entry.Created(), entry.Updated()
 		// Hermes totals a session rather than its responses: the totals stand in for a sum
 		// nothing can compute
-		u := model.Usage{Input: jsonmap.Count(info["input_tokens"]), Output: jsonmap.Count(info["output_tokens"]),
-			CacheRead: jsonmap.Count(info["cache_read_tokens"]), CacheWrite: jsonmap.Count(info["cache_write_tokens"])}
-		cost, _ := kit.Num(info["estimated_cost_usd"])
-		cost = max(cost, 0) // a price below zero is not one
+		u := model.Usage{Input: kit.Count(info["input_tokens"]), Output: kit.Count(info["output_tokens"]),
+			CacheRead: kit.Count(info["cache_read_tokens"]), CacheWrite: kit.Count(info["cache_write_tokens"])}
+		cost := jsonmap.Cost(info["estimated_cost_usd"])
 		if !u.IsZero() || cost > 0 {
 			w.S.Recorded = &model.Recorded{Usage: &u, CostUSD: cost}
 		}
@@ -290,8 +300,8 @@ func sessionRow(ctx context.Context, db *sql.DB, id string, sess *model.Session)
 			row[name] = vals[i]
 		}
 	}
-	num := func(name string) float64 { n, _ := kit.Num(row[name]); return n }
-	count := func(name string) int64 { return jsonmap.Count(row[name]) }
+	num := func(name string) float64 { return number(row[name]) }
+	count := func(name string) int64 { return kit.Count(row[name]) }
 
 	// Hermes writes a title for a session (title_source says who made it); display_name is
 	// the older field
@@ -318,10 +328,11 @@ func sessionRow(ctx context.Context, db *sql.DB, id string, sess *model.Session)
 	u := model.Usage{Input: count("input_tokens"), Output: count("output_tokens"),
 		CacheRead: count("cache_read_tokens"), CacheWrite: count("cache_write_tokens"),
 		Reasoning: count("reasoning_tokens")}
-	// A price below zero is not one
-	cost := max(num("actual_cost_usd"), 0)
+	// What it cost, where that is a price (see jsonmap.Cost): what the provider billed,
+	// and failing that what Hermes estimated
+	cost := jsonmap.Cost(row["actual_cost_usd"])
 	if cost == 0 {
-		cost = max(num("estimated_cost_usd"), 0)
+		cost = jsonmap.Cost(row["estimated_cost_usd"])
 	}
 	if !u.IsZero() || cost > 0 {
 		sess.Recorded = &model.Recorded{Usage: &u, CostUSD: cost}

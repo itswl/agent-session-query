@@ -2,7 +2,9 @@ package dsh
 
 import (
 	"bytes"
+	"fmt"
 	"path/filepath"
+	"runtime/debug"
 	"testing"
 	"time"
 
@@ -40,12 +42,22 @@ func FuzzRead(f *testing.F) {
 		}
 		root := t.TempDir()
 		put(t, filepath.Join(sessionDir(root), name), data)
-		start := time.Now()
+		// go test -fuzz gives no one input a time limit: a read that never ends stalls its
+		// worker until -fuzztime runs out, the run ends as a pass with nothing saved, and a
+		// check made after the read returns is never reached. The watchdog panics instead. A
+		// panic on any goroutine ends the worker's process, the fuzzer saves the input it was
+		// on as a crasher, and with every goroutine's stack printed the one the read is stuck
+		// in is among them.
+		watchdog := time.AfterFunc(hang, func() {
+			debug.SetTraceback("all")
+			panic(fmt.Sprintf("reading a %d-byte transcript has not ended in %s", len(data), hang))
+		})
+		defer watchdog.Stop()
 		sourcetest.Attempt(t, Spec.Open(root))
-		// A transcript of the size a fuzzer writes reads in a millisecond: one that takes a
-		// second is a read that has stopped making headway, and as much a failure as a panic
-		if took := time.Since(start); took > time.Second {
-			t.Errorf("reading took %s", took)
-		}
 	})
 }
+
+// hang is how long reading one input may take before it is taken for a read that will not
+// end. A transcript of the size a fuzzer writes reads in milliseconds — the seeds, all of
+// them, in about 0.04 s under -race — so a read still going after this is stuck, not slow.
+const hang = 10 * time.Second

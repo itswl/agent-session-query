@@ -66,7 +66,9 @@ export function mount(main, route, ctx) {
     v.items = reset ? r.files : v.items.concat(r.files);
     v.total = r.total;
     v.end = r.files.length < PAGE;
-    summary.textContent = `${f.plural(r.total, 'turn')} ${read ? 'read or changed' : 'changed'} ${path ? `a file whose path contains “${path}”` : 'files'} in the last ${windowName}.`;
+    // A row is a file and a turn that touched it, so a file two turns changed is counted
+    // twice, as the digest counts files changed
+    summary.textContent = `${f.plural(r.total, 'file')}${path ? ` whose path contains “${path}”` : ''} ${read ? 'read or changed' : 'changed'} in the last ${windowName}.`;
     list.replaceChildren(...v.items.map(row));
     if (!v.items.length) list.replaceChildren(h('li', null, empty(path ? `No file whose path contains “${path}” in the last ${windowName}.` : `No files ${read ? 'read or changed' : 'changed'} in the last ${windowName}.`, 'Try a longer window.')));
     if (!body.contains(list)) body.replaceChildren(list, more);

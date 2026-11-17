@@ -174,9 +174,11 @@ func Open(path string) (*Index, error) {
 		rw.Close()
 		return nil, fmt.Errorf("index: %s: %w", path, err)
 	}
-	if err := addColumn(rw, "sessions", "reads", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		rw.Close()
-		return nil, fmt.Errorf("index: %s: %w", path, err)
+	for _, col := range [][2]string{{"reads", "INTEGER NOT NULL DEFAULT 0"}, {"reads_stamp", "TEXT NOT NULL DEFAULT ''"}} {
+		if err := addColumn(rw, "sessions", col[0], col[1]); err != nil {
+			rw.Close()
+			return nil, fmt.Errorf("index: %s: %w", path, err)
+		}
 	}
 	ro, err := sql.Open("sqlite", uri+"?mode=ro&_pragma=busy_timeout(10000)&_pragma=query_only(1)&_pragma=cache_size(-32768)")
 	if err != nil {

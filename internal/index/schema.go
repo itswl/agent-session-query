@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   key        TEXT NOT NULL,      -- the transcript within the store
   stamp      TEXT NOT NULL,      -- the fingerprint it was read at
   reads      INTEGER NOT NULL DEFAULT 0,   -- the adapter's reading it was read with (sources.Spec.Reads)
+  reads_stamp TEXT NOT NULL DEFAULT '',    -- the stamp that reading was of: another, and the reading is unknown
   id         TEXT NOT NULL,      -- the CLI's own session id
   path       TEXT NOT NULL DEFAULT '',
   title      TEXT NOT NULL DEFAULT '',

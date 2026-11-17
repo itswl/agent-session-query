@@ -79,6 +79,19 @@ func TestANewReadingIsReadAgain(t *testing.T) {
 			t.Errorf("files moved, reading %d: %d read, want %d (%s)", step.reads, n, step.want, step.why)
 		}
 	}
+
+	// An asq from before readings, at the same path, reads what moved and writes its own
+	// reading over the row, saying nothing of readings: the reading the row names is not
+	// the one it holds, and the files are read again, once
+	if _, err := ix.rw.Exec(`UPDATE sessions SET stamp = '3'`); err != nil {
+		t.Fatal(err)
+	}
+	if n := moved(2, "3"); n != 4 {
+		t.Errorf("rows an asq from before readings rewrote: %d read again, want 4", n)
+	}
+	if n := moved(2, "3"); n != 0 {
+		t.Errorf("and then %d", n)
+	}
 }
 
 // gated is a store whose sessions in slow are not read until gate is closed.

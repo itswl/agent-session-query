@@ -192,10 +192,10 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 					jobs = append(jobs, job{store: st, ref: ref})
 				}
 			case k.reads < st.Spec.Reads:
-				// Read with an older reading of the CLI's files (sources.Spec.Reads): read
-				// again, once, after what is new. A session a newer reading stored is left to
-				// it — a binary of either age may share the index, and neither undoes the
-				// other's work
+				// Read with an older reading of the CLI's files (sources.Spec.Reads), or by an
+				// asq that keeps none (see known): read again, once, after what is new. A
+				// session a newer reading stored is left to it, so that an older asq sharing
+				// the index does not undo a newer one's reading
 				jobs = append(jobs, job{store: st, ref: ref, again: k.stamp == ref.Stamp})
 			}
 		}
@@ -343,7 +343,10 @@ func (ix *Index) setState(fn func(*SyncState)) {
 
 // known is what the index holds of one store: each transcript's fingerprint.
 func (ix *Index) known(ctx context.Context, source string) (map[string]known, error) {
-	rows, err := ix.rw.QueryContext(ctx, `SELECT sid, key, stamp, reads, id, read_ms, read_at FROM sessions WHERE source = ?`, source)
+	// A reading counts only for the stamp it was of: an asq from before readings, writing
+	// to the same file, moves the stamp and leaves the reading as it was, and what it wrote
+	// is its own reading of the files, not the one the column names
+	rows, err := ix.rw.QueryContext(ctx, `SELECT sid, key, stamp, CASE WHEN reads_stamp = stamp THEN reads ELSE 0 END, id, read_ms, read_at FROM sessions WHERE source = ?`, source)
 	if err != nil {
 		return nil, err
 	}

@@ -449,6 +449,15 @@ th.n, td.n { text-align: right; }
 .f-out { max-height: 16em; }
 .f-later { display: grid; gap: 4px; font-size: 13px; color: var(--ok); }
 .f-later a { font-variant-numeric: tabular-nums; }
+.file-filter { display: flex; max-width: 520px; margin: 0 0 12px; }
+.file-filter input { flex: 1; min-width: 0; height: 32px; padding: 0 10px; background: var(--sunk); border: 1px solid transparent; border-radius: 7px; color: var(--text); font: 13px var(--mono); }
+.file-filter input:focus { background: var(--surface); border-color: var(--accent); outline: none; }
+.file-path { font-size: 13px; overflow-wrap: anywhere; }
+.file-now { font-size: 13px; }
+.file-now.ok { color: var(--ok); }
+.file-now.warn { color: var(--warn); }
+.file-now.bad { color: var(--bad); }
+.file-ask { font-size: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
 .digest { margin: 0; padding: 0; list-style: none; }
 .d-project { padding: 16px 0; border-bottom: 1px solid var(--line); }
@@ -476,6 +485,15 @@ th.n, td.n { text-align: right; }
   .window + .window { border-left: 0; }
   .window:nth-child(n + 3) { border-top: 1px solid var(--line); }
   .window:nth-child(even) { border-left: 1px solid var(--line); }
+}
+@media (min-width: 721px) and (max-width: 880px) {
+  /* A narrow desk: the bar keeps to one row by giving up what is said elsewhere too —
+     the name beside the mark, the search's key, the status's words (its dot stays, and
+     its title says the rest) — and some of the room between */
+  .bar { gap: 8px; }
+  .brand span, .search kbd, .sync .sync-text { display: none; }
+  .nav a { padding: 5px 7px; }
+  .sync { min-width: 0; }
 }
 @media (max-width: 720px) {
   /* the bar scrolls away on a phone, so whatever stuck below it sticks to the top */
@@ -507,6 +525,18 @@ th.n, td.n { text-align: right; }
   .tool-disc > .disc { grid-template-columns: 14px 8px auto minmax(0, 1fr); }
   .tool-meta { grid-column: 3 / -1; }
   .matches { padding-left: 12px; }
+}
+@media (max-width: 479px) {
+  /* Five views do not fit beside the name and the status on a phone: the bar is three
+     rows — the name with the status and the buttons, the views across the width, the
+     search and its help */
+  .sync { order: 1; }
+  .bar > .icon-btn { order: 2; }
+  .bar > .signout { order: 3; }
+  .nav { order: 4; flex: 1 0 100%; justify-content: space-between; }
+  .nav a { padding: 5px 5px; }
+  .search { order: 5; flex-basis: calc(100% - 44px); }
+  .help-drop { order: 6; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }

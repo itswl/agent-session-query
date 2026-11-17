@@ -9,12 +9,13 @@ import * as sessions from './js/views/sessions.js';
 import * as session from './js/views/session.js';
 import * as usage from './js/views/usage.js';
 import * as failures from './js/views/failures.js';
+import * as files from './js/views/files.js';
 import * as digest from './js/views/digest.js';
 import { login } from './js/views/login.js';
 
-const VIEWS = { sessions, search: sessions, session, usage, failures, digest };
+const VIEWS = { sessions, search: sessions, session, usage, failures, files, digest };
 const RELEASES = 'https://github.com/itswl/agent-session-query/releases/tag/';
-const NAV = [['/', 'Sessions', 'sessions search session'], ['/usage', 'Usage', 'usage'], ['/failures', 'Failures', 'failures'], ['/digest', 'Digest', 'digest']];
+const NAV = [['/', 'Sessions', 'sessions search session'], ['/usage', 'Usage', 'usage'], ['/failures', 'Failures', 'failures'], ['/files', 'Files', 'files'], ['/digest', 'Digest', 'digest']];
 const LIST_FILTERS = ['source', 'project', 'since', 'archived'];
 const HELP = [
   ['Search', [['deploy', 'words match what they begin: deployment, deployed'], ['"exit status 1"', 'a phrase, word for word'], ['-flaky', 'leave out turns that hold this word'],

@@ -7,6 +7,7 @@ const ROUTES = [
   ['session', /^\/s\/([^/]+)\/(.+)$/],
   ['usage', /^\/usage\/?$/],
   ['failures', /^\/failures\/?$/],
+  ['files', /^\/files\/?$/],
   ['digest', /^\/digest\/?$/],
 ];
 

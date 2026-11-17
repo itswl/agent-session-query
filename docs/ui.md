@@ -82,6 +82,12 @@ one tool.
 
 ![Failures](screenshots/failures.png)
 
+**Files** — the turns that changed a file in the last day, week or month, newest first, each with
+the ask that led to it and how the file stands now against what that turn left: *as this turn
+left it*, *written since*, *changed since*, *not written since*, *deleted* — judged on this
+machine, from the file itself ([how](api.md#reports)). The box narrows to paths that contain what
+is typed; *Read or changed* adds the turns that only read them.
+
 **Digest** — the same window per project: sessions, turns, tool calls and failures, tokens, files
 changed by kind, which models and CLIs did the work.
 

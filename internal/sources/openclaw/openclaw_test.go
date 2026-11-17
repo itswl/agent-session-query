@@ -548,12 +548,37 @@ func TestAFigureOfTheWrongTypeAndAColdArchive(t *testing.T) {
 		`INSERT INTO session_windows VALUES ('ses_cold', 'agent:main:main', 'done', 1789704223504, 1789704262019, 1789704262019, 1789704262019, 'deepseek', 'deepseek-chat', '')`,
 		`CREATE TABLE session_transcript_cold_archives (session_id TEXT PRIMARY KEY, storage TEXT, event_count INTEGER, last_seq INTEGER)`,
 		`INSERT INTO session_transcript_cold_archives VALUES ('ses_cold', 'file', 40, 40)`,
+		`INSERT INTO session_windows VALUES ('ses_warm', 'agent:main:main', 'done', 1789704223504, 1789704262019, 1789704262019, 1789704262019, 'deepseek', 'deepseek-chat', '')`,
+		`INSERT INTO transcript_events VALUES ('ses_warm', 41, '{"type":"message","timestamp":"2026-09-18T04:30:00Z","message":{"role":"user","content":"and then?"}}', 0)`,
+		`INSERT INTO session_transcript_cold_archives VALUES ('ses_warm', 'file', 'forty', 40)`,
 	)
 	all := sourcetest.All(t, Spec.Open(state))
 	if odd := sourcetest.ByID(t, all, "ses_odd"); odd.Turn(t, 1).Ask != "still listed" {
 		t.Errorf("a session whose start is a word = %+v", odd.Session)
 	}
-	if cold := sourcetest.ByID(t, all, "ses_cold"); cold.Unread["events:cold-archived"] != 1 {
+	cold := sourcetest.ByID(t, all, "ses_cold")
+	if cold.Unread["events:cold-archived"] != 1 {
 		t.Errorf("a session in cold storage: unread %v", cold.Unread)
+	}
+	// and says so itself, where it begins
+	said := ""
+	for _, turn := range cold.Turns {
+		for _, it := range turn.Items {
+			if it.Kind == model.Event && it.Event == "cold_storage" {
+				said = it.Text
+			}
+		}
+	}
+	if !strings.HasPrefix(said, "40 of this session's events were moved to OpenClaw's cold storage") {
+		t.Errorf("a session in cold storage says %q; turns %+v", said, cold.Turns)
+	}
+	// Some of it still there: the notice comes before it, and the ask is the ask
+	warm := sourcetest.ByID(t, all, "ses_warm")
+	first := warm.Turns[0]
+	if len(first.Items) == 0 || first.Items[0].Event != "cold_storage" || !strings.HasPrefix(first.Items[0].Text, "Some of this session's events") {
+		t.Errorf("a session partly in cold storage begins with %+v", first.Items)
+	}
+	if warm.Turn(t, 1).Ask != "and then?" {
+		t.Errorf("the ask after the notice = %q", warm.Turn(t, 1).Ask)
 	}
 }

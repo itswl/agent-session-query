@@ -253,11 +253,22 @@ FROM session_windows WHERE session_id = ?`, id).Scan(&status, &mdl, &name, &bega
 		}
 		// Cold storage moves a session's events out of transcript_events, to a file or a
 		// table of its own, which this does not read: what was moved is missing from the
-		// session, and is said to be, so that doctor tells of it rather than nothing
+		// session. The session says so where it begins, which is where the events moved
+		// come from, and doctor counts it
 		if kit.HasTable(conn, "session_transcript_cold_archives") {
-			var archived int
-			if conn.QueryRowContext(ctx, `SELECT count(*) FROM session_transcript_cold_archives WHERE session_id = ?`, id).Scan(&archived) == nil && archived > 0 {
+			var events any // whatever the column holds: see listDB
+			if conn.QueryRowContext(ctx, `SELECT event_count FROM session_transcript_cold_archives WHERE session_id = ?`, id).Scan(&events) == nil {
 				unread = append(unread, "events:cold-archived")
+				said := "Some of this session's events were moved to OpenClaw's cold storage, which asq does not read: they are not here."
+				if n := kit.Int(events); n > 0 {
+					said = fmt.Sprintf("%d of this session's events were moved to OpenClaw's cold storage, which asq does not read: they are not here.", n)
+				}
+				at := sess.StartedAt
+				if len(msgs) > 0 && !msgs[0].At.IsZero() && (at.IsZero() || msgs[0].At.Before(at)) {
+					at = msgs[0].At
+				}
+				msgs = append([]transcript.Message{{Role: transcript.System, At: at,
+					Blocks: []transcript.Block{transcript.EventOf("cold_storage", said)}}}, msgs...)
 			}
 		}
 		return nil

@@ -106,6 +106,7 @@ func (ix *Index) publish(changes []Change) {
 type known struct {
 	sid    int64
 	stamp  string
+	reads  int
 	id     string
 	readMs int64
 	readAt int64
@@ -173,11 +174,15 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 		res.Scanned += len(sc.refs)
 		seen := make(map[string]bool, len(sc.refs))
 		for _, ref := range sc.refs {
-			ref.Stamp = st.Spec.Stamp(ref) // and the reading of it: see sources.Spec.Reads
 			seen[ref.Key] = true
 			k, ok := have[ref.Key]
 			switch {
 			case !ok, opts.Rebuild:
+				jobs = append(jobs, job{st, ref})
+			case k.reads < st.Spec.Reads:
+				// Read with an older reading of the CLI's files (sources.Spec.Reads): read
+				// again, once. A session a newer reading stored is left to it — a binary of
+				// either age may share the index, and neither undoes the other's work
 				jobs = append(jobs, job{st, ref})
 			case k.stamp != ref.Stamp:
 				wait := min(time.Duration(k.readMs*patience)*time.Millisecond, maxPatience)
@@ -289,7 +294,7 @@ func (ix *Index) setState(fn func(*SyncState)) {
 
 // known is what the index holds of one store: each transcript's fingerprint.
 func (ix *Index) known(ctx context.Context, source string) (map[string]known, error) {
-	rows, err := ix.rw.QueryContext(ctx, `SELECT sid, key, stamp, id, read_ms, read_at FROM sessions WHERE source = ?`, source)
+	rows, err := ix.rw.QueryContext(ctx, `SELECT sid, key, stamp, reads, id, read_ms, read_at FROM sessions WHERE source = ?`, source)
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +303,7 @@ func (ix *Index) known(ctx context.Context, source string) (map[string]known, er
 	for rows.Next() {
 		var k known
 		var key string
-		if err := rows.Scan(&k.sid, &key, &k.stamp, &k.id, &k.readMs, &k.readAt); err != nil {
+		if err := rows.Scan(&k.sid, &key, &k.stamp, &k.reads, &k.id, &k.readMs, &k.readAt); err != nil {
 			return nil, err
 		}
 		out[key] = k

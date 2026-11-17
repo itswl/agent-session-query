@@ -9,7 +9,6 @@ package sources
 
 import (
 	"context"
-	"strconv"
 	"time"
 
 	"github.com/itswl/agent-session-query/internal/transcript"
@@ -80,16 +79,8 @@ type Spec struct {
 	Store string
 	// Reads is the version of how the adapter reads its CLI's files. Raised whenever a
 	// change would read a session already in an index differently — a record now read,
-	// a figure now bounded — it has every session of the CLI read again at the next
-	// sync, so that an index does not keep what an older reading made of them.
+	// a figure now bounded — it has every session the index holds of the CLI, read with
+	// an older one, read again at the next sync, so that an index does not keep what an
+	// older reading made of them. The index keeps each session's reading beside its stamp.
 	Reads int
-}
-
-// Stamp is a ref's stamp as an index keeps it: what the session's files say, and which
-// reading of them the index holds. Either moving is a reason to read the session again.
-func (s Spec) Stamp(ref Ref) string {
-	if s.Reads <= 0 {
-		return ref.Stamp
-	}
-	return ref.Stamp + "|r" + strconv.Itoa(s.Reads)
 }

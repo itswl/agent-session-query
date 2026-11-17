@@ -41,6 +41,7 @@ const (
 type reading struct {
 	source string
 	agent  string
+	reads  int // the adapter's reading (sources.Spec.Reads)
 	ref    sources.Ref
 	sess   model.Session
 	stats  model.Stats
@@ -103,7 +104,7 @@ type turnBody struct {
 // writer only has rows to insert.
 func (ix *Index) read(ctx context.Context, st Store, ref sources.Ref) *reading {
 	start := time.Now()
-	rd := &reading{source: st.Name, agent: st.Spec.Name, ref: ref}
+	rd := &reading{source: st.Name, agent: st.Spec.Name, reads: st.Spec.Reads, ref: ref}
 	w := transcript.New(transcript.SinkFunc(func(t *model.Turn) error {
 		if t.Index > maxTurnIndex {
 			return nil
@@ -405,14 +406,14 @@ func (ix *Index) write(ctx context.Context, rd *reading) (sid int64, changed boo
 			p = *s.Parent
 		}
 		err := tx.QueryRowContext(ctx, `
-INSERT INTO sessions (source, agent, key, stamp, id, path, title, cwd, branch, model, version, platform,
+INSERT INTO sessions (source, agent, key, stamp, reads, id, path, title, cwd, branch, model, version, platform,
   started_at, updated_at, archived, running,
   parent_session, parent_agent, parent_call, parent_run, agent_type, fork,
   turns, items, tools, failures, calls, tok_in, tok_out, tok_cr, tok_cw, tok_think, cost,
   last_ask, answer, first_id, last_id, error, read_ms, read_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?)
 ON CONFLICT (source, key) DO UPDATE SET
-  agent=excluded.agent, stamp=excluded.stamp, id=excluded.id, path=excluded.path, title=excluded.title,
+  agent=excluded.agent, stamp=excluded.stamp, reads=excluded.reads, id=excluded.id, path=excluded.path, title=excluded.title,
   cwd=excluded.cwd, branch=excluded.branch, model=excluded.model, version=excluded.version,
   platform=excluded.platform, started_at=excluded.started_at, updated_at=excluded.updated_at,
   archived=excluded.archived, running=excluded.running,
@@ -425,7 +426,7 @@ ON CONFLICT (source, key) DO UPDATE SET
   last_ask=excluded.last_ask, answer=excluded.answer, first_id=excluded.first_id,
   last_id=excluded.last_id, error=excluded.error, read_ms=excluded.read_ms, read_at=excluded.read_at
 RETURNING sid`,
-			rd.source, rd.agent, rd.ref.Key, rd.ref.Stamp, s.ID, s.Path, s.Title, s.Cwd, s.Branch, s.Model, s.Version, s.Platform,
+			rd.source, rd.agent, rd.ref.Key, rd.ref.Stamp, rd.reads, s.ID, s.Path, s.Title, s.Cwd, s.Branch, s.Model, s.Version, s.Platform,
 			ms(s.StartedAt), ms(s.UpdatedAt), b2i(s.Archived), b2i(s.Running),
 			p.Session, p.Agent, p.Call, p.Run, p.Type, b2i(p.Fork),
 			st.Turns, st.Items, st.Tools, st.Failures, st.Calls,

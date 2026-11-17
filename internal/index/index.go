@@ -91,6 +91,27 @@ func (ix *Index) recount() {
 	ix.sourcesMu.Unlock()
 }
 
+// addColumn adds a column to a table that does not have it yet.
+func addColumn(db *sql.DB, table, column, decl string) error {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return err
+	}
+	have := false
+	for rows.Next() {
+		var name string
+		if rows.Scan(&name) == nil && name == column {
+			have = true
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || have {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + decl)
+	return err
+}
+
 // DefaultPath is where the index lives unless told otherwise: the user's cache
 // directory, since everything in it can be rebuilt. ASQ_INDEX moves it.
 func DefaultPath() string {
@@ -123,6 +144,13 @@ func Open(path string) (*Index, error) {
 	}
 	rw.SetMaxOpenConns(1)
 	if _, err := rw.Exec(schema); err != nil {
+		rw.Close()
+		return nil, fmt.Errorf("index: %s: %w", path, err)
+	}
+	// An index made before readings were counted gains the column, every session at
+	// reading 0. The column is the index's alone: a binary from before it writes its
+	// sessions as it always did, and leaves it be
+	if err := addColumn(rw, "sessions", "reads", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		rw.Close()
 		return nil, fmt.Errorf("index: %s: %w", path, err)
 	}

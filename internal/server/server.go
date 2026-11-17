@@ -30,6 +30,8 @@ import (
 	"net"
 	"net/http"
 	"path"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -77,8 +79,9 @@ type Server struct {
 	key      []byte
 	attempts limiter
 
-	mux    *http.ServeMux
-	assets map[string]asset
+	mux     *http.ServeMux
+	assets  map[string]asset
+	pageTag string // names this set of the page's files (see versioned)
 
 	// For pacing the watch: how many streams are open, and when anyone last asked
 	streams atomic.Int64
@@ -135,7 +138,7 @@ func New(a *app.App, opts Options) (*Server, error) {
 	}
 	if opts.Page != nil {
 		var err error
-		if s.assets, err = readPage(opts.Page); err != nil {
+		if s.assets, s.pageTag, err = readPage(opts.Page); err != nil {
 			return nil, err
 		}
 	}
@@ -160,8 +163,9 @@ func (s *Server) logf(format string, args ...any) {
 }
 
 // readPage reads the page's files: a few hundred kilobytes that never change while the
-// process lives, each with the ETag its bytes decide.
-func readPage(page fs.FS) (map[string]asset, error) {
+// process lives, each with the ETag its bytes decide; and the tag that names this set of
+// them (see versioned).
+func readPage(page fs.FS) (map[string]asset, string, error) {
 	assets := map[string]asset{}
 	err := fs.WalkDir(page, ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -196,8 +200,56 @@ func readPage(page fs.FS) (map[string]asset, error) {
 		assets["/"+name] = asset{body: body, ctype: ctype, etag: `"` + hex.EncodeToString(sum[:8]) + `"`}
 		return nil
 	})
-	return assets, err
+	if err != nil {
+		return nil, "", err
+	}
+	tag := pageTag(assets)
+	if idx, ok := assets["/index.html"]; ok {
+		idx.body = versioned(idx.body, tag, assets)
+		sum := sha256.Sum256(idx.body)
+		idx.etag = `"` + hex.EncodeToString(sum[:8]) + `"`
+		assets["/index.html"] = idx
+	}
+	return assets, tag, nil
 }
+
+// pageTag names a set of the page's files: it changes when any of them does.
+func pageTag(assets map[string]asset) string {
+	names := make([]string, 0, len(assets))
+	for name := range assets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	h := sha256.New()
+	for _, name := range names {
+		io.WriteString(h, name+"\x00"+assets[name].etag+"\x00")
+	}
+	return hex.EncodeToString(h.Sum(nil)[:6])
+}
+
+// versioned points the page at its script, its style and its fonts under /a/<tag>/: a
+// path that names this set of the files, and so may be kept for good. What the script
+// imports, and the style's fonts, are named relative to it and follow.
+//
+// Asked for again by its own path, a file is asked whether it changed. A cache in
+// between need not ask: Cloudflare, by default, keeps a script for four hours whatever
+// the server says, and a browser behind it would run a page the server is no longer.
+// Under its tag, a file that changes is a file at another path.
+func versioned(index []byte, tag string, assets map[string]asset) []byte {
+	return pageRef.ReplaceAllFunc(index, func(m []byte) []byte {
+		sub := pageRef.FindSubmatch(m)
+		ref := string(sub[2])
+		switch path.Ext(ref) {
+		case ".js", ".css", ".woff2":
+			if _, ok := assets[ref]; ok {
+				return []byte(string(sub[1]) + `="/a/` + tag + ref + `"`)
+			}
+		}
+		return m
+	})
+}
+
+var pageRef = regexp.MustCompile(`\b(href|src)="(/[^"]+)"`)
 
 func (s *Server) routes() {
 	mux := http.NewServeMux()
@@ -322,12 +374,12 @@ func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusMethodNotAllowed, "the page is only read")
 		return
 	}
-	assets := s.assets
+	assets, tag := s.assets, s.pageTag
 	if s.opts.Live {
 		// Each request reads the directory for itself: a browser asks for a dozen modules
 		// at once, and none of them may see another's half-read set
 		var err error
-		if assets, err = readPage(s.opts.Page); err != nil {
+		if assets, tag, err = readPage(s.opts.Page); err != nil {
 			writeError(w, r, http.StatusInternalServerError, "the page could not be read: "+err.Error())
 			return
 		}
@@ -338,11 +390,24 @@ func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := path.Clean(r.URL.Path)
+	// Always asked for again, and answered 304 while unchanged — unless it is asked for
+	// under the tag of this set of the files, which may be kept for good (see versioned).
+	// A file under another tag — a page loaded before an upgrade — is the file as it is
+	// now, and not to be kept
+	cache := "no-cache"
+	tagged := false
+	if rest, ok := strings.CutPrefix(name, "/a/"); ok {
+		t, file, _ := strings.Cut(rest, "/")
+		name, tagged = "/"+file, true
+		if t == tag && !s.opts.Live {
+			cache = "public, max-age=31536000, immutable"
+		}
+	}
 	a, ok := assets[name]
 	if !ok {
 		// Any path that is not a file is the page, which reads the address itself: a
 		// session's link opens that session
-		if path.Ext(name) != "" {
+		if tagged || path.Ext(name) != "" {
 			http.NotFound(w, r)
 			return
 		}
@@ -351,7 +416,7 @@ func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Content-Type", a.ctype)
 	h.Set("ETag", a.etag)
-	h.Set("Cache-Control", "no-cache") // always asked for again, and answered 304 while unchanged
+	h.Set("Cache-Control", cache)
 	h.Set("Content-Security-Policy", pageCSP)
 	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, a.etag) {
 		w.WriteHeader(http.StatusNotModified)

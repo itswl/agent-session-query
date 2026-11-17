@@ -171,6 +171,11 @@ By hand, and that is a decision rather than an economy.
   origin, no framing. If the rule above were ever broken, the injected text still could not run.
 - **Replies that are not pages.** What the API sends is JSON with no `<`, `>` or `&` in it —
   they travel as `\u003c`-style escapes — so a reply opened where a page was expected is text.
+- **Named for what they are.** The page asks for its script, its style and its fonts under
+  `/a/<tag>/`, where the tag is a hash of all its files; under that path they are kept for good.
+  A new version is new paths, so a browser — or a cache in between that keeps scripts whatever
+  the server says, as Cloudflare does for four hours by default — never runs a page the server
+  no longer is. By their own paths the files are still served, and asked for again each time.
 - **Tested for what a bundler would have caught.** `web/web_test.go` checks that every module a
   module imports exists, that everything the page points at is embedded, that no script uses a
   sink that turns text into markup, and that the HTML needs nothing inline.

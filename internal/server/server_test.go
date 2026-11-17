@@ -25,6 +25,7 @@ import (
 	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/fixture"
 	"github.com/itswl/agent-session-query/internal/index"
+	"github.com/itswl/agent-session-query/web"
 )
 
 const token = "a-token-long-enough-to-be-one"
@@ -1083,6 +1084,71 @@ func TestPage(t *testing.T) {
 	}
 	if rec := (call{method: http.MethodPost, path: "/"}).do(s); rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST / = %d", rec.Code)
+	}
+}
+
+// The page names its script, style and fonts under a tag of this set of its files, which
+// may be kept for good: a cache in between that keeps scripts whatever the server says
+// (Cloudflare does, for four hours) cannot then run a page the server is no longer.
+func TestThePagesFilesAreNamedForWhatTheyAre(t *testing.T) {
+	s, _, _ := build(t, Options{Page: web.Files}) // the page itself: its script, its modules, its fonts
+	page := call{path: "/"}.do(s).Body.String()
+	tag := s.pageTag
+	if len(tag) != 12 {
+		t.Fatalf("tag %q", tag)
+	}
+	for _, ref := range []string{"/app.js", "/app.css", "/js/theme.js", "/fonts/Geist-Variable.woff2"} {
+		if !strings.Contains(page, `"/a/`+tag+ref+`"`) || strings.Contains(page, `"`+ref+`"`) {
+			t.Errorf("the page does not name %s under its tag", ref)
+		}
+	}
+	for _, ref := range []string{"/manifest.webmanifest", "/favicon.ico"} {
+		if !strings.Contains(page, `"`+ref+`"`) {
+			t.Errorf("%s moved: only what the page runs and draws with is tagged", ref)
+		}
+	}
+	plain := call{path: "/app.js"}.do(s)
+	under := call{path: "/a/" + tag + "/app.js"}.do(s)
+	if under.Code != http.StatusOK || under.Body.String() != plain.Body.String() || !strings.Contains(under.Header().Get("Cache-Control"), "immutable") {
+		t.Errorf("app.js under its tag = %d, %q", under.Code, under.Header().Get("Cache-Control"))
+	}
+	if plain.Header().Get("Cache-Control") != "no-cache" {
+		t.Errorf("app.js by its own path = %q", plain.Header().Get("Cache-Control"))
+	}
+	// What the script imports, and the style's fonts, follow it under the tag
+	for _, ref := range []string{"/js/api.js", "/js/views/sessions.js", "/fonts/GeistMono-Variable.woff2"} {
+		if rec := (call{path: "/a/" + tag + ref}).do(s); rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Cache-Control"), "immutable") {
+			t.Errorf("%s under the tag = %d", ref, rec.Code)
+		}
+	}
+	// A page loaded before an upgrade asks under the old tag: it is given the file as it
+	// is now, not to be kept
+	if old := (call{path: "/a/0123456789ab/app.js"}).do(s); old.Code != http.StatusOK || old.Header().Get("Cache-Control") != "no-cache" {
+		t.Errorf("under another tag = %d, %q", old.Code, old.Header().Get("Cache-Control"))
+	}
+	for _, p := range []string{"/a/" + tag + "/missing.js", "/a/" + tag + "/", "/a/" + tag + "/s/claude/x"} {
+		if rec := (call{path: p}).do(s); rec.Code != http.StatusNotFound {
+			t.Errorf("%s = %d: under a tag only the files are", p, rec.Code)
+		}
+	}
+
+	// Any file that changes is a new set, under a new tag
+	files := fstest.MapFS{
+		"index.html": {Data: []byte(`<link rel="stylesheet" href="/app.css"><script type="module" src="/app.js"></script>`)},
+		"app.js":     {Data: []byte("1")},
+		"app.css":    {Data: []byte("a{}")},
+	}
+	_, first, err := readPage(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files["app.css"] = &fstest.MapFile{Data: []byte("b{}")}
+	assets, second, _ := readPage(files)
+	if first == second {
+		t.Error("the style changed, and the tag did not")
+	}
+	if want := `<link rel="stylesheet" href="/a/` + second + `/app.css"><script type="module" src="/a/` + second + `/app.js"></script>`; string(assets["/index.html"].body) != want {
+		t.Errorf("index = %s", assets["/index.html"].body)
 	}
 }
 

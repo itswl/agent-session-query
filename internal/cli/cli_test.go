@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -17,7 +18,9 @@ import (
 	"github.com/itswl/agent-session-query/internal/fixture"
 	"github.com/itswl/agent-session-query/internal/index"
 	"github.com/itswl/agent-session-query/internal/render"
+	"github.com/itswl/agent-session-query/internal/sources"
 	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
+	"github.com/itswl/agent-session-query/internal/transcript"
 )
 
 // asq runs one command against the fixture and returns what it printed and how it ended.
@@ -376,6 +379,44 @@ func TestDoctorLooksPastEmptySessions(t *testing.T) {
 	out, errs, code := asq(t, h, indexPath, "doctor")
 	if code != 0 || !strings.Contains(out, "✓ claude") || !strings.Contains(out, "63 transcripts") {
 		t.Errorf("doctor: exit %d\n%s%s", code, out, errs)
+	}
+}
+
+// told is a store of sessions, newest first, each either a word said or only an event.
+type told []bool
+
+func (told) Location() string { return "test" }
+func (told) Exists() bool     { return true }
+func (t told) Scan(context.Context) ([]sources.Ref, error) {
+	refs := make([]sources.Ref, len(t))
+	for i := range t {
+		refs[i] = sources.Ref{Key: fmt.Sprint(i), Stamp: "1", ModTime: time.Unix(int64(1790000000-i), 0)}
+	}
+	return refs, nil
+}
+func (t told) Read(_ context.Context, ref sources.Ref, w *transcript.Writer) error {
+	i, _ := strconv.Atoi(ref.Key)
+	w.S.ID = "s" + ref.Key
+	at := time.Unix(1790000000, 0)
+	if t[i] {
+		w.Add(transcript.Message{Role: transcript.User, At: at, Blocks: []transcript.Block{{Type: transcript.Text, Text: "hello"}}})
+		return nil
+	}
+	w.Add(transcript.Message{Role: transcript.System, At: at, Blocks: []transcript.Block{transcript.EventOf("cold_storage", "40 of this session's events were moved")}})
+	return nil
+}
+
+// A session that holds nothing but what the adapter says of it — that its events were moved
+// where they are not read — is not a conversation doctor can judge a store by: the next is
+// the newest, and a store of nothing else reads as one that may have changed its format.
+func TestDoctorIsNotToldByEventsAlone(t *testing.T) {
+	ctx := context.Background()
+	store := func(t told) index.Store { return index.Store{Name: "openclaw", Source: t} }
+	if _, newest, _, _, _, err := deepRead(ctx, store(told{false, true})); err != nil || newest != "s1" {
+		t.Errorf("an archived session before a conversation: newest %q, %v; want s1", newest, err)
+	}
+	if _, newest, _, _, _, err := deepRead(ctx, store(told{false, false, false})); err == nil {
+		t.Errorf("sessions that say only that they were archived passed as conversations: newest %q", newest)
 	}
 }
 

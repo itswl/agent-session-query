@@ -837,7 +837,8 @@ func deepRead(ctx context.Context, store index.Store) (sessions int, newest stri
 			}
 			continue
 		}
-		if got.Stats.Items > 0 || read == 0 {
+		spoke := said(got)
+		if spoke || read == 0 {
 			for kind, n := range got.Unread {
 				if unread == nil {
 					unread = map[string]int{}
@@ -845,7 +846,7 @@ func deepRead(ctx context.Context, store index.Store) (sessions int, newest stri
 				unread[kind] += n
 			}
 		}
-		if got.Stats.Items > 0 {
+		if spoke {
 			if read == 0 {
 				newest, turns, items = got.Session.ID, got.Stats.Turns, got.Stats.Items
 			}
@@ -859,6 +860,21 @@ func deepRead(ctx context.Context, store index.Store) (sessions int, newest stri
 		return len(refs), "", 0, 0, unread, firstErr
 	}
 	return len(refs), "", 0, 0, unread, fmt.Errorf("the %d newest sessions all read as empty: %s may have changed how it writes them", tried, store.Name)
+}
+
+// said reports whether a session read holds a conversation: something asked, answered or
+// done. Events alone do not make one — among them what an adapter says of the session
+// itself, as that part of it was moved where it is not read (OpenClaw's cold storage):
+// a session that says only that proves nothing of how its CLI writes.
+func said(got transcript.Collected) bool {
+	for _, turn := range got.Turns {
+		for _, it := range turn.Items {
+			if it.Kind != model.Event {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // doctorReads is how many of a store's newest conversations doctor reads for what they

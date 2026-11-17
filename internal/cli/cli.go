@@ -773,6 +773,10 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 		}
 		checks = append(checks, ck)
 	}
+	// A look that was stopped is not a pass, whatever it got through
+	if ctx.Err() != nil {
+		failed = true
+	}
 	if c.json {
 		if err := printJSON(io.out, map[string]any{"version": app.Version, "stores": checks, "ok": !failed}); err != nil {
 			return err
@@ -852,7 +856,9 @@ func deepRead(ctx context.Context, store index.Store) (look, error) {
 		spoke, moved := said(got), has(got, model.EventColdStorage)
 		if moved {
 			lk.archived++
-			if !spoke {
+			// moved whole: nothing in it but the word that it was, and nothing passed over
+			// not knowing it — what is left of a session moved in part says how it is written
+			if !spoke && len(got.Unread) == 0 {
 				stored++
 			}
 		}
@@ -876,7 +882,9 @@ func deepRead(ctx context.Context, store index.Store) (look, error) {
 		return lk, nil
 	case firstErr != nil:
 		return lk, firstErr
-	case stored == tried:
+	case ctx.Err() != nil:
+		return lk, fmt.Errorf("stopped before a session was read: %w", ctx.Err())
+	case stored > 0 && stored == tried:
 		// Every one read was moved whole to where it is not read, and says so: that is why
 		// they are empty, and not a format that drifted
 		return lk, nil
@@ -1024,7 +1032,7 @@ func cmdIndex(ctx context.Context, args []string, io *streams) error {
 		strconv.FormatFloat(float64(h.Totals.Bytes)/(1<<20), 'f', 1, 64)+" MB", txt.Duration(time.Duration(h.Sync.Took)*time.Millisecond))
 	if cfg.IndexPath == "" {
 		for _, old := range index.Older() {
-			fmt.Fprintf(io.out, "  · an earlier asq's index is still here, and not read: %s (asq index rm removes it)\n", old)
+			fmt.Fprintf(io.out, "  · an earlier asq's index is still here, and not read: %s (once no earlier asq runs, asq index rm removes it)\n", old)
 		}
 	}
 	for _, s := range h.Stores {

@@ -416,6 +416,10 @@ func (t told) Read(_ context.Context, ref sources.Ref, w *transcript.Writer) err
 	case "warm":
 		event(model.EventColdStorage)
 		ask()
+	case "drifted":
+		// moved in part, and what is left is not understood
+		event(model.EventColdStorage)
+		w.Unread("row:message_v3")
 	}
 	return nil
 }
@@ -440,6 +444,16 @@ func TestDoctorIsNotToldByEventsAlone(t *testing.T) {
 	}
 	if lk, err := look(told{"cold", "warm", "said"}); err != nil || lk.newest != "s1" || lk.archived != 2 {
 		t.Errorf("a conversation moved in part: newest %q, archived %d, %v; want s1, 2", lk.newest, lk.archived, err)
+	}
+	if _, err := look(told{"drifted", "drifted", "cold"}); err == nil {
+		t.Error("sessions moved in part, the rest not understood, passed as moved whole")
+	}
+
+	// Stopped before it read anything: not a pass
+	stopped, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := deepRead(stopped, index.Store{Name: "openclaw", Source: told{"said"}}); err == nil {
+		t.Error("a look stopped before it read a session passed")
 	}
 }
 

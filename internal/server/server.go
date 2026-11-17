@@ -81,6 +81,7 @@ type Server struct {
 	// keepsKnown says the state directory keeps the callers known (see keepKnown)
 	keepsKnown bool
 	keepMu     sync.Mutex
+	keepFailed time.Time // when keeping the callers known last failed; under keepMu
 
 	mux     *http.ServeMux
 	assets  map[string]asset

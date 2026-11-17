@@ -73,6 +73,8 @@ const (
 	// again is written down (see keepKnown): a caller asking all day is kept at most hourly.
 	knownNoted = time.Hour
 	knownFile  = "known.json"
+	// knownRetry is how long after a failed write of the callers known the next is tried.
+	knownRetry = time.Minute
 
 	secretFile = "session.key"
 	secretSize = 32
@@ -199,12 +201,15 @@ type keptKnown struct {
 	Known map[string]time.Time `json:"known"`
 }
 
-// knownMark names the token the callers are known by: derived from the key cookies are
-// signed with, which is the token's and the secret's, and telling nothing of either.
+// knownMark names the token the callers are known by, in two bytes of what the key cookies
+// are signed with makes of it. Two are enough that a new token finds the callers of the
+// last strangers, but for one change in 65536 — and too few for the file and the secret
+// beside it to confirm a guess at the token: one guess in 65536 matches, and a match is
+// still only a guess to try against the server, at the pace it allows.
 func (s *Server) knownMark() string {
 	mac := hmac.New(sha256.New, s.key)
 	mac.Write([]byte("asq callers known v1"))
-	return hex.EncodeToString(mac.Sum(nil)[:16])
+	return hex.EncodeToString(mac.Sum(nil)[:2])
 }
 
 // loadKnown reads the callers known when the server last kept them: those still within
@@ -253,6 +258,11 @@ func (s *Server) keepKnown() {
 	// in one order and wrote it in the other would leave the older set in the file
 	s.keepMu.Lock()
 	defer s.keepMu.Unlock()
+	// A write that failed is tried again, but not on every request while the directory
+	// stays as it is
+	if time.Since(s.keepFailed) < knownRetry {
+		return
+	}
 	s.attempts.mu.Lock()
 	if !s.attempts.noted {
 		s.attempts.mu.Unlock()
@@ -266,17 +276,26 @@ func (s *Server) keepKnown() {
 		return
 	}
 	path := filepath.Join(s.opts.State, knownFile)
+	failed := func(why string) {
+		s.attempts.mu.Lock()
+		s.attempts.noted = true // still to be written
+		s.attempts.mu.Unlock()
+		s.keepFailed = time.Now()
+		s.logf("the callers known could not be kept in %s: %s", path, why)
+	}
 	tmp, err := os.CreateTemp(s.opts.State, knownFile+".*")
 	if err != nil {
-		s.logf("the callers known could not be kept: %v", err)
+		failed(err.Error())
 		return
 	}
 	_, werr := tmp.Write(raw)
 	cerr := tmp.Close()
 	if werr != nil || cerr != nil || os.Chmod(tmp.Name(), 0o600) != nil || os.Rename(tmp.Name(), path) != nil {
 		os.Remove(tmp.Name())
-		s.logf("the callers known could not be kept in %s", path)
+		failed("the file could not be written and put in place")
+		return
 	}
+	s.keepFailed = time.Time{}
 }
 
 // sign builds a cookie value: the expiry in Unix seconds, a dot, and its HMAC.

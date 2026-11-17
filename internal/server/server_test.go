@@ -897,6 +897,14 @@ func TestGuessesAreChargedToWhoMadeThem(t *testing.T) {
 func TestTheCallersKnownOutliveARestart(t *testing.T) {
 	const local = "127.0.0.1:50000"
 	dir := filepath.Join(t.TempDir(), "state")
+	// A secret of the test's own: the mark is two bytes of what it and the token make, and
+	// with a secret drawn at random two tokens would share one, now and then
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, secretFile), bytes.Repeat([]byte{7}, secretSize), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	opts := Options{Token: token, ProxyHeader: "CF-Connecting-IP", State: dir}
 	ask := func(s *Server, auth, ip string) int {
 		return call{path: "/api/sessions", remote: local, header: map[string]string{"Authorization": auth, "CF-Connecting-IP": ip}}.do(s).Code
@@ -933,6 +941,9 @@ func TestTheCallersKnownOutliveARestart(t *testing.T) {
 		t.Errorf("a newcomer = %d", c)
 	}
 	mark := s.knownMark()
+	if len(mark) != 4 {
+		t.Errorf("the mark %q is more than two bytes: beside the secret, it would confirm a guess at the token", mark)
+	}
 
 	// The token changed: whoever knew the old one is a stranger to the new
 	other := opts
@@ -970,6 +981,35 @@ func TestTheCallersKnownOutliveARestart(t *testing.T) {
 	flood(s)
 	if c := ask(s, "Bearer "+token, "203.0.113.100"); c != http.StatusTooManyRequests {
 		t.Errorf("a caller known more than a day ago = %d", c)
+	}
+
+	// A directory that would not take the file: the caller is written down once it does,
+	// on a later request — not on every one meanwhile
+	if runtime.GOOS != "windows" {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		s, _, _ = build(t, opts)
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		if c := ask(s, "Bearer "+token, "203.0.113.100"); c != http.StatusOK {
+			t.Fatalf("a caller with the token, the directory read-only = %d", c)
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		ask(s, "Bearer "+token, "203.0.113.100")
+		if _, err := os.Stat(path); err == nil {
+			t.Error("a failed write was tried again at once")
+		}
+		s.keepMu.Lock()
+		s.keepFailed = s.keepFailed.Add(-knownRetry)
+		s.keepMu.Unlock()
+		ask(s, "Bearer "+token, "203.0.113.100")
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("the callers known were not kept once the directory took them: %v", err)
+		}
 	}
 
 	// A server with nowhere to keep its secret keeps no callers either

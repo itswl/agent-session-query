@@ -173,6 +173,7 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 		res.Scanned += len(sc.refs)
 		seen := make(map[string]bool, len(sc.refs))
 		for _, ref := range sc.refs {
+			ref.Stamp = st.Spec.Stamp(ref) // and the reading of it: see sources.Spec.Reads
 			seen[ref.Key] = true
 			k, ok := have[ref.Key]
 			switch {

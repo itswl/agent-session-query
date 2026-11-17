@@ -64,6 +64,7 @@ var Spec = sources.Spec{
 	},
 	Movable: true,
 	Resume:  "opencode --session",
+	Reads:   1,
 	Store:   "~/.local/share/opencode/opencode.db",
 }
 

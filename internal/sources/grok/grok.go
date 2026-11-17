@@ -53,6 +53,7 @@ var Spec = sources.Spec{
 	Open:    func(location string) sources.Source { return &Source{root: location} },
 	Movable: true,
 	Resume:  "grok -r",
+	Reads:   1,
 	Store:   "~/.grok/sessions/<url-encoded-cwd>/<session-id>/updates.jsonl",
 }
 

@@ -43,6 +43,7 @@ var Spec = sources.Spec{
 	// "latest" or an index, --list-sessions numbers them, and --delete-session takes that
 	// same index. A session id cannot be turned into a command at all.
 	Resume: "",
+	Reads:  1,
 	Store:  "~/.gemini/tmp/<project>/chats/session-*.jsonl",
 }
 

@@ -47,6 +47,7 @@ var Spec = sources.Spec{
 	Open:    func(location string) sources.Source { return open(location) },
 	Movable: true,
 	Resume:  "agy --conversation",
+	Reads:   1,
 	Store:   "~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl (agy; the IDE's is antigravity/brain)",
 }
 

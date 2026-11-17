@@ -46,6 +46,7 @@ var Spec = sources.Spec{
 	Open:    func(location string) sources.Source { return &Source{root: location} },
 	Movable: true,
 	Resume:  "claude --resume",
+	Reads:   1,
 	Store:   "~/.claude/projects/<project>/<session>.jsonl",
 }
 

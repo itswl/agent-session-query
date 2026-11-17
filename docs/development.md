@@ -113,8 +113,15 @@ One package and one line.
        Movable: true,
        Resume:  "mycli --resume",
        Store:   "~/.mycli/sessions/<id>.jsonl",
+       Reads:   1,
    }
    ```
+
+   `Reads` is the version of how the adapter reads the CLI's files. **Raise it with any change
+   that would read a session already in an index differently** — a record now read, a figure now
+   bounded, a field now taken from elsewhere. It is part of the stamp the index keeps for each
+   session, so every session of the CLI is read again at the next sync, once; without it, an
+   index keeps what the older reading made of every session whose files have not moved.
 
 3. **Add it to `catalog.All`.** The list, search, briefs, usage, failures, traces, the page and
    the MCP tools now cover it.

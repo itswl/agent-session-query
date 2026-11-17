@@ -51,6 +51,7 @@ var Spec = sources.Spec{
 	Open:    func(location string) sources.Source { return &Source{root: location} },
 	Movable: true,
 	Resume:  "codex resume",
+	Reads:   1,
 	Store:   "~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl",
 }
 

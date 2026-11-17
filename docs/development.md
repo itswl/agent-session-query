@@ -156,6 +156,24 @@ asq serve --page-dir web
 serves `web/` from disk, re-read on every request: edit, reload. The rules the page is built
 under, and why, are in [The page](ui.md).
 
+## Screenshots
+
+The page's screenshots in `docs/screenshots/` are of a synthetic history: nothing in them is
+anyone's. `docs/screenshots/make/gen.py` writes it — a Claude Code store and a Codex store under
+`/tmp/demo`, and the projects they worked in under `/tmp/work`, both emptied first — with times
+relative to now, files whose modification times give the Files view each of its states, and
+failures that pass later. Then serve it and take the pictures:
+
+```sh
+python3 docs/screenshots/make/gen.py
+go build -o /tmp/asq ./cmd/asq
+env -i PATH=/usr/bin:/bin HOME=/tmp/demo ASQ_INDEX=/tmp/demo/index.db ASQ_STATE=/tmp/demo/state \
+  /tmp/asq serve --port 7882
+```
+
+and run `docs/screenshots/make/shots.js` — a Playwright page function — from the repository's
+root. It takes the eleven images at their sizes: 1440×900, and the phone's 390×844.
+
 ## Releasing
 
 Tag `vX.Y.Z` with an annotated tag whose message is the release notes (`git tag -a

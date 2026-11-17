@@ -88,6 +88,8 @@ left it*, *written since*, *changed since*, *not written since*, *deleted* — j
 machine, from the file itself ([how](api.md#reports)). The box narrows to paths that contain what
 is typed; *Read or changed* adds the turns that only read them.
 
+![Files](screenshots/files.png)
+
 **Digest** — the same window per project: sessions, turns, tool calls and failures, tokens, files
 changed by kind, which models and CLIs did the work.
 

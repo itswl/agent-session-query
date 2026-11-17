@@ -518,10 +518,11 @@ func TestAnExecStillRunningHasNoStatus(t *testing.T) {
 		`INSERT INTO transcript_events VALUES ('ses_r', 1, '{"type":"message","message":{"role":"user","content":"test it"}}', 0)`,
 		nested(2, "n1", `{"status":"running"}`),
 		nested(3, "n2", `{"status":"completed","exitCode":0}`),
+		nested(4, "n3", `{"status":"approval-pending","approvalId":"a1"}`), // not run yet: waiting to be allowed
 	)
 	s := sourcetest.One(t, Spec.Open(state))
 	tools := sourcetest.Tools(s.Turn(t, 1))
-	if len(tools) != 2 || tools[0].Status != "" || tools[1].Status != model.StatusOK {
-		t.Errorf("statuses = %q, %q", tools[0].Status, tools[1].Status)
+	if len(tools) != 3 || tools[0].Status != "" || tools[1].Status != model.StatusOK || tools[2].Status != "" {
+		t.Errorf("statuses = %q", []string{tools[0].Status, tools[1].Status, tools[2].Status})
 	}
 }

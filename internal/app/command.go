@@ -246,25 +246,44 @@ func resolve(line string, depth int) (words []string, decides bool) {
 				words = words[1:] // the duration
 			}
 		case "bash", "sh", "zsh", "dash", "ksh", "fish":
-			for i := 0; i < len(args); i++ {
+			// Options as a shell reads them: letters in clusters, an o or O in one taking
+			// the next word (-euo pipefail), c saying that the first word after the
+			// options is the script to run. Without a c, that word is a script file.
+			script, i := false, 0
+		options:
+			for ; i < len(args); i++ {
 				a := args[i]
 				switch {
-				case a == "-o" || a == "+o" || a == "-O" || a == "+O" || a == "--rcfile" || a == "--init-file" || a == "--init-command":
-					i++ // an option and its argument: -o pipefail
+				case a == "--" || a == "-":
+					i++
+					break options
+				case a == "--command":
+					script = true
+				case a == "--rcfile" || a == "--init-file" || a == "--init-command":
+					i++
 				case strings.HasPrefix(a, "--"):
 					// --login, --noprofile, --norc
-				case strings.HasPrefix(a, "-") && strings.Contains(a, "c"):
-					if i+1 >= len(args) {
-						return nil, false
+				case len(a) > 1 && (a[0] == '-' || a[0] == '+'):
+					for _, r := range a[1:] {
+						switch r {
+						case 'c':
+							script = true
+						case 'o', 'O':
+							i++
+						}
 					}
-					inner, ok := resolve(args[i+1], depth+1)
-					return inner, decides && ok
-				case strings.HasPrefix(a, "-") || strings.HasPrefix(a, "+"):
 				default:
-					return words, decides // a script file, run by name
+					break options
 				}
 			}
-			return words, decides
+			if !script {
+				return words, decides
+			}
+			if i >= len(args) {
+				return nil, false
+			}
+			inner, ok := resolve(args[i], depth+1)
+			return inner, decides && ok
 		default:
 			return words, decides
 		}
@@ -316,11 +335,7 @@ func keyOf(words []string, depth int) string {
 	case "git":
 		args = skipOptions(args, "Cc", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env")
 	case "make", "gmake":
-		// -j and -l take a number when one follows, and are flags otherwise
-		for len(args) > 1 && (args[0] == "-j" || args[0] == "-l") && strings.Trim(args[1], "0123456789.") == "" {
-			args = args[2:]
-		}
-		args = skipOptions(args, "CfIWo", "--directory", "--file", "--makefile")
+		args = makeOptions(args)
 	case "cargo":
 		args = skipOptions(args, "Z", "--manifest-path", "--config", "--color")
 	case "npx", "bunx", "pnpx":
@@ -373,6 +388,28 @@ func progName(prog string) string {
 		name = name[:len(name)-4]
 	}
 	return name
+}
+
+// makeOptions passes over make's options. -j and -l (--jobs, --load-average) take a number
+// when one follows — or what will be one, $(nproc) — and are flags otherwise.
+func makeOptions(args []string) []string {
+	for len(args) > 0 && strings.HasPrefix(args[0], "-") && args[0] != "-" {
+		a := args[0]
+		args = args[1:]
+		switch a {
+		case "--":
+			return args
+		case "-C", "-f", "-I", "-W", "-o", "--directory", "--file", "--makefile", "--include-dir", "--what-if", "--new-file", "--assume-new", "--old-file", "--assume-old":
+			if len(args) > 0 {
+				args = args[1:]
+			}
+		case "-j", "-l", "--jobs", "--load-average", "--max-load":
+			if len(args) > 0 && (strings.Trim(args[0], "0123456789.") == "" || strings.ContainsAny(args[0], "$`")) {
+				args = args[1:]
+			}
+		}
+	}
+	return args
 }
 
 // skipOptions passes over a program's options: "-x", "--long", "--long=value", and the

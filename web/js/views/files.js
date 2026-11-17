@@ -1,7 +1,7 @@
 // The turns that changed a file, newest first, each with how the file stands now against
 // what that turn left: whether a recollection of it still holds.
 
-import { h, time, skeleton, errorBox, empty, choices, fill, stale } from '../dom.js';
+import { h, icon, time, skeleton, errorBox, empty, choices, fill, stale } from '../dom.js';
 import { api, qs, sessionHref, isAbort, last } from '../api.js';
 import { coalesce } from '../live.js';
 import { go } from '../router.js';
@@ -41,6 +41,7 @@ export function mount(main, route, ctx) {
   const href = (changes) => '/files' + qs({ since, path, read, ...changes });
   const v = { items: [], total: 0, end: false, busy: false, top: null };
   const summary = h('p', { class: 'dim summary' });
+  const waiting = h('div', { class: 'waiting' });
   const list = h('ol', { class: 'fails file-list' });
   const more = h('div', { class: 'more-row' });
   const body = h('div', { class: 'page-body' }, skeleton(6, 'row'));
@@ -58,7 +59,7 @@ export function mount(main, route, ctx) {
     h('nav', { class: 'chips', 'aria-label': 'Which turns' },
       h('a', { class: 'chip', href: href({ read: false }), 'aria-current': read ? null : 'true' }, 'Changed'),
       h('a', { class: 'chip', href: href({ read: true }), 'aria-current': read ? 'true' : null }, 'Read or changed')),
-    note.el, summary, body));
+    note.el, waiting, summary, body));
 
   function show(r, reset) {
     if (reset) v.top = r;
@@ -67,6 +68,11 @@ export function mount(main, route, ctx) {
     v.end = r.files.length < PAGE;
     // A row is a file and a turn that touched it, so a file two turns changed is counted
     // twice, as the digest counts files changed
+    // Folders a look is waiting in: on a Mac, macOS asking on its screen whether asq may
+    // read them. Their files are listed, and not judged, until it is answered
+    const folders = [...new Set(v.items.filter((x) => x.waiting && !x.now).map((x) => x.waiting))];
+    waiting.replaceChildren(...folders.map((dir) => h('div', { class: 'notice warn', role: 'status' }, icon('alert'),
+      h('p', null, 'How files in ', h('code', null, dir), ' stand now is not shown: asq is waiting to read that folder. On a Mac, macOS is asking on the Mac’s screen whether asq may — answer it there, or allow asq in System Settings › Privacy & Security › Files and Folders.'))));
     summary.textContent = `${f.plural(r.total, 'file')}${path ? ` whose path contains “${path}”` : ''} ${read ? 'read or changed' : 'changed'}${within(since)}.`;
     list.replaceChildren(...v.items.map(row));
     if (!v.items.length) list.replaceChildren(h('li', null, empty(path ? `No file whose path contains “${path}”${within(since)}.` : `No files ${read ? 'read or changed' : 'changed'}${within(since)}.`, longer(since))));
@@ -107,5 +113,6 @@ function row(x) {
       !x.changed && h('span', { class: 'dim' }, 'read')),
     h('p', { class: 'mono file-path' }, x.path),
     said && h('p', { class: `file-now ${tone}`, title: NOW_TITLE[x.now.by] || null }, 'now: ', said),
+    !said && x.waiting && h('p', { class: 'file-now dim', title: `asq is waiting to read ${x.waiting}` }, 'now: not looked at yet'),
     x.ask && h('p', { class: 'dim file-ask' }, f.firstLine(x.ask, 200)));
 }

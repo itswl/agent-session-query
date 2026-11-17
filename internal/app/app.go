@@ -41,6 +41,8 @@ type App struct {
 	syncs    atomic.Int64  // how many reads of the stores have run
 	last     time.Time     // when the last sync ended
 	lastErr  error
+
+	waits waits // the folders a look at a file is waiting in (see lookWait)
 }
 
 // Open opens the index and resolves the stores.

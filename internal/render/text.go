@@ -724,6 +724,8 @@ func Files(w io.Writer, list []index.FileTouch, total int, st Style) {
 				paint = st.yellow
 			}
 			fmt.Fprintf(w, "    %s\n", paint(line))
+		} else if f.Waiting != "" {
+			fmt.Fprintf(w, "    %s\n", st.dim("now: not looked at — a look in "+f.Waiting+" is waiting (on a Mac, macOS asking whether asq may read it)"))
 		}
 	}
 	if total > len(list) {

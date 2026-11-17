@@ -91,8 +91,10 @@ one tool.
 **Files** — the turns that changed a file in the window, newest first, each with
 the ask that led to it and how the file stands now against what that turn left: *as this turn
 left it*, *written since*, *changed since*, *not written since*, *deleted* — judged on this
-machine, from the file itself ([how](api.md#reports)). The box narrows to paths that contain what
-is typed; *Read or changed* adds the turns that only read them.
+machine, from the file itself ([how](api.md#reports)). A file whose folder cannot be read in time
+— on a Mac, macOS asking on its screen whether `asq` may read Documents or Desktop — is listed
+without it, and the page names the folder ([on macOS](deploy.md#keeping-it-running)). The box
+narrows to paths that contain what is typed; *Read or changed* adds the turns that only read them.
 
 ![Files](screenshots/files.png)
 

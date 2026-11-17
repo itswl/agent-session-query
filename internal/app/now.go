@@ -20,11 +20,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/itswl/agent-session-query/internal/index"
@@ -45,6 +47,101 @@ const (
 	laterTurns = 3
 )
 
+// lookWait is how long one look at a file is waited for.
+//
+// A look can take as long as something else decides. On a Mac, the first look at a file in
+// a folder the system guards — Documents, Desktop, Downloads, iCloud Drive, another disk —
+// asks the person at the Mac whether asq may read it, and the look waits for the answer: a
+// question asked from a phone gets none. A network disk that went away waits as long. An
+// answer does not wait with them: a look not back by lookWait is left to finish on its own,
+// its file is not judged, and every other look in the same folder is skipped until it does
+// (see guarded) — one look waits, however many questions are asked meanwhile.
+var lookWait = 400 * time.Millisecond
+
+// osStat is how a file is looked at: os.Stat, or a stand-in that waits, in a test.
+var osStat = os.Stat
+
+// errWaiting is a look not back in time, or not made since another in its folder is not.
+var errWaiting = errors.New("a look in this folder is waiting")
+
+// waits are the folders a look is waiting in, with how many are.
+type waits struct {
+	mu     sync.Mutex
+	folder map[string]int
+}
+
+// look runs see on path within lookWait, unless a look in its folder is waiting already.
+func look[T any](a *App, path string, see func() (T, error)) (T, error) {
+	var zero T
+	folder := guarded(path)
+	a.waits.mu.Lock()
+	busy := a.waits.folder[folder] > 0
+	a.waits.mu.Unlock()
+	if busy {
+		return zero, errWaiting
+	}
+	type result struct {
+		v   T
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		v, err := see()
+		done <- result{v, err}
+	}()
+	timer := time.NewTimer(lookWait)
+	defer timer.Stop()
+	select {
+	case r := <-done:
+		return r.v, r.err
+	case <-timer.C:
+	}
+	a.waits.mu.Lock()
+	if a.waits.folder == nil {
+		a.waits.folder = map[string]int{}
+	}
+	a.waits.folder[folder]++
+	first := a.waits.folder[folder] == 1
+	a.waits.mu.Unlock()
+	if first {
+		fmt.Fprintf(os.Stderr, "asq: looking at a file in %s is waiting: on a Mac, macOS may be asking on its screen whether asq may read that folder; its files are not judged until it is answered\n", folder)
+	}
+	go func() {
+		<-done
+		a.waits.mu.Lock()
+		if a.waits.folder[folder]--; a.waits.folder[folder] <= 0 {
+			delete(a.waits.folder, folder)
+		}
+		a.waits.mu.Unlock()
+	}()
+	return zero, errWaiting
+}
+
+// guarded is the folder a look at path waits in: the one a privacy question names — under
+// the home directory its first folder (in Library, the second: ~/Library/Mobile Documents),
+// elsewhere the first two (/Volumes/Disk) — so that one question holds back the looks it is
+// about, and not the rest.
+func guarded(path string) string {
+	clean := filepath.Clean(path)
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if rel, err := filepath.Rel(home, clean); err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			parts := strings.Split(rel, string(filepath.Separator))
+			n := 1
+			if parts[0] == "Library" && len(parts) > 2 {
+				n = 2
+			}
+			return filepath.Join(append([]string{home}, parts[:n]...)...)
+		}
+	}
+	vol := filepath.VolumeName(clean)
+	rest := strings.TrimPrefix(clean[len(vol):], string(filepath.Separator))
+	parts := strings.SplitN(rest, string(filepath.Separator), 3)
+	if len(parts) > 2 {
+		parts = parts[:2]
+	}
+	return vol + string(filepath.Separator) + filepath.Join(parts...)
+}
+
 // Files is the index's Files, each file with how it stands now (see index.FileNow).
 func (a *App) Files(ctx context.Context, f index.Filter, w index.Window, path string, changedOnly bool, p index.Page) ([]index.FileTouch, int, error) {
 	list, total, err := a.Index.Files(ctx, f, w, path, changedOnly, p)
@@ -56,7 +153,7 @@ func (a *App) Files(ctx context.Context, f index.Filter, w index.Window, path st
 		if ctx.Err() != nil {
 			break
 		}
-		list[i].Now = look.fileNow(ctx, &list[i])
+		list[i].Now, list[i].Waiting = look.fileNow(ctx, &list[i])
 	}
 	return list, total, nil
 }
@@ -99,7 +196,7 @@ type turnKey struct {
 
 type fileSeen struct {
 	info os.FileInfo
-	err  error
+	err  error // errWaiting: the look did not come back in time
 }
 
 func newLooker(a *App) *looker {
@@ -154,22 +251,30 @@ func (l *looker) stat(path string) *fileSeen {
 	f := l.files[path]
 	if f == nil {
 		f = &fileSeen{}
-		f.info, f.err = os.Stat(path)
+		f.info, f.err = look(l.a, path, func() (os.FileInfo, error) { return osStat(path) })
 		l.files[path] = f
 	}
 	return f
 }
 
 // content is a file's text to compare with, CRLFs as LFs; false when it is larger than
-// maxCompared or cannot be read. However large its size said it was: a file can grow,
-// and some (/proc's) say nothing of their size.
+// maxCompared or cannot be read in time. However large its size said it was: a file can
+// grow, and some (/proc's) say nothing of their size.
 func (l *looker) content(path string) ([]byte, bool) {
 	if path != l.lastPath {
 		l.lastPath = path
-		l.lastData, l.lastOK = readAtMost(path, maxCompared)
+		data, err := look(l.a, path, func() ([]byte, error) {
+			if data, ok := readAtMost(path, maxCompared); ok {
+				return data, nil
+			}
+			return nil, errUnread
+		})
+		l.lastData, l.lastOK = data, err == nil
 	}
 	return l.lastData, l.lastOK
 }
+
+var errUnread = errors.New("not read")
 
 func readAtMost(path string, most int64) ([]byte, bool) {
 	f, err := os.Open(path)
@@ -187,7 +292,8 @@ func readAtMost(path string, most int64) ([]byte, bool) {
 	return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")), true
 }
 
-// fileNow says how the file a turn named stands now; nil when that cannot be said.
+// fileNow says how the file a turn named stands now; nil when that cannot be said, with the
+// folder a look is waiting in when that is why.
 //
 // Both kinds of evidence are weighed. What the turn's last write put there is either
 // still in the file or not; and the file has been written since the turn ended, or not.
@@ -199,34 +305,45 @@ func readAtMost(path string, most int64) ([]byte, bool) {
 //
 // Only this machine's files are judged: not those of a labelled store, which is as a rule
 // another machine's, nor those of a session whose directory is not here.
-func (l *looker) fileNow(ctx context.Context, t *index.FileTouch) *index.FileNow {
+func (l *looker) fileNow(ctx context.Context, t *index.FileTouch) (*index.FileNow, string) {
 	if s := l.session(ctx, t.Session); s == nil || strings.Contains(s.Source, "@") {
-		return nil
+		return nil, ""
 	}
 	path := t.Path
 	if t.Cwd != "" {
 		// A directory this machine does not have — or names another way: a Unix path on
 		// Windows — is another machine's
-		if dir := l.stat(t.Cwd); dir.err != nil || !dir.info.IsDir() {
-			return nil
+		dir := l.stat(t.Cwd)
+		if errors.Is(dir.err, errWaiting) {
+			return nil, guarded(t.Cwd)
+		}
+		if dir.err != nil || !dir.info.IsDir() {
+			return nil, ""
 		}
 		if !filepath.IsAbs(path) && filepath.IsAbs(t.Cwd) {
 			path = filepath.Join(t.Cwd, path)
 		}
 	}
 	if !filepath.IsAbs(path) {
-		return nil
+		return nil, ""
 	}
 	f := l.stat(path)
+	if errors.Is(f.err, errWaiting) {
+		return nil, guarded(path)
+	}
 	if errors.Is(f.err, fs.ErrNotExist) {
 		// Gone from a directory that is here; from one that is not, nothing can be said
-		if dir := l.stat(filepath.Dir(path)); dir.err == nil && dir.info.IsDir() {
-			return &index.FileNow{State: index.FileDeleted}
+		dir := l.stat(filepath.Dir(path))
+		if errors.Is(dir.err, errWaiting) {
+			return nil, guarded(path)
 		}
-		return nil
+		if dir.err == nil && dir.info.IsDir() {
+			return &index.FileNow{State: index.FileDeleted}, ""
+		}
+		return nil, ""
 	}
 	if f.err != nil || !f.info.Mode().IsRegular() {
-		return nil
+		return nil, ""
 	}
 	end := t.Ended
 	if end.IsZero() {
@@ -240,24 +357,24 @@ func (l *looker) fileNow(ctx context.Context, t *index.FileTouch) *index.FileNow
 				held := holds(data, whole, fragments)
 				switch {
 				case held && (whole != nil || !since):
-					return &index.FileNow{State: index.FileSame, By: index.ByContent}
+					return &index.FileNow{State: index.FileSame, By: index.ByContent}, ""
 				case held:
-					return &index.FileNow{State: index.FileWritten, By: index.ByContent}
+					return &index.FileNow{State: index.FileWritten, By: index.ByContent}, ""
 				case timed && !since:
-					return &index.FileNow{State: index.FileSame, By: index.ByTime}
+					return &index.FileNow{State: index.FileSame, By: index.ByTime}, ""
 				default:
-					return &index.FileNow{State: index.FileChanged, By: index.ByContent}
+					return &index.FileNow{State: index.FileChanged, By: index.ByContent}, ""
 				}
 			}
 		}
 	}
 	switch {
 	case !timed:
-		return nil
+		return nil, ""
 	case since:
-		return &index.FileNow{State: index.FileWritten, By: index.ByTime}
+		return &index.FileNow{State: index.FileWritten, By: index.ByTime}, ""
 	}
-	return &index.FileNow{State: index.FileSame, By: index.ByTime}
+	return &index.FileNow{State: index.FileSame, By: index.ByTime}, ""
 }
 
 // holds says whether the file still holds what the turn left in it.

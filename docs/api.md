@@ -87,7 +87,7 @@ match's `seq` is the step to open (`/items/{seq}`).
 | `GET /api/usage?by=model\|day\|source\|project\|session` | `{"by", "rows", "total"}` |
 | `GET /api/failures?tool=` | `{"failures", "total", "byTool"}` — the last 7 days unless `since` says otherwise. `tool` names one tool exactly (`Bash` is not `bash`), or with a trailing `*` by how its name begins; `byTool` counts every tool of the window whichever is asked for |
 | `GET /api/digest` | `{"projects", "total"}` — likewise |
-| `GET /api/files?path=&changed=1` | `{"files", "total"}` — each file with `now`, how it stands against what that turn left (below) |
+| `GET /api/files?path=&changed=1` | `{"files", "total"}` — each file with `now`, how it stands against what that turn left (below); `waiting` instead names the folder a look at it is waiting in, as macOS asks on the Mac whether `asq` may read it |
 | `GET /api/projects` | `{"projects"}` |
 | `GET /api/pack?turns=1` | `{"pack", "sessions"}` — Markdown |
 

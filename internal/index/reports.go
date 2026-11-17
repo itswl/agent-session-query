@@ -238,6 +238,9 @@ type FileTouch struct {
 	// which can look at the file (see app.Files); nil when it cannot be said — the file is
 	// not on this machine, or the path names nothing it can read.
 	Now *FileNow `json:"now,omitempty"`
+	// Waiting names the folder a look at the file is waiting in, when Now is nil for that:
+	// on a Mac, macOS asking on its screen whether asq may read the folder (see app.lookWait).
+	Waiting string `json:"waiting,omitempty"`
 }
 
 // FileNow is how a file stands now, against what a turn left it as.

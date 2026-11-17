@@ -175,6 +175,14 @@ launchctl bootout "gui/$(id -u)/io.github.itswl.asq"          # stop and unload
 - A LaunchAgent, not a LaunchDaemon: a daemon runs as root, whose home is not yours, and reads
   nobody's sessions.
 - If the plist holds a token (`EnvironmentVariables`), `chmod 600` it.
+- The Files view says how each file a turn changed stands now, which means reading the file. For
+  a project in a folder macOS guards — Documents, Desktop, Downloads, iCloud Drive, another disk
+  — the first read asks on the Mac's screen whether `asq` may, and the read waits for the answer.
+  The page does not: it shows those files without how they stand, says which folder is waiting,
+  and judges them once the question is answered. The question comes again after an upgrade, as
+  macOS knows the binary by its signature and each release is a new one. To answer it ahead of
+  time, allow `asq` in System Settings › Privacy & Security › Files and Folders (or Full Disk
+  Access) after installing.
 
 **Windows — a scheduled task at logon**
 

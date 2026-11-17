@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -710,5 +711,14 @@ func TestACommandStillRunningHasNoStatus(t *testing.T) {
 	_, o = stripHeader("Chunk ID: b3\nWall time: 1.0 seconds\nProcess exited with code 0\nOriginal token count: 3\nOutput:\nok\n")
 	if o.Status != model.StatusOK || o.Exit == nil || *o.Exit != 0 {
 		t.Errorf("ended: %+v", o)
+	}
+	// The same, as the list of items an output may also be
+	list := `[{"type":"input_text","text":"Chunk ID: d4\nWall time: 10.0 seconds\nProcess running with session ID 8\nOriginal token count: 3\nOutput:\n=== RUN TestY\n"}]`
+	if text, o := output(json.RawMessage(list), func(string) {}); text != "=== RUN TestY\n" || o.Status != "" {
+		t.Errorf("still running, as a list: %q, %+v", text, o)
+	}
+	list = `[{"type":"input_text","text":"Chunk ID: d5\nWall time: 1.0 seconds\nProcess exited with code 0\nOriginal token count: 3\nOutput:\nok\n"}]`
+	if _, o := output(json.RawMessage(list), func(string) {}); o.Status != model.StatusOK {
+		t.Errorf("ended, as a list: %+v", o)
 	}
 }

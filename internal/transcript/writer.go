@@ -77,7 +77,7 @@ func (w *Writer) Unread(kind string) {
 		if w.kinds == nil {
 			w.kinds = map[string]string{}
 		}
-		if len(w.kinds) < 4*unreadKinds {
+		if len(w.kinds) < 4*unreadKinds && len(raw) <= 256 {
 			w.kinds[raw] = kind
 		}
 	}

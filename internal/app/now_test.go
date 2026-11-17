@@ -371,8 +371,25 @@ func TestCommandKey(t *testing.T) {
 		"git --work-tree /x status":         "git status",
 		"uv run --with x pytest":            "uv run pytest",
 		"# run the tests\ngo test ./...":    "go test",
-		"":                                  "",
-		"   ":                               "",
+		// Codex argv scripts that run over lines, or with what runs the shell in front
+		"bash -lc cd /p\ngo test ./...":                          "go test",
+		"bash -lc python3 - <<'PY'\nimport sys\nsys.exit(1)\nPY": "",
+		"bash -lc set -euo pipefail\ncd /p\nmake test":           "make test",
+		"timeout 60 bash -lc cd /p && go test ./...":             "go test",
+		// A shell's long options, and options with arguments, before its -c
+		"bash --login -c 'go test ./...'":            "go test",
+		"bash --noprofile --norc -c 'make lint'":     "make lint",
+		"bash -o pipefail -c 'go test ./... | tail'": "go test",
+		"fish -c 'go test ./...'":                    "go test",
+		"bash ./run.sh -c":                           "bash ./run.sh",
+		// Flags that take no value
+		"pnpm -w lint":              "pnpm lint",
+		"make -e test":              "make test",
+		"make -j test":              "make test",
+		"make -j 8 test":            "make test",
+		"time (cd web && npm test)": "npm test",
+		"":                          "",
+		"   ":                       "",
 	} {
 		if got := commandKey(in); got != want {
 			t.Errorf("commandKey(%q) = %q, want %q", in, got, want)
@@ -408,11 +425,13 @@ func TestTheLinesStatusIsTheCommands(t *testing.T) {
 		"(cd web && npm test) || true":                    false,
 		"(cd web && npm test) &":                          false,
 		// What only ends the line hides nothing
-		"go test ./...\n":                true,
-		"go test ./... ;":                true,
-		"go test ./... &&\necho ok":      true,
-		"go test ./... # note; more":     true,
-		"# run the tests\ngo test ./...": true,
+		"go test ./...\n":                        true,
+		"go test ./... ;":                        true,
+		"go test ./... &&\necho ok":              true,
+		"go test ./... # note; more":             true,
+		"# run the tests\ngo test ./...":         true,
+		"bash --login -c 'go test ./... | tail'": false,
+		"bash -lc cd /p\ngo test ./...":          true,
 	} {
 		if _, got := resolve(in, 0); got != want {
 			t.Errorf("resolve(%q) decides = %v, want %v", in, got, want)

@@ -168,7 +168,7 @@ var tools = []tool{
 	{
 		name:  "files",
 		title: "Turns that touched a file",
-		about: "Which turns read or changed a file, newest first, each with the ask that led to it. Use it for \"who changed this file and why\". Each line also says how the file stands now against what that turn left: \"as this turn left it\" (the text it wrote is there and nothing has written the file since), \"not written since\", \"written since\" (with what this turn wrote still in it, or by its time alone), \"changed since\" (what this turn wrote is no longer all there), \"deleted\"; nothing for a file not on this machine. A turn's account of a file written or changed since may be out of date: read the file before acting on it.",
+		about: "Which turns read or changed a file, newest first, each with the ask that led to it. Use it for \"who changed this file and why\". Each line also says how the file stands now against what that turn left: \"as this turn left it\" (the text it wrote is there, and nothing has written the file since — or the turn wrote it whole and it is that, to the byte), \"not written since\", \"written since\" (with what this turn wrote still in it, or by its time alone), \"changed since\" (what this turn wrote is no longer all there), \"deleted\"; nothing for a file not on this machine. A turn's account of a file written or changed since may be out of date: read the file before acting on it.",
 		props: []prop{
 			{"path", "string", "Part of the file's path, e.g. internal/server/auth.go or just auth.go."},
 			{"changed", "boolean", "Only the turns that changed it, not those that only read it."},

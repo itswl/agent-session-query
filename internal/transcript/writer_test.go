@@ -1,6 +1,7 @@
 package transcript
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -304,5 +305,15 @@ func TestUnreadIsCheapOnceSeen(t *testing.T) {
 	w.Unread("row:x")
 	if allocs := testing.AllocsPerRun(100, func() { w.Unread("row:x") }); allocs > 0 {
 		t.Errorf("%v allocations for a kind already seen", allocs)
+	}
+}
+
+// What is kept to clean a kind once is kept small: a kind as long as a line is cleaned
+// each time rather than held.
+func TestUnreadKeepsNoLongKind(t *testing.T) {
+	w := New(&Collector{})
+	w.Unread("row:" + strings.Repeat("x", 1<<20))
+	if len(w.kinds) != 0 {
+		t.Errorf("%d raw kinds kept", len(w.kinds))
 	}
 }

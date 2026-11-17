@@ -59,7 +59,7 @@ Punctuation separates words, as it does in the index: `session_query`, `session-
 **`asq files <path>`** — the turns that named a file, newest first, each with the ask that led
 to it. `--changed` keeps only turns that changed it. Each says how the file stands now against
 what that turn left: *as this turn left it* (the text it wrote is there, and nothing has written
-the file since), *written since* (with that text still in it, or by its modification time alone),
+the file since, or it is to the byte the whole of what the turn wrote), *written since* (with that text still in it, or by its modification time alone),
 *changed since* (the text is not all there), *not written since*, *deleted* — the difference
 between a history that still holds and one that has moved on
 ([how it is judged](api.md#reports)). Only this machine's files are judged.

@@ -804,6 +804,7 @@ func output(raw json.RawMessage, unread func(string)) (string, transcript.Outcom
 	}
 	var outcome transcript.Outcome
 	var bodies []string
+	running := false
 	for _, item := range items {
 		text := item.text(unread)
 		if text == "" {
@@ -816,14 +817,17 @@ func output(raw json.RawMessage, unread func(string)) (string, transcript.Outcom
 		if outcome.DurMs == 0 {
 			outcome.DurMs = found.DurMs
 		}
-		if found.Status == model.StatusError {
+		switch found.Status {
+		case model.StatusError:
 			outcome.Status = model.StatusError
+		case "":
+			running = true // the command runs on: see stripHeader
 		}
 		if body != "" {
 			bodies = append(bodies, body)
 		}
 	}
-	if outcome.Status == "" {
+	if outcome.Status == "" && !running {
 		outcome.Status = model.StatusOK
 	}
 	return strings.Join(bodies, ""), outcome

@@ -365,6 +365,12 @@ func outcomeOf(failed bool, details map[string]any) transcript.Outcome {
 		o.DurMs = int64(ms)
 	}
 	o.Status = transcript.StatusOf(failed)
+	switch strings.ToLower(kit.Str(details["status"])) {
+	case "running", "started", "backgrounded", "background", "pending", "yielded":
+		if !failed {
+			o.Status = "" // it runs on: how it ends is not recorded, and is no success
+		}
+	}
 	return o
 }
 

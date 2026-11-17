@@ -103,6 +103,9 @@ func parseLine(line string) []segment {
 			}
 		case c == '(' && !in, c == ')':
 			endWord() // a subshell's bounds: what is inside is read as it is
+			if c == '(' && len(words) == 1 && words[0] == "time" {
+				words = nil // time ( … ) times the group, which is what is run
+			}
 		case c == ' ' || c == '\t' || c == '\r':
 			endWord()
 		case c == '\n' || c == ';':
@@ -202,7 +205,12 @@ func assignment(w string) bool {
 // shellArgv is a line that runs a shell's -c on a script given as words of its own rather
 // than as one quoted word: how Codex's argv commands, ["bash", "-lc", "cd /p && make"],
 // are kept, joined by spaces. The script is all the rest of the line.
-var shellArgv = regexp.MustCompile(`^\s*(?:\S*/)?(?:bash|sh|zsh|dash|ksh)\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*c[A-Za-z]*\s+([^\s'"].*)$`)
+//
+// What runs the shell may come first — timeout 60, sudo -n, env FOO=1 — and the script
+// may run over many lines: a here-document, a preamble of set -euo pipefail.
+var shellArgv = regexp.MustCompile(`(?s)^\s*` +
+	`(?:(?:sudo|doas|env|time|nohup|nice|timeout|gtimeout)(?:\s+(?:-[^\s'"]+|\d+[smhd]?|[A-Za-z_][A-Za-z0-9_]*=[^\s'"]*))*\s+)*` +
+	`(?:\S*/)?(?:bash|sh|zsh|dash|ksh|fish)\s+(?:-[A-Za-z-]+\s+)*-[A-Za-z]*c[A-Za-z]*\s+([^\s'"].*)$`)
 
 // resolve is the simple command a line runs, read through everything that only runs
 // another — the programs that wrap one (sudo, env, time, timeout, nice, nohup) and a
@@ -238,17 +246,23 @@ func resolve(line string, depth int) (words []string, decides bool) {
 			if len(words) > 0 {
 				words = words[1:] // the duration
 			}
-		case "bash", "sh", "zsh", "dash", "ksh":
-			for i, a := range args {
-				if !strings.HasPrefix(a, "-") || strings.HasPrefix(a, "--") {
-					break
-				}
-				if strings.Contains(a, "c") {
+		case "bash", "sh", "zsh", "dash", "ksh", "fish":
+			for i := 0; i < len(args); i++ {
+				a := args[i]
+				switch {
+				case a == "-o" || a == "+o" || a == "-O" || a == "+O" || a == "--rcfile" || a == "--init-file" || a == "--init-command":
+					i++ // an option and its argument: -o pipefail
+				case strings.HasPrefix(a, "--"):
+					// --login, --noprofile, --norc
+				case strings.HasPrefix(a, "-") && strings.Contains(a, "c"):
 					if i+1 >= len(args) {
 						return nil, false
 					}
 					inner, ok := resolve(args[i+1], depth+1)
 					return inner, decides && ok
+				case strings.HasPrefix(a, "-") || strings.HasPrefix(a, "+"):
+				default:
+					return words, decides // a script file, run by name
 				}
 			}
 			return words, decides
@@ -303,7 +317,11 @@ func keyOf(words []string, depth int) string {
 	case "git":
 		args = skipOptions(args, "Cc", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env")
 	case "make", "gmake":
-		args = skipOptions(args, "CfIjlWoe", "--directory", "--file", "--makefile", "--jobs")
+		// -j and -l take a number when one follows, and are flags otherwise
+		for len(args) > 1 && (args[0] == "-j" || args[0] == "-l") && strings.Trim(args[1], "0123456789.") == "" {
+			args = args[2:]
+		}
+		args = skipOptions(args, "CfIWo", "--directory", "--file", "--makefile")
 	case "cargo":
 		args = skipOptions(args, "Z", "--manifest-path", "--config", "--color")
 	case "npx", "bunx", "pnpx":
@@ -320,7 +338,14 @@ func keyOf(words []string, depth int) string {
 			return ""
 		}
 	case "npm", "pnpm", "yarn":
-		args = skipOptions(args, "CwF", "--prefix", "--dir", "--filter", "--workspace", "--cwd")
+		switch prog {
+		case "npm":
+			args = skipOptions(args, "Cw", "--prefix", "--workspace")
+		case "pnpm":
+			args = skipOptions(args, "CF", "--dir", "--filter") // pnpm's -w is a flag: the workspace root
+		default:
+			args = skipOptions(args, "", "--cwd")
+		}
 		if len(args) > 1 && (args[0] == "run" || args[0] == "run-script" || args[0] == "exec" || args[0] == "dlx") && !strings.HasPrefix(args[1], "-") {
 			return prog + " " + args[0] + " " + args[1]
 		}

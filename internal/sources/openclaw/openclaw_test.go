@@ -504,3 +504,24 @@ func TestTimesNoRunCouldSpan(t *testing.T) {
 		t.Errorf("tools = %+v", tools)
 	}
 }
+
+// An exec that yields to the background answers that it runs on: it has not ended, so it
+// has no status, and nothing reading the record takes it for one that succeeded.
+func TestAnExecStillRunningHasNoStatus(t *testing.T) {
+	state := t.TempDir()
+	nested := func(seq int, id, details string) string {
+		return `INSERT INTO transcript_events VALUES ('ses_r', ` + strconv.Itoa(seq) + `, '{"type":"message","message":{"role":"custom","customType":"openclaw.nested-tool.v1","content":"","details":{"toolCallId":"` + id +
+			`","toolName":"exec","input":{"command":"make test"},"result":{"content":[{"type":"text","text":"Command still running (session s1)"}],"details":` + details + `},"isError":false,"startedAt":1794568034704,"timestamp":1794568035399}}}', 0)`
+	}
+	agent(t, state, "main", schema,
+		`INSERT INTO session_windows VALUES ('ses_r', 'agent:main:main', 'done', 1789704223504, 1789704262019, 1789704262019, 1789704262019, 'deepseek', 'deepseek-chat', '')`,
+		`INSERT INTO transcript_events VALUES ('ses_r', 1, '{"type":"message","message":{"role":"user","content":"test it"}}', 0)`,
+		nested(2, "n1", `{"status":"running"}`),
+		nested(3, "n2", `{"status":"completed","exitCode":0}`),
+	)
+	s := sourcetest.One(t, Spec.Open(state))
+	tools := sourcetest.Tools(s.Turn(t, 1))
+	if len(tools) != 2 || tools[0].Status != "" || tools[1].Status != model.StatusOK {
+		t.Errorf("statuses = %q, %q", tools[0].Status, tools[1].Status)
+	}
+}

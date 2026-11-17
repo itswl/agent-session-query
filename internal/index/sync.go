@@ -57,6 +57,12 @@ type SyncOptions struct {
 	Force bool
 	// Rebuild reads everything again, whatever the fingerprints say.
 	Rebuild bool
+	// CaughtUp, when set, is called once the sync has read every transcript that is new
+	// or whose fingerprint moved, if it still has others to read: the ones read again only
+	// because their adapter now reads them differently (sources.Spec.Reads), which can be
+	// the whole history, and come last. The index is then as new as the stores, and what
+	// is left only reads it better. It is called at most once, and not when ctx ends first.
+	CaughtUp func()
 }
 
 // patience bounds how often a transcript that keeps changing is read again: no sooner
@@ -115,6 +121,7 @@ type known struct {
 type job struct {
 	store Store
 	ref   sources.Ref
+	again bool // read only because the adapter's reading is newer than the index's
 }
 
 // Sync brings the index in step with the stores: every transcript that is new or whose
@@ -178,17 +185,18 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 			k, ok := have[ref.Key]
 			switch {
 			case !ok, opts.Rebuild:
-				jobs = append(jobs, job{st, ref})
-			case k.reads < st.Spec.Reads:
-				// Read with an older reading of the CLI's files (sources.Spec.Reads): read
-				// again, once. A session a newer reading stored is left to it — a binary of
-				// either age may share the index, and neither undoes the other's work
-				jobs = append(jobs, job{st, ref})
-			case k.stamp != ref.Stamp:
+				jobs = append(jobs, job{store: st, ref: ref})
+			case k.stamp != ref.Stamp && k.reads >= st.Spec.Reads:
 				wait := min(time.Duration(k.readMs*patience)*time.Millisecond, maxPatience)
 				if opts.Force || now.Sub(time.UnixMilli(k.readAt)) >= wait {
-					jobs = append(jobs, job{st, ref})
+					jobs = append(jobs, job{store: st, ref: ref})
 				}
+			case k.reads < st.Spec.Reads:
+				// Read with an older reading of the CLI's files (sources.Spec.Reads): read
+				// again, once, after what is new. A session a newer reading stored is left to
+				// it — a binary of either age may share the index, and neither undoes the
+				// other's work
+				jobs = append(jobs, job{store: st, ref: ref, again: k.stamp == ref.Stamp})
 			}
 		}
 		for key, k := range have {
@@ -214,14 +222,56 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 		res.Removed = len(gone)
 	}
 
-	// Newest first: the sessions someone is most likely to ask about are there first
-	sort.SliceStable(jobs, func(i, j int) bool { return jobs[i].ref.ModTime.After(jobs[j].ref.ModTime) })
+	// What is new before what is only read better, and newest first: the sessions someone
+	// is most likely to ask about are there first
+	sort.SliceStable(jobs, func(i, j int) bool {
+		if jobs[i].again != jobs[j].again {
+			return !jobs[i].again
+		}
+		return jobs[i].ref.ModTime.After(jobs[j].ref.ModTime)
+	})
+	fresh := 0 // jobs that are not read again only for a new reading: they come first
+	for fresh < len(jobs) && !jobs[fresh].again {
+		fresh++
+	}
 	found := hex.EncodeToString(condition.Sum(nil)[:5])
 	ix.setState(func(s *SyncState) {
 		s.Running, s.Total, s.Done, s.Began, s.Stores = true, len(jobs), 0, start, found
 	})
 
 	var firstErr error
+	published := 0
+	// settle makes what has been written so far whole: the sessions linked to one another
+	// and the counts let go of
+	settle := func() {
+		if res.Read > 0 || res.Removed > 0 {
+			ix.recount()
+			if ctx.Err() == nil {
+				if err := ix.link(ctx); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
+	}
+	tell := func() {
+		if len(res.Changes) > published {
+			ix.publish(res.Changes[published:])
+			published = len(res.Changes)
+		}
+	}
+	// caughtUp is when the index holds what the stores do, with a part of it read again
+	// for a new reading still to come
+	caughtUp := func() {
+		if opts.CaughtUp == nil || ctx.Err() != nil {
+			return
+		}
+		settle()
+		tell()
+		opts.CaughtUp()
+	}
+	if fresh == 0 && len(jobs) > 0 {
+		caughtUp()
+	}
 	if len(jobs) > 0 {
 		readings := make(chan *reading, 8)
 		queue := make(chan job)
@@ -232,7 +282,9 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 			go func() {
 				defer readers.Done()
 				for j := range queue {
-					readings <- ix.read(ctx, j.store, j.ref)
+					rd := ix.read(ctx, j.store, j.ref)
+					rd.again = j.again
+					readings <- rd
 				}
 			}()
 		}
@@ -250,6 +302,7 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 			readers.Wait()
 			close(readings)
 		}()
+		left := fresh
 		for rd := range readings {
 			if ctx.Err() != nil {
 				continue // drain: the readers are stopping
@@ -263,23 +316,19 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 				res.Changes = append(res.Changes, Change{Source: rd.source, ID: rd.sess.ID})
 			}
 			ix.setState(func(s *SyncState) { s.Done++ })
+			if !rd.again {
+				if left--; left == 0 && fresh < len(jobs) {
+					caughtUp()
+				}
+			}
 		}
 	}
 
-	if res.Read > 0 || res.Removed > 0 {
-		ix.recount()
-	}
-	if (res.Read > 0 || res.Removed > 0) && ctx.Err() == nil {
-		if err := ix.link(ctx); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
+	settle()
 	ix.setState(func(s *SyncState) {
 		s.Running, s.At, s.Took = false, time.Now(), time.Since(start).Milliseconds()
 	})
-	if len(res.Changes) > 0 {
-		ix.publish(res.Changes)
-	}
+	tell()
 	if firstErr == nil {
 		firstErr = ctx.Err()
 	}

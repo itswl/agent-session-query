@@ -41,7 +41,8 @@ const (
 type reading struct {
 	source string
 	agent  string
-	reads  int // the adapter's reading (sources.Spec.Reads)
+	reads  int  // the adapter's reading (sources.Spec.Reads)
+	again  bool // read only because that reading is newer than the index's
 	ref    sources.Ref
 	sess   model.Session
 	stats  model.Stats

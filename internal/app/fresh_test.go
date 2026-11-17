@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"database/sql"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -31,14 +33,14 @@ func TestWhenAQuestionWaitsForTheStores(t *testing.T) {
 	underWay := func(last, began time.Time) chan struct{} {
 		reading := make(chan struct{})
 		a.mu.Lock()
-		a.running, a.last, a.began = reading, last, began
+		a.running, a.caught, a.last, a.began = reading, reading, last, began
 		a.mu.Unlock()
 		return reading
 	}
 	over := func(reading chan struct{}) {
 		close(reading)
 		a.mu.Lock()
-		a.running = nil
+		a.running, a.caught = nil, nil
 		a.mu.Unlock()
 	}
 	synced := func() time.Time { return a.Index.State().At }
@@ -49,6 +51,18 @@ func TestWhenAQuestionWaitsForTheStores(t *testing.T) {
 		t.Error("an index that was never read answered as if it had been")
 	}
 	over(first)
+
+	// The first read has read what is new, and goes on to read the rest again for an
+	// adapter that reads it differently now: that is not waited for
+	reading, caught := make(chan struct{}), make(chan struct{})
+	close(caught)
+	a.mu.Lock()
+	a.running, a.caught, a.last, a.began = reading, caught, time.Time{}, time.Now()
+	a.mu.Unlock()
+	if start := time.Now(); !a.Fresh(ctx, maxAge, 5*time.Second) || time.Since(start) > time.Second {
+		t.Errorf("a question waited %v for a history read again only for a new reading", time.Since(start))
+	}
+	over(reading)
 
 	if _, err := a.Sync(ctx, index.SyncOptions{}); err != nil {
 		t.Fatal(err)
@@ -117,5 +131,63 @@ func TestWhenAQuestionWaitsForTheStores(t *testing.T) {
 	read = synced()
 	if !a.Fresh(ctx, maxAge, 5*time.Second) || !synced().Equal(read) {
 		t.Error("an index read a moment ago was read again")
+	}
+}
+
+// A sync that has caught up with the stores, and goes on to read the history again for a
+// new reading, lets the questions waiting for it go then, and not when it ends.
+func TestCaughtUpIsWhenTheQuestionsGo(t *testing.T) {
+	dir := t.TempDir()
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	line := `{"type":"user","uuid":"u1","timestamp":"` + at + `","sessionId":"s1","cwd":"/w","message":{"role":"user","content":"hello"}}` + "\n"
+	if err := os.MkdirAll(filepath.Join(dir, "claude", "-w"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "claude", "-w", "s1.jsonl"), []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, err := Open(Config{
+		IndexPath: filepath.Join(dir, "index.db"),
+		Stores:    catalog.Config{Only: []string{"claude"}, Paths: []catalog.Path{{Agent: "claude", Dir: filepath.Join(dir, "claude")}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	ctx := context.Background()
+	if res, err := a.Sync(ctx, index.SyncOptions{}); err != nil || res.Read != 1 {
+		t.Fatalf("first read: %+v, %v", res, err)
+	}
+	// As an older reading left it
+	db, err := sql.Open("sqlite", a.Index.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`UPDATE sessions SET reads = 0`)
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	let, held := false, false
+	res, err := a.Sync(ctx, index.SyncOptions{CaughtUp: func() {
+		a.mu.Lock()
+		caught, running := a.caught, a.running
+		a.mu.Unlock()
+		select {
+		case <-caught:
+			let = true
+		default:
+		}
+		select {
+		case <-running:
+		default:
+			held = true
+		}
+	}})
+	if err != nil || res.Read != 1 {
+		t.Fatalf("reading again: %+v, %v", res, err)
+	}
+	if !let || !held {
+		t.Errorf("when the sync caught up: questions let go %v, the sync still under way %v; want both", let, held)
 	}
 }

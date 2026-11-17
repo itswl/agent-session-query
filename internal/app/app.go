@@ -35,6 +35,7 @@ type App struct {
 
 	mu      sync.Mutex
 	running chan struct{} // closed when the sync in flight ends; nil when none is
+	caught  chan struct{} // closed when it has read what is new (index.SyncOptions.CaughtUp), or ends
 	began   time.Time     // when the sync in flight began
 	syncs   atomic.Int64  // how many reads of the stores have run
 	last    time.Time     // when the last sync ended
@@ -79,25 +80,35 @@ func (a *App) Sync(ctx context.Context, opts index.SyncOptions) (index.SyncResul
 		}
 		a.mu.Lock()
 	}
-	done := a.claim()
+	done, caught := a.claim()
 	a.mu.Unlock()
-	return a.run(ctx, opts, done)
+	return a.run(ctx, opts, done, caught)
 }
 
 // claim marks a sync as under way, from now. a.mu must be held, and no sync running.
-func (a *App) claim() chan struct{} {
-	done := make(chan struct{})
-	a.running, a.began = done, time.Now()
-	return done
+func (a *App) claim() (done, caught chan struct{}) {
+	done, caught = make(chan struct{}), make(chan struct{})
+	a.running, a.caught, a.began = done, caught, time.Now()
+	return done, caught
 }
 
 // run is the sync a claim was made for.
-func (a *App) run(ctx context.Context, opts index.SyncOptions, done chan struct{}) (index.SyncResult, error) {
+func (a *App) run(ctx context.Context, opts index.SyncOptions, done, caught chan struct{}) (index.SyncResult, error) {
 	a.syncs.Add(1)
+	var once sync.Once
+	up := func() { once.Do(func() { close(caught) }) }
+	then := opts.CaughtUp
+	opts.CaughtUp = func() {
+		up()
+		if then != nil {
+			then()
+		}
+	}
 	res, err := a.Index.Sync(ctx, a.Set.Present(), opts)
 	a.mu.Lock()
-	a.running, a.last, a.lastErr = nil, time.Now(), err
+	a.running, a.caught, a.last, a.lastErr = nil, nil, time.Now(), err
 	a.mu.Unlock()
+	up()
 	close(done)
 	return res, err
 }
@@ -118,9 +129,14 @@ func (a *App) run(ctx context.Context, opts index.SyncOptions, done chan struct{
 //     question should, and the question is then answered from what has been read so far.
 //     If a read is already under way, it is the one waited for; a second is not queued
 //     behind it.
+//
+// What is waited for is what is new or changed in the stores. A read that goes on to read
+// the rest again, because an adapter now reads it differently (index.SyncOptions.CaughtUp),
+// does that after the question is answered.
 func (a *App) Fresh(ctx context.Context, maxAge, wait time.Duration) bool {
 	a.mu.Lock()
-	running, began, last := a.running, a.began, a.last
+	// running is closed once the sync in flight has read what is new: see above
+	running, began, last := a.caught, a.began, a.last
 	switch {
 	case last.IsZero() && running != nil:
 		// the first read is under way: it is the one waited for
@@ -136,9 +152,9 @@ func (a *App) Fresh(ctx context.Context, maxAge, wait time.Duration) bool {
 		// one find it under way and wait for it, rather than each starting its own. The
 		// sync outlives the question that started it: a first read is not thrown away
 		// because one caller stopped waiting
-		done := a.claim()
-		running = done
-		go func() { _, _ = a.run(context.WithoutCancel(ctx), index.SyncOptions{}, done) }()
+		done, caught := a.claim()
+		running = caught
+		go func() { _, _ = a.run(context.WithoutCancel(ctx), index.SyncOptions{}, done, caught) }()
 	}
 	a.mu.Unlock()
 	if wait <= 0 {

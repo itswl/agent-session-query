@@ -152,7 +152,7 @@ kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width:
   background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--line);
 }
-.brand { display: flex; align-items: center; gap: 8px; color: var(--text); font-weight: 650; font-size: 16px; letter-spacing: -.02em; }
+.brand { display: flex; flex: none; align-items: center; gap: 8px; color: var(--text); font-weight: 650; font-size: 16px; letter-spacing: -.02em; white-space: nowrap; }
 .brand:hover { text-decoration: none; }
 .brand img { border-radius: 5px; }
 .nav { display: flex; gap: 2px; }

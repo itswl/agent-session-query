@@ -1,28 +1,35 @@
-// What the model calls consumed: rolling windows, the last thirty days, and where it went.
+// What the model calls consumed: rolling windows, the last thirty days, and where it went
+// in the window chosen.
 
-import { h, mark, skeleton, errorBox, stale } from '../dom.js';
+import { h, mark, skeleton, errorBox, stale, choices } from '../dom.js';
 import { api, qs, last } from '../api.js';
 import { coalesce } from '../live.js';
 import * as f from '../format.js';
+import { WINDOWS, windowOf, label, span } from '../windows.js';
 
 // Stacked bottom to top in this order; the colours are the chart palette's first four
 const PARTS = [['cacheRead', 'Cache read'], ['cacheWrite', 'Cache write'], ['input', 'Input'], ['output', 'Output']];
-const WINDOWS = { '24h': 'Last 24 hours', '3d': 'Last 3 days', '7d': 'Last 7 days', '30d': 'Last 30 days', all: 'All time' };
+// The window the breakdowns cover: all of it unless one is chosen
+const windowIn = (query) => windowOf(query, 'all');
 
 // first is what the view asks for when it opens, so that it can be asked for ahead.
-export const first = () => '/api/usage';
+export const first = (query) => '/api/usage' + qs({ since: windowIn(query) });
 
 export function mount(main, route, ctx) {
   document.title = 'Usage · asq';
+  const since = windowIn(route.query);
   // What it showed last time is shown at once; the fresh report replaces it when it comes
-  const state = { withCache: true, table: false, report: last(first()) };
+  const state = { withCache: true, table: false, report: last(first(route.query)) };
   const body = h('div', { class: 'page-body' }, state.report ? null : skeleton(6, 'line'));
   const note = stale();
-  main.append(h('div', { class: 'page' }, h('header', { class: 'page-head' }, h('h1', { tabIndex: -1 }, 'Usage')), note.el, body));
+  main.append(h('div', { class: 'page' },
+    h('header', { class: 'page-head' }, h('h1', { tabIndex: -1 }, 'Usage'),
+      choices('Window', WINDOWS.map(([k, name]) => ['/usage' + qs({ since: k === 'all' ? '' : k }), name, k === since]))),
+    note.el, body));
 
   async function load() {
     try {
-      const report = await api(first(), { signal: ctx.signal, keep: true });
+      const report = await api(first(route.query), { signal: ctx.signal, keep: true });
       note.say();
       if (report === state.report) return; // nothing changed: what is drawn stays as it is, under the pointer
       state.report = report;
@@ -38,15 +45,17 @@ export function mount(main, route, ctx) {
   function render() {
     const r = state.report;
     body.replaceChildren(
-      h('dl', { class: 'windows' }, r.windows.map((w) => h('div', { class: 'window' },
-        h('dt', null, w.key, h('span', { class: 'sr' }, ' — ' + WINDOWS[w.key])),
+      // Every window at once, whichever is chosen: what each consumed, the chosen one marked
+      // as the one the tables below add up to
+      h('dl', { class: 'windows' }, r.windows.map((w) => h('div', { class: w.key === since ? 'window on' : 'window', 'aria-current': w.key === since ? 'true' : null },
+        h('dt', null, label(w.key)),
         h('dd', { class: 'big', title: f.num(w.total) + ' tokens' }, f.tokens(w.total)),
         h('dd', { class: 'dots dim' }, h('span', { title: f.num(w.calls) + ' model calls' }, f.plural(w.calls, 'call')),
           w.total > 0 && h('span', null, f.pct(w.cacheHit) + ' cached'))))),
       chart(r.byDay),
-      section('By model', table(r.byModel, r.total, 'Model', (k) => k || '(not recorded)')),
-      section('By store', table(r.bySource, r.total, 'Store', (k) => h('span', { class: 'store' }, mark(k), k))),
-      section('By project', table(r.byProject, r.total, 'Project', (k) => (k ? h('a', { href: '/' + qs({ project: k }), title: k }, f.shortPath(k)) : '(no directory)'))),
+      section('By model', span(since), table(r.byModel, r.total, 'Model', (k) => k || '(not recorded)')),
+      section('By store', span(since), table(r.bySource, r.total, 'Store', (k) => h('span', { class: 'store' }, mark(k), k))),
+      section('By project', span(since), table(r.byProject, r.total, 'Project', (k) => (k ? h('a', { href: '/' + qs({ project: k }), title: k }, f.shortPath(k)) : '(no directory)'))),
     );
   }
 
@@ -73,7 +82,7 @@ export function mount(main, route, ctx) {
     const mode = (withCache, label) => h('button', { type: 'button', class: 'seg-btn', 'aria-pressed': String(state.withCache === withCache), onclick() { state.withCache = withCache; render(); } }, label);
     const tableBtn = h('button', { type: 'button', class: 'btn', 'aria-pressed': String(state.table), onclick() { state.table = !state.table; render(); } }, state.table ? 'Hide table' : 'Show as table');
     return h('section', { class: 'chart' },
-      h('header', { class: 'section-head' }, h('h2', null, 'Tokens by day'), h('span', { class: 'dim' }, 'last 30 days'),
+      h('header', { class: 'section-head' }, h('h2', null, 'Tokens by day'), h('span', { class: 'dim' }, span('30d')),
         h('div', { class: 'seg-group', role: 'group', 'aria-label': 'What the bars count' }, mode(true, 'All tokens'), mode(false, 'Without cache reads')), tableBtn),
       h('ul', { class: 'legend' }, parts.map(([k, label]) => h('li', null, h('span', { class: 'swatch', dataset: { part: k } }), label))),
       readout,
@@ -111,7 +120,7 @@ function niceMax(v) {
   return [1, 2, 2.5, 5, 10].map((m) => m * p).find((x) => x >= v);
 }
 
-const section = (title, content) => h('section', null, h('header', { class: 'section-head' }, h('h2', null, title)), content);
+const section = (title, when, content) => h('section', null, h('header', { class: 'section-head' }, h('h2', null, title), h('span', { class: 'dim' }, when)), content);
 
 function table(rows, total, keyLabel, keyCell) {
   const n = (v) => h('td', { class: 'n', title: f.num(v) }, f.tokens(v));

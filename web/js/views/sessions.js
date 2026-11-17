@@ -7,10 +7,12 @@ import { go, savedY } from '../router.js';
 import { health, coalesce, onStatus, status } from '../live.js';
 import { needles, highlight } from '../md.js';
 import * as f from '../format.js';
+import { WINDOWS } from '../windows.js';
 
 const PAGE = 50;
 const HITS = 20;
-const WHEN = [['', 'All time'], ['today', 'Today'], ['7d', '7 days'], ['30d', '30 days']];
+// The windows every view offers (see windows.js); all time is no filter at all
+const WHEN = WINDOWS.map(([k, name]) => [k === 'all' ? '' : k, name]);
 const TOP_PROJECTS = 8;
 
 // Each list as it was left, by its address. Coming back to one — by Back from a session,
@@ -93,7 +95,8 @@ export function mount(main, route, ctx) {
     projectsP ||= api('/api/projects').then((r) => r.projects).catch(() => { projectsP = null; return []; });
     const projects = await projectsP;
     const option = (key, value, label, extra) => {
-      const on = (q.get(key) || '') === value;
+      const now = q.get(key) || '';
+      const on = (key === 'since' && now === 'all' ? '' : now) === value; // since=all is all time too
       return h('li', null, h('a', { href: hrefWith(v.route, { [key]: on && value ? '' : value }), class: 'opt', 'aria-current': on ? 'true' : null, title: extra?.title }, label, extra?.n != null && h('span', { class: 'n' }, f.num(extra.n))));
     };
     const flag = (key, label) => {

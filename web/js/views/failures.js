@@ -4,11 +4,11 @@ import { h, time, skeleton, errorBox, empty, choices, fill, stale } from '../dom
 import { api, qs, sessionHref, isAbort, last } from '../api.js';
 import { coalesce } from '../live.js';
 import * as f from '../format.js';
+import { WINDOWS, windowOf as windowIn, within, longer } from '../windows.js';
 
-const WINDOWS = [['24h', '24 hours'], ['7d', '7 days'], ['30d', '30 days']];
 const PAGE = 50;
 
-const windowOf = (query) => (WINDOWS.some(([k]) => k === query.get('since')) ? query.get('since') : '7d');
+const windowOf = (query) => windowIn(query, '7d');
 const pageAt = (query, offset) => '/api/failures' + qs({ since: windowOf(query), tool: query.get('tool') || '', limit: PAGE, offset });
 
 // first is what the view asks for when it opens, so that it can be asked for ahead.
@@ -26,10 +26,9 @@ export function mount(main, route, ctx) {
   const more = h('div', { class: 'more-row' });
   const body = h('div', { class: 'page-body' }, skeleton(6, 'row'));
   const note = stale();
-  const windowName = WINDOWS.find(([k]) => k === since)[1];
   main.append(h('div', { class: 'page' },
     h('header', { class: 'page-head' }, h('h1', { tabIndex: -1 }, 'Failures'),
-      choices('Window', WINDOWS.map(([k, label]) => [href({ since: k }), label, k === since]))),
+      choices('Window', WINDOWS.map(([k, name]) => [href({ since: k }), name, k === since]))),
     note.el, summary, chips, body));
 
   function show(r, reset) {
@@ -37,13 +36,13 @@ export function mount(main, route, ctx) {
     v.items = reset ? r.failures : v.items.concat(r.failures);
     v.total = r.total;
     v.end = r.failures.length < PAGE;
-    summary.textContent = `${f.plural(r.total, 'failed call')} in the last ${windowName}${tool ? ` of ${tool}` : ''}.`;
+    summary.textContent = `${f.plural(r.total, 'failed call')}${tool ? ` of ${tool}` : ''}${within(since)}.`;
     if (reset) fill(chips,
       h('a', { class: 'chip', href: href({ tool: '' }), 'aria-current': tool ? null : 'true' }, 'All tools'),
       r.byTool.map((t) => h('a', { class: 'chip', href: href({ tool: t.tool === tool ? '' : t.tool }), 'aria-current': t.tool === tool ? 'true' : null },
         h('span', { class: 'mono' }, t.tool), h('span', { class: 'n' }, f.num(t.count)))));
     list.replaceChildren(...v.items.map(row));
-    if (!v.items.length) list.replaceChildren(h('li', null, empty(`No failed tool calls in the last ${windowName}.`, tool ? 'Try all tools, or a longer window.' : 'Try a longer window.')));
+    if (!v.items.length) list.replaceChildren(h('li', null, empty(`No failed tool calls${tool ? ` of ${tool}` : ''}${within(since)}.`, tool ? (since === 'all' ? 'Try all tools.' : 'Try all tools, or a longer window.') : longer(since))));
     if (!body.contains(list)) body.replaceChildren(list, more);
     more.replaceChildren(v.end ? '' : h('button', { type: 'button', class: 'btn', onclick: () => load(false) }, 'Load more'));
   }

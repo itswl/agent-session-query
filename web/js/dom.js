@@ -193,7 +193,7 @@ export function stale() {
 }
 
 export const empty = (title, ...hints) =>
-  h('div', { class: 'empty' }, h('p', { class: 'empty-title' }, title), hints.map((x) => h('p', null, x)));
+  h('div', { class: 'empty' }, h('p', { class: 'empty-title' }, title), hints.filter(Boolean).map((x) => h('p', null, x)));
 
 export const fact = (label, value, props) => h('div', { class: 'fact', ...props }, h('dt', null, label), h('dd', null, value));
 

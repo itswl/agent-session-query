@@ -66,9 +66,15 @@ the button at the bottom takes you back to the newest turn, or turns following o
 
 ## Reports
 
-**Usage** — tokens over rolling windows, the last thirty days as stacked bars (cache reads,
-cache writes, input, output; *Without cache reads* rescales to what is left, since cache reads
-are usually most of it), then tables by model, store and project — with how much of the output
+Every view that reads a window of time offers the same ones, in the same words: **24 hours, 7
+days, 30 days, All time**. They roll — the last 24 hours, not today — so a window reads the same
+whenever it is asked. The sessions list and the usage tables show all time unless a window is
+chosen; failures, files and the digest, the last 7 days.
+
+**Usage** — tokens in each of those windows, with the one chosen marked; the last thirty days as
+stacked bars (cache reads, cache writes, input, output; *Without cache reads* rescales to what is
+left, since cache reads are usually most of it), whichever window is chosen; then tables by
+model, store and project over the chosen window, which each names — with how much of the output
 was reasoning, where the provider said, and the share of the prompt that came from cache. Every
 rounded figure carries its exact value on hover, and the chart can be read as a table. The
 reports are in tokens: a session's own cost, where its CLI recorded one, is on the session's
@@ -76,13 +82,13 @@ page and [is not summed](cli.md#measuring).
 
 ![Usage](screenshots/usage.png)
 
-**Failures** — the tool calls that failed in the last day, week or month, newest first: the
+**Failures** — the tool calls that failed in the window, newest first: the
 command, how it ended, the end of what it printed, and a link to the step. The chips narrow to
 one tool.
 
 ![Failures](screenshots/failures.png)
 
-**Files** — the turns that changed a file in the last day, week or month, newest first, each with
+**Files** — the turns that changed a file in the window, newest first, each with
 the ask that led to it and how the file stands now against what that turn left: *as this turn
 left it*, *written since*, *changed since*, *not written since*, *deleted* — judged on this
 machine, from the file itself ([how](api.md#reports)). The box narrows to paths that contain what
@@ -143,8 +149,8 @@ line away.
 A list is kept by its address. Back from a session returns to it whole and to where it was read,
 and the rows that changed meanwhile are folded in where they stand. The link in the bar and a
 filter taken off again show it at once from its top, and its first page then becomes what the
-server says now: what was kept below it may no longer match — *Today* is yesterday after
-midnight — or be gone. A search comes back whole on Back too, but is asked for afresh any other
+server says now: what was kept below it may no longer match — the last 24 hours have moved on —
+or be gone. A search comes back whole on Back too, but is asked for afresh any other
 way, since what it found is ranked rather than dated and cannot be brought up to date row by row.
 Pointing at a view's link asks for it before the click lands. Nothing of this outlives the page,
 and all of it is dropped when the sign-in is lost.

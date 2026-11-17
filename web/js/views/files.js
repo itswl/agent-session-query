@@ -6,11 +6,11 @@ import { api, qs, sessionHref, isAbort, last } from '../api.js';
 import { coalesce } from '../live.js';
 import { go } from '../router.js';
 import * as f from '../format.js';
+import { WINDOWS, windowOf as windowIn, within, longer } from '../windows.js';
 
-const WINDOWS = [['24h', '24 hours'], ['7d', '7 days'], ['30d', '30 days']];
 const PAGE = 50;
 
-const windowOf = (query) => (WINDOWS.some(([k]) => k === query.get('since')) ? query.get('since') : '7d');
+const windowOf = (query) => windowIn(query, '7d');
 const readToo = (query) => query.get('read') === '1';
 const pageAt = (query, offset) =>
   '/api/files' + qs({ since: windowOf(query), path: query.get('path') || '', changed: !readToo(query), limit: PAGE, offset });
@@ -45,7 +45,6 @@ export function mount(main, route, ctx) {
   const more = h('div', { class: 'more-row' });
   const body = h('div', { class: 'page-body' }, skeleton(6, 'row'));
   const note = stale();
-  const windowName = WINDOWS.find(([k]) => k === since)[1];
   const input = h('input', { type: 'search', name: 'path', value: path, placeholder: 'part of a path: auth.go, src/api/', 'aria-label': 'Files whose path contains', autocomplete: 'off', spellcheck: false });
   const form = h('form', { class: 'file-filter', role: 'search' }, input);
   form.addEventListener('submit', (e) => {
@@ -54,7 +53,7 @@ export function mount(main, route, ctx) {
   });
   main.append(h('div', { class: 'page' },
     h('header', { class: 'page-head' }, h('h1', { tabIndex: -1 }, 'Files'),
-      choices('Window', WINDOWS.map(([k, label]) => [href({ since: k }), label, k === since]))),
+      choices('Window', WINDOWS.map(([k, name]) => [href({ since: k }), name, k === since]))),
     form,
     h('nav', { class: 'chips', 'aria-label': 'Which turns' },
       h('a', { class: 'chip', href: href({ read: false }), 'aria-current': read ? null : 'true' }, 'Changed'),
@@ -68,9 +67,9 @@ export function mount(main, route, ctx) {
     v.end = r.files.length < PAGE;
     // A row is a file and a turn that touched it, so a file two turns changed is counted
     // twice, as the digest counts files changed
-    summary.textContent = `${f.plural(r.total, 'file')}${path ? ` whose path contains “${path}”` : ''} ${read ? 'read or changed' : 'changed'} in the last ${windowName}.`;
+    summary.textContent = `${f.plural(r.total, 'file')}${path ? ` whose path contains “${path}”` : ''} ${read ? 'read or changed' : 'changed'}${within(since)}.`;
     list.replaceChildren(...v.items.map(row));
-    if (!v.items.length) list.replaceChildren(h('li', null, empty(path ? `No file whose path contains “${path}” in the last ${windowName}.` : `No files ${read ? 'read or changed' : 'changed'} in the last ${windowName}.`, 'Try a longer window.')));
+    if (!v.items.length) list.replaceChildren(h('li', null, empty(path ? `No file whose path contains “${path}”${within(since)}.` : `No files ${read ? 'read or changed' : 'changed'}${within(since)}.`, longer(since))));
     if (!body.contains(list)) body.replaceChildren(list, more);
     more.replaceChildren(v.end ? '' : h('button', { type: 'button', class: 'btn', onclick: () => load(false) }, 'Load more'));
   }

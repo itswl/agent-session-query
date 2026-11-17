@@ -4,11 +4,11 @@ import { h, mark, skeleton, errorBox, empty, choices, stale } from '../dom.js';
 import { api, qs, isAbort, last } from '../api.js';
 import { coalesce } from '../live.js';
 import * as f from '../format.js';
+import { WINDOWS, windowOf as windowIn, within, longer } from '../windows.js';
 
-const WINDOWS = [['24h', '24 hours'], ['7d', '7 days'], ['30d', '30 days']];
 const KINDS = ['code', 'test', 'docs', 'config'];
 
-const windowOf = (query) => (WINDOWS.some(([k]) => k === query.get('since')) ? query.get('since') : '7d');
+const windowOf = (query) => windowIn(query, '7d');
 
 // first is what the view asks for when it opens, so that it can be asked for ahead.
 export const first = (query) => '/api/digest' + qs({ since: windowOf(query) });
@@ -23,7 +23,7 @@ export function mount(main, route, ctx) {
   const note = stale();
   main.append(h('div', { class: 'page' },
     h('header', { class: 'page-head' }, h('h1', { tabIndex: -1 }, 'Digest'),
-      choices('Window', WINDOWS.map(([k, label]) => ['/digest' + qs({ since: k }), label, k === since]))),
+      choices('Window', WINDOWS.map(([k, name]) => ['/digest' + qs({ since: k }), name, k === since]))),
     note.el, summary, body));
 
   function show(r) {
@@ -39,7 +39,7 @@ export function mount(main, route, ctx) {
       h('span', null, `${f.plural(KINDS.reduce((n, k) => n + (t.changed?.[k] || 0), 0), 'file')} changed`)));
     body.replaceChildren(r.projects.length
       ? h('ol', { class: 'digest' }, r.projects.map(project))
-      : empty(`Nothing was asked in the last ${WINDOWS.find(([k]) => k === since)[1]}.`, 'Try a longer window.'));
+      : empty(`Nothing was asked${within(since)}.`, longer(since)));
   }
 
   async function load() {

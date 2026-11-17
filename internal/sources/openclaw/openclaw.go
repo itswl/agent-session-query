@@ -61,7 +61,7 @@ var Spec = sources.Spec{
 	// session on disk. A command that works for the newest handful and fails for the
 	// rest is worse than none.
 	Resume: "",
-	Reads:  1,
+	Reads:  2,
 	Store:  "~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite",
 }
 
@@ -145,19 +145,23 @@ FROM session_windows w`)
 		}
 		defer rows.Close()
 		for rows.Next() {
+			// The figures are read as whatever SQLite holds, since a column takes a value of
+			// any type: one row's time written as text is read as none, and does not make
+			// the agent's whole database look unreadable
 			var id, status, name, mdl sql.NullString
-			var updated, transcript, seq sql.NullInt64
-			if err := rows.Scan(&id, &updated, &transcript, &status, &name, &mdl, &seq); err != nil {
+			var updatedV, transcriptV, seqV any
+			if err := rows.Scan(&id, &updatedV, &transcriptV, &status, &name, &mdl, &seqV); err != nil {
 				return err
 			}
 			if id.String == "" {
 				continue
 			}
+			updated, transcript, seq := kit.Int(updatedV), kit.Int(transcriptV), kit.Int(seqV)
 			refs = append(refs, sources.Ref{
 				Key: path + "#" + id.String,
-				Stamp: strings.Join([]string{strconv.FormatInt(updated.Int64, 36), strconv.FormatInt(transcript.Int64, 36),
-					strconv.FormatInt(seq.Int64, 36), jsonmap.StampOf(status.String, name.String, mdl.String)}, "."),
-				ModTime: time.UnixMilli(max(updated.Int64, transcript.Int64)),
+				Stamp: strings.Join([]string{strconv.FormatInt(updated, 36), strconv.FormatInt(transcript, 36),
+					strconv.FormatInt(seq, 36), jsonmap.StampOf(status.String, name.String, mdl.String)}, "."),
+				ModTime: time.UnixMilli(max(updated, transcript)),
 			})
 		}
 		return rows.Err()
@@ -179,23 +183,38 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	var unread []string // what the reader passed over not knowing it, told to w once the read is done
 	err := kit.ReadDB(ctx, db, func(conn *sql.DB) error {
 		msgs, sess, unread = msgs[:0], w.S, unread[:0]
-		var status, provider, mdl, name sql.NullString
-		var started, ended, updated sql.NullInt64
+		// started_at and ended_at are a run's, not the session's: a run sets started_at and
+		// clears ended_at as it begins, and writes ended_at as it ends. When the session
+		// began is created_at, which came with 2026.11; before it, started_at is all there is.
+		created := "NULL"
+		if cols, err := kit.Columns(conn, "session_windows"); err == nil && cols["created_at"] {
+			created = "created_at"
+		}
+		var status, mdl, name sql.NullString
+		var beganV, startedV, endedV, updatedV any // whatever the column holds: see listDB
 		err := conn.QueryRowContext(ctx, `
-SELECT status, model_provider, model, display_name, started_at, ended_at, COALESCE(transcript_updated_at, updated_at)
-FROM session_windows WHERE session_id = ?`, id).Scan(&status, &provider, &mdl, &name, &started, &ended, &updated)
+SELECT status, model, display_name, `+created+`, started_at, ended_at, COALESCE(transcript_updated_at, updated_at)
+FROM session_windows WHERE session_id = ?`, id).Scan(&status, &mdl, &name, &beganV, &startedV, &endedV, &updatedV)
 		if err != nil {
 			return err
 		}
 		// display_name is set for a session that came through a chat channel; a run from
 		// the command line leaves it empty, and its first ask is its title
 		sess.Title = name.String
+		// The model by its own name, as each response names it: with the provider in front
+		// the session and its calls would name one model two ways, and usage by model
+		// would count them apart
 		sess.Model = mdl.String
-		if provider.String != "" && mdl.String != "" {
-			sess.Model = provider.String + "/" + mdl.String
+		began := kit.Int(beganV)
+		if began <= 0 {
+			began = kit.Int(startedV)
 		}
-		sess.StartedAt, sess.UpdatedAt = jsonmapMillis(started.Int64), jsonmapMillis(updated.Int64)
-		sess.Running = status.String == "running"
+		sess.StartedAt, sess.UpdatedAt = jsonmapMillis(began), jsonmapMillis(kit.Int(updatedV))
+		// A run in flight is one begun and not ended: 2026.11 clears the status as a run
+		// starts and writes it once the run is done, where earlier versions wrote running.
+		// A Gateway stopped mid-run leaves its run so until it restarts and carries the run
+		// on. A run with --local records neither time, and is not seen running.
+		sess.Running = status.String == "running" || !status.Valid && startedV != nil && endedV == nil
 
 		// A large event is stored compressed: event_json is NULL and event_zstd holds it.
 		// The column came with that change, so a database from before it has only the text.
@@ -229,7 +248,19 @@ FROM session_windows WHERE session_id = ?`, id).Scan(&status, &provider, &mdl, &
 			}
 		}
 		sess.Cwd = reader.Cwd
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		// Cold storage moves a session's events out of transcript_events, to a file or a
+		// table of its own, which this does not read: what was moved is missing from the
+		// session, and is said to be, so that doctor tells of it rather than nothing
+		if kit.HasTable(conn, "session_transcript_cold_archives") {
+			var archived int
+			if conn.QueryRowContext(ctx, `SELECT count(*) FROM session_transcript_cold_archives WHERE session_id = ?`, id).Scan(&archived) == nil && archived > 0 {
+				unread = append(unread, "events:cold-archived")
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return err

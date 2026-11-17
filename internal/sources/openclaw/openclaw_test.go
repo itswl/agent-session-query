@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -78,7 +79,7 @@ func TestAgentDatabase(t *testing.T) {
 	cli := sourcetest.ByID(t, all, "ses_cli")
 	s := cli.Session
 	// With no display_name the first ask is the title; the cwd is the session row's
-	if s.Title != "set up an Nginx reverse proxy" || s.Cwd != "/w/proj" || s.Model != "deepseek/deepseek-chat" || !s.Running || s.Path != path {
+	if s.Title != "set up an Nginx reverse proxy" || s.Cwd != "/w/proj" || s.Model != "deepseek-chat" || !s.Running || s.Path != path {
 		t.Errorf("cli session = %+v", s)
 	}
 	if s.StartedAt.UnixMilli() != 1789704223504 || s.UpdatedAt.UnixMilli() != 1789704227688 {
@@ -243,7 +244,7 @@ func TestCompressedEventsAndNestedTools(t *testing.T) {
 
 	s := sourcetest.One(t, Spec.Open(state))
 	sourcetest.NothingUnread(t, s)
-	if s.Session.Cwd != "/w/proj" || s.Session.Model != "deepseek/deepseek-v4-pro" || len(s.Turns) != 1 {
+	if s.Session.Cwd != "/w/proj" || s.Session.Model != "deepseek-v4-pro" || len(s.Turns) != 1 {
 		t.Fatalf("session = %+v, %d turns", s.Session, len(s.Turns))
 	}
 	turn := s.Turn(t, 1)
@@ -505,8 +506,12 @@ func TestTimesNoRunCouldSpan(t *testing.T) {
 	}
 }
 
-// An exec that yields to the background answers that it runs on: it has not ended, so it
-// has no status, and nothing reading the record takes it for one that succeeded.
+// A call that has not ended when its result is written says so in the result's status:
+// "running" for a command given background or past its yield window (as a real one wrote
+// it, in testdata), "waiting" for a Code Mode program suspended with tools still out, and
+// "approval-pending" for a command whose approval is followed up later. It has no status,
+// and nothing reading the record takes it for one that succeeded. Every other status is
+// of a call that ended: "yielded" is sessions_yield having handed the turn back.
 func TestAnExecStillRunningHasNoStatus(t *testing.T) {
 	state := t.TempDir()
 	nested := func(seq int, id, details string) string {
@@ -516,13 +521,39 @@ func TestAnExecStillRunningHasNoStatus(t *testing.T) {
 	agent(t, state, "main", schema,
 		`INSERT INTO session_windows VALUES ('ses_r', 'agent:main:main', 'done', 1789704223504, 1789704262019, 1789704262019, 1789704262019, 'deepseek', 'deepseek-chat', '')`,
 		`INSERT INTO transcript_events VALUES ('ses_r', 1, '{"type":"message","message":{"role":"user","content":"test it"}}', 0)`,
-		nested(2, "n1", `{"status":"running"}`),
+		nested(2, "n1", `{"status":"running","sessionId":"briny-atlas","pid":2470537}`),
 		nested(3, "n2", `{"status":"completed","exitCode":0}`),
 		nested(4, "n3", `{"status":"approval-pending","approvalId":"a1"}`), // not run yet: waiting to be allowed
+		nested(5, "n4", `{"status":"waiting","runId":"r1","reason":"pending_tools"}`),
+		`INSERT INTO transcript_events VALUES ('ses_r', 6, '{"type":"message","message":{"role":"toolResult","toolCallId":"y1","toolName":"sessions_yield","content":[{"type":"text","text":"{\"status\":\"yielded\"}"}],"details":{"status":"yielded"},"isError":false}}', 0)`,
 	)
 	s := sourcetest.One(t, Spec.Open(state))
-	tools := sourcetest.Tools(s.Turn(t, 1))
-	if len(tools) != 3 || tools[0].Status != "" || tools[1].Status != model.StatusOK || tools[2].Status != "" {
-		t.Errorf("statuses = %q", []string{tools[0].Status, tools[1].Status, tools[2].Status})
+	var got []string
+	for _, tool := range sourcetest.Tools(s.Turn(t, 1)) {
+		got = append(got, tool.Status)
+	}
+	if want := []string{"", model.StatusOK, "", "", model.StatusOK}; !slices.Equal(got, want) {
+		t.Errorf("statuses = %q, want %q", got, want)
+	}
+}
+
+// One row's figure of another type does not cost the agent's database; and a session whose
+// events cold storage took away says that they are missing, rather than reading as a
+// session that said nothing.
+func TestAFigureOfTheWrongTypeAndAColdArchive(t *testing.T) {
+	state := t.TempDir()
+	agent(t, state, "main", schema,
+		`INSERT INTO session_windows VALUES ('ses_odd', 'agent:main:main', 'done', 'soon', 1789704262019, 'later', 1789704262019, 'deepseek', 'deepseek-chat', '')`,
+		`INSERT INTO transcript_events VALUES ('ses_odd', 1, '{"type":"message","message":{"role":"user","content":"still listed"}}', 0)`,
+		`INSERT INTO session_windows VALUES ('ses_cold', 'agent:main:main', 'done', 1789704223504, 1789704262019, 1789704262019, 1789704262019, 'deepseek', 'deepseek-chat', '')`,
+		`CREATE TABLE session_transcript_cold_archives (session_id TEXT PRIMARY KEY, storage TEXT, event_count INTEGER, last_seq INTEGER)`,
+		`INSERT INTO session_transcript_cold_archives VALUES ('ses_cold', 'file', 40, 40)`,
+	)
+	all := sourcetest.All(t, Spec.Open(state))
+	if odd := sourcetest.ByID(t, all, "ses_odd"); odd.Turn(t, 1).Ask != "still listed" {
+		t.Errorf("a session whose start is a word = %+v", odd.Session)
+	}
+	if cold := sourcetest.ByID(t, all, "ses_cold"); cold.Unread["events:cold-archived"] != 1 {
+		t.Errorf("a session in cold storage: unread %v", cold.Unread)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"strings"
+	"unicode"
 
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/sources/kit"
@@ -60,6 +61,10 @@ type message struct {
 	// message of its own kind, what kind and the whole of what it records
 	CustomType string          `json:"customType"`
 	Details    json.RawMessage `json:"details"`
+	// OpenClaw: where a user message came from, where it says (see notTyped)
+	Provenance struct {
+		Kind string `json:"kind"`
+	} `json:"provenance"`
 
 	// Hermes: an assistant's reasoning and calls, and a tool's result
 	Reasoning string          `json:"reasoning"`
@@ -240,6 +245,7 @@ func (r *Reader) typed(x *row) (transcript.Message, bool) {
 	switch msg.Role {
 	case "user":
 		m.Role = transcript.User
+		m.Injected = notTyped(msg.Provenance.Kind)
 		m.Blocks = wordBlocks(msg.Content, r.note)
 		return m, len(m.Blocks) > 0
 	case "assistant":
@@ -257,7 +263,7 @@ func (r *Reader) typed(x *row) (transcript.Message, bool) {
 		if !u.IsZero() {
 			m.Usage = &u
 		}
-		m.Blocks = assistantBlocks(msg.Content, r.note)
+		m.Blocks = withoutSilence(assistantBlocks(msg.Content, r.note))
 		// How a response ended, where that is something that happened rather than
 		// something said: stopped by the person, or failed at the provider — a 429, a
 		// dropped connection — with errorMessage carrying the reason either way
@@ -296,6 +302,45 @@ func (r *Reader) typed(x *row) (transcript.Message, bool) {
 	m.Role = transcript.System
 	m.Blocks = wordBlocks(msg.Content, r.note)
 	return m, len(m.Blocks) > 0
+}
+
+// notTyped reports whether a user message's provenance says no person typed it. OpenClaw
+// marks what it puts in the user's seat itself as internal_system — the notice that a
+// command left running in the background has finished, the request to carry on after a
+// restart cut a turn short — and what another session sent as inter_session. A message
+// that says nothing of where it came from, or external_user, is a person's.
+func notTyped(kind string) bool {
+	return kind == "internal_system" || kind == "inter_session"
+}
+
+// silentReply is what an OpenClaw agent answers when it has nothing to tell anyone — most
+// often to the notice that a background command finished. OpenClaw delivers nothing in
+// its place.
+const silentReply = "NO_REPLY"
+
+// withoutSilence drops a text block that is the silent reply and nothing else: it is no
+// answer, and read as one it would stand as the turn's answer in place of the last thing
+// the agent did say. The response it came in is still a response, and keeps what it cost.
+// OpenClaw takes the token in any case, repeated, and with punctuation at its edges.
+func withoutSilence(blocks []transcript.Block) []transcript.Block {
+	out := blocks[:0]
+	for _, b := range blocks {
+		if b.Type == transcript.Text && isSilent(b.Text) {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+func isSilent(text string) bool {
+	words := strings.Fields(strings.TrimFunc(text, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsPunct(r) }))
+	for _, word := range words {
+		if !strings.EqualFold(word, silentReply) {
+			return false
+		}
+	}
+	return len(words) > 0
 }
 
 // nestedToolType marks the row OpenClaw writes for a tool run from inside another: its
@@ -365,14 +410,20 @@ func outcomeOf(failed bool, details map[string]any) transcript.Outcome {
 		o.DurMs = int64(ms)
 	}
 	o.Status = transcript.StatusOf(failed)
-	switch status := strings.ToLower(kit.Str(details["status"])); {
-	case failed:
-	case status == "running", status == "started", status == "backgrounded", status == "background", status == "yielded",
-		strings.HasSuffix(status, "pending"): // approval-pending: it has not run yet
+	if !failed && unended[strings.ToLower(kit.Str(details["status"]))] {
 		o.Status = "" // it runs on, or has yet to: how it ends is not recorded, and is no success
 	}
 	return o
 }
+
+// unended are the statuses OpenClaw gives a call that has not finished when its result is
+// written. A command given background, or one that outlasts its yield window, answers
+// "running" with the session to poll it by; a Code Mode program that suspends with tools
+// still out answers "waiting" with the run to resume; a command whose approval is followed
+// up later answers "approval-pending", and has not run. Every other status a result
+// carries is of something that ended — "yielded" is sessions_yield handing the turn back,
+// which it has done — and one that failed is flagged isError beside it.
+var unended = map[string]bool{"running": true, "waiting": true, "approval-pending": true}
 
 // maxDurMs is a hundred and fifteen days: longer than any call runs.
 const maxDurMs = 1e10

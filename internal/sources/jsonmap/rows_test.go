@@ -43,3 +43,14 @@ func TestCost(t *testing.T) {
 		t.Errorf("Cost(NaN) = %v", got)
 	}
 }
+
+// The silent reply is the token alone, as OpenClaw takes it: in any case, repeated, with
+// punctuation at its edges. A reply that says it among other words said something.
+func TestIsSilent(t *testing.T) {
+	for text, want := range map[string]bool{"NO_REPLY": true, " no_reply.\n": true, "NO_REPLY NO_REPLY": true, "**NO_REPLY**": true,
+		"": false, "  ": false, "NO_REPLY, the build passed": false, "NO_REPLYING": false, "DONE": false} {
+		if got := isSilent(text); got != want {
+			t.Errorf("isSilent(%q) = %v, want %v", text, got, want)
+		}
+	}
+}

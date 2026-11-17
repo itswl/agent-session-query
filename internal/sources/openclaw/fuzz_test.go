@@ -42,6 +42,13 @@ func FuzzRead(f *testing.F) {
 			`{"type":"message","message":{"role":"assistant","timestamp":1789704230000,"content":[],"stopReason":"error","errorMessage":"429 rate limit exceeded"}}`,
 		},
 		{
+			// 2026.11.3, from testdata: a command given background, the notice OpenClaw put in
+			// the user's seat when it finished, and the agent's silent reply to it
+			`{"type":"message","message":{"role":"toolResult","toolCallId":"c3","toolName":"exec","content":[{"type":"text","text":"Command still running"}],"details":{"status":"running","sessionId":"fresh-dune","pid":2506042},"isError":false}}`,
+			`{"type":"message","message":{"role":"user","content":"Exec completed (fresh-du, code 0) :: bg-finished","provenance":{"kind":"internal_system","sourceTool":"exec"}}}`,
+			`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"NO_REPLY"}],"stopReason":"stop","usage":{"input":11980,"output":86,"reasoningTokens":82}}}`,
+		},
+		{
 			// The older layout's shape: a result written as a block of the response
 			`{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"uptime"}},{"type":"toolResult","toolCallId":"c1","toolName":"bash","content":[{"type":"text","text":"up 3 days"}]},{"type":"text","text":"fine"}],"stopReason":"stop"}}`,
 		},

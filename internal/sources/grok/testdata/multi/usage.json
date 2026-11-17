@@ -1,0 +1,100 @@
+{
+  "sessionId": "01a1e7d7-4b75-78a3-a87a-5053c7846168",
+  "updatedAt": "2026-11-17T04:50:32.340160421+00:00",
+  "session": {
+    "inputTokens": 34106,
+    "outputTokens": 220,
+    "cachedReadTokens": 22592,
+    "cacheCreationTokens": 0,
+    "reasoningTokens": 206,
+    "totalTokens": 34326,
+    "modelCalls": 3,
+    "turnCount": 3,
+    "primaryModelId": "gemini-2.5-flash",
+    "modelUsage": {
+      "gemini-2.5-flash": {
+        "inputTokens": 34106,
+        "outputTokens": 220,
+        "cachedReadTokens": 22592,
+        "cacheCreationTokens": 0,
+        "reasoningTokens": 206,
+        "totalTokens": 34326,
+        "modelCalls": 3
+      }
+    }
+  },
+  "turns": [
+    {
+      "turnNumber": 1,
+      "endedAt": "2026-11-17T04:50:14.363072955+00:00",
+      "inputTokens": 11313,
+      "outputTokens": 40,
+      "cachedReadTokens": 0,
+      "cacheCreationTokens": 0,
+      "reasoningTokens": 37,
+      "totalTokens": 11353,
+      "modelCalls": 1,
+      "turnCount": 1,
+      "primaryModelId": "gemini-2.5-flash",
+      "modelUsage": {
+        "gemini-2.5-flash": {
+          "inputTokens": 11313,
+          "outputTokens": 40,
+          "cachedReadTokens": 0,
+          "cacheCreationTokens": 0,
+          "reasoningTokens": 37,
+          "totalTokens": 11353,
+          "modelCalls": 1
+        }
+      }
+    },
+    {
+      "turnNumber": 2,
+      "endedAt": "2026-11-17T04:50:26.394290903+00:00",
+      "inputTokens": 11374,
+      "outputTokens": 31,
+      "cachedReadTokens": 11264,
+      "cacheCreationTokens": 0,
+      "reasoningTokens": 26,
+      "totalTokens": 11405,
+      "modelCalls": 1,
+      "turnCount": 1,
+      "primaryModelId": "gemini-2.5-flash",
+      "modelUsage": {
+        "gemini-2.5-flash": {
+          "inputTokens": 11374,
+          "outputTokens": 31,
+          "cachedReadTokens": 11264,
+          "cacheCreationTokens": 0,
+          "reasoningTokens": 26,
+          "totalTokens": 11405,
+          "modelCalls": 1
+        }
+      }
+    },
+    {
+      "turnNumber": 3,
+      "endedAt": "2026-11-17T04:50:32.340160421+00:00",
+      "inputTokens": 11419,
+      "outputTokens": 149,
+      "cachedReadTokens": 11328,
+      "cacheCreationTokens": 0,
+      "reasoningTokens": 143,
+      "totalTokens": 11568,
+      "modelCalls": 1,
+      "turnCount": 1,
+      "primaryModelId": "gemini-2.5-flash",
+      "modelUsage": {
+        "gemini-2.5-flash": {
+          "inputTokens": 11419,
+          "outputTokens": 149,
+          "cachedReadTokens": 11328,
+          "cacheCreationTokens": 0,
+          "reasoningTokens": 143,
+          "totalTokens": 11568,
+          "modelCalls": 1
+        }
+      }
+    }
+  ]
+}

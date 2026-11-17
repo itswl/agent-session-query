@@ -1,0 +1,19 @@
+{
+  "info": {
+    "id": "01a1e7d8-96d0-7723-9d06-b710c3814afc",
+    "cwd": "/home/user/work/live"
+  },
+  "session_summary": "Run the shell command: sleep 20 && echo finished .",
+  "created_at": "2026-11-17T04:51:33.728658258Z",
+  "updated_at": "2026-11-17T04:51:39.931171603Z",
+  "num_messages": 5,
+  "num_chat_messages": 6,
+  "current_model_id": "gemini-2.5-flash",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "last_active_at": "2026-11-17T04:51:39.931171603Z",
+  "generated_title": "Run the shell command: sleep 20 && echo finished .",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off"
+}

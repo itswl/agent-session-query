@@ -21,6 +21,16 @@ func FuzzRead(f *testing.F) {
 	f.Add(summary, readFile(f, filepath.Join(dir, updatesFile)), false, []byte(nil))
 	f.Add(summary, jsonl(f, chatHistory...), true, []byte(sessionUsage))
 
+	// What Grok 1.0.77 wrote: commands that exited 0 and 2, writes and edits whose words
+	// are in rawOutput, a search's matches as bytes, a plan-mode turn, and a session read
+	// by its whole-message log
+	for _, name := range []string{"shell", "files", "search", "plan"} {
+		dir := filepath.Join("testdata", name)
+		f.Add(readFile(f, filepath.Join(dir, summaryFile)), readFile(f, filepath.Join(dir, updatesFile)), false, []byte(nil))
+	}
+	f.Add(readFile(f, filepath.Join("testdata", "shell-history", summaryFile)), readFile(f, filepath.Join("testdata", "shell-history", historyFile)),
+		true, readFile(f, filepath.Join("testdata", "shell-history", usageFile)))
+
 	// Turns that close on a tool's result, on words and on nothing, and a call named by
 	// its title alone
 	f.Add([]byte(`{"info":{"id":"sid-turns","cwd":"/w"},"current_model_id":"grok-4.6"}`), jsonl(f,
@@ -67,10 +77,12 @@ func FuzzRead(f *testing.F) {
 	// A log with a second prompt, calls with arguments that are not JSON, and reasoning
 	// with nothing after it yet
 	f.Add([]byte(`{"info":{"id":"sid-live","cwd":"/w"}}`), jsonl(f,
-		`{"type":"user","content":"list the files"}`,
+		`{"type":"user","content":"list the files","prompt_index":0}`,
+		`{"type":"user","content":"<user_info>\nOS Version: linux\n</user_info>"}`,
 		`{"type":"assistant","content":"one file.","model_id":"gemini-3.8-flash"}`,
 		`{"type":"user","content":[{"type":"text","text":"<user_query>\ndeploy the gateway`+harness+`\n</user_query>"}]}`,
 		`{"type":"assistant","content":"On it.","tool_calls":[{"id":"c1","name":"run_terminal_command","arguments":"not json"}],"model_id":"grok-4.6"}`,
+		`{"type":"tool_result","tool_call_id":"c1","content":"exit: 2\nno such file"}`,
 		`{"type":"handoff","content":"carry on"}`,
 		`{"type":"reasoning","summary":[{"type":"summary_text","text":"Waiting on the deploy."}]}`,
 	), true, []byte(`{"session":{"inputTokens":5,"outputTokens":"many"}}`))

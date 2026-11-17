@@ -14,12 +14,17 @@
 // Client Protocol stream, and _x.ai/session/update is Grok's own — hook runs, and the
 // turn_completed row that says what a turn cost.
 //
-// When the stream is written has changed. An earlier Grok was measured writing it while a
-// turn ran: sampled every 8 seconds through a multi-tool turn, its modification time
-// advanced five times, each time together with summary.json's. Grok 1.0.52 flushes it
-// when the session ends, and until then keeps chat_history.jsonl — one whole message per
-// line — and usage.json. A session with no stream yet is read from those two, and says it
-// is running.
+// When the stream is written has changed, twice. An earlier Grok was measured writing it
+// while a turn ran: sampled every 8 seconds through a multi-tool turn, its modification
+// time advanced five times, each time together with summary.json's. Grok 1.0.52 flushed it
+// when the session ended, and until then kept chat_history.jsonl — one whole message per
+// line — and usage.json. Grok 1.0.77 writes it as the turn runs again: a session read
+// mid-turn had its prompt, reasoning and open call in the stream, and no usage.json until
+// the turn completed. A session with no stream yet is read from the other two, and says
+// it is running. One with a stream does not: a turn Grok was killed in (SIGKILL) reads the
+// same as one it is still at work on, so the files do not say which. One it was stopped in
+// with Ctrl+C does differ — a stop hook's row ends the stream, and resume_status.json
+// lists what was left — but is not read as running either.
 package grok
 
 import (
@@ -30,6 +35,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,7 +60,7 @@ var Spec = sources.Spec{
 	Open:    func(location string) sources.Source { return &Source{root: location} },
 	Movable: true,
 	Resume:  "grok -r",
-	Reads:   1,
+	Reads:   2,
 	Store:   "~/.grok/sessions/<url-encoded-cwd>/<session-id>/updates.jsonl",
 }
 
@@ -255,24 +262,31 @@ func storedTitle(candidates ...string) string {
 //
 // Grok streams a turn as many small updates: text arrives in chunks, and a tool call
 // opens on one line and completes on a later one. One message per update would turn a
-// single reply into dozens of one-word rows, so consecutive pieces from one speaker become
-// one message, and consecutive text chunks inside it one block. A message is handed over
-// when the speaker changes, when the turn completes, or when the transcript ends.
+// single reply into dozens of one-word rows, so consecutive text chunks of one kind
+// become one block, and consecutive pieces from one speaker one response. A message is
+// handed over when the speaker changes, when the turn completes, or when the transcript
+// ends.
 //
 // The speakers are three: the user, the agent, and the tool whose result a finished call
-// reports. The tool being one is what keeps a turn's times — a result is filed at the
-// second it arrived, not at the second the agent began — and it makes a message of each
-// stretch the agent spoke between results, which is as near as the stream comes to one
-// per response: in the turn measured, Grok's own modelCalls of 2 is the number of
-// messages this makes of it.
+// reports. The tool being one is what keeps a turn's times — a result is filed when it
+// arrived, not when the agent began — and it makes a response of each stretch the agent
+// spoke between results, which is as near as the stream comes to one per model call: in
+// the turns measured, Grok's own modelCalls is the number of responses this makes of
+// them.
+//
+// A block that begins later than the message it would join is a message of its own, in
+// the same response: each piece keeps its own time. A call is made when its line says,
+// not when the reasoning before it began — which could be most of a minute earlier — and
+// of two calls made together and finishing apart, the slower ends when it ended.
 type folder struct {
-	w     *transcript.Writer
-	model string             // the model that answers, as far as the transcript has said
-	msg   transcript.Message // the message being built; it exists once it has a block
-	tail  strings.Builder    // the text of its last block, while chunks still add to it
+	w         *transcript.Writer
+	model     string             // the model that answers, as far as the transcript has said
+	msg       transcript.Message // the message being built; it exists once it has a block
+	tail      strings.Builder    // the text of its last block, while chunks still add to it
+	responses int                // the agent's responses so far, which name each one
 }
 
-// speak makes role the speaker: whoever spoke before has finished a message.
+// speak makes role the speaker: whoever spoke before has finished.
 func (f *folder) speak(role transcript.Role, at time.Time) {
 	if len(f.msg.Blocks) > 0 && f.msg.Role == role {
 		return
@@ -280,15 +294,15 @@ func (f *folder) speak(role transcript.Role, at time.Time) {
 	f.flush()
 	f.msg = transcript.Message{Role: role, At: at}
 	if role == transcript.Assistant {
-		f.msg.Model = f.model
+		f.responses++
+		f.msg.Model, f.msg.Response = f.model, "response-"+strconv.Itoa(f.responses)
 	}
 }
 
 // add appends a whole block to role's message.
 func (f *folder) add(role transcript.Role, at time.Time, b transcript.Block) {
 	f.speak(role, at)
-	f.seal()
-	f.msg.Blocks = append(f.msg.Blocks, b)
+	f.open(at, b)
 }
 
 // chunk appends streamed text, joining it to a block of the same kind it follows: a
@@ -299,10 +313,21 @@ func (f *folder) chunk(role transcript.Role, at time.Time, kind transcript.Block
 	}
 	f.speak(role, at)
 	if n := len(f.msg.Blocks); n == 0 || f.tail.Len() == 0 || f.msg.Blocks[n-1].Type != kind {
-		f.seal()
-		f.msg.Blocks = append(f.msg.Blocks, transcript.Block{Type: kind})
+		f.open(at, transcript.Block{Type: kind})
 	}
 	f.tail.WriteString(text)
+}
+
+// open begins a block in the speaker's message, or in a message of its own beside it
+// when it begins later than the message did.
+func (f *folder) open(at time.Time, b transcript.Block) {
+	f.seal()
+	if len(f.msg.Blocks) > 0 && !at.Equal(f.msg.At) {
+		next := transcript.Message{Role: f.msg.Role, At: at, Model: f.msg.Model, Response: f.msg.Response}
+		f.w.Add(f.msg)
+		f.msg = next
+	}
+	f.msg.Blocks = append(f.msg.Blocks, b)
 }
 
 // seal closes the block chunks were adding to. Its text is gathered once, here: a long
@@ -347,11 +372,30 @@ type line struct {
 	Method    string `json:"method"`
 	Params    struct {
 		Update update `json:"update"`
+		Meta   struct {
+			At any `json:"agentTimestampMs"`
+		} `json:"_meta"`
 	} `json:"params"`
 }
 
-// update is a session update, reduced to the parts a transcript needs. What is left out
-// is mostly rawOutput: a tool's own struct, whose shape differs per tool.
+// at is when the line's update happened.
+//
+// The timestamp is when the line was written, in whole seconds, and Grok 1.0.77 writes
+// some lines well after what they record: an edit that completed 56 ms after it was
+// called was stamped four seconds on, and a call re-titled as it began was stamped eight
+// seconds on, when the session was interrupted and its stream flushed. The milliseconds
+// Grok's agent stamped the update with are when it happened, and agree with
+// events.jsonl's to the millisecond; a Grok that writes none is read by the timestamp.
+func (l *line) at() time.Time {
+	if at := kit.Time(l.Params.Meta.At); !at.IsZero() {
+		return at
+	}
+	return kit.Time(l.Timestamp)
+}
+
+// update is a session update, reduced to the parts a transcript needs. rawOutput, a
+// tool's own struct whose shape differs per tool, is kept whole for the few fields a
+// finished call is read by.
 type update struct {
 	Kind       string          `json:"sessionUpdate"`
 	Content    any             `json:"content"` // a chunk's block, or a finished call's list of them
@@ -359,6 +403,7 @@ type update struct {
 	Title      string          `json:"title"`
 	Status     string          `json:"status"`
 	RawInput   json.RawMessage `json:"rawInput"`
+	RawOutput  json.RawMessage `json:"rawOutput"`
 	Meta       struct {
 		ModelID string `json:"modelId"`
 		Tool    struct {
@@ -390,7 +435,7 @@ func readUpdates(ctx context.Context, path string, f *folder) error {
 		if !decode(raw, &l) {
 			return true
 		}
-		u, at := &l.Params.Update, kit.Time(l.Timestamp)
+		u, at := &l.Params.Update, l.at()
 		switch {
 		case u.Kind == "turn_completed":
 			f.complete(at, usageOf(u.Usage), u.StopReason)
@@ -402,6 +447,9 @@ func readUpdates(ctx context.Context, path string, f *folder) error {
 			case u.Kind == "hook_execution":
 				// A hook Grok ran at a point of the session, and what it returned: Grok's
 				// own plumbing, not conversation
+			case u.Kind == "background_tasks":
+				// The commands and agents still running in the background, listed as a
+				// resumed session's next prompt begins: a status, not something said
 			case aside(u.Kind):
 				// One of the protocol's updates that say nothing of the conversation, which
 				// is no more conversation for being written under Grok's own method
@@ -433,12 +481,17 @@ func (f *folder) update(u *update, at time.Time) {
 	case "tool_call":
 		f.add(transcript.Assistant, at, transcript.CallOf(u.ToolCallID, toolName(u), u.RawInput))
 	case "tool_call_update":
-		// Only a finished call carries output, and which of the two ways it finished is
-		// the one thing Grok records about how it went.
+		// Only a finished call carries output. How it went is which of the two ways it
+		// finished, and for a command its exit code too: Grok marks a command that ran
+		// and exited non-zero completed, as it does one that succeeded — the call worked,
+		// the command did not — and its own events.jsonl counts that call's outcome an
+		// error.
 		switch u.Status {
 		case "completed", "failed":
-			outcome := transcript.Outcome{Status: transcript.StatusOf(u.Status == "failed")}
-			f.add(transcript.ToolRole, at, transcript.ResultOf(u.ToolCallID, "", resultText(u.Content), outcome))
+			exit := exitCode(u.RawOutput)
+			failed := u.Status == "failed" || (exit != nil && *exit != 0)
+			outcome := transcript.Outcome{Status: transcript.StatusOf(failed), Exit: exit}
+			f.add(transcript.ToolRole, at, transcript.ResultOf(u.ToolCallID, "", output(u), outcome))
 		case "", "pending", "in_progress":
 			// An update with no status is the call being re-titled while it runs, and one
 			// that has not finished has nothing to show yet
@@ -456,9 +509,9 @@ func (f *folder) update(u *update, at time.Time) {
 // nothing of the conversation, each of which is passed over on purpose.
 //
 // They are passed over under either method. The protocol sends them as session/update,
-// but this adapter was first written taking Grok to put plan and mode changes among its
-// own events, and which of the two it uses has not been checked against a session. A
-// kind known under one method is no news under the other.
+// and Grok 1.0.77 was seen to write a plan and a mode change there; this adapter was
+// first written taking Grok to put them among its own events, and a kind known under one
+// method is no news under the other.
 func aside(kind string) bool {
 	switch kind {
 	case "plan":
@@ -518,13 +571,125 @@ func resultText(content any) string {
 	return strings.Join(texts, "\n")
 }
 
+// output is a finished call's output: what the tool gave the model, as near as the
+// stream keeps it. The content array is that for most tools; a search's content is a
+// count, and a file written or edited, a listing or a todo list has none to show.
+func output(u *update) string {
+	if s := matches(u.RawOutput); s != "" {
+		return s
+	}
+	if s := resultText(u.Content); strings.TrimSpace(s) != "" {
+		return s
+	}
+	return toldModel(u.RawOutput)
+}
+
+// matches is what a search gave the model. Grok's grep shows a count for content —
+// "found 1 matches" — and keeps the matching lines, as the model read them, in rawOutput's
+// stdout: the bytes, written as a list of numbers.
+func matches(raw json.RawMessage) string {
+	var v struct {
+		Type   string `json:"type"`
+		Stdout []int  `json:"stdout"`
+	}
+	if len(raw) == 0 || !decode(raw, &v) || v.Type != "GrepSearch" {
+		return ""
+	}
+	b := make([]byte, len(v.Stdout))
+	for i, n := range v.Stdout {
+		if n < 0 || n > 255 {
+			return ""
+		}
+		b[i] = byte(n)
+	}
+	return strings.ToValidUTF8(string(b), "\uFFFD")
+}
+
+// exitCode is the exit code a finished command's rawOutput carries, if it carries one.
+//
+// Only a command's: Grok's grep keeps the exit code of the search it ran too, and a search
+// exits 1 when it matched nothing, which is an answer and not a failure.
+func exitCode(raw json.RawMessage) *int {
+	var v struct {
+		Type     string `json:"type"`
+		ExitCode *int   `json:"exit_code"`
+	}
+	if len(raw) == 0 || !decode(raw, &v) || v.Type != "Bash" {
+		return nil
+	}
+	return v.ExitCode
+}
+
+// toldModel is the words a finished call's rawOutput says the tool gave the model, for the
+// calls whose content has none to show.
+//
+// Grok 1.0.77 gives a file written or edited a diff for content, and a directory listed or
+// a todo list updated no content at all. What the model was told — the session's
+// chat_history.jsonl has the same words — sits in rawOutput, under a name that differs
+// per tool, one level down beneath the name of how the call went:
+// {"type":"SearchReplace","EditsApplied":{"tool_output_for_prompt":"The file … has been
+// updated successfully.",…}}, {"type":"ListDir","Content":{"content":"- /w/\n"}},
+// {"type":"Todo","TodosUpdated":{"summary_for_prompt":"- [pending] 1: …"}}.
+func toldModel(raw json.RawMessage) string {
+	var fields map[string]json.RawMessage
+	if len(raw) == 0 || !decode(raw, &fields) {
+		return ""
+	}
+	if s := said(raw); s != "" {
+		return s
+	}
+	// A map keeps no order: the names are sorted, so that a struct with two such objects
+	// gives the same words every read
+	names := make([]string, 0, len(fields))
+	for name, v := range fields {
+		if len(v) > 0 && v[0] == '{' {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		if s := said(fields[name]); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// said is the words one object of a rawOutput gave the model, under the names Grok's
+// tools put them.
+func said(raw json.RawMessage) string {
+	var v struct {
+		ToolOutput string `json:"tool_output_for_prompt"`
+		Summary    string `json:"summary_for_prompt"`
+		Content    string `json:"content"`
+	}
+	if !decode(raw, &v) {
+		return ""
+	}
+	for _, s := range []string{v.ToolOutput, v.Summary, v.Content} {
+		if strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
+}
+
 // usageOf converts Grok's counters — a turn's in turn_completed, the session's in
-// usage.json, under the same names — to the canonical ones. They need no arithmetic:
-// inputTokens leaves the cache out and outputTokens has the reasoning in it. The turn
-// measured says both, its totalTokens of 31344 being exactly 15667 in + 53 out + 15624
-// read from cache, with its 10 reasoning tokens added nowhere. cachedReadTokens is Grok's
-// spelling; no counter for cache writes has been seen, and the names read beside Grok's
-// are the ones the same shape goes by elsewhere.
+// usage.json, under the same names — to the canonical ones: input without the cache,
+// output with the reasoning.
+//
+// Whether Grok's inputTokens holds the cache has changed, and its totalTokens says which.
+// A Grok 1.0.41 turn had 31344 total, exactly 15667 in + 53 out + 15624 read from cache:
+// the input left the cache out. Grok 1.0.77 counts the whole prompt — a resumed turn's
+// 11374 in, of which 11264 were read from cache, with 11405 total, in + out — so a
+// reader that added the cache to it counted every cached token twice. What the counters
+// add up to past the total is what the input already holds, and is taken out of it.
+// Without a total, or with one that no part of the cache explains, the input is read as
+// it stands. Under either, the reasoning is part of the output and added to nothing.
+//
+// cachedReadTokens is Grok's spelling, and cacheCreationTokens its name for writing the
+// cache, which has been seen only at zero; the names read beside Grok's are the ones the
+// same shape goes by elsewhere.
 //
 // A counter is read by the one rule for what a count is (kit.Count): one below zero or
 // past model.MaxTokens is a number gone wrong, and reads as no counter at all.
@@ -541,8 +706,14 @@ func usageOf(raw map[string]any) *model.Usage {
 		Input:      count("inputTokens"),
 		Output:     count("outputTokens"),
 		CacheRead:  count("cachedReadTokens", "cacheReadTokens"),
-		CacheWrite: count("cacheWriteTokens"),
+		CacheWrite: count("cacheCreationTokens", "cacheWriteTokens"),
 		Reasoning:  count("reasoningTokens"),
+	}
+	if total := count("totalTokens"); total > 0 {
+		cache := u.CacheRead + u.CacheWrite
+		if twice := u.Input + u.Output + cache - total; twice > 0 && twice <= cache && twice <= u.Input {
+			u.Input -= twice
+		}
 	}
 	if u.IsZero() {
 		return nil
@@ -562,8 +733,9 @@ type historyLine struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
 	} `json:"tool_calls"`
-	ToolCallID string `json:"tool_call_id"`
-	ModelID    string `json:"model_id"`
+	ToolCallID  string `json:"tool_call_id"`
+	ModelID     string `json:"model_id"`
+	PromptIndex *int   `json:"prompt_index"` // on a prompt the person sent, and on no other user line
 }
 
 // readHistory reads the whole-message log of a session still running, into the messages
@@ -587,7 +759,15 @@ func readHistory(ctx context.Context, path string, f *folder) error {
 		switch l.Type {
 		case "user":
 			f.flush() // a line is a whole message: a second prompt is a second one
-			if text := userQuery(kit.ContentText(l.Content)); strings.TrimSpace(text) != "" {
+			text := kit.ContentText(l.Content)
+			if l.PromptIndex == nil && !strings.Contains(text, "<user_query>") {
+				// Grok's own context in the user's seat: Grok 1.0.77 opens a session's log
+				// with the workspace and its rules, and a reminder of the workflows on offer,
+				// before the first prompt. Neither carries a prompt_index or a user_query,
+				// and the stream has neither: a session reads the same from either file.
+				return true
+			}
+			if text = userQuery(text); strings.TrimSpace(text) != "" {
 				f.add(transcript.User, none, transcript.TextOf(text))
 				f.flush()
 			}
@@ -617,8 +797,13 @@ func readHistory(ctx context.Context, path string, f *folder) error {
 			}
 			f.flush()
 		case "tool_result":
-			// The log names no status, so the result carries no outcome
-			f.add(transcript.ToolRole, none, transcript.ResultOf(l.ToolCallID, "", kit.ContentText(l.Content), transcript.Outcome{}))
+			// The log names no status. A command's result opens on its exit code, which is
+			// the outcome; any other result carries none
+			text, outcome := kit.ContentText(l.Content), transcript.Outcome{}
+			if exit, rest, ok := exitLine(text); ok {
+				text, outcome = rest, transcript.Outcome{Status: transcript.StatusOf(exit != 0), Exit: &exit}
+			}
+			f.add(transcript.ToolRole, none, transcript.ResultOf(l.ToolCallID, "", text, outcome))
 		case "system":
 			// Grok's own prompt, the log's first line: not conversation
 		default:
@@ -626,6 +811,22 @@ func readHistory(ctx context.Context, path string, f *folder) error {
 		}
 		return true
 	})
+}
+
+// exitLine splits a command's result as the log keeps it — "exit: 2\n" and then the
+// output, which is how Grok tells the model how a command ended — into the code and the
+// output alone, which is what the stream's content holds.
+func exitLine(text string) (code int, rest string, ok bool) {
+	first, rest, _ := strings.Cut(text, "\n")
+	digits, cut := strings.CutPrefix(first, "exit: ")
+	if !cut {
+		return 0, "", false
+	}
+	code, err := strconv.Atoi(digits)
+	if err != nil {
+		return 0, "", false
+	}
+	return code, rest, true
 }
 
 // arguments are a call's arguments as the log carries them: a JSON object inside a string.

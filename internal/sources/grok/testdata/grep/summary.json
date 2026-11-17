@@ -1,0 +1,19 @@
+{
+  "info": {
+    "id": "01a1e7ec-b1e4-73a2-903f-af4f41b7b91d",
+    "cwd": "/home/user/work/files"
+  },
+  "session_summary": "Use your grep tool (not the shell) to search this",
+  "created_at": "2026-11-17T05:13:31.376196477Z",
+  "updated_at": "2026-11-17T05:13:52.944761168Z",
+  "num_messages": 13,
+  "num_chat_messages": 9,
+  "current_model_id": "gemini-2.5-flash",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "last_active_at": "2026-11-17T05:13:52.944761168Z",
+  "generated_title": "Use your grep tool (not the shell) to search this",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off"
+}

@@ -1,0 +1,19 @@
+{
+  "info": {
+    "id": "01a1e7e1-9b44-7e70-9ea3-8515e04e39c5",
+    "cwd": "/home/user/work/files"
+  },
+  "session_summary": "Read notes.txt with your file-reading tool, then search this directory",
+  "created_at": "2026-11-17T05:01:24.688496269Z",
+  "updated_at": "2026-11-17T05:01:44.182644509Z",
+  "num_messages": 18,
+  "num_chat_messages": 10,
+  "current_model_id": "gemini-2.5-flash",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "last_active_at": "2026-11-17T05:01:44.182644509Z",
+  "generated_title": "Read notes.txt with your file-reading tool, then search this directory",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off"
+}

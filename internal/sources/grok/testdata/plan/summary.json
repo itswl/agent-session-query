@@ -1,0 +1,19 @@
+{
+  "info": {
+    "id": "01a1e7da-8139-7de2-bb3c-01ec61eee044",
+    "cwd": "/home/user/work/plan"
+  },
+  "session_summary": "First use your todo tool to record two items: write",
+  "created_at": "2026-11-17T04:53:39.265459116Z",
+  "updated_at": "2026-11-17T04:54:04.478581132Z",
+  "num_messages": 31,
+  "num_chat_messages": 16,
+  "current_model_id": "gemini-2.5-flash",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "last_active_at": "2026-11-17T04:54:04.478581132Z",
+  "generated_title": "First use your todo tool to record two items: write",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off"
+}

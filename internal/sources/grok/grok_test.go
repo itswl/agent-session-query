@@ -118,12 +118,13 @@ func TestSession(t *testing.T) {
 	}
 
 	// Epoch seconds, and each piece at its own: the ask when it was typed, the call when it
-	// was made, its result when it came back, the turn's end at the agent's last message
+	// was made, its result when it came back, the thought when it began, the turn's end at
+	// the agent's last words
 	if !turn.StartedAt.Equal(at(1790128656)) || !turn.Items[0].At.Equal(time.Date(2026, 9, 23, 1, 57, 36, 0, time.UTC)) {
 		t.Errorf("turn started %v, prompt at %v", turn.StartedAt, turn.Items[0].At)
 	}
-	if !turn.Items[1].At.Equal(at(1790128663)) || !tool.EndAt.Equal(at(1790128664)) || !turn.EndedAt.Equal(at(1790128665)) {
-		t.Errorf("call at %v, result at %v, turn ended %v", turn.Items[1].At, tool.EndAt, turn.EndedAt)
+	if !turn.Items[1].At.Equal(at(1790128663)) || !tool.EndAt.Equal(at(1790128664)) || !turn.Items[2].At.Equal(at(1790128665)) || !turn.EndedAt.Equal(at(1790128666)) {
+		t.Errorf("call at %v, result at %v, thought at %v, turn ended %v", turn.Items[1].At, tool.EndAt, turn.Items[2].At, turn.EndedAt)
 	}
 
 	// The turn's counters are on its last message from the agent and nowhere else. The
@@ -255,8 +256,9 @@ func TestRunningSessionReadsChatHistory(t *testing.T) {
 	if tool.Name != "run_terminal_command" || tool.CallID != "call_1" || tool.Command != "ls -la" || !strings.Contains(tool.Output, "note.txt") {
 		t.Errorf("tool = %+v", tool)
 	}
-	if !tool.Done || tool.Status != "" {
-		t.Errorf("status = %q: the log names none, and none is not success", tool.Status)
+	// The log names no status; a command's result opens on its exit code, which is one
+	if !tool.Done || tool.Status != model.StatusOK || tool.Exit == nil || *tool.Exit != 0 || tool.Output != "total 4\nnote.txt" {
+		t.Errorf("tool = %+v: the exit code is the outcome, and the rest the output", tool)
 	}
 	if !strings.Contains(turn.Answer, "note.txt") {
 		t.Errorf("answer = %q", turn.Answer)
@@ -298,7 +300,8 @@ func TestChatHistoryShapes(t *testing.T) {
 	dir := filepath.Join(root, "%2Fw", "sid-live")
 	sourcetest.Write(t, filepath.Join(dir, "summary.json"), `{"info":{"id":"sid-live","cwd":"/w"}}`)
 	sourcetest.Write(t, filepath.Join(dir, "chat_history.jsonl"),
-		`{"type":"user","content":"list the files"}`,
+		// A prompt sent as it was typed carries its prompt_index and no user_query
+		`{"type":"user","content":"list the files","prompt_index":0}`,
 		`{"type":"assistant","content":"one file.","model_id":"gemini-3.8-flash"}`,
 		`{"type":"user","content":[{"type":"text","text":"<user_query>\ndeploy the gateway`+harness+`\n</user_query>"}]}`,
 		`{"type":"assistant","content":"On it.","tool_calls":[{"id":"c1","name":"run_terminal_command","arguments":"not json"}],"model_id":"grok-4.6"}`,
@@ -440,9 +443,13 @@ func TestChunksFoldIntoBlocks(t *testing.T) {
 			t.Errorf("item %d = %.40q, want %.40q", i, turn.Items[i].Text, want)
 		}
 	}
-	// One speaker throughout — the call was never answered — so one message, one response
-	if len(turn.Calls) != 1 || turn.Answer != "It reads tokens.\n"+strings.TrimSpace(long.String()) || sourcetest.Tools(turn)[0].Done {
+	// One speaker throughout — the call was never answered — so one response, of pieces
+	// each at its own time; its answer is the words it ended on
+	if len(turn.Calls) != 1 || turn.Answer != strings.TrimSpace(long.String()) || sourcetest.Tools(turn)[0].Done {
 		t.Errorf("calls = %d, answer = %.40q", len(turn.Calls), turn.Answer)
+	}
+	if !turn.Items[3].At.Equal(at(1790000003)) || !turn.Items[4].At.Equal(at(1790000004)) || !turn.Calls[0].At.Equal(at(1790000001)) || !turn.Calls[0].EndAt.Equal(at(1790000005)) {
+		t.Errorf("thought at %v, call at %v, response %v … %v", turn.Items[3].At, turn.Items[4].At, turn.Calls[0].At, turn.Calls[0].EndAt)
 	}
 }
 

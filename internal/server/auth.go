@@ -30,6 +30,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -189,8 +190,21 @@ func (s *Server) cookieSecret() ([]byte, bool) {
 // back when the server starts. Without them a restart made every caller a newcomer, and
 // while someone kept a proxy's allowance spent, a remote agent that had asked a minute
 // before was shut out until they stopped.
+//
+// They are known by a token, and are not by the next: the file says which (For), and a
+// server with another token starts with nobody known — as a sign-in, a caller that held
+// the old token is a stranger once it changes.
 type keptKnown struct {
+	For   string               `json:"for"`
 	Known map[string]time.Time `json:"known"`
+}
+
+// knownMark names the token the callers are known by: derived from the key cookies are
+// signed with, which is the token's and the secret's, and telling nothing of either.
+func (s *Server) knownMark() string {
+	mac := hmac.New(sha256.New, s.key)
+	mac.Write([]byte("asq callers known v1"))
+	return hex.EncodeToString(mac.Sum(nil)[:16])
 }
 
 // loadKnown reads the callers known when the server last kept them: those still within
@@ -213,6 +227,9 @@ func (s *Server) loadKnown(now time.Time) {
 	if json.Unmarshal(raw, &kept) != nil {
 		return
 	}
+	if !hmac.Equal([]byte(kept.For), []byte(s.knownMark())) {
+		return // known by another token, or another secret: nobody is, until they show this one
+	}
 	s.attempts.mu.Lock()
 	defer s.attempts.mu.Unlock()
 	if s.attempts.hits == nil {
@@ -232,20 +249,22 @@ func (s *Server) keepKnown() {
 	if !s.keepsKnown {
 		return
 	}
+	// One writer at a time, from taking the set to putting it in place: two that took it
+	// in one order and wrote it in the other would leave the older set in the file
+	s.keepMu.Lock()
+	defer s.keepMu.Unlock()
 	s.attempts.mu.Lock()
 	if !s.attempts.noted {
 		s.attempts.mu.Unlock()
 		return
 	}
 	s.attempts.noted = false
-	kept := keptKnown{Known: maps.Clone(s.attempts.known)}
+	kept := keptKnown{For: s.knownMark(), Known: maps.Clone(s.attempts.known)}
 	s.attempts.mu.Unlock()
 	raw, err := json.Marshal(kept)
 	if err != nil {
 		return
 	}
-	s.keepMu.Lock()
-	defer s.keepMu.Unlock()
 	path := filepath.Join(s.opts.State, knownFile)
 	tmp, err := os.CreateTemp(s.opts.State, knownFile+".*")
 	if err != nil {

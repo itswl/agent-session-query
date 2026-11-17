@@ -932,6 +932,19 @@ func TestTheCallersKnownOutliveARestart(t *testing.T) {
 	if c := ask(s, "Bearer "+token, "203.0.113.101"); c != http.StatusTooManyRequests {
 		t.Errorf("a newcomer = %d", c)
 	}
+	mark := s.knownMark()
+
+	// The token changed: whoever knew the old one is a stranger to the new
+	other := opts
+	other.Token = token + "-the-next-one"
+	s, _, _ = build(t, other)
+	flood(s)
+	if c := ask(s, "Bearer "+other.Token, "203.0.113.100"); c != http.StatusTooManyRequests {
+		t.Errorf("a caller known by the token before = %d", c)
+	}
+	if s.knownMark() == mark {
+		t.Error("two tokens are known by one mark")
+	}
 
 	// A file others could read or write is not believed
 	if runtime.GOOS != "windows" {
@@ -946,7 +959,7 @@ func TestTheCallersKnownOutliveARestart(t *testing.T) {
 	}
 
 	// Nor is a caller known more than a day ago
-	old := `{"known":{"named 203.0.113.100 via local":"` + time.Now().Add(-knownFor-time.Minute).UTC().Format(time.RFC3339) + `"}}`
+	old := `{"for":"` + mark + `","known":{"named 203.0.113.100 via local":"` + time.Now().Add(-knownFor-time.Minute).UTC().Format(time.RFC3339) + `"}}`
 	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
 		t.Fatal(err)
 	}

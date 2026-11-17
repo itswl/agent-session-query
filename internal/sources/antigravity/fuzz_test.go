@@ -15,7 +15,9 @@ import (
 // fuzzSeeds are transcripts as agy writes them, taken from the tests: a turn with a step
 // rewritten and a tool step, a model step still generating, agy's own context in the
 // user's seat with lines that are not steps, fields of odd types, steps of types this
-// reader does not know or does not yet read, and counters that are not counts.
+// reader does not know or does not yet read, counters that are not counts, and agy 1.5.8's
+// tool calls with the steps that answer them — in order, failed, moved to the background,
+// left unanswered — beside what agy tells the model.
 var fuzzSeeds = [][]string{
 	{
 		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-12T10:00:00Z","content":"<USER_REQUEST>fix the build</USER_REQUEST><ADDITIONAL_METADATA>noise</ADDITIONAL_METADATA>"}`,
@@ -54,6 +56,17 @@ var fuzzSeeds = [][]string{
 		`{"step_index":0,"type":"USER_INPUT","content":"<USER_REQUEST>go</USER_REQUEST>"}`,
 		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","content":"one","input_tokens":9e18,"output_tokens":7}`,
 		`{"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","content":"two","input_tokens":-40,"output_tokens":1099511627777,"cache_write_tokens":1099511627776}`,
+	},
+	{
+		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-17T04:58:18Z","content":"<USER_REQUEST>\nread both\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-17T12:58:18+08:00.\n</ADDITIONAL_METADATA>"}`,
+		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-17T04:58:18Z","model":"MODEL_GOOGLE_GEMINI_INTERNAL_BYOM","input_tokens":8949,"cache_read_tokens":0,"output_tokens":84,"thinking":"Two reads at once.","tool_calls":[{"name":"read_file","args":{"Path":"/etc/hostname"}},{"name":"read_file","args":{"Path":"/nonexistent.txt"}},"odd",{"args":{}}]}`,
+		`{"step_index":2,"source":"MODEL","type":"GENERIC","status":"DONE","created_at":"2026-11-17T04:58:23Z","content":"Created At: 2026-11-17T12:58:23+08:00\nCompleted At: 2026-11-17T12:58:23+08:00\nCommand exited with code 2.\n\nCommand output:\nls: cannot access\r\n"}`,
+		`{"step_index":3,"source":"MODEL","type":"GENERIC","status":"ERROR","error":"file does not exist","created_at":"2026-11-17T04:58:23Z","content":"Created At: 2026-11-17T12:58:23+08:00\nCompleted At: 2026-11-17T12:58:23+08:00\n"}`,
+		`{"step_index":4,"source":"MODEL","type":"GENERIC","status":"RUNNING","created_at":"2026-11-17T04:58:24Z","content":"Created At: 2026-11-17T12:58:24+08:00\nTool is running as a background task with task id: c/task-4"}`,
+		`{"step_index":5,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","created_at":"2026-11-17T04:58:25Z","content":"The following is a <SYSTEM_MESSAGE> not actually sent by the user."}`,
+		`{"step_index":6,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-17T04:58:26Z","content":"done","tool_calls":[{"name":"run_command","args":{"CommandLine":"sleep 8"}}]}`,
+		`{"step_index":7,"source":"MODEL","type":"GENERIC","status":"DONE","created_at":"2026-11-17T04:58:27Z","content":"Command exited with code x."}`,
+		`{"step_index":8,"source":"MODEL","type":"GENERIC","status":"DONE","created_at":"2026-11-17T04:58:28Z","error":{"code":1}}`,
 	},
 }
 

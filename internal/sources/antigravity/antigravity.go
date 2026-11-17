@@ -11,6 +11,11 @@
 // truth, and the file is read into a map before it is walked. The index carries each
 // conversation's title, workspace and last-active time, which no transcript does.
 //
+// A model step (PLANNER_RESPONSE) carries the model's words, its thinking and the tools it
+// called, by name and arguments and without an id; each call's result is a step of its own
+// (GENERIC) that follows in the order of the calls. Steps of agy's own — what it tells the
+// model between the person's words (SYSTEM_MESSAGE) — sit among them.
+//
 // An API-key provider can run agy with a private --gemini_dir (cc-switch's profiles are the
 // common case); that directory has the same shape, and is what a --path points at.
 package antigravity
@@ -47,7 +52,7 @@ var Spec = sources.Spec{
 	Open:    func(location string) sources.Source { return open(location) },
 	Movable: true,
 	Resume:  "agy --conversation",
-	Reads:   1,
+	Reads:   2,
 	Store:   "~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl (agy; the IDE's is antigravity/brain)",
 }
 
@@ -266,12 +271,20 @@ type step struct {
 	CreatedAt any    `json:"created_at"`
 	Model     string `json:"model"`
 	Content   any    `json:"content"`
+	// A model step's reasoning and the tools it called; a tool step's error. Each is
+	// whatever it is, so an odd one costs itself and nothing else
+	Thinking  any `json:"thinking"`
+	ToolCalls any `json:"tool_calls"`
+	Error     any `json:"error"`
 
 	InputTokens      any `json:"input_tokens"`
 	OutputTokens     any `json:"output_tokens"`
 	CacheReadTokens  any `json:"cache_read_tokens"`
 	CacheWriteTokens any `json:"cache_write_tokens"`
 }
+
+// call is one tool call of a model step, waiting for the step that answers it.
+type call struct{ id, name string }
 
 // Read parses one conversation: the index's word on what it is called and where it was
 // held, then its steps in order.
@@ -318,9 +331,20 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	}
 	sort.Slice(indexes, func(i, j int) bool { return indexes[i] < indexes[j] })
 
+	// The calls of the latest model step that no step has answered yet, first first: agy
+	// gives a call no id, and answers a step's calls one step each, in the order they were
+	// made. The model speaks again only once they are all answered, so its next step's
+	// calls replace whatever is left — the calls of a turn that was stopped, which nothing
+	// will answer
+	var waiting []call
 	for _, index := range indexes {
 		st := byIndex[index]
-		m := transcript.Message{ID: strconv.FormatInt(index, 10), At: kit.Time(st.CreatedAt)}
+		num := strconv.FormatInt(index, 10)
+		// A step's index is its place in its own conversation and nowhere else: the id of
+		// a row is the conversation's and the step's, as agy names a task by the
+		// conversation and the task's number. Two conversations otherwise share every id,
+		// and each would read as a copy of the other
+		m := transcript.Message{ID: id + "/" + num, At: kit.Time(st.CreatedAt)}
 		text := kit.ContentText(st.Content)
 		switch st.Type {
 		case "USER_INPUT":
@@ -333,9 +357,47 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			m.Role = transcript.Assistant
 			m.Model = st.Model
 			m.Usage = st.usage()
-			if text != "" {
-				m.Blocks = []transcript.Block{transcript.TextOf(text)}
+			if thinking := kit.ContentText(st.Thinking); strings.TrimSpace(thinking) != "" {
+				m.Blocks = append(m.Blocks, transcript.ThinkingOf(thinking))
 			}
+			if text != "" {
+				m.Blocks = append(m.Blocks, transcript.TextOf(text))
+			}
+			waiting = waiting[:0]
+			list, _ := st.ToolCalls.([]any)
+			for i, item := range list {
+				c := call{id: num + "." + strconv.Itoa(i)}
+				// An entry is a call whatever it holds: the steps that answer the calls
+				// follow their order, and one passed over would hand each later result to
+				// the call before it
+				var input any = item
+				if obj, ok := item.(map[string]any); ok {
+					c.name, input = strings.TrimSpace(kit.Str(obj["name"])), obj["args"]
+				}
+				waiting = append(waiting, c)
+				m.Blocks = append(m.Blocks, transcript.CallOf(c.id, c.name, input))
+			}
+		case "GENERIC":
+			// What a tool returned, whichever tool it was: the step answers the first call
+			// still waiting. One with no call to answer stands as a result of its own,
+			// under an id of its own — without one it would answer whichever call was left
+			// open last, a call it has nothing to do with
+			c := call{id: num + ".result"}
+			if len(waiting) > 0 {
+				c, waiting = waiting[0], waiting[1:]
+			}
+			output, outcome := st.result(text)
+			m.Role = transcript.ToolRole
+			m.Blocks = []transcript.Block{transcript.ResultOf(c.id, c.name, output, outcome)}
+		case "SYSTEM_MESSAGE":
+			// What agy tells the model between the person's words — a background task that
+			// finished, the tasks a restart stopped — in the user's seat, introduced as not
+			// sent by the user. It is context, neither an ask nor a reply
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			m.Role = transcript.System
+			m.Blocks = []transcript.Block{transcript.TextOf(text)}
 		case "RUN_COMMAND", "COMMAND_STATUS", "SEND_COMMAND_INPUT", "READ_TERMINAL",
 			"VIEW_FILE", "VIEW_FILE_OUTLINE", "VIEW_CODE_ITEM", "VIEW_CONTENT_CHUNK",
 			"LIST_DIRECTORY", "FIND", "GREP_SEARCH", "CODE_ACTION",
@@ -352,10 +414,13 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			//
 			// Only RUN_COMMAND and CHECKPOINT are in the samples of agy's transcripts this
 			// reader was built from; the rest are the Cascade step types agy's names come from.
-			// An event is what each of these is, so a name agy never writes costs nothing.
-			// NOTIFY_USER, by its name agy's word to the person in task mode, and ERROR_MESSAGE,
-			// by its name a failure, are not among them: shown as an event, either would be
-			// misread, so each is counted below until what it holds has been seen
+			// agy 1.5.8 answering through its gemini provider writes none of them: its tools'
+			// steps are GENERIC. An event is what each of these is, so a name agy never writes
+			// costs nothing. NOTIFY_USER, by its name agy's word to the person in task mode, and
+			// ERROR_MESSAGE, by its name a failure, are not among them: shown as an event,
+			// either would be misread, so each is counted below until what it holds has been
+			// seen. agy 1.5.8 keeps a failed model call's error step only in its binary store
+			// and writes no line for it here
 			m.Role = transcript.System
 			m.Blocks = []transcript.Block{transcript.EventOf(st.Type, text)}
 		default:
@@ -370,6 +435,47 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		w.Add(m)
 	}
 	return nil
+}
+
+// result is what a tool's step says it returned, and how the call ended.
+//
+// agy heads the output with when the step was created and completed, the pair written
+// once or twice and only to the second. Both are stamped as the tool returns, so they
+// measure nothing: they are taken off, and the call keeps no duration. A command's output
+// then opens with "Command exited with code N.", the one place its exit code is written.
+//
+// DONE is a call that ended: in failure when its command's code is not 0. ERROR is one
+// that failed — a missing file, a permission refused — and says why in its content and in
+// an error field. A step still RUNNING at its latest line is a tool agy moved to the
+// background — a command that outlasted its wait, a timer — which answers the call with
+// where to find it: the call has returned but not ended, and is neither a success nor a
+// failure.
+func (st *step) result(content string) (string, transcript.Outcome) {
+	output := content
+	for {
+		line, rest, _ := strings.Cut(output, "\n")
+		if !strings.HasPrefix(line, "Created At: ") && !strings.HasPrefix(line, "Completed At: ") {
+			break
+		}
+		output = rest
+	}
+	if strings.TrimSpace(output) == "" {
+		output = kit.ContentText(st.Error)
+	}
+	var o transcript.Outcome
+	if rest, ok := strings.CutPrefix(output, "Command exited with code "); ok {
+		digits, _, _ := strings.Cut(rest, ".")
+		if code, err := strconv.Atoi(digits); err == nil {
+			o.Exit = transcript.ExitOf(code)
+		}
+	}
+	switch st.Status {
+	case "DONE":
+		o.Status = transcript.StatusOf(o.Exit != nil && *o.Exit != 0)
+	case "ERROR":
+		o.Status = model.StatusError
+	}
+	return output, o
 }
 
 // usage is a finished model step's counters in the canonical shape. agy records

@@ -156,4 +156,21 @@ func TestAResumeNeedsItsDirectoryWhereTheCLIDoes(t *testing.T) {
 	if got := app.Resume(&index.Session{Session: model.Session{Source: "codex", ID: "c-1"}}); got != "codex resume c-1" {
 		t.Errorf("a Codex session, which resumes from anywhere = %q", got)
 	}
+
+	// Why not, said as it is: the directory unknown is not a CLI without the command
+	for _, c := range []struct {
+		s    model.Session
+		says string
+	}{
+		{model.Session{Source: "gemini", ID: "g-1", Cwd: "qa"}, "Gemini CLI finds a session only from the directory it was worked in"},
+		{model.Session{Source: "gemini", ID: "session-2026-11-10T08-00-1a2b3c4d", Cwd: "/w/qa"}, "Gemini CLI reopens a session by the id it keeps in its file"},
+		{model.Session{Source: "dsh", ID: "d-1", Cwd: "/w"}, "has no command that reopens a session by its id"},
+		{model.Session{Source: "codex", ID: "c-1"}, ""},
+	} {
+		s := index.Session{Session: c.s}
+		why := app.NoResume(&s)
+		if c.says == "" && why != "" || !strings.Contains(why, c.says) || (why == "") != (app.Resume(&s) != "") {
+			t.Errorf("%s %s in %q: no resume because %q, resume %q; want it to say %q", c.s.Source, c.s.ID, c.s.Cwd, why, app.Resume(&s), c.says)
+		}
+	}
 }

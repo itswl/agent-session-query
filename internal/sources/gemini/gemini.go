@@ -52,8 +52,11 @@ var Spec = sources.Spec{
 	// project's directory as its own.
 	Resume:     "gemini --resume",
 	ResumeHere: true,
-	Reads:      2,
-	Store:      "~/.gemini/tmp/<project>/chats/session-*.jsonl",
+	// A file with no metadata line goes by its own name (session-<time>-<id>), which is
+	// not an id --resume takes
+	Resumable: func(id string) bool { return !strings.HasPrefix(id, "session-") },
+	Reads:     2,
+	Store:     "~/.gemini/tmp/<project>/chats/session-*.jsonl",
 }
 
 // Source is a Gemini CLI tmp directory.

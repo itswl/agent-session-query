@@ -75,6 +75,10 @@ type Spec struct {
 	// in, which a CLI that keeps sessions per project does: where that directory is not
 	// known, there is no command to give.
 	ResumeHere bool
+	// Resumable says whether the CLI knows a session by the id its adapter gave it; nil
+	// when it knows every one. An adapter that names a session after its file, for want
+	// of the id the CLI keeps in it, gives an id the command cannot take.
+	Resumable func(id string) bool
 	// Store is the layout in one line, for the documentation the program prints.
 	Store string
 	// Reads is the version of how the adapter reads its CLI's files. Raised whenever a

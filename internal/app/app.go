@@ -277,21 +277,38 @@ func When(s string, now time.Time) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unreadable time %q (want 7d, 12h, 2026-09-01 or 2026-09-01T08:00:00Z)", s)
 }
 
+// NoResume says why there is no command that reopens a session, or "" when there is one.
+func NoResume(s *index.Session) string {
+	spec, ok := catalog.Spec(s.Source)
+	title := s.Agent
+	if ok {
+		title = spec.Title
+	}
+	switch {
+	case s.Parent != nil:
+		return "it is a subagent's transcript: a CLI reopens the session it ran in"
+	case !ok || spec.Resume == "":
+		return title + " has no command that reopens a session by its id"
+	case s.ID == "" || spec.Resumable != nil && !spec.Resumable(s.ID):
+		return title + " reopens a session by the id it keeps in its file, and this session's file has none"
+	case spec.ResumeHere && !isAbsolute(s.Cwd):
+		return title + " finds a session only from the directory it was worked in, and this session does not say which that was"
+	}
+	return ""
+}
+
 // Resume is the command that reopens a session in the CLI that wrote it, with the cd it
-// needs, or "" when its CLI has no such command.
+// needs, or "" when there is none (NoResume says why).
 //
 // The session is found from anywhere — the CLIs resolve an id across working
 // directories. What the directory decides is where the resumed agent then works: it
 // inherits the one it is launched in, and anywhere but the session's own it carries on
 // about files its tools can no longer reach.
 func Resume(s *index.Session) string {
-	if s.Parent != nil || s.ID == "" {
-		return "" // a subagent is not a session a CLI reopens; its parent is
-	}
-	spec, ok := catalog.Spec(s.Source)
-	if !ok || spec.Resume == "" || spec.ResumeHere && !isAbsolute(s.Cwd) {
+	if NoResume(s) != "" {
 		return ""
 	}
+	spec, _ := catalog.Spec(s.Source)
 	cmd := spec.Resume + " " + ShellArg(s.ID) // a spec's words are plain: see ResumeArgs
 	if isAbsolute(s.Cwd) {
 		cd := "cd "

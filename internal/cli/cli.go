@@ -719,7 +719,7 @@ func cmdResume(ctx context.Context, args []string, io *streams) error {
 		if s.Parent != nil {
 			return fmt.Errorf("%s is a subagent's transcript: resume the session it ran in, %s", s.Ref, s.Root)
 		}
-		return fmt.Errorf("%s has no command that reopens a session by its id", s.Agent)
+		return fmt.Errorf("%s cannot be resumed: %s", s.Ref, app.NoResume(&s))
 	}
 	if !*run {
 		fmt.Fprintln(io.out, s.Resume)

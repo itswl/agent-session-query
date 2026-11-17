@@ -141,14 +141,22 @@ func TestASyncRecountsTheStores(t *testing.T) {
 }
 
 // many is a store of n sessions of one message each.
-type many struct{ n int }
+// many is a store of n sessions, all at one stamp: "1" unless told otherwise.
+type many struct {
+	n     int
+	stamp string
+}
 
 func (many) Location() string { return "test" }
 func (many) Exists() bool     { return true }
 func (m many) Scan(context.Context) ([]sources.Ref, error) {
 	refs := make([]sources.Ref, m.n)
 	for i := range refs {
-		refs[i] = sources.Ref{Key: fmt.Sprint(i), Stamp: "1", ModTime: time.Now()}
+		stamp := m.stamp
+		if stamp == "" {
+			stamp = "1"
+		}
+		refs[i] = sources.Ref{Key: fmt.Sprint(i), Stamp: stamp, ModTime: time.Now()}
 	}
 	return refs, nil
 }

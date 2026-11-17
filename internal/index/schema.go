@@ -15,10 +15,14 @@
 // last one learned.
 package index
 
-// schemaVersion names the index file. A different layout, or a different reading of the
-// transcripts, is a different file: two versions of the program running at once each
-// keep their own instead of rewriting one another's.
-const schemaVersion = 1
+// schemaVersion names the index file. A different layout, or an adapter that lists a
+// CLI's sessions differently — other keys for them — is a different file: two versions of
+// the program running at once each keep their own instead of rewriting one another's.
+// Each removes from the index what it does not list, and the other reads it in again.
+// The same sessions read differently are not a new file: see sources.Spec.Reads.
+//
+// 2: the reads column, and Gemini's subagents and Antigravity's conversations listed apart.
+const schemaVersion = 2
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (

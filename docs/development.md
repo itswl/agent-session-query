@@ -125,6 +125,11 @@ One package and one line.
    files have not moved. A session a newer reading made is left alone, so an older `asq` sharing
    the index does not undo it.
 
+   A change to *which* sessions the adapter lists — their keys: one file read as two sessions,
+   or two as one — is not a new reading but a new index file (`schemaVersion` in
+   `internal/index/schema.go`). Each `asq` removes from the index what it does not list, so two
+   that list differently and share a file would remove each other's sessions on every sync.
+
 3. **Add it to `catalog.All`.** The list, search, briefs, usage, failures, traces, the page and
    the MCP tools now cover it.
 

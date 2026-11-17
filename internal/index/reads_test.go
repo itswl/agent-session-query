@@ -15,12 +15,11 @@ import (
 // with an older reading is read again at the next sync, once. A session a newer reading
 // stored is left to it, so that two binaries sharing an index do not undo each other.
 func TestANewReadingIsReadAgain(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "index.db")
-	ix, err := Open(path)
+	ix, err := Open(filepath.Join(t.TempDir(), "index.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { ix.Close() }()
+	defer ix.Close()
 	ctx := context.Background()
 	sync := func(reads int) int {
 		t.Helper()
@@ -42,7 +41,7 @@ func TestANewReadingIsReadAgain(t *testing.T) {
 			}
 		}
 	}
-	steps("a new index", []step{
+	steps("an index", []step{
 		{0, 4, "the first read"},
 		{0, 0, "nothing moved"},
 		{1, 4, "the first counted reading: every session read again"},
@@ -53,33 +52,31 @@ func TestANewReadingIsReadAgain(t *testing.T) {
 		{2, 0, "and the newer one finds it as it left it"},
 	})
 
-	// An index from before readings were kept has none: it gains the column, every
-	// session at reading 0, and keeps its sessions
-	ix.Close()
-	{
-		raw, err := Open(path)
+	// The files move, and an older binary is the one to read them: what it stored is its
+	// reading, and the newer one reads them again, once
+	moved := func(reads int, stamp string) int {
+		t.Helper()
+		res, err := ix.Sync(ctx, []Store{{Name: "claude", Spec: sources.Spec{Name: "claude", Reads: reads}, Source: many{n: 4, stamp: stamp}}}, SyncOptions{Force: true})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := raw.rw.Exec(`ALTER TABLE sessions DROP COLUMN reads`); err != nil {
-			t.Fatal(err)
+		return res.Read
+	}
+	for _, step := range []struct {
+		reads int
+		stamp string
+		want  int
+		why   string
+	}{
+		{1, "2", 4, "an older binary reads what moved"},
+		{2, "2", 4, "and the newer one reads it again"},
+		{1, "2", 0, "once"},
+		{2, "2", 0, "and once"},
+	} {
+		if n := moved(step.reads, step.stamp); n != step.want {
+			t.Errorf("files moved, reading %d: %d read, want %d (%s)", step.reads, n, step.want, step.why)
 		}
-		raw.Close()
 	}
-	if ix, err = Open(path); err != nil {
-		t.Fatalf("an index without readings: %v", err)
-	}
-	var sessions, unread int
-	if err := ix.rw.QueryRow(`SELECT count(*), count(*) FILTER (WHERE reads = 0) FROM sessions`).Scan(&sessions, &unread); err != nil {
-		t.Fatal(err)
-	}
-	if sessions != 4 || unread != 4 {
-		t.Fatalf("after the column came: %d sessions, %d at reading 0; want 4 and 4", sessions, unread)
-	}
-	steps("an index from before readings", []step{
-		{2, 4, "read with no counted reading: every session again"},
-		{2, 0, "and once only"},
-	})
 }
 
 // gated is a store whose sessions in slow are not read until gate is closed.

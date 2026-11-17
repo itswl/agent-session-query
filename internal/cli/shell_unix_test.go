@@ -76,3 +76,66 @@ func TestResumeHandsTheProcessOver(t *testing.T) {
 		t.Errorf("the TERM did not reach the agent: %q", b)
 	}
 }
+
+// The agent's environment says where it is, as a shell's cd would have it: PWD the
+// session's directory, OLDPWD the one asq was started in — each once.
+func TestResumeSaysWhereTheAgentIs(t *testing.T) {
+	if dir := os.Getenv("ASQ_TEST_RESUME_ENV"); dir != "" {
+		err := resume(dir, []string{"env"}, "")
+		fmt.Fprintln(os.Stderr, "not handed over:", err)
+		os.Exit(3)
+	}
+	dir := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestResumeSaysWhereTheAgentIs$")
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(), "ASQ_TEST_RESUME_ENV="+dir, "PWD="+cmd.Dir, "OLDPWD=/elsewhere")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pwd, oldpwd []string
+	for _, kv := range strings.Split(string(out), "\n") {
+		if v, ok := strings.CutPrefix(kv, "PWD="); ok {
+			pwd = append(pwd, v)
+		}
+		if v, ok := strings.CutPrefix(kv, "OLDPWD="); ok {
+			oldpwd = append(oldpwd, v)
+		}
+	}
+	was, _ := filepath.EvalSymlinks(cmd.Dir)
+	if len(pwd) != 1 || pwd[0] != dir || len(oldpwd) != 1 {
+		t.Fatalf("PWD %q, OLDPWD %q: want PWD %q once, and OLDPWD once", pwd, oldpwd, dir)
+	}
+	if got, _ := filepath.EvalSymlinks(oldpwd[0]); got != was {
+		t.Errorf("OLDPWD %q, want %q", oldpwd[0], was)
+	}
+}
+
+// The agent is looked for as a shell would after its cd: from the session's directory,
+// relative entries of PATH included — a project's node_modules/.bin.
+func TestResumeFindsTheAgentFromTheSessionsDirectory(t *testing.T) {
+	if dir := os.Getenv("ASQ_TEST_RESUME_LOCAL"); dir != "" {
+		err := resume(dir, []string{"agent-here"}, "")
+		fmt.Fprintln(os.Stderr, "not handed over:", err)
+		os.Exit(3)
+	}
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "node_modules", ".bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "agent-here"), []byte("#!/bin/sh\necho found > said\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestResumeFindsTheAgentFromTheSessionsDirectory$")
+	cmd.Env = append(os.Environ(), "ASQ_TEST_RESUME_LOCAL="+dir, "PATH=node_modules/.bin:/usr/bin:/bin")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "said")); strings.TrimSpace(string(b)) != "found" {
+		t.Errorf("the agent in the session's node_modules/.bin was not run: %q", b)
+	}
+}

@@ -59,7 +59,9 @@ export async function api(path, { signal, method = 'GET', body, keep = false } =
     if (isAbort(e)) throw e;
     throw new ApiError(0, 'The server could not be reached. Is asq still running?');
   }
-  const text = await res.text().catch(() => '');
+  // A request given up while its body was on the way is given up, not an error: the
+  // view that gave it up has moved on, and must not be told it failed
+  const text = await res.text().catch((e) => { if (isAbort(e)) throw e; return ''; });
   let data = null;
   try { data = JSON.parse(text); } catch { /* not JSON: an error page from something in between */ }
   if (res.status === 401 && path !== '/api/login') {

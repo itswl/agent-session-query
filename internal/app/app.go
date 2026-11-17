@@ -273,7 +273,7 @@ func Resume(s *index.Session) string {
 		return "" // a subagent is not a session a CLI reopens; its parent is
 	}
 	spec, ok := catalog.Spec(s.Source)
-	if !ok || spec.Resume == "" {
+	if !ok || spec.Resume == "" || spec.ResumeHere && !isAbsolute(s.Cwd) {
 		return ""
 	}
 	cmd := spec.Resume + " " + ShellArg(s.ID) // a spec's words are plain: see ResumeArgs

@@ -72,6 +72,10 @@ type Spec struct {
 	// Resume is the command that reopens a session by id in its own CLI, the id appended;
 	// empty when the CLI has no such command.
 	Resume string
+	// ResumeHere says the command finds the session only from the directory it was worked
+	// in, which a CLI that keeps sessions per project does: where that directory is not
+	// known, there is no command to give.
+	ResumeHere bool
 	// Store is the layout in one line, for the documentation the program prints.
 	Store string
 	// Reads is the version of how the adapter reads its CLI's files. Raised whenever a

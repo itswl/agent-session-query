@@ -43,11 +43,12 @@ var Spec = sources.Spec{
 		}
 		return filepath.Join(env.Home, ".claude", "projects")
 	},
-	Open:    func(location string) sources.Source { return &Source{root: location} },
-	Movable: true,
-	Resume:  "claude --resume",
-	Reads:   1,
-	Store:   "~/.claude/projects/<project>/<session>.jsonl",
+	Open:       func(location string) sources.Source { return &Source{root: location} },
+	Movable:    true,
+	Resume:     "claude --resume",
+	ResumeHere: true,
+	Reads:      1,
+	Store:      "~/.claude/projects/<project>/<session>.jsonl",
 }
 
 // Source is a Claude Code projects directory.

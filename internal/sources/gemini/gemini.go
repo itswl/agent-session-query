@@ -1,15 +1,19 @@
 // Package gemini reads Gemini CLI's sessions.
 //
-//	<root>/<project>/chats/session-<time>-<id>.jsonl      one file of a conversation
+//	<root>/<project>/.project_root                         the directory the project is
+//	<root>/<project>/chats/session-<time>-<id>.jsonl       one file of a conversation
+//	<root>/<project>/chats/<session id>/<agent id>.jsonl   a subagent the session ran
 //
-// A file is an append log: a metadata first line (sessionId, startTime …), message rows
-// (type "user" and "gemini"; the others are bookkeeping), {"$set": …} patch rows, which
-// move the metadata's lastUpdated on and may carry messages of their own, and
-// {"$rewindTo": id} rows, which /rewind writes.
+// A file is an append log: a metadata first line (sessionId, startTime, kind …), message
+// rows (type "user" and "gemini"; the others are bookkeeping), {"$set": …} rows, which move
+// the metadata's lastUpdated on and may carry messages of their own, {"$rewindTo": id}
+// rows, which /rewind writes, and {"$patch": …} rows, which bring the messages in line
+// with the model's history.
 //
-// A conversation is not always one file. Gemini CLI continues a session in a new file that
-// opens with the same sessionId (measured: two files a minute apart), so the conversation —
-// not the file — is what a Ref names, and Read walks every file of it in order.
+// --resume appends to the file it continues (measured, 0.68). A conversation can still be
+// more than one file: earlier versions continued a session in a new file that opens with
+// the same sessionId (measured: two files a minute apart), so the conversation — not the
+// file — is what a Ref names, and Read walks every file of it in order.
 package gemini
 
 import (
@@ -17,10 +21,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,12 +46,14 @@ var Spec = sources.Spec{
 	Locate:  func(env sources.Env) string { return filepath.Join(env.Home, ".gemini", "tmp") },
 	Open:    func(location string) sources.Source { return &Source{root: location} },
 	Movable: true,
-	// Gemini CLI addresses sessions by position rather than identity: --resume takes
-	// "latest" or an index, --list-sessions numbers them, and --delete-session takes that
-	// same index. A session id cannot be turned into a command at all.
-	Resume: "",
-	Reads:  1,
-	Store:  "~/.gemini/tmp/<project>/chats/session-*.jsonl",
+	// --resume takes a session's id as well as "latest" or an index, and says so on exit
+	// ("To resume this session: gemini --resume <id>"). It looks for the id among the
+	// sessions of the directory it is started in, which is why Read gives the session the
+	// project's directory as its own.
+	Resume:     "gemini --resume",
+	ResumeHere: true,
+	Reads:      2,
+	Store:      "~/.gemini/tmp/<project>/chats/session-*.jsonl",
 }
 
 // Source is a Gemini CLI tmp directory.
@@ -105,8 +114,14 @@ func (s *Source) Scan(ctx context.Context) ([]sources.Ref, error) {
 
 // walk globs the store and groups its files by session id. Its second result names the
 // project directories it could not read, whose sessions are missing from the first.
+//
+// A subagent's transcript is a conversation of its own, one file under the directory of
+// the session that ran it, and is grouped with nothing: its id is new each time an agent
+// runs, so there is no other file to look for.
 func (s *Source) walk(ctx context.Context) ([]*conversation, error, error) {
 	matches, unread := kit.Glob(filepath.Join(s.root, "*", "chats", "session-*.jsonl"))
+	agents, agentsUnread := kit.Glob(filepath.Join(s.root, "*", "chats", "*", "*.jsonl"))
+	unread = errors.Join(unread, agentsUnread)
 	s.mu.Lock()
 	known := s.heads
 	s.mu.Unlock()
@@ -114,6 +129,14 @@ func (s *Source) walk(ctx context.Context) ([]*conversation, error, error) {
 	heads := make(map[string]head, len(matches))
 	byID := map[string]*conversation{}
 	var convs []*conversation
+	for i, path := range agents {
+		if i&63 == 63 && ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+		if stamp, mod := kit.Stamp(path); stamp != "-" {
+			convs = append(convs, &conversation{id: path, files: []file{{path: path, stamp: stamp, mod: mod}}})
+		}
+	}
 	for i, path := range matches {
 		if i&63 == 63 && ctx.Err() != nil {
 			return nil, nil, ctx.Err()
@@ -231,12 +254,61 @@ func sessionIDOf(path string) string {
 // headLines is how many lines of a file are looked at for its session id.
 const headLines = 5
 
-// project is the directory name a conversation's files sit under: <root>/<project>/chats.
-func project(path string) string { return filepath.Base(filepath.Dir(filepath.Dir(path))) }
+// projectDir is the project directory a file sits under: the one that holds chats/,
+// whether the file is a session's or, a level down, a subagent's.
+func projectDir(path string) string {
+	dir := filepath.Dir(path)
+	if filepath.Base(dir) != "chats" {
+		dir = filepath.Dir(dir)
+	}
+	return filepath.Dir(dir)
+}
+
+// parentOf is the id of the session a subagent's file belongs to — the directory it sits
+// in — and "" for a session's own file.
+func parentOf(path string) string {
+	if dir := filepath.Base(filepath.Dir(path)); dir != "chats" {
+		return dir
+	}
+	return ""
+}
+
+// rootLimit bounds how much of a .project_root is read: it holds one path.
+const rootLimit = 4 << 10
+
+// cwdOf is the directory a project's sessions ran in. Gemini CLI names a project's
+// directory after the directory's base name (or a hash of its path, in earlier versions)
+// and writes the path itself into .project_root beside chats/, to tell projects of the
+// same name apart. Without that file, or with something in it that is not a path, the
+// project's own name is what there is.
+func cwdOf(project string) string {
+	if f, err := os.Open(filepath.Join(project, ".project_root")); err == nil {
+		defer f.Close()
+		b, _ := io.ReadAll(io.LimitReader(f, rootLimit))
+		if root := strings.TrimSpace(string(b)); !strings.ContainsAny(root, "\n\x00") && absolute(root) {
+			return root
+		}
+	}
+	return filepath.Base(project)
+}
+
+// absolute says whether a path written on any system is absolute: a store may have been
+// copied from another.
+func absolute(path string) bool {
+	switch {
+	case strings.HasPrefix(path, "/"), strings.HasPrefix(path, `\\`):
+		return true
+	case len(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/'):
+		c := path[0] | 0x20
+		return 'a' <= c && c <= 'z'
+	}
+	return false
+}
 
 // row is one line of a session file. It is a message when it has a type, the metadata when
 // it has a sessionId, a patch when it has $set — a patch's messages are rows of their own,
-// written inside it — and a rewind when it has $rewindTo.
+// written inside it — a rewind when it has $rewindTo, and a message patch when it has
+// $patch.
 type row struct {
 	message
 	SessionID   string `json:"sessionId"`
@@ -246,7 +318,8 @@ type row struct {
 		LastUpdated string            `json:"lastUpdated"`
 		Messages    []json.RawMessage `json:"messages"`
 	} `json:"$set"`
-	RewindTo string `json:"$rewindTo"`
+	RewindTo string          `json:"$rewindTo"`
+	Patch    json.RawMessage `json:"$patch"`
 }
 
 // unknownRow names a line that is none of the rows above, for Writer.Unread: by its
@@ -259,7 +332,7 @@ func unknownRow(line []byte) string {
 	if json.Unmarshal(line, &fields) != nil || len(fields) == 0 {
 		return ""
 	}
-	for _, known := range []string{"$set", "$rewindTo", "sessionId", "type"} {
+	for _, known := range []string{"$set", "$rewindTo", "$patch", "sessionId", "type"} {
 		if _, ok := fields[known]; ok {
 			return ""
 		}
@@ -281,16 +354,18 @@ func unknownRow(line []byte) string {
 // too, where the row was rewritten from the model's history. Gemini CLI also takes a lone
 // part for the array, and a string among the parts for a text part, and so does Read.
 // thoughts, tokens and toolCalls have changed shape between Gemini CLI's versions and are
-// read loosely.
+// read loosely. displayContent, on a user row, is what the person typed, where the CLI sent
+// the model more than that.
 type message struct {
-	Type      string `json:"type"`
-	ID        string `json:"id"`
-	Timestamp string `json:"timestamp"`
-	Model     string `json:"model"`
-	Content   any    `json:"content"`
-	Thoughts  any    `json:"thoughts"`
-	Tokens    any    `json:"tokens"`
-	ToolCalls any    `json:"toolCalls"`
+	Type           string `json:"type"`
+	ID             string `json:"id"`
+	Timestamp      string `json:"timestamp"`
+	Model          string `json:"model"`
+	Content        any    `json:"content"`
+	DisplayContent any    `json:"displayContent"`
+	Thoughts       any    `json:"thoughts"`
+	Tokens         any    `json:"tokens"`
+	ToolCalls      any    `json:"toolCalls"`
 }
 
 // Read parses one conversation, every file of it in order.
@@ -300,10 +375,13 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		return err
 	}
 	w.S.Path = files[0]
-	// Gemini CLI records no working directory in a session file: what it has is the project
-	// it filed the session under (a hash, or a name, by version). That stands in for the
-	// directory, the one grouping the files give.
-	w.S.Cwd = project(files[0])
+	// A session file records no working directory: its project does, beside it
+	w.S.Cwd = cwdOf(projectDir(files[0]))
+	if parent := parentOf(files[0]); parent != "" {
+		// What kind of agent it was is in the call that started it, in the parent's file:
+		// the subagent's own says only whose it is
+		w.S.Parent = &model.Parent{Session: parent}
+	}
 
 	rd := &reader{w: w, answered: map[string]bool{}, issued: map[string]bool{}, statuses: map[string]string{}}
 	var meta time.Time // the latest time the metadata lines claim, the last resort for "updated"
@@ -373,6 +451,13 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				// came after is read all the same: it was said and done, its tools ran and
 				// its tokens were spent, and without it the history cannot say how the
 				// session came to be where it is
+			case len(r.Patch) > 0:
+				// Gemini CLI brings the messages in line with the model's history: on
+				// --resume and after /rewind it writes each model row again as the parts
+				// the history holds (its thinking and its words, said once more), a
+				// rollback or a compression drops rows, and a call's result can be set to
+				// what the history kept of it. None of it is something said: the rows say
+				// what was, and are read as they were first written
 			default:
 				unknown(line)
 			}
@@ -432,7 +517,8 @@ type reader struct {
 	last     time.Time         // the time on the latest row that had one
 }
 
-// add files one message row. Only the two sides' rows are the conversation.
+// add files one message row. Only the two sides' rows are the conversation, and the notice
+// that the person stopped a turn.
 func (rd *reader) add(m *message) {
 	at := kit.Time(m.Timestamp)
 	if !at.IsZero() {
@@ -440,28 +526,137 @@ func (rd *reader) add(m *message) {
 	}
 	switch m.Type {
 	case "user":
-		if blocks := rd.blocks(m); len(blocks) > 0 {
+		blocks, answers := rd.blocks(m)
+		for _, a := range answers {
+			blocks = append(blocks, a.block)
+		}
+		// Where the CLI sent the model more than the person typed — the files an @path
+		// named, a command's prompt — the row keeps both. The ask is what was typed; the
+		// rest the model read too, and is the CLI's
+		var added string
+		if typed := partsText(m.DisplayContent); strings.TrimSpace(typed) != "" {
+			if sent := partsText(m.Content); sent != typed {
+				blocks = withText(blocks, typed)
+				added = strings.TrimSpace(strings.TrimPrefix(sent, typed))
+			}
+		}
+		if len(blocks) > 0 {
 			rd.w.Add(transcript.Message{ID: m.ID, Role: transcript.User, At: at, Blocks: blocks})
 		}
+		if added != "" {
+			rd.w.Add(transcript.Message{ID: m.ID, Role: transcript.User, At: at, Injected: true,
+				Blocks: []transcript.Block{transcript.TextOf(added)}})
+		}
 	case "gemini":
-		// Added even when it says nothing: a row of only tokens is still a model call, and
-		// has to be counted
-		rd.w.Add(transcript.Message{ID: m.ID, Role: transcript.Assistant, At: at, Model: m.Model,
-			Usage: usageOf(m.Tokens), Blocks: rd.blocks(m)})
-	case "info", "warning", "error":
-		// What the CLI showed the person beside the conversation — a notice (that the
-		// context was compressed, say), a warning, an error — and the bytes of an image or
-		// PDF a tool read: neither side said it
+		blocks, answers := rd.blocks(m)
+		// A row of only tokens is still a model call, and has to be counted. A row with
+		// neither tokens nor anything said is not one: it is the CLI writing calls again —
+		// a call the person cancelled is, on a row of its own — and brings at most their
+		// outcome
+		if usage := usageOf(m.Tokens); usage != nil || says(blocks) {
+			rd.w.Add(transcript.Message{ID: m.ID, Role: transcript.Assistant, At: at, Model: m.Model,
+				Usage: usage, Blocks: blocks})
+		}
+		for _, a := range answers {
+			// A call answered in place says when it finished: the row it is on was written
+			// when the model asked for it
+			done := a.at
+			if done.IsZero() {
+				done = at
+			}
+			rd.w.Add(transcript.Message{ID: m.ID, Role: transcript.ToolRole, At: done, Blocks: []transcript.Block{a.block}})
+		}
+	case "info":
+		// What the CLI showed the person beside the conversation — a notice, the bytes of
+		// an image or PDF a tool read — is not something either side said. The notice that
+		// the person stopped the turn is how the turn ended
+		if text := strings.TrimSpace(kit.ContentText(m.Content)); cancelNotices[text] {
+			rd.w.Add(transcript.Message{ID: m.ID, Role: transcript.System, At: at,
+				Blocks: []transcript.Block{transcript.EventOf(model.EventInterrupted, text)}})
+		}
+	case "warning", "error":
+		// A warning or an error the CLI showed the person: neither side said it
 	default:
 		rd.w.Unread("row:" + m.Type)
 	}
 }
 
+// cancelNotices are the info rows Gemini CLI writes when the person stops a turn: Esc or
+// Ctrl+C while the model or a tool is at work.
+var cancelNotices = map[string]bool{"Request cancelled.": true, "User cancelled the request.": true}
+
+// says reports whether a model row's blocks hold anything the model produced: words,
+// thinking, a call.
+func says(blocks []transcript.Block) bool {
+	for _, b := range blocks {
+		switch b.Type {
+		case transcript.Text, transcript.Thinking:
+			if b.Text != "" {
+				return true
+			}
+		case transcript.Call:
+			return true
+		}
+	}
+	return false
+}
+
+// partsText is the text of a content value as Gemini CLI flattens it: the text parts
+// joined as they stand, without the thinking.
+func partsText(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case map[string]any:
+		return partsText([]any{t})
+	case []any:
+		var b strings.Builder
+		for _, item := range t {
+			if s, ok := item.(string); ok {
+				b.WriteString(s)
+				continue
+			}
+			if part := kit.Map(item); part["thought"] != true {
+				b.WriteString(kit.Str(part["text"]))
+			}
+		}
+		return b.String()
+	}
+	return ""
+}
+
+// withText puts text in place of a row's text blocks, where the first of them stood.
+func withText(blocks []transcript.Block, text string) []transcript.Block {
+	out := make([]transcript.Block, 0, len(blocks)+1)
+	placed := false
+	for _, b := range blocks {
+		if b.Type != transcript.Text {
+			out = append(out, b)
+			continue
+		}
+		if !placed {
+			out = append(out, transcript.TextOf(text))
+			placed = true
+		}
+	}
+	if !placed {
+		out = append([]transcript.Block{transcript.TextOf(text)}, out...)
+	}
+	return out
+}
+
+// answer is the outcome a toolCalls entry carries, and when the call finished.
+type answer struct {
+	at    time.Time
+	block transcript.Block
+}
+
 // blocks lays a row out in the order it happened: the thinking that came first, the
 // words — with any call only the model's history holds, where it stands among them — then
-// each call with the answer it carries.
-func (rd *reader) blocks(m *message) []transcript.Block {
+// each call. The answers the row's calls carry come apart, each with its own time.
+func (rd *reader) blocks(m *message) ([]transcript.Block, []answer) {
 	var out []transcript.Block
+	var answers []answer
 	thoughts := thoughtText(m.Thoughts)
 	if thoughts != "" {
 		out = append(out, transcript.ThinkingOf(thoughts))
@@ -547,13 +742,20 @@ func (rd *reader) blocks(m *message) []transcript.Block {
 	for _, tc := range kit.List(m.ToolCalls) {
 		call := kit.Map(tc)
 		id, name := kit.Str(call["id"]), kit.Str(call["name"])
-		args, ok := call["args"]
-		if !ok {
-			args = map[string]any{}
+		if id != "" && rd.answered[id] {
+			// Written again once its outcome was read: a call the person cancelled is
+			// written on the row that asked for it and once more on a row of its own
+			continue
 		}
-		out = append(out, transcript.CallOf(id, name, args))
-		if id != "" {
-			rd.issued[id] = true
+		if id == "" || !rd.issued[id] {
+			args, ok := call["args"]
+			if !ok {
+				args = map[string]any{}
+			}
+			out = append(out, transcript.CallOf(id, name, args))
+			if id != "" {
+				rd.issued[id] = true
+			}
 		}
 
 		// The newer shape answers the call in place
@@ -585,12 +787,12 @@ func (rd *reader) blocks(m *message) []transcript.Block {
 			}
 			continue
 		}
-		out = append(out, result(id, name, response, display, status))
+		answers = append(answers, answer{at: kit.Time(call["timestamp"]), block: result(id, name, response, display, status)})
 		if id != "" {
 			rd.answered[id] = true
 		}
 	}
-	return out
+	return out, answers
 }
 
 // entries is what a row's toolCalls say of the calls in it: the ids of the entries that
@@ -654,6 +856,10 @@ func partKind(part map[string]any) string {
 // response object's output or error, or the display text. An error field is the verdict
 // when the entry carries no status of its own; a response that says nothing against it is
 // a success.
+//
+// A command's exit code is not on the entry: Gemini CLI marks a command that ran a success
+// whatever it exited with (measured: ls of a missing path, exit 2, "success"), and tells
+// the model the code in the response. A command that exited non-zero failed.
 func result(id, name string, response map[string]any, display, status string) transcript.Block {
 	output := kit.ContentText(response["output"])
 	errText := kit.ContentText(response["error"])
@@ -673,26 +879,104 @@ func result(id, name string, response map[string]any, display, status string) tr
 			outcome.Status = model.StatusOK
 		}
 	}
+	if name == shellTool {
+		code, exited, signalled := shellEnd(output)
+		if exited {
+			outcome.Exit = transcript.ExitOf(code)
+		}
+		switch {
+		case outcome.Status == model.StatusInterrupted:
+		case signalled:
+			outcome.Status = model.StatusInterrupted // ended by a signal before it finished
+		case exited && code != 0:
+			outcome.Status = model.StatusError
+		}
+	}
 	return transcript.ResultOf(id, name, content, outcome)
 }
 
+// shellTool is Gemini CLI's tool for running a command.
+const shellTool = "run_shell_command"
+
+// shellEnd is how a command ended, from what the shell tool told the model of it:
+//
+//	Output: <what it printed>
+//	Exit Code: <n>                       0.68: only when not 0
+//	Signal: <n>                          when a signal ended it
+//	Background PIDs: <pids>
+//	Process Group PGID: <pid>
+//
+// wrapped in <untrusted_context>; and before 0.68 every line, a "(none)" where there was
+// nothing to say, after a Command: and a Directory: line. The lines after the output are
+// read from the end. The code is known only where the tool wrote one: a 0 goes unsaid in
+// 0.68, and so does the code of a command cancelled, sent to the background or summarised.
+// A signal that ended it is a command that did not finish.
+func shellEnd(output string) (code int, exited, signalled bool) {
+	text := strings.TrimSpace(output)
+	if rest, ok := strings.CutPrefix(text, "<untrusted_context"); ok {
+		if _, body, found := strings.Cut(rest, ">"); found {
+			text = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(body), "</untrusted_context>"))
+		}
+	}
+	if !strings.HasPrefix(text, "Output:") && !strings.HasPrefix(text, "Command:") {
+		return 0, false, false
+	}
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 1; i > 0; i-- {
+		key, value, _ := strings.Cut(strings.TrimSpace(lines[i]), ":")
+		value = strings.TrimSpace(value)
+		switch key {
+		case "Process Group PGID", "Background PIDs", "Error":
+			continue
+		case "Signal":
+			if n, err := strconv.Atoi(value); err == nil && n > 0 {
+				signalled = true
+			}
+			continue
+		case "Exit Code":
+			if n, err := strconv.Atoi(value); err == nil {
+				code, exited = n, true
+			}
+			continue
+		}
+		break
+	}
+	return code, exited, signalled
+}
+
 // thoughtText flattens thoughts into text. Gemini CLI has two generations of the format: a
-// plain string, or a [{subject, description, timestamp}] array (itemised thinking used
-// when planning or reporting on itself), of which the description is taken — the subject
-// only where there is none.
+// plain string, or a [{subject, description, timestamp}] array, of which the description
+// is taken — the subject only where there is none.
+//
+// The array holds the thinking as it streamed in, one entry per piece, each trimmed. A
+// piece that opens with a bold subject starts a thought; one without continues the thought
+// before it. Whole thoughts come one piece each, a line apart. Some models, behind some
+// gateways, stream their thinking a token at a time (measured: 268 entries for 268 thought
+// tokens), and those pieces are one text, a space apart — the space each piece lost to the
+// trimming — rather than a column of words.
 func thoughtText(v any) string {
 	switch t := v.(type) {
 	case string:
 		return t
 	case []any:
-		parts := make([]string, 0, len(t))
+		var b strings.Builder
 		for _, item := range t {
 			m := kit.Map(item)
-			if text := kit.First(kit.Str(m["description"]), kit.Str(m["subject"])); text != "" {
-				parts = append(parts, text)
+			subject := kit.Str(m["subject"])
+			text := kit.First(kit.Str(m["description"]), subject)
+			if text == "" {
+				continue
 			}
+			if b.Len() > 0 {
+				if subject != "" {
+					b.WriteByte('\n')
+				} else {
+					b.WriteByte(' ')
+				}
+			}
+			b.WriteString(text)
 		}
-		return strings.Join(parts, "\n")
+		return b.String()
 	}
 	return ""
 }

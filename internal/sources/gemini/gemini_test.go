@@ -457,7 +457,8 @@ func TestSpec(t *testing.T) {
 	if got := Spec.Locate(sourcetest.Env("/home/u", "GEMINI_HOME", "/x")); got != filepath.Join("/home/u", ".gemini", "tmp") {
 		t.Errorf("with a variable = %s", got)
 	}
-	if Spec.Name != "gemini" || Spec.Title != "Gemini CLI" || !Spec.Movable || Spec.Resume != "" {
+	// --resume takes a session's id from the session's own directory (measured, 0.68)
+	if Spec.Name != "gemini" || Spec.Title != "Gemini CLI" || !Spec.Movable || Spec.Resume != "gemini --resume" {
 		t.Errorf("spec = %+v", Spec)
 	}
 	missing := Spec.Open(filepath.Join(t.TempDir(), "absent"))
@@ -566,16 +567,20 @@ func TestTheFormatAsGeminiCLIWritesIt(t *testing.T) {
 		t.Fatalf("turns = %+v", s.Turns)
 	}
 	turn := s.Turn(t, 1)
-	if turn.Ask != "what is in shot.png?" || turn.Answer != "It is a login form." {
+	// The ask is what was typed; what the CLI sent in its place, the model read too
+	if turn.Ask != "what is in @shot.png?" || turn.Answer != "It is a login form." {
 		t.Errorf("ask %q answer %q", turn.Ask, turn.Answer)
 	}
 	// The thought part of a row with thoughts of its own is not read twice, the call part
 	// is the toolCalls entry, and the synthetic thought of a row without thoughts is
 	// thinking, not an answer
-	if got := sourcetest.Kinds(turn); got != "prompt thinking tool thinking thinking reply" {
+	if got := sourcetest.Kinds(turn); got != "prompt context thinking tool thinking thinking reply" {
 		t.Errorf("items = %s", got)
 	}
-	if got := turn.Items[3].Text; got != "Binary content received. Proceeding with analysis." {
+	if got := turn.Items[1].Text; got != "what is in shot.png?" {
+		t.Errorf("what was sent = %q", got)
+	}
+	if got := turn.Items[4].Text; got != "Binary content received. Proceeding with analysis." {
 		t.Errorf("the synthetic thought = %q", got)
 	}
 	tools := sourcetest.Tools(turn)
@@ -741,5 +746,106 @@ func TestARowOfManyCallsReadsInTimeWithItsSize(t *testing.T) {
 	}
 	if s.Stats.Tools != parts+entries {
 		t.Errorf("tools = %d, want %d", s.Stats.Tools, parts+entries)
+	}
+}
+
+// Thinking comes as one entry per streamed piece. A piece with a bold subject — whole
+// thought summaries come so, one piece each — starts a line; a piece without one goes on
+// with the thought before it.
+func TestThoughtsJoinAsTheyStreamed(t *testing.T) {
+	got := thoughtText([]any{
+		map[string]any{"subject": "Reading the config", "description": "The port is set twice."},
+		map[string]any{"subject": "", "description": "The second"},
+		map[string]any{"subject": "", "description": "wins."},
+		map[string]any{"subject": "Answering", "description": ""},
+		map[string]any{"subject": "", "description": ""},
+		"not an entry",
+	})
+	if want := "The port is set twice. The second wins.\nAnswering"; got != want {
+		t.Errorf("thinking = %q, want %q", got, want)
+	}
+}
+
+// Without a .project_root, or with something in it that is not a path, the project's own
+// directory name is all a session says of where it ran.
+func TestCwdWithoutAProjectRoot(t *testing.T) {
+	root := t.TempDir()
+	for project, marker := range map[string]string{
+		"bare":     "",
+		"relative": "work/thing",
+		"twoLines": "/a\n/b",
+		"windows":  `C:\Users\u\code`,
+		"posix":    "  /srv/app\n",
+	} {
+		sourcetest.Write(t, filepath.Join(root, project, "chats", "session-2026-11-17T04-00-"+project+".jsonl"),
+			`{"sessionId":"`+project+`"}`, `{"type":"user","id":"u","content":[{"text":"hi"}]}`)
+		if marker != "" {
+			if err := os.WriteFile(filepath.Join(root, project, ".project_root"), []byte(marker), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	want := map[string]string{"bare": "bare", "relative": "relative", "twoLines": "twoLines", "windows": `C:\Users\u\code`, "posix": "/srv/app"}
+	for _, s := range sourcetest.All(t, Spec.Open(root)) {
+		if s.Session.Cwd != want[s.Session.ID] {
+			t.Errorf("%s: cwd = %q, want %q", s.Session.ID, s.Session.Cwd, want[s.Session.ID])
+		}
+	}
+}
+
+// The exit code is read where the shell tool wrote one, and nowhere else: not from a
+// command cancelled, sent to the background or ended by a signal, not from the words of
+// what it printed, and not from another tool.
+func TestShellExitCodes(t *testing.T) {
+	for _, c := range []struct {
+		output            string
+		code              int
+		exited, signalled bool
+	}{
+		{"<untrusted_context>\nOutput: x\nExit Code: 1\nProcess Group PGID: 7\n</untrusted_context>", 1, true, false},
+		{"Output: (empty)\nExit Code: 127\nBackground PIDs: 9\nProcess Group PGID: 7", 127, true, false},
+		{"<untrusted_context>\nOutput: ok\nProcess Group PGID: 7\n</untrusted_context>", 0, false, false},
+		{"Output: Exit Code: 3", 0, false, false},
+		{"Output: done\nSignal: 15\nProcess Group PGID: 7", 0, false, true},
+		{"Output: \nError: spawn sh ENOENT\nProcess Group PGID: 7", 0, false, false},
+		{"Command was cancelled by user before it could complete. There was no output before it was cancelled.", 0, false, false},
+		{"Command moved to background (PID: 9). Output hidden. Press Ctrl+B to view.", 0, false, false},
+		{"Output: x\nExit Code: (none)", 0, false, false},
+		// Before 0.68: every line, "(none)" where there was nothing to say
+		{"Command: ls /missing\nDirectory: (root)\nOutput: ls: /missing: No such file\nError: (none)\nExit Code: 2\nSignal: (none)\nBackground PIDs: (none)\nProcess Group PGID: 7", 2, true, false},
+		{"Command: true\nDirectory: (root)\nOutput: (empty)\nError: (none)\nExit Code: 0\nSignal: (none)\nBackground PIDs: (none)\nProcess Group PGID: 7", 0, true, false},
+	} {
+		code, exited, signalled := shellEnd(c.output)
+		if code != c.code || exited != c.exited || signalled != c.signalled {
+			t.Errorf("shellEnd(%q) = %d, %v, %v; want %d, %v, %v", c.output, code, exited, signalled, c.code, c.exited, c.signalled)
+		}
+	}
+	if killed := result("r0", shellTool, map[string]any{"output": "Output: done\nSignal: 15\nProcess Group PGID: 7"}, "", "success"); killed.Status != model.StatusInterrupted {
+		t.Errorf("a command a signal ended = %+v", killed.Outcome)
+	}
+	other := result("r1", "read_file", map[string]any{"output": "Output: x\nExit Code: 2"}, "", "success")
+	if other.Exit != nil || other.Status != model.StatusOK {
+		t.Errorf("another tool's output read as a command's: %+v", other.Outcome)
+	}
+	cancelled := result("r2", shellTool, map[string]any{"output": "Output: x\nExit Code: 130"}, "", "cancelled")
+	if cancelled.Exit == nil || *cancelled.Exit != 130 || cancelled.Status != model.StatusInterrupted {
+		t.Errorf("a cancelled command with an exit code = %+v", cancelled.Outcome)
+	}
+}
+
+// A call written while it ran and again once it was done — on a later row of the same
+// response, with its outcome — is one call, answered once.
+func TestACallWrittenAgainWhenDoneIsOneCall(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "projC", "chats", "session-2026-10-02T10-00-00.jsonl"),
+		`{"sessionId":"g-3","startTime":"2026-10-02T10:00:00Z","lastUpdated":"2026-10-02T10:05:00Z"}`,
+		`{"type":"user","id":"u1","timestamp":"2026-10-02T10:00:01Z","content":[{"text":"build it"}]}`,
+		`{"type":"gemini","id":"g1","timestamp":"2026-10-02T10:00:02Z","content":"","toolCalls":[{"id":"run-1","name":"run_shell_command","args":{"command":"make"},"status":"executing"}]}`,
+		`{"type":"gemini","id":"g2","timestamp":"2026-10-02T10:00:09Z","content":"","toolCalls":[{"id":"run-1","name":"run_shell_command","args":{"command":"make"},"status":"success","resultDisplay":"built"}]}`,
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	tools := sourcetest.Tools(s.Turn(t, 1))
+	if len(tools) != 1 || tools[0].Output != "built" || tools[0].Status != model.StatusOK {
+		t.Fatalf("tools = %d: %+v", len(tools), tools)
 	}
 }

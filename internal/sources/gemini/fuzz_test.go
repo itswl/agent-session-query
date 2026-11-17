@@ -9,10 +9,11 @@ import (
 )
 
 // FuzzRead reads whatever a session file may hold. The input is written as a session file
-// and again as the file that continues it, as Gemini CLI does when a session goes on in a
+// and again as the file that continues it, as Gemini CLI did when a session went on in a
 // new file: what one file leaves behind in the reader — the calls answered, a message's
-// first place — is what the next one is read against. An error is an answer; a panic, a
-// hang or a session that breaks the invariants is not.
+// first place — is what the next one is read against. It is written a third time as a
+// subagent's transcript, which is read on its own. An error is an answer; a panic, a hang
+// or a session that breaks the invariants is not.
 func FuzzRead(f *testing.F) {
 	for _, seed := range seeds {
 		f.Add([]byte(seed))
@@ -22,11 +23,11 @@ func FuzzRead(f *testing.F) {
 	// input is read by a Source of its own, which has seen no other.
 	root := f.TempDir()
 	dir := filepath.Join(root, "p", "chats")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "a"), 0o755); err != nil {
 		f.Fatal(err)
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
-		for _, name := range []string{"session-2026-11-01T09-00-a.jsonl", "session-2026-11-01T09-01-a.jsonl"} {
+		for _, name := range []string{"session-2026-11-01T09-00-a.jsonl", "session-2026-11-01T09-01-a.jsonl", filepath.Join("a", "b.jsonl")} {
 			if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -76,6 +77,22 @@ not json at all
 {"id":"u3","timestamp":"2026-11-01T09:01:00.000Z","type":"user","content":[{"text":"make the button blue"}]}
 {"$rewindTo":"u3"}
 {"id":"w1","timestamp":"2026-11-01T09:01:30.000Z","type":"warning","content":"Rewound."}
+`,
+	// as Gemini CLI 0.68 writes it (see recorded_test.go): the context it opens with, an
+	// @path, a rewind and the patch after it, a command that exited 2, one cancelled and
+	// written again, the notice of the cancel, a scratchpad
+	`{"sessionId":"517cee15","projectHash":"ffb0","startTime":"2026-11-17T05:01:58.641Z","lastUpdated":"2026-11-17T05:01:58.641Z","kind":"main"}
+{"id":"d049","timestamp":"2026-11-17T05:01:58.651Z","type":"user","content":[{"text":"<session_context>\nThis is the Gemini CLI.\n</session_context>"}]}
+{"id":"u1","timestamp":"2026-11-17T05:03:06.882Z","type":"user","content":[{"text":"What word is in @notes.txt?"},{"text":"\n--- Content from referenced files ---"},{"text":"\nContent from @notes.txt:\n"},{"text":"beta"},{"text":"\n--- End of content ---"}],"displayContent":[{"text":"What word is in @notes.txt?"}]}
+{"id":"g1","timestamp":"2026-11-17T05:03:47.973Z","type":"gemini","content":"beta","thoughts":[{"subject":"","description":"The","timestamp":"2026-11-17T05:03:47.970Z"},{"subject":"","description":"user","timestamp":"2026-11-17T05:03:47.971Z"}],"tokens":{"input":8068,"output":3,"cached":7168,"thoughts":29,"tool":0,"total":8100},"model":"gemini-2.5-flash"}
+{"$rewindTo":"u1"}
+{"$patch":{"updates":[{"id":"g1","content":[{"text":"The","thought":true},{"text":"beta"}]}]}}
+{"id":"u2","timestamp":"2026-11-17T05:05:33.924Z","type":"user","content":[{"text":"list /nope, then sleep"}]}
+{"id":"g2","timestamp":"2026-11-17T05:05:39.426Z","type":"gemini","content":"","tokens":{"input":10928,"output":25,"cached":2624,"thoughts":33,"tool":0,"total":10986},"model":"gemini-2.5-flash","toolCalls":[{"id":"run-1","name":"run_shell_command","args":{"command":"ls /nope"},"result":[{"functionResponse":{"id":"run-1","name":"run_shell_command","response":{"output":"<untrusted_context>\nOutput: ls: cannot access '/nope'\nExit Code: 2\nProcess Group PGID: 1\n</untrusted_context>"}}}],"status":"success","timestamp":"2026-11-17T05:05:39.500Z","resultDisplay":"ls: cannot access '/nope'"},{"id":"run-2","name":"run_shell_command","args":{"command":"sleep 40"},"result":[{"functionResponse":{"id":"run-2","name":"run_shell_command","response":{"error":"[Operation Cancelled] Reason: User cancelled operation"}}}],"status":"cancelled","timestamp":"2026-11-17T05:05:42.049Z"}]}
+{"id":"i1","timestamp":"2026-11-17T05:05:42.050Z","type":"info","content":"Request cancelled."}
+{"id":"g3","timestamp":"2026-11-17T05:05:42.333Z","type":"gemini","content":"","toolCalls":[{"id":"run-2","name":"run_shell_command","args":{"command":"sleep 40"},"result":[{"functionResponse":{"id":"run-2","name":"run_shell_command","response":{"error":"[Operation Cancelled] Reason: Operation cancelled by user"}}}],"status":"cancelled","timestamp":"2026-11-17T05:05:42.333Z"}],"thoughts":[],"model":"gemini-2.5-flash"}
+{"id":"u3","timestamp":"2026-11-17T05:05:42.334Z","type":"user","content":[{"functionResponse":{"id":"run-2","name":"run_shell_command","response":{"error":"[Operation Cancelled] Reason: Operation cancelled by user"}}}]}
+{"$set":{"memoryScratchpad":{"version":1,"workflowSummary":"run_shell_command: sleep"}}}
 `,
 	// counters below zero, at the most a count can be and past it (see
 	// TestTokenCountsPastAnyModelCountNothing)

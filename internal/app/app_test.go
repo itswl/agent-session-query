@@ -9,6 +9,7 @@ import (
 	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/fixture"
 	"github.com/itswl/agent-session-query/internal/index"
+	"github.com/itswl/agent-session-query/internal/model"
 )
 
 func TestWhen(t *testing.T) {
@@ -140,5 +141,19 @@ func TestFreshAndHealth(t *testing.T) {
 	text, n, err := a.Pack(ctx, app.Query{}, 1, false)
 	if err != nil || n != 1 || !strings.Contains(text, "Fix flaky test") || strings.Contains(text, "rotate") {
 		t.Errorf("a pack of one is the most recent session: %d, %v", n, err)
+	}
+}
+
+// A CLI that keeps sessions per project finds one only from the directory it was worked
+// in: without that directory, there is no command to give, rather than one that fails.
+func TestAResumeNeedsItsDirectoryWhereTheCLIDoes(t *testing.T) {
+	if got := app.Resume(&index.Session{Session: model.Session{Source: "gemini", ID: "g-1", Cwd: "qa"}}); got != "" {
+		t.Errorf("a Gemini session whose directory is only its name = %q", got)
+	}
+	if got := app.Resume(&index.Session{Session: model.Session{Source: "gemini", ID: "g-1", Cwd: "/w/qa"}}); !strings.HasSuffix(got, "/w/qa && gemini --resume g-1") {
+		t.Errorf("a Gemini session in /w/qa = %q", got)
+	}
+	if got := app.Resume(&index.Session{Session: model.Session{Source: "codex", ID: "c-1"}}); got != "codex resume c-1" {
+		t.Errorf("a Codex session, which resumes from anywhere = %q", got)
 	}
 }

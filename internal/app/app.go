@@ -99,9 +99,7 @@ func (a *App) run(ctx context.Context, opts index.SyncOptions, done, caught chan
 	var once sync.Once
 	up := func() {
 		once.Do(func() {
-			a.mu.Lock()
-			a.caughtAt = time.Now()
-			a.mu.Unlock()
+			a.caughtUp(caught)
 			close(caught)
 		})
 	}
@@ -119,6 +117,17 @@ func (a *App) run(ctx context.Context, opts index.SyncOptions, done, caught chan
 	up()
 	close(done)
 	return res, err
+}
+
+// caughtUp notes when the sync that claimed caught caught up — only while it is the one in
+// flight: called as a sync ends, the next may be claimed already, and has caught up with
+// nothing yet.
+func (a *App) caughtUp(caught chan struct{}) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.caught == caught {
+		a.caughtAt = time.Now()
+	}
 }
 
 // Fresh makes sure the index is as near to the stores as a question needs, and reports

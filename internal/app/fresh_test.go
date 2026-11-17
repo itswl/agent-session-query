@@ -211,4 +211,23 @@ func TestCaughtUpIsWhenTheQuestionsGo(t *testing.T) {
 	if !let || !held {
 		t.Errorf("when the sync caught up: questions let go %v, the sync still under way %v; want both", let, held)
 	}
+
+	// A sync that ends with nothing to read again is caught up as it ends — by then the
+	// next may be claimed, and that one has caught up with nothing
+	a.mu.Lock()
+	_, ended := a.claim()
+	a.running, a.caught = nil, nil
+	_, next := a.claim()
+	a.mu.Unlock()
+	a.caughtUp(ended)
+	if b := a.Behind(); b != 0 {
+		t.Errorf("a sync just claimed is behind by %v: the one before it caught up for it", b)
+	}
+	a.caughtUp(next)
+	if a.Behind() == 0 {
+		t.Error("a sync that caught up is not")
+	}
+	a.mu.Lock()
+	a.running, a.caught = nil, nil
+	a.mu.Unlock()
 }

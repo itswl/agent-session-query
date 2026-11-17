@@ -260,6 +260,9 @@ func (s *Server) run(ctx context.Context, t tool, given map[string]any) (string,
 	a.budget = min(max(budget, 500), maxChars)
 
 	fresh := s.App.Fresh(ctx, s.MaxAge, s.Wait)
+	// Where the index stood before the answer was read is what the answer can say of it: a
+	// sync that caught up while it was being read may not have caught up with what it read
+	st, behind := s.App.Index.State(), s.App.Behind()
 	text, err := t.run(ctx, s, a)
 	if err != nil {
 		return "", err
@@ -273,8 +276,7 @@ func (s *Server) run(ctx context.Context, t tool, given map[string]any) (string,
 
 	var notes []string
 	if !fresh {
-		st := s.App.Index.State()
-		if behind := s.App.Behind(); behind > 0 {
+		if behind > 0 {
 			notes = append(notes, fmt.Sprintf("The index is reading the history again for a newer reading of it (%d of %d transcripts): every session is here, but what changed in the last %s is not yet.", st.Done, st.Total, behind.Round(time.Second)))
 		} else if st.Running && st.Total > 0 {
 			notes = append(notes, fmt.Sprintf("The index is still reading the history (%d of %d transcripts): this answer covers what has been read so far.", st.Done, st.Total))

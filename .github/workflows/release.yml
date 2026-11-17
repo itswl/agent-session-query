@@ -78,8 +78,9 @@ jobs:
           echo "::error::vars.MACOS_SIGNING_SHA1 is set, but the MACOS_SIGNING_KEY or MACOS_SIGNING_CERT secret is missing"
           exit 1
 
+      # The variable alone switches signing on: secrets without it sign nothing
       - name: Sign for macOS
-        if: matrix.goos == 'darwin' && env.MACOS_SIGN == 'true'
+        if: matrix.goos == 'darwin' && env.MACOS_SIGNING_SHA1 != '' && env.MACOS_SIGN == 'true'
         env:
           KEY: ${{ secrets.MACOS_SIGNING_KEY }}
           CERT: ${{ secrets.MACOS_SIGNING_CERT }}
@@ -98,11 +99,13 @@ jobs:
           # The certificate the repository names, and no other
           have=$(openssl x509 -outform DER -in "$dir/cert.pem" | sha1sum | cut -c1-40)
           want=$(printf '%s' "$MACOS_SIGNING_SHA1" | tr 'A-F' 'a-f')
-          if [ -n "$want" ] && [ "$have" != "$want" ]; then
+          if [ "$have" != "$want" ]; then
             echo "::error::the signing certificate is $have, not the $want vars.MACOS_SIGNING_SHA1 names"
             exit 1
           fi
-          "$dir/$rc/rcodesign" sign --pem-file "$dir/key.pem" --pem-file "$dir/cert.pem" --binary-identifier io.github.itswl.asq asq
+          # No timestamp: macOS keys its answer on the certificate and the identifier, not on
+          # when it was signed, and Apple's timestamp server down is no reason to hold a release
+          "$dir/$rc/rcodesign" sign --timestamp-url none --pem-file "$dir/key.pem" --pem-file "$dir/cert.pem" --binary-identifier io.github.itswl.asq asq
 
       - name: Package
         env:
@@ -183,8 +186,10 @@ jobs:
   image:
     # The linux binaries the build matrix just produced, copied into an empty image by
     # Dockerfile.release: no compiler in this job, and byte-identical to the archives.
-    needs: build
-    if: ${{ github.event.created }}
+    # Pushed only when the release will be, so that latest never names a version without
+    # one: after the macOS check, where it runs (skipped: signing not set up).
+    needs: [build, verify-macos]
+    if: ${{ !cancelled() && github.event.created && needs.build.result == 'success' && (needs.verify-macos.result == 'success' || needs.verify-macos.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

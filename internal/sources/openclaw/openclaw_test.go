@@ -557,14 +557,14 @@ func TestAFigureOfTheWrongTypeAndAColdArchive(t *testing.T) {
 		t.Errorf("a session whose start is a word = %+v", odd.Session)
 	}
 	cold := sourcetest.ByID(t, all, "ses_cold")
-	if cold.Unread["events:cold-archived"] != 1 {
-		t.Errorf("a session in cold storage: unread %v", cold.Unread)
+	if len(cold.Unread) != 0 {
+		t.Errorf("a session in cold storage: unread %v — nothing was passed over not knowing it", cold.Unread)
 	}
 	// and says so itself, where it begins
 	said := ""
 	for _, turn := range cold.Turns {
 		for _, it := range turn.Items {
-			if it.Kind == model.Event && it.Event == "cold_storage" {
+			if it.Kind == model.Event && it.Event == model.EventColdStorage {
 				said = it.Text
 			}
 		}
@@ -575,7 +575,7 @@ func TestAFigureOfTheWrongTypeAndAColdArchive(t *testing.T) {
 	// Some of it still there: the notice comes before it, and the ask is the ask
 	warm := sourcetest.ByID(t, all, "ses_warm")
 	first := warm.Turns[0]
-	if len(first.Items) == 0 || first.Items[0].Event != "cold_storage" || !strings.HasPrefix(first.Items[0].Text, "Some of this session's events") {
+	if len(first.Items) == 0 || first.Items[0].Event != model.EventColdStorage || !strings.HasPrefix(first.Items[0].Text, "Some of this session's events") {
 		t.Errorf("a session partly in cold storage begins with %+v", first.Items)
 	}
 	if warm.Turn(t, 1).Ask != "and then?" {

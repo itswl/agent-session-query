@@ -754,6 +754,9 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 		// Unread is what the newest transcripts held that the adapter did not know how to
 		// read, by kind: the sign that a CLI changed its format
 		Unread map[string]int `json:"unread,omitempty"`
+		// Archived is how many of the transcripts read were moved in part where they are
+		// not read (OpenClaw's cold storage)
+		Archived int `json:"archived,omitempty"`
 	}
 	st := c.style(io.out)
 	var checks []check
@@ -761,7 +764,9 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 	for _, store := range set.All() {
 		ck := check{Source: store.Name, Location: store.Source.Location(), Found: store.Source.Exists()}
 		if ck.Found {
-			ck.Sessions, ck.Newest, ck.Turns, ck.Items, ck.Unread, err = deepRead(ctx, store)
+			var lk look
+			lk, err = deepRead(ctx, store)
+			ck.Sessions, ck.Newest, ck.Turns, ck.Items, ck.Unread, ck.Archived = lk.sessions, lk.newest, lk.turns, lk.items, lk.unread, lk.archived
 			if err != nil {
 				ck.Error, failed = err.Error(), true
 			}
@@ -781,8 +786,13 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 				fmt.Fprintf(io.out, "· %-12s not found          %s\n", ck.Source, st.Path(ck.Location))
 			case ck.Error != "":
 				fmt.Fprintf(io.out, "✗ %-12s FAILED             %s\n    %s\n", ck.Source, st.Path(ck.Location), ck.Error)
+			case ck.Newest == "" && ck.Archived > 0:
+				fmt.Fprintf(io.out, "✓ %-12s %4d transcripts   the newest are in cold storage, where they are not read   %s\n", ck.Source, ck.Sessions, st.Path(ck.Location))
 			default:
 				fmt.Fprintf(io.out, "✓ %-12s %4d transcripts   newest read whole: %s, %s   %s\n", ck.Source, ck.Sessions, plural(ck.Turns, "turn"), plural(ck.Items, "step"), st.Path(ck.Location))
+			}
+			if ck.Archived > 0 && ck.Newest != "" {
+				fmt.Fprintf(io.out, "  · %s of the newest read were moved in part to cold storage, where they are not read\n", plural(ck.Archived, "transcript"))
 			}
 			if len(ck.Unread) > 0 {
 				fmt.Fprintf(io.out, "  %s %s\n", st.Warn("!"), unreadLine(ck.Unread))
@@ -799,13 +809,15 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 // a format that drifted lists fine and reads as empty. It also reads the next newest, a
 // few, for what they held that the adapter did not know: a format that drifted in part
 // reads as less than it is, with nothing failing.
-func deepRead(ctx context.Context, store index.Store) (sessions int, newest string, turns, items int, unread map[string]int, err error) {
+func deepRead(ctx context.Context, store index.Store) (look, error) {
+	var lk look
 	refs, err := store.Source.Scan(ctx)
 	if err != nil {
-		return 0, "", 0, 0, nil, fmt.Errorf("listing: %w", err)
+		return lk, fmt.Errorf("listing: %w", err)
 	}
+	lk.sessions = len(refs)
 	if len(refs) == 0 {
-		return 0, "", 0, 0, nil, nil
+		return lk, nil
 	}
 	sort.Slice(refs, func(i, j int) bool { return refs[i].ModTime.After(refs[j].ModTime) })
 	// The newest that holds a conversation. A session opened and closed with nothing said
@@ -821,7 +833,7 @@ func deepRead(ctx context.Context, store index.Store) (sessions int, newest stri
 	// doctorLook transcripts and no further.
 	deadline := time.Now().Add(5 * time.Second)
 	var firstErr error
-	tried, read, past := 0, 0, 0
+	tried, read, past, stored := 0, 0, 0, 0 // stored: read as nothing but that it was moved
 	for _, ref := range refs {
 		if ctx.Err() != nil || (tried >= 5 && time.Now().After(deadline)) || read >= doctorReads || past >= doctorLook {
 			break
@@ -837,29 +849,60 @@ func deepRead(ctx context.Context, store index.Store) (sessions int, newest stri
 			}
 			continue
 		}
-		spoke := said(got)
+		spoke, moved := said(got), has(got, model.EventColdStorage)
+		if moved {
+			lk.archived++
+			if !spoke {
+				stored++
+			}
+		}
 		if spoke || read == 0 {
 			for kind, n := range got.Unread {
-				if unread == nil {
-					unread = map[string]int{}
+				if lk.unread == nil {
+					lk.unread = map[string]int{}
 				}
-				unread[kind] += n
+				lk.unread[kind] += n
 			}
 		}
 		if spoke {
 			if read == 0 {
-				newest, turns, items = got.Session.ID, got.Stats.Turns, got.Stats.Items
+				lk.newest, lk.turns, lk.items = got.Session.ID, got.Stats.Turns, got.Stats.Items
 			}
 			read++
 		}
 	}
-	if read > 0 {
-		return len(refs), newest, turns, items, unread, nil
+	switch {
+	case read > 0:
+		return lk, nil
+	case firstErr != nil:
+		return lk, firstErr
+	case stored == tried:
+		// Every one read was moved whole to where it is not read, and says so: that is why
+		// they are empty, and not a format that drifted
+		return lk, nil
 	}
-	if firstErr != nil {
-		return len(refs), "", 0, 0, unread, firstErr
+	return lk, fmt.Errorf("the %d newest sessions all read as empty: %s may have changed how it writes them", tried, store.Name)
+}
+
+// look is what doctor found of one store.
+type look struct {
+	sessions     int
+	newest       string // the newest that holds a conversation; "" when none was found
+	turns, items int    // of that one
+	unread       map[string]int
+	archived     int // of the sessions read, how many were moved in part where they are not read
+}
+
+// has reports whether a session read holds an event of that kind.
+func has(got transcript.Collected, event string) bool {
+	for _, turn := range got.Turns {
+		for _, it := range turn.Items {
+			if it.Kind == model.Event && it.Event == event {
+				return true
+			}
+		}
 	}
-	return len(refs), "", 0, 0, unread, fmt.Errorf("the %d newest sessions all read as empty: %s may have changed how it writes them", tried, store.Name)
+	return false
 }
 
 // said reports whether a session read holds a conversation: something asked, answered or

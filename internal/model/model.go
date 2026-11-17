@@ -295,6 +295,9 @@ const (
 	EventInterrupted = "interrupted"
 	EventHookError   = "hook_error"
 	EventModelChange = "model_change"
+	// EventColdStorage is the adapter's own word on a session part of which its CLI moved
+	// where it is not read (OpenClaw's cold storage): what was moved is not in it.
+	EventColdStorage = "cold_storage"
 )
 
 // Tool kinds: what a call was for.

@@ -17,6 +17,7 @@ import (
 	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/fixture"
 	"github.com/itswl/agent-session-query/internal/index"
+	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/render"
 	"github.com/itswl/agent-session-query/internal/sources"
 	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
@@ -382,8 +383,9 @@ func TestDoctorLooksPastEmptySessions(t *testing.T) {
 	}
 }
 
-// told is a store of sessions, newest first, each either a word said or only an event.
-type told []bool
+// told is a store of sessions, newest first: each a word said, an event alone, or a
+// session moved to cold storage whole ("cold") or in part ("warm").
+type told []string
 
 func (told) Location() string { return "test" }
 func (told) Exists() bool     { return true }
@@ -398,25 +400,46 @@ func (t told) Read(_ context.Context, ref sources.Ref, w *transcript.Writer) err
 	i, _ := strconv.Atoi(ref.Key)
 	w.S.ID = "s" + ref.Key
 	at := time.Unix(1790000000, 0)
-	if t[i] {
-		w.Add(transcript.Message{Role: transcript.User, At: at, Blocks: []transcript.Block{{Type: transcript.Text, Text: "hello"}}})
-		return nil
+	event := func(kind string) {
+		w.Add(transcript.Message{Role: transcript.System, At: at, Blocks: []transcript.Block{transcript.EventOf(kind, "said of the session")}})
 	}
-	w.Add(transcript.Message{Role: transcript.System, At: at, Blocks: []transcript.Block{transcript.EventOf("cold_storage", "40 of this session's events were moved")}})
+	ask := func() {
+		w.Add(transcript.Message{Role: transcript.User, At: at, Blocks: []transcript.Block{{Type: transcript.Text, Text: "hello"}}})
+	}
+	switch t[i] {
+	case "said":
+		ask()
+	case "event":
+		event(model.EventCompaction)
+	case "cold":
+		event(model.EventColdStorage)
+	case "warm":
+		event(model.EventColdStorage)
+		ask()
+	}
 	return nil
 }
 
-// A session that holds nothing but what the adapter says of it — that its events were moved
-// where they are not read — is not a conversation doctor can judge a store by: the next is
-// the newest, and a store of nothing else reads as one that may have changed its format.
+// A session that holds nothing but events is not a conversation doctor can judge a store
+// by. One moved whole to where it is not read says so, and that is why it is empty: a store
+// of those is not one whose format drifted, though a store of other empty sessions may be.
 func TestDoctorIsNotToldByEventsAlone(t *testing.T) {
 	ctx := context.Background()
-	store := func(t told) index.Store { return index.Store{Name: "openclaw", Source: t} }
-	if _, newest, _, _, _, err := deepRead(ctx, store(told{false, true})); err != nil || newest != "s1" {
-		t.Errorf("an archived session before a conversation: newest %q, %v; want s1", newest, err)
+	look := func(t told) (look, error) { return deepRead(ctx, index.Store{Name: "openclaw", Source: t}) }
+	if lk, err := look(told{"event", "said"}); err != nil || lk.newest != "s1" {
+		t.Errorf("events alone before a conversation: newest %q, %v; want s1", lk.newest, err)
 	}
-	if _, newest, _, _, _, err := deepRead(ctx, store(told{false, false, false})); err == nil {
-		t.Errorf("sessions that say only that they were archived passed as conversations: newest %q", newest)
+	if lk, err := look(told{"event", "event", "event"}); err == nil {
+		t.Errorf("sessions of events alone passed as conversations: newest %q", lk.newest)
+	}
+	if lk, err := look(told{"cold", "cold", "cold"}); err != nil || lk.newest != "" || lk.archived != 3 {
+		t.Errorf("a store whose newest are in cold storage: newest %q, archived %d, %v; want none, 3, no error", lk.newest, lk.archived, err)
+	}
+	if _, err := look(told{"cold", "event", "cold"}); err == nil {
+		t.Error("sessions in cold storage hid others that read as empty")
+	}
+	if lk, err := look(told{"cold", "warm", "said"}); err != nil || lk.newest != "s1" || lk.archived != 2 {
+		t.Errorf("a conversation moved in part: newest %q, archived %d, %v; want s1, 2", lk.newest, lk.archived, err)
 	}
 }
 

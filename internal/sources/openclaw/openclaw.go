@@ -258,7 +258,6 @@ FROM session_windows WHERE session_id = ?`, id).Scan(&status, &mdl, &name, &bega
 		if kit.HasTable(conn, "session_transcript_cold_archives") {
 			var events any // whatever the column holds: see listDB
 			if conn.QueryRowContext(ctx, `SELECT event_count FROM session_transcript_cold_archives WHERE session_id = ?`, id).Scan(&events) == nil {
-				unread = append(unread, "events:cold-archived")
 				said := "Some of this session's events were moved to OpenClaw's cold storage, which asq does not read: they are not here."
 				if n := kit.Int(events); n > 0 {
 					said = fmt.Sprintf("%d of this session's events were moved to OpenClaw's cold storage, which asq does not read: they are not here.", n)
@@ -268,7 +267,7 @@ FROM session_windows WHERE session_id = ?`, id).Scan(&status, &mdl, &name, &bega
 					at = msgs[0].At
 				}
 				msgs = append([]transcript.Message{{Role: transcript.System, At: at,
-					Blocks: []transcript.Block{transcript.EventOf("cold_storage", said)}}}, msgs...)
+					Blocks: []transcript.Block{transcript.EventOf(model.EventColdStorage, said)}}}, msgs...)
 			}
 		}
 		return nil

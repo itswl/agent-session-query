@@ -50,12 +50,12 @@ func TestDoctorReadsConversations(t *testing.T) {
 	talk := make([]bool, 3000)
 	talk[0] = true // one conversation, then nothing but empty sessions
 	read := 0
-	n, newest, _, _, unread, err := deepRead(context.Background(), index.Store{Name: "test", Source: shelf{talk: talk, read: &read}})
-	if err != nil || n != 3000 || newest != "s0" {
-		t.Fatalf("deepRead = %d, %q, %v", n, newest, err)
+	lk, err := deepRead(context.Background(), index.Store{Name: "test", Source: shelf{talk: talk, read: &read}})
+	if err != nil || lk.sessions != 3000 || lk.newest != "s0" {
+		t.Fatalf("deepRead = %d, %q, %v", lk.sessions, lk.newest, err)
 	}
-	if unread["row:in-an-empty-one"] != 0 || unread["row:in-a-conversation"] != 1 {
-		t.Errorf("unread = %v: what the conversation held, and nothing the empty sessions did", unread)
+	if lk.unread["row:in-an-empty-one"] != 0 || lk.unread["row:in-a-conversation"] != 1 {
+		t.Errorf("unread = %v: what the conversation held, and nothing the empty sessions did", lk.unread)
 	}
 	if read > 1+doctorLook {
 		t.Errorf("%d sessions read past the conversation found; doctorLook is %d", read-1, doctorLook)
@@ -67,16 +67,16 @@ func TestDoctorReadsConversations(t *testing.T) {
 	talk = make([]bool, 20)
 	talk[3] = true
 	read = 0
-	_, newest, _, _, unread, err = deepRead(context.Background(), index.Store{Name: "test", Source: shelf{talk: talk, read: &read}})
-	if err != nil || newest != "s3" || unread["row:in-an-empty-one"] != 3 {
-		t.Errorf("drifted newest sessions: %q, %v, unread %v", newest, err, unread)
+	lk, err = deepRead(context.Background(), index.Store{Name: "test", Source: shelf{talk: talk, read: &read}})
+	if err != nil || lk.newest != "s3" || lk.unread["row:in-an-empty-one"] != 3 {
+		t.Errorf("drifted newest sessions: %q, %v, unread %v", lk.newest, err, lk.unread)
 	}
 
 	// Nothing but empty sessions: what they held is told, since it may be why
 	read = 0
-	_, _, _, _, unread, err = deepRead(context.Background(), index.Store{Name: "test", Source: shelf{talk: make([]bool, 8), read: &read}})
-	if err == nil || unread["row:in-an-empty-one"] == 0 {
-		t.Errorf("a store of empty sessions: %v, unread %v", err, unread)
+	lk, err = deepRead(context.Background(), index.Store{Name: "test", Source: shelf{talk: make([]bool, 8), read: &read}})
+	if err == nil || lk.unread["row:in-an-empty-one"] == 0 {
+		t.Errorf("a store of empty sessions: %v, unread %v", err, lk.unread)
 	}
 }
 

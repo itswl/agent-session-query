@@ -544,6 +544,12 @@ th.n, td.n { text-align: right; }
   .search { order: 5; flex-basis: calc(100% - 44px); }
   .help-drop { order: 6; }
 }
+/* A phone zooms the page into a text field set smaller than 16px as it takes focus, and in an
+   installed app leaves it zoomed: on a touch screen every field is 16px or more. Zooming is not
+   turned off — pinching stays the reader's own. */
+@media (pointer: coarse) {
+  input, textarea, select, .search input, .file-filter input, .login input { font-size: 16px; }
+}
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }

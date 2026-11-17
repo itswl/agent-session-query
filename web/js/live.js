@@ -123,12 +123,12 @@ function setSync(sync) {
 }
 
 // health is the report as it was last asked for. status.health changes — and those who
-// watch it are told — only when what the page shows of it does: which stores there are,
-// how many sessions each holds, which could not be read. The rest of the report moves
+// watch it are told — only when what the page shows of it does: the server's version,
+// which stores there are, how many sessions each holds, which could not be read. The rest of the report moves
 // with every line an agent writes.
 export function health() {
   healthP ||= api('/api/health').then((h) => {
-    const key = JSON.stringify([h.stores, h.warnings]);
+    const key = JSON.stringify([h.version, h.stores, h.warnings]);
     if (key !== healthKey || !status.health) {
       healthKey = key;
       status.health = h;

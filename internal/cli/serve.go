@@ -97,7 +97,7 @@ func cmdMCP(ctx context.Context, args []string, io *streams) error {
 	// person who runs it at a terminal sees it wait for input that never makes sense to
 	// type, so it says what it is for
 	if fromTerminal(io.in) {
-		fmt.Fprintln(io.err, "asq mcp speaks JSON-RPC on stdin and stdout, for an MCP client to start: claude mcp add asq -- asq mcp (see 'asq mcp -h'). Ctrl+C or Ctrl+D ends it.")
+		fmt.Fprintf(io.err, "asq %s: asq mcp speaks JSON-RPC on stdin and stdout, for an MCP client to start: claude mcp add asq -- asq mcp (see 'asq mcp -h'). Ctrl+C or Ctrl+D ends it.\n", app.Version)
 	}
 	err = mcp.New(a, io.err).Serve(ctx, io.in, io.out)
 	if ctx.Err() != nil {

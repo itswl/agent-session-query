@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/fixture"
 	"github.com/itswl/agent-session-query/internal/index"
 	"github.com/itswl/agent-session-query/internal/render"
@@ -74,7 +75,7 @@ func TestCommands(t *testing.T) {
 		{[]string{"files", "schema.sql", "--changed"}, []string{"changed", "/work/alpha/db/schema.sql", "#2"}},
 		{[]string{"projects"}, []string{"/work/alpha", "/work/beta"}},
 		{[]string{"resume", alpha}, []string{"/work/alpha && claude --resume " + fixture.Alpha}},
-		{[]string{"doctor"}, []string{"✓ claude", "3 transcripts", "1 turn, 3 steps"}},
+		{[]string{"doctor"}, []string{"asq " + app.Version + "\n", "✓ claude", "3 transcripts", "1 turn, 3 steps"}},
 		{[]string{"index"}, []string{"2 sessions", "1 subagent transcript", "3 turns", "✓ claude"}},
 		{[]string{"index", "path"}, []string{index}},
 		{[]string{"otel", "--dry-run", "--content", "asks"}, []string{`"resourceSpans"`, "fix the flaky test", "invoke_agent"}},
@@ -115,7 +116,7 @@ func TestJSON(t *testing.T) {
 		{[]string{"digest"}, []string{"projects", "total"}},
 		{[]string{"files", "schema"}, []string{"files", "total"}},
 		{[]string{"projects"}, []string{"projects"}},
-		{[]string{"doctor"}, []string{"stores", "ok"}},
+		{[]string{"doctor"}, []string{"version", "stores", "ok"}},
 		{[]string{"index"}, []string{"version", "index", "totals", "sync", "stores", "warnings"}},
 	} {
 		out, errs, code := asq(t, h, index, append(tc.args, "--json")...)
@@ -375,5 +376,16 @@ func TestDoctorLooksPastEmptySessions(t *testing.T) {
 	out, errs, code := asq(t, h, indexPath, "doctor")
 	if code != 0 || !strings.Contains(out, "✓ claude") || !strings.Contains(out, "63 transcripts") {
 		t.Errorf("doctor: exit %d\n%s%s", code, out, errs)
+	}
+}
+
+// Which asq this is is said wherever someone would look for it: the usage, --version, and
+// doctor, whose report depends on it.
+func TestTheVersionIsSaid(t *testing.T) {
+	for _, args := range [][]string{nil, {"-h"}, {"--version"}, {"version"}} {
+		var out, errs bytes.Buffer
+		if code := Run(args, strings.NewReader(""), &out, &errs); code != 0 || !strings.HasPrefix(out.String(), "asq "+app.Version) {
+			t.Errorf("asq %q: exit %d, first line %q", args, code, strings.SplitN(out.String(), "\n", 2)[0])
+		}
 	}
 }

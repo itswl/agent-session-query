@@ -13,6 +13,7 @@ import * as digest from './js/views/digest.js';
 import { login } from './js/views/login.js';
 
 const VIEWS = { sessions, search: sessions, session, usage, failures, digest };
+const RELEASES = 'https://github.com/itswl/agent-session-query/releases/tag/';
 const NAV = [['/', 'Sessions', 'sessions search session'], ['/usage', 'Usage', 'usage'], ['/failures', 'Failures', 'failures'], ['/digest', 'Digest', 'digest']];
 const LIST_FILTERS = ['source', 'project', 'since', 'archived'];
 const HELP = [
@@ -31,6 +32,9 @@ const themeBtn = h('button', { type: 'button', class: 'icon-btn' });
 const syncEl = h('span', { class: 'sync', role: 'status' });
 const syncDot = h('span', { class: 'dot', 'aria-hidden': 'true' });
 const syncText = h('span', { class: 'sync-text' });
+const brand = h('a', { class: 'brand', href: '/', 'aria-label': 'asq — sessions' }, h('img', { src: '/icons/icon-192.png', alt: '', width: 20, height: 20 }), h('span', null, 'asq'));
+const versionEl = h('p', { class: 'help-foot' });
+let loadedVersion = ''; // the server's version when this page was loaded: what its script is
 const navLinks = NAV.map(([href, label, names]) => h('a', { href, dataset: { names } }, label));
 // Pointing at a view asks for what it will show, so that it is there when the click lands
 for (const a of navLinks) {
@@ -96,7 +100,8 @@ function buildBar(signedIn) {
     if (e.key === 'Escape') { e.preventDefault(); search.blur(); }
   });
   const help = h('div', { class: 'help', role: 'dialog', 'aria-label': 'Search syntax and keys' },
-    HELP.map(([title, rows]) => h('section', null, h('h2', null, title), h('dl', null, rows.map(([k, d]) => h('div', null, h('dt', null, h('kbd', null, k)), h('dd', null, d)))))));
+    HELP.map(([title, rows]) => h('section', null, h('h2', null, title), h('dl', null, rows.map(([k, d]) => h('div', null, h('dt', null, h('kbd', null, k)), h('dd', null, d)))))),
+    versionEl);
   themeBtn.addEventListener('click', () => {
     const next = theme() === 'dark' ? 'light' : 'dark';
     document.documentElement.dataset.theme = next;
@@ -105,7 +110,7 @@ function buildBar(signedIn) {
   });
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderTheme);
   fill(bar,
-    h('a', { class: 'brand', href: '/', 'aria-label': 'asq — sessions' }, h('img', { src: '/icons/icon-192.png', alt: '', width: 20, height: 20 }), h('span', null, 'asq')),
+    brand,
     h('nav', { class: 'nav', 'aria-label': 'Views' }, navLinks),
     form,
     dropdown(helpBtn, help, 'help-drop'),
@@ -196,6 +201,7 @@ function renderStatus(st) {
   }
   if (st.health !== seenHealth) {
     seenHealth = st.health;
+    renderVersion(seenHealth?.version);
     renderWarnings();
   }
   // A connection that is a moment in coming is not news: it is said if it lasts
@@ -219,9 +225,31 @@ function drawStatus(cls, text, title) {
 }
 
 // A store that could not be read says so, so that its silence is not read as "no sessions"
+// The version the server is, at the foot of the help and on the name in the bar. A
+// release links to what it changed. A page left open while the server was upgraded runs
+// the script it was loaded with, and says so (see renderWarnings).
+function renderVersion(v) {
+  if (!v) return;
+  loadedVersion ||= v;
+  brand.title = `asq ${v}`;
+  const released = /^v\d+\.\d+\.\d+$/.test(v);
+  fill(versionEl, 'asq ', h('span', { class: 'mono' }, v),
+    released && [' · ', h('a', { href: RELEASES + v, target: '_blank', rel: 'noopener' }, 'what changed')]);
+}
+
 function renderWarnings() {
   const key = (w) => w.source + '\n' + w.error;
-  notices.replaceChildren(...(seenHealth?.warnings || []).filter((w) => !dismissed.has(key(w))).map((w) =>
+  const now = seenHealth?.version;
+  const updated = loadedVersion && now && now !== loadedVersion && !dismissed.has('version ' + now) &&
+    h('div', { class: 'notice warn', role: 'status' }, icon('alert'),
+      h('p', null, `asq is now ${now}; this page was loaded from ${loadedVersion}. Reload to use the new one.`),
+      h('button', { type: 'button', class: 'btn', onclick: () => location.reload() }, 'Reload'),
+      h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Dismiss the notice about the update', onclick() {
+        dismissed.add('version ' + now);
+        sessionStorage.setItem('asq-dismissed', JSON.stringify([...dismissed]));
+        renderWarnings();
+      } }, icon('x')));
+  notices.replaceChildren(...[updated].filter(Boolean), ...(seenHealth?.warnings || []).filter((w) => !dismissed.has(key(w))).map((w) =>
     h('div', { class: 'notice warn', role: 'alert' }, icon('alert'),
       h('p', null, h('strong', null, w.source), ' could not be read: ', w.error, w.location && h('span', { class: 'dim' }, ` (${w.location})`)),
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Dismiss the notice about ${w.source}`, onclick() {

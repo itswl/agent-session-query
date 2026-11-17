@@ -53,10 +53,15 @@ A <ref> is what ls and search print — claude/3f2a9c1e — or just the start of
 id. Every command takes --json. 'asq <command> -h' lists a command's flags.
 `
 
+// usageText is the usage, its first line naming the version this binary is.
+func usageText() string {
+	return strings.Replace(usage, "asq —", "asq "+app.Version+" —", 1)
+}
+
 // Run runs one command and returns the process's exit code.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprint(stdout, usage)
+		fmt.Fprint(stdout, usageText())
 		return 0
 	}
 	name, rest := args[0], args[1:]
@@ -64,13 +69,13 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if !ok {
 		switch name {
 		case "-h", "--help", "help":
-			fmt.Fprint(stdout, usage)
+			fmt.Fprint(stdout, usageText())
 			return 0
 		case "-v", "--version", "version":
 			fmt.Fprintln(stdout, "asq", app.Version)
 			return 0
 		}
-		fmt.Fprintf(stderr, "asq: unknown command %q\n\n%s", name, usage)
+		fmt.Fprintf(stderr, "asq: unknown command %q\n\n%s", name, usageText())
 		return 2
 	}
 	// Ctrl+C or a TERM asks the command to finish what it is doing and stop. Once asked,
@@ -764,10 +769,12 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 		checks = append(checks, ck)
 	}
 	if c.json {
-		if err := printJSON(io.out, map[string]any{"stores": checks, "ok": !failed}); err != nil {
+		if err := printJSON(io.out, map[string]any{"version": app.Version, "stores": checks, "ok": !failed}); err != nil {
 			return err
 		}
 	} else {
+		// Which asq this is comes first: what a store reads as depends on it
+		fmt.Fprintf(io.out, "asq %s\n", app.Version)
 		for _, ck := range checks {
 			switch {
 			case !ck.Found:

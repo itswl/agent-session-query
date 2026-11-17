@@ -175,6 +175,8 @@ kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width:
 .help dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 12px; margin-bottom: 12px; font-size: 12.5px; }
 .help dl > div { display: contents; }
 .help dd { color: var(--muted); }
+.help-foot { margin: 2px -16px 0; padding: 8px 16px 4px; border-top: 1px solid var(--line); color: var(--faint); font-size: 12px; }
+.help-foot:empty { display: none; }
 /* The status holds its place and its figures hold their width: nothing beside it moves
    when what it says changes. It pulses only for a catch-up, and slowly. */
 .sync { display: inline-flex; align-items: center; gap: 6px; min-width: 76px; font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -478,7 +480,7 @@ th.n, td.n { text-align: right; }
 @media (max-width: 720px) {
   /* the bar scrolls away on a phone, so whatever stuck below it sticks to the top */
   :root { --bar-h: 0px; }
-  .bar { position: static; flex-wrap: wrap; height: auto; gap: 8px 6px; padding: 8px 12px; }
+  .bar { position: relative; flex-wrap: wrap; height: auto; gap: 8px 6px; padding: 8px 12px; }
   .brand span, .search kbd, .sync .sync-text { display: none; }
   .sync.busy .sync-text { display: inline; }
   .nav a { padding: 5px 7px; }
@@ -489,6 +491,13 @@ th.n, td.n { text-align: right; }
      token the way out. The search gives up room for both and takes back what is unused. */
   .search { order: 4; flex: 1 1 calc(100% - 84px); max-width: none; margin: 0; }
   .help-drop { order: 5; }
+  /* The help opens under the bar, across it, rather than from its button: the button sits
+     inside the second row, and a panel the width of the screen hung from it runs off the
+     left edge. A key too long for its column wraps rather than squeeze what it does. */
+  .dropdown.help-drop { position: static; }
+  .help { top: calc(100% + 4px); left: 12px; right: 12px; width: auto; }
+  .help dl { grid-template-columns: fit-content(45%) minmax(0, 1fr); }
+  .help kbd { white-space: normal; overflow-wrap: anywhere; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
   .bar > .signout { order: 6; }
   .notices, .page, .session { padding-left: 12px; padding-right: 12px; }
   .turn, .t-day { padding-left: 18px; }

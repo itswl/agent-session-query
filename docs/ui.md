@@ -118,6 +118,10 @@ If the index is still reading a large history, the bar says how far it is and wh
 covers what has been read. If a store could not be read, a notice says which and why: an empty
 list is never the only sign that something broke.
 
+Which `asq` is running is at the foot of the help (`?`), with a link to what that release
+changed, and on the name in the bar. A page left open while the server was upgraded still runs
+the page it was loaded with; it says so, and offers to reload.
+
 ## Quick, and quiet
 
 **Going from one view to another is not a wait.** Each view keeps what it was last answered for

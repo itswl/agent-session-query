@@ -192,10 +192,11 @@ images are also built and run on every push, so a tag is not where a broken one 
 ### Signing for macOS
 
 macOS remembers whether a program may read a folder it guards — Documents, Desktop, Downloads,
-iCloud Drive, another disk — against the program's signature. The release signs both macOS
-binaries with one certificate and the identifier `io.github.itswl.asq`, so every release is the
-same program to it and the answer outlasts an upgrade. Go's own signature is a hash of the one
-build: a binary built from source is asked again after every build.
+iCloud Drive, another disk — against the program's signature. Go's own signature is a hash of the
+one build, so every release is a new program to it and its users are asked again. Once the
+repository has the certificate below, the release signs both macOS binaries with it and the
+identifier `io.github.itswl.asq`: every release is then the same program to macOS, and the answer
+outlasts an upgrade. A binary built from source is still asked again after every build.
 
 The certificate is self-signed, made once, and must never change: a release signed with another
 — or not signed — has every macOS user asked again. It is set up in the repository's settings:

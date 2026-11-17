@@ -883,7 +883,7 @@ func result(id, name string, response map[string]any, display, status string) tr
 		}
 	}
 	if name == shellTool {
-		code, exited, signalled := shellEnd(output)
+		code, exited, signalled := shellEnd(output, display)
 		if exited {
 			outcome.Exit = transcript.ExitOf(code)
 		}
@@ -914,7 +914,12 @@ const shellTool = "run_shell_command"
 // read from the end. The code is known only where the tool wrote one: a 0 goes unsaid in
 // 0.68, and so does the code of a command cancelled, sent to the background or summarised.
 // A signal that ended it is a command that did not finish.
-func shellEnd(output string) (code int, exited, signalled bool) {
+//
+// What the command printed may end in lines that read like the tool's ("Exit Code: 0").
+// display, what the user was shown, is the output alone (measured: every command of 0.68),
+// and where the text opens with it, only what follows is the tool's. Where it does not,
+// the tool's lines are read from the end in the order it writes them, each once.
+func shellEnd(output, display string) (code int, exited, signalled bool) {
 	text := strings.TrimSpace(output)
 	if rest, ok := strings.CutPrefix(text, "<untrusted_context"); ok {
 		if _, body, found := strings.Cut(rest, ">"); found {
@@ -924,28 +929,38 @@ func shellEnd(output string) (code int, exited, signalled bool) {
 	if !strings.HasPrefix(text, "Output:") && !strings.HasPrefix(text, "Command:") {
 		return 0, false, false
 	}
-	lines := strings.Split(text, "\n")
-	for i := len(lines) - 1; i > 0; i-- {
+	lines, first := strings.Split(text, "\n"), 1 // the first line is the command's, or its output's
+	if display != "" {
+		if rest, ok := strings.CutPrefix(text, "Output: "+display); ok && (rest == "" || rest[0] == '\n') {
+			lines, first = strings.Split(strings.TrimPrefix(rest, "\n"), "\n"), 0
+		}
+	}
+	at := -1
+	for i := len(lines) - 1; i >= first; i-- {
 		key, value, _ := strings.Cut(strings.TrimSpace(lines[i]), ":")
+		rank, ok := trailer[key]
+		if !ok || rank <= at {
+			break
+		}
+		at = rank
 		value = strings.TrimSpace(value)
 		switch key {
-		case "Process Group PGID", "Background PIDs", "Error":
-			continue
 		case "Signal":
 			if n, err := strconv.Atoi(value); err == nil && n > 0 {
 				signalled = true
 			}
-			continue
 		case "Exit Code":
 			if n, err := strconv.Atoi(value); err == nil {
 				code, exited = n, true
 			}
-			continue
 		}
-		break
 	}
 	return code, exited, signalled
 }
+
+// trailer is the lines the shell tool writes after a command's output, by how far from
+// the end each comes.
+var trailer = map[string]int{"Process Group PGID": 0, "Background PIDs": 1, "Signal": 2, "Exit Code": 3, "Error": 4}
 
 // thoughtText flattens thoughts into text. Gemini CLI has two generations of the format: a
 // plain string, or a [{subject, description, timestamp}] array, of which the description

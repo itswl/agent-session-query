@@ -798,30 +798,40 @@ func TestCwdWithoutAProjectRoot(t *testing.T) {
 // what it printed, and not from another tool.
 func TestShellExitCodes(t *testing.T) {
 	for _, c := range []struct {
-		output            string
+		output, display   string
 		code              int
 		exited, signalled bool
 	}{
-		{"<untrusted_context>\nOutput: x\nExit Code: 1\nProcess Group PGID: 7\n</untrusted_context>", 1, true, false},
-		{"Output: (empty)\nExit Code: 127\nBackground PIDs: 9\nProcess Group PGID: 7", 127, true, false},
-		{"<untrusted_context>\nOutput: ok\nProcess Group PGID: 7\n</untrusted_context>", 0, false, false},
-		{"Output: Exit Code: 3", 0, false, false},
-		{"Output: done\nSignal: 15\nProcess Group PGID: 7", 0, false, true},
-		{"Output: \nError: spawn sh ENOENT\nProcess Group PGID: 7", 0, false, false},
-		{"Command was cancelled by user before it could complete. There was no output before it was cancelled.", 0, false, false},
-		{"Command moved to background (PID: 9). Output hidden. Press Ctrl+B to view.", 0, false, false},
-		{"Output: x\nExit Code: (none)", 0, false, false},
+		{"<untrusted_context>\nOutput: x\nExit Code: 1\nProcess Group PGID: 7\n</untrusted_context>", "", 1, true, false},
+		{"Output: (empty)\nExit Code: 127\nBackground PIDs: 9\nProcess Group PGID: 7", "", 127, true, false},
+		{"<untrusted_context>\nOutput: ok\nProcess Group PGID: 7\n</untrusted_context>", "ok", 0, false, false},
+		{"Output: Exit Code: 3", "", 0, false, false},
+		{"Output: done\nSignal: 15\nProcess Group PGID: 7", "done", 0, false, true},
+		{"Output: \nError: spawn sh ENOENT\nProcess Group PGID: 7", "", 0, false, false},
+		{"Command was cancelled by user before it could complete. There was no output before it was cancelled.", "", 0, false, false},
+		{"Command moved to background (PID: 9). Output hidden. Press Ctrl+B to view.", "", 0, false, false},
+		{"Output: x\nExit Code: (none)", "", 0, false, false},
+		// What the command printed ends in lines like the tool's: the tool's are the last,
+		// each once — and with what the user was shown, only what follows that
+		{"Output: make: ok\nExit Code: 0\nExit Code: 1\nProcess Group PGID: 7", "", 1, true, false},
+		{"Output: tests\nSignal: 9\nExit Code: 0\nExit Code: 2\nProcess Group PGID: 7", "", 2, true, false},
+		{"Output: done\nExit Code: 5\nProcess Group PGID: 7", "done\nExit Code: 5", 0, false, false},
+		{"Output: done\nExit Code: 5\nExit Code: 1\nProcess Group PGID: 7", "done\nExit Code: 5", 1, true, false},
+		{"Output: done\nExit Code: 1\nProcess Group PGID: 7", "something else", 1, true, false},
 		// Before 0.68: every line, "(none)" where there was nothing to say
-		{"Command: ls /missing\nDirectory: (root)\nOutput: ls: /missing: No such file\nError: (none)\nExit Code: 2\nSignal: (none)\nBackground PIDs: (none)\nProcess Group PGID: 7", 2, true, false},
-		{"Command: true\nDirectory: (root)\nOutput: (empty)\nError: (none)\nExit Code: 0\nSignal: (none)\nBackground PIDs: (none)\nProcess Group PGID: 7", 0, true, false},
+		{"Command: ls /missing\nDirectory: (root)\nOutput: ls: /missing: No such file\nError: (none)\nExit Code: 2\nSignal: (none)\nBackground PIDs: (none)\nProcess Group PGID: 7", "", 2, true, false},
+		{"Command: true\nDirectory: (root)\nOutput: (empty)\nError: (none)\nExit Code: 0\nSignal: (none)\nBackground PIDs: (none)\nProcess Group PGID: 7", "", 0, true, false},
 	} {
-		code, exited, signalled := shellEnd(c.output)
+		code, exited, signalled := shellEnd(c.output, c.display)
 		if code != c.code || exited != c.exited || signalled != c.signalled {
-			t.Errorf("shellEnd(%q) = %d, %v, %v; want %d, %v, %v", c.output, code, exited, signalled, c.code, c.exited, c.signalled)
+			t.Errorf("shellEnd(%q, %q) = %d, %v, %v; want %d, %v, %v", c.output, c.display, code, exited, signalled, c.code, c.exited, c.signalled)
 		}
 	}
 	if killed := result("r0", shellTool, map[string]any{"output": "Output: done\nSignal: 15\nProcess Group PGID: 7"}, "", "success"); killed.Status != model.StatusInterrupted {
 		t.Errorf("a command a signal ended = %+v", killed.Outcome)
+	}
+	if passed := result("r0", shellTool, map[string]any{"output": "Output: done\nExit Code: 5\nProcess Group PGID: 7"}, "done\nExit Code: 5", "success"); passed.Status != model.StatusOK || passed.Exit != nil {
+		t.Errorf("a command that passed, whose output ends in an exit code of its own = %+v", passed.Outcome)
 	}
 	other := result("r1", "read_file", map[string]any{"output": "Output: x\nExit Code: 2"}, "", "success")
 	if other.Exit != nil || other.Status != model.StatusOK {

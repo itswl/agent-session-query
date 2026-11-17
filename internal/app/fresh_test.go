@@ -59,10 +59,27 @@ func TestWhenAQuestionWaitsForTheStores(t *testing.T) {
 	a.mu.Lock()
 	a.running, a.caught, a.last, a.began = reading, caught, time.Time{}, time.Now()
 	a.mu.Unlock()
+	a.mu.Lock()
+	a.caughtAt = time.Now()
+	a.mu.Unlock()
 	if start := time.Now(); !a.Fresh(ctx, maxAge, 5*time.Second) || time.Since(start) > time.Second {
 		t.Errorf("a question waited %v for a history read again only for a new reading", time.Since(start))
 	}
+	// and while that goes on for longer than maxAge, nothing new is read: not fresh, and
+	// not waited for either
+	a.mu.Lock()
+	a.caughtAt = time.Now().Add(-2 * maxAge)
+	a.mu.Unlock()
+	if start := time.Now(); a.Fresh(ctx, maxAge, 5*time.Second) || time.Since(start) > time.Second {
+		t.Errorf("a question %v into a long reading again was answered as fresh, or waited for it", time.Since(start))
+	}
+	if b := a.Behind(); b < 2*maxAge || b > 2*maxAge+time.Minute {
+		t.Errorf("behind by %v, %v after it caught up", b, 2*maxAge)
+	}
 	over(reading)
+	if b := a.Behind(); b != 0 {
+		t.Errorf("behind by %v with no sync under way", b)
+	}
 
 	if _, err := a.Sync(ctx, index.SyncOptions{}); err != nil {
 		t.Fatal(err)
@@ -171,8 +188,12 @@ func TestCaughtUpIsWhenTheQuestionsGo(t *testing.T) {
 	let, held := false, false
 	res, err := a.Sync(ctx, index.SyncOptions{CaughtUp: func() {
 		a.mu.Lock()
-		caught, running := a.caught, a.running
+		caught, running, at := a.caught, a.running, a.caughtAt
 		a.mu.Unlock()
+		if at.IsZero() {
+			held = false // the time it caught up is what tells a question later on
+			return
+		}
 		select {
 		case <-caught:
 			let = true

@@ -273,7 +273,10 @@ func (s *Server) run(ctx context.Context, t tool, given map[string]any) (string,
 
 	var notes []string
 	if !fresh {
-		if st := s.App.Index.State(); st.Running && st.Total > 0 {
+		st := s.App.Index.State()
+		if behind := s.App.Behind(); behind > 0 {
+			notes = append(notes, fmt.Sprintf("The index is reading the history again for a newer reading of it (%d of %d transcripts): every session is here, but what changed in the last %s is not yet.", st.Done, st.Total, behind.Round(time.Second)))
+		} else if st.Running && st.Total > 0 {
 			notes = append(notes, fmt.Sprintf("The index is still reading the history (%d of %d transcripts): this answer covers what has been read so far.", st.Done, st.Total))
 		} else {
 			notes = append(notes, "The index is still catching up: this answer may miss the last few seconds.")

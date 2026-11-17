@@ -33,13 +33,14 @@ type App struct {
 	Index *index.Index
 	Set   *catalog.Set
 
-	mu      sync.Mutex
-	running chan struct{} // closed when the sync in flight ends; nil when none is
-	caught  chan struct{} // closed when it has read what is new (index.SyncOptions.CaughtUp), or ends
-	began   time.Time     // when the sync in flight began
-	syncs   atomic.Int64  // how many reads of the stores have run
-	last    time.Time     // when the last sync ended
-	lastErr error
+	mu       sync.Mutex
+	running  chan struct{} // closed when the sync in flight ends; nil when none is
+	caught   chan struct{} // closed when it has read what is new (index.SyncOptions.CaughtUp), or ends
+	began    time.Time     // when the sync in flight began
+	caughtAt time.Time     // when it caught up; zero until it has
+	syncs    atomic.Int64  // how many reads of the stores have run
+	last     time.Time     // when the last sync ended
+	lastErr  error
 }
 
 // Open opens the index and resolves the stores.
@@ -88,7 +89,7 @@ func (a *App) Sync(ctx context.Context, opts index.SyncOptions) (index.SyncResul
 // claim marks a sync as under way, from now. a.mu must be held, and no sync running.
 func (a *App) claim() (done, caught chan struct{}) {
 	done, caught = make(chan struct{}), make(chan struct{})
-	a.running, a.caught, a.began = done, caught, time.Now()
+	a.running, a.caught, a.began, a.caughtAt = done, caught, time.Now(), time.Time{}
 	return done, caught
 }
 
@@ -96,7 +97,14 @@ func (a *App) claim() (done, caught chan struct{}) {
 func (a *App) run(ctx context.Context, opts index.SyncOptions, done, caught chan struct{}) (index.SyncResult, error) {
 	a.syncs.Add(1)
 	var once sync.Once
-	up := func() { once.Do(func() { close(caught) }) }
+	up := func() {
+		once.Do(func() {
+			a.mu.Lock()
+			a.caughtAt = time.Now()
+			a.mu.Unlock()
+			close(caught)
+		})
+	}
 	then := opts.CaughtUp
 	opts.CaughtUp = func() {
 		up()
@@ -132,9 +140,15 @@ func (a *App) run(ctx context.Context, opts index.SyncOptions, done, caught chan
 //
 // What is waited for is what is new or changed in the stores. A read that goes on to read
 // the rest again, because an adapter now reads it differently (index.SyncOptions.CaughtUp),
-// does that after the question is answered.
+// does that after the question is answered — and looks at the stores no more until it is
+// done, which on a large history is minutes. Once it caught up longer ago than maxAge, the
+// index is not fresh, and waiting does not make it so.
 func (a *App) Fresh(ctx context.Context, maxAge, wait time.Duration) bool {
 	a.mu.Lock()
+	if a.running != nil && !a.caughtAt.IsZero() && time.Since(a.caughtAt) > maxAge {
+		a.mu.Unlock()
+		return false
+	}
 	// running is closed once the sync in flight has read what is new: see above
 	running, began, last := a.caught, a.began, a.last
 	switch {
@@ -175,6 +189,18 @@ func (a *App) Fresh(ctx context.Context, maxAge, wait time.Duration) bool {
 	case <-ctx.Done():
 		return false
 	}
+}
+
+// Behind is how long the index has not looked at the stores while a sync that caught up
+// with them reads the history again for a newer reading (see Fresh); 0 when it is not.
+// Every session is in the index meanwhile; what changed in that time is not yet.
+func (a *App) Behind() time.Duration {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.running == nil || a.caughtAt.IsZero() {
+		return 0
+	}
+	return max(time.Since(a.caughtAt), time.Nanosecond)
 }
 
 // Watch keeps the index in step until ctx ends, looking at the stores every interval.

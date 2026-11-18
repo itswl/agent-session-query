@@ -485,10 +485,17 @@ RETURNING sid`,
 
 		// The turns whose words are to be written again though their rows are not: those
 		// another asq wrote, and the one that holds the title when it changed — which the
-		// upsert above has just named, if it did (see wordsStale)
-		stale, err := staleTurns(ctx, tx, sid)
+		// upsert above has just named, if it did (see wordsStale). A newer asq's table is
+		// left to it: those are its to write (see wordsAhead)
+		ahead, err := wordsAhead(ctx, tx)
 		if err != nil {
 			return err
+		}
+		stale := map[int]bool{}
+		if !ahead {
+			if stale, err = staleTurns(ctx, tx, sid); err != nil {
+				return err
+			}
 		}
 		words := func(t *turnRow, again bool) error {
 			title := ""
@@ -529,7 +536,11 @@ RETURNING sid`,
 				return err
 			}
 		}
-		// Every turn the session has now holds the words this asq writes
+		// Every turn the session has now holds the words this asq writes — which, in a newer
+		// asq's table, that asq is still to write its own way
+		if ahead {
+			return nil
+		}
 		_, err = tx.ExecContext(ctx, `DELETE FROM words_stale WHERE sid = ?`, sid)
 		return err
 	})

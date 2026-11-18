@@ -122,24 +122,16 @@ func addColumn(db *sql.DB, table, column, decl string) error {
 	return tx.Commit()
 }
 
-// newWords makes the words table anew when what it holds is not what wordsVersion names:
-// dropped and created again, empty, with every turn the index holds named in words_stale
-// for the next sync to write its words from what the index holds (see Index.refill).
-// Nothing is read from a transcript for it, and an asq that does not know the table's
-// new shape goes on using it: the columns it writes are the first five, as they were.
-// The look is made again under the write lock, as in addColumn.
+// newWords makes the words table anew when an older asq made it — its wordsVersion lower
+// than this one's, or none: dropped and created again, empty, with every turn the index
+// holds named in words_stale for the next sync to write its words from what the index
+// holds (see Index.refill). Nothing is read from a transcript for it, and an asq that does
+// not know the table's new shape goes on using it: the columns it writes are the first
+// five, as they were. A table a newer asq made is left as it is (see wordsAhead). The look
+// is made again under the write lock, as in addColumn.
 func newWords(db *sql.DB) error {
-	current := func(q interface {
-		QueryRow(string, ...any) *sql.Row
-	}) (bool, error) {
-		var v string
-		err := q.QueryRow(`SELECT value FROM meta WHERE key = 'words'`).Scan(&v)
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
-		}
-		return v == wordsVersion, err
-	}
-	if ok, err := current(db); err != nil || ok {
+	ctx := context.Background()
+	if v, err := wordsMadeBy(ctx, db); err != nil || v >= wordsVersion {
 		return err
 	}
 	tx, err := db.Begin() // BEGIN IMMEDIATE: see Open
@@ -147,20 +139,48 @@ func newWords(db *sql.DB) error {
 		return err
 	}
 	defer tx.Rollback()
-	if ok, err := current(tx); err != nil || ok {
+	if v, err := wordsMadeBy(ctx, tx); err != nil || v >= wordsVersion {
 		return err
 	}
 	for _, q := range []string{
 		`DROP TABLE IF EXISTS words`,
 		wordsTable,
 		`INSERT OR IGNORE INTO words_stale (sid, idx) SELECT sid, idx FROM turns`,
-		`INSERT OR REPLACE INTO meta (key, value) VALUES ('words', '` + wordsVersion + `')`,
+		`INSERT OR REPLACE INTO meta (key, value) VALUES ('words', '` + strconv.Itoa(wordsVersion) + `')`,
 	} {
 		if _, err := tx.Exec(q); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
+}
+
+// querier is a database or a transaction, to read from.
+type querier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// wordsMadeBy is the wordsVersion of the asq that made the words table: 0 when the index
+// does not say, as one before wordsVersion leaves it.
+func wordsMadeBy(ctx context.Context, q querier) (int, error) {
+	var v string
+	err := q.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'words'`).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	n, _ := strconv.Atoi(v)
+	return n, err
+}
+
+// wordsAhead reports whether a newer asq made the words table: one that writes what it
+// holds otherwise. This one leaves it as it is, searches it as well as it can, and writes
+// the columns it knows for the turns it reads; what words_stale names is the newer asq's
+// to write, and is not written or cleared here (see Index.write and Index.refill). It is
+// asked at each write, since a newer asq may make the table anew while this one has the
+// index open.
+func wordsAhead(ctx context.Context, q querier) (bool, error) {
+	v, err := wordsMadeBy(ctx, q)
+	return v > wordsVersion, err
 }
 
 // DefaultPath is where the index lives unless told otherwise: the user's cache

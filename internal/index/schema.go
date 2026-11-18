@@ -223,13 +223,15 @@ const wordsTable = `CREATE VIRTUAL TABLE IF NOT EXISTS words USING fts5 (
   tokenize = "unicode61 remove_diacritics 2"
 )`
 
-// wordsVersion names what the words table holds, in the meta table under "words". An index
-// whose table holds anything else — an older asq made it — has it made anew when it is
-// opened, empty, and every turn named in words_stale: the next sync writes them all again
-// from what the index holds, without reading a transcript (see Index.refill).
+// wordsVersion numbers what the words table holds, in the meta table under "words": a
+// change to it raises the number. An index whose table an older asq made — a lower number,
+// or none — has it made anew when it is opened, empty, and every turn named in words_stale:
+// the next sync writes them all again from what the index holds, without reading a
+// transcript (see Index.refill). One a newer asq made is left to it (see wordsAhead), so
+// that two releases sharing an index do not make it anew, each its own way, by turns.
 //
 // 2: the session's title, and the stems of English words.
-const wordsVersion = "2"
+const wordsVersion = 2
 
 // wordsStale names, in words_stale, the turns whose words another asq wrote: a turn it
 // inserted, or the first ask of a session whose title it changed (see titleTurn). One that

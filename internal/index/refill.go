@@ -15,7 +15,8 @@ import (
 // items are in the index, and what it keeps of them as a preview is kept whole beside it.
 // The latest sessions first, whole, a few hundred turns to a transaction: a transaction
 // each would cost more than the words, and one for all would hold every other writer
-// back. done is called for each session written.
+// back. done is called for each session written. It stops when a newer asq has made the
+// table its own (see wordsAhead).
 func (ix *Index) refill(ctx context.Context, done func()) error {
 	for {
 		if err := ctx.Err(); err != nil {
@@ -41,9 +42,13 @@ func (ix *Index) refill(ctx context.Context, done func()) error {
 		if len(sids) == 0 {
 			return nil
 		}
-		written := 0
+		written, ahead := 0, false
 		err = ix.tx(ctx, func(tx *sql.Tx) error {
 			written = 0
+			var err error
+			if ahead, err = wordsAhead(ctx, tx); err != nil || ahead {
+				return err
+			}
 			for turns := 0; written < len(sids) && turns < refillTurns; written++ {
 				n, err := ix.refillSession(ctx, tx, sids[written])
 				if err != nil {
@@ -58,6 +63,9 @@ func (ix *Index) refill(ctx context.Context, done func()) error {
 		}
 		for range written {
 			done()
+		}
+		if ahead {
+			return nil
 		}
 	}
 }

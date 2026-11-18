@@ -131,9 +131,12 @@ One package and one line.
    that list differently and share a file would remove each other's sessions on every sync.
 
    A change to what the search's words table holds for a turn — its columns, what goes in them —
-   is neither: it raises `wordsVersion` beside `schemaVersion`. An index whose table holds
-   anything else has it made anew when it is opened, and the next sync writes every turn's words
-   from what the index holds, without reading a transcript.
+   is neither: it raises `wordsVersion` beside `schemaVersion`. An index whose table an older
+   `asq` made has it made anew when it is opened, and the next sync writes every turn's words
+   from what the index holds, without reading a transcript. One a newer `asq` made is left as it
+   is: the older one searches it and writes the columns it knows, and leaves the turns it writes
+   for the newer one to write again. So a change keeps the columns there are, in their order, and
+   adds any after them.
 
    `Retention` is for a CLI that deletes its own old sessions by default: one clause saying what
    it deletes, after how long, and the setting and file that change it, as the CLI's own

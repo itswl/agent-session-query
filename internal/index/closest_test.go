@@ -408,3 +408,71 @@ func TestPartialMatchesOfManyWords(t *testing.T) {
 		}
 	}
 }
+
+func TestWordsOfANewerAsqAreLeftAlone(t *testing.T) {
+	h := fixture.Write(t)
+	cfg := h.Config(t)
+	a, err := app.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := a.Sync(ctx, index.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", cfg.IndexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	count := func(q string) (n int) {
+		t.Helper()
+		if err := db.QueryRow(q).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	// A later asq opens the index while this one has it open: it makes the words table
+	// anew, its own way, and names every turn for its next sync to write
+	for _, q := range []string{
+		`UPDATE meta SET value = '99' WHERE key = 'words'`,
+		`INSERT OR IGNORE INTO words_stale (sid, idx) SELECT sid, idx FROM turns`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queued := count(`SELECT count(*) FROM words_stale`)
+	if queued == 0 {
+		t.Fatal("nothing queued")
+	}
+	// This one leaves those turns to it, whether it reads anything or not
+	for _, o := range []index.SyncOptions{{}, {Rebuild: true}} {
+		if _, err := a.Sync(ctx, o); err != nil {
+			t.Fatal(err)
+		}
+		if n := count(`SELECT count(*) FROM words_stale`); n != queued {
+			t.Errorf("a sync (%+v) of the older asq left %d of the %d turns the newer one is to write", o, n, queued)
+		}
+	}
+	a.Close()
+
+	// … and opened again, it leaves the table as it is, and searches it
+	a, err = app.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	f := filter(a)
+	f.Agents = true
+	if got, _ := a.Index.Search(ctx, index.ParseQuery("rotating"), f, index.SearchOptions{}); got.Total != 1 {
+		t.Errorf("rotating in the newer table: %d", got.Total)
+	}
+	if _, err := a.Sync(ctx, index.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	var v string
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'words'`).Scan(&v); err != nil || v != "99" || count(`SELECT count(*) FROM words_stale`) != queued {
+		t.Errorf("the words table is %q, %v, with %d turns queued: the newer asq's, as it left them", v, err, count(`SELECT count(*) FROM words_stale`))
+	}
+}

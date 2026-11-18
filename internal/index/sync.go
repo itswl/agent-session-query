@@ -236,10 +236,14 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 	}
 	// Sessions with turns whose words are to be written again from the index (see refill):
 	// before anything is read, since after the words table was made anew such a turn is
-	// not found by a search at all
+	// not found by a search at all. None when a newer asq made the table: they are its
 	var stale int
-	if err := ix.rw.QueryRowContext(ctx, `SELECT count(DISTINCT sid) FROM words_stale`).Scan(&stale); err != nil {
+	if ahead, err := wordsAhead(ctx, ix.rw); err != nil {
 		return res, err
+	} else if !ahead {
+		if err := ix.rw.QueryRowContext(ctx, `SELECT count(DISTINCT sid) FROM words_stale`).Scan(&stale); err != nil {
+			return res, err
+		}
 	}
 	found := hex.EncodeToString(condition.Sum(nil)[:5])
 	ix.setState(func(s *SyncState) {

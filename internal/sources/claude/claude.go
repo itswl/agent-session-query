@@ -50,6 +50,10 @@ var Spec = sources.Spec{
 	ResumeHere: true,
 	Reads:      2,
 	Store:      "~/.claude/projects/<project>/<session>.jsonl",
+	// Claude Code sweeps every project after a session starts, and keeps the sessions begun
+	// in Claude Desktop or Cowork at any age: "Cleaned up automatically" in
+	// code.claude.com/docs/en/claude-directory
+	Retention: "Claude Code deletes the transcripts of sessions not used for 30 days (cleanupPeriodDays in ~/.claude/settings.json)",
 }
 
 // Source is a Claude Code projects directory.

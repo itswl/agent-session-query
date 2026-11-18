@@ -742,15 +742,27 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return usageError{err}
 	}
+	return doctor(ctx, set.All(), c.json, c.style(io.out), io.out)
+}
+
+// doctor looks at each store and says what it found, in words or as JSON. It fails when a
+// store that is there cannot be read, and when it was stopped before it looked at them all.
+func doctor(ctx context.Context, stores []index.Store, asJSON bool, st render.Style, out io.Writer) error {
 	type check struct {
 		Source   string `json:"source"`
 		Location string `json:"location"`
 		Found    bool   `json:"found"`
 		Sessions int    `json:"transcripts"`
-		Newest   string `json:"newest,omitempty"`
-		Turns    int    `json:"turns"`
-		Items    int    `json:"items"`
-		Error    string `json:"error,omitempty"`
+		// Oldest is when the store last wrote the least recently written of its transcripts:
+		// how far back its history goes
+		Oldest time.Time `json:"oldest,omitzero"`
+		// Retention is what the CLI deletes of its own history (sources.Spec.Retention),
+		// said of a store that holds transcripts
+		Retention string `json:"retention,omitempty"`
+		Newest    string `json:"newest,omitempty"`
+		Turns     int    `json:"turns"`
+		Items     int    `json:"items"`
+		Error     string `json:"error,omitempty"`
 		// Unread is what the newest transcripts held that the adapter did not know how to
 		// read, by kind: the sign that a CLI changed its format
 		Unread map[string]int `json:"unread,omitempty"`
@@ -758,15 +770,16 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 		// not read (OpenClaw's cold storage)
 		Archived int `json:"archived,omitempty"`
 	}
-	st := c.style(io.out)
 	var checks []check
 	failed := false
-	for _, store := range set.All() {
+	for _, store := range stores {
 		ck := check{Source: store.Name, Location: store.Source.Location(), Found: store.Source.Exists()}
 		if ck.Found {
-			var lk look
-			lk, err = deepRead(ctx, store)
-			ck.Sessions, ck.Newest, ck.Turns, ck.Items, ck.Unread, ck.Archived = lk.sessions, lk.newest, lk.turns, lk.items, lk.unread, lk.archived
+			lk, err := deepRead(ctx, store)
+			ck.Sessions, ck.Oldest, ck.Newest, ck.Turns, ck.Items, ck.Unread, ck.Archived = lk.sessions, lk.oldest, lk.newest, lk.turns, lk.items, lk.unread, lk.archived
+			if ck.Sessions > 0 {
+				ck.Retention = store.Spec.Retention
+			}
 			if err != nil {
 				ck.Error, failed = err.Error(), true
 			}
@@ -778,37 +791,44 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 	if stopped {
 		failed = true
 	}
-	if c.json {
+	if asJSON {
 		report := map[string]any{"version": app.Version, "stores": checks, "ok": !failed}
 		if stopped {
 			report["stopped"] = true
 		}
-		if err := printJSON(io.out, report); err != nil {
+		if err := printJSON(out, report); err != nil {
 			return err
 		}
 	} else {
 		// Which asq this is comes first: what a store reads as depends on it
-		fmt.Fprintf(io.out, "asq %s\n", app.Version)
+		fmt.Fprintf(out, "asq %s\n", app.Version)
 		for _, ck := range checks {
+			oldest := ""
+			if !ck.Oldest.IsZero() {
+				oldest = ", oldest " + ck.Oldest.Local().Format(time.DateOnly)
+			}
 			switch {
 			case !ck.Found:
-				fmt.Fprintf(io.out, "· %-12s not found          %s\n", ck.Source, st.Path(ck.Location))
+				fmt.Fprintf(out, "· %-12s not found          %s\n", ck.Source, st.Path(ck.Location))
 			case ck.Error != "":
-				fmt.Fprintf(io.out, "✗ %-12s FAILED             %s\n    %s\n", ck.Source, st.Path(ck.Location), ck.Error)
+				fmt.Fprintf(out, "✗ %-12s FAILED             %s\n    %s\n", ck.Source, st.Path(ck.Location), ck.Error)
 			case ck.Newest == "" && ck.Archived > 0:
-				fmt.Fprintf(io.out, "✓ %-12s %4d transcripts   the newest are in cold storage, where they are not read   %s\n", ck.Source, ck.Sessions, st.Path(ck.Location))
+				fmt.Fprintf(out, "✓ %-12s %4d transcripts%-19s   the newest are in cold storage, where they are not read   %s\n", ck.Source, ck.Sessions, oldest, st.Path(ck.Location))
 			default:
-				fmt.Fprintf(io.out, "✓ %-12s %4d transcripts   newest read whole: %s, %s   %s\n", ck.Source, ck.Sessions, plural(ck.Turns, "turn"), plural(ck.Items, "step"), st.Path(ck.Location))
+				fmt.Fprintf(out, "✓ %-12s %4d transcripts%-19s   newest read whole: %s, %s   %s\n", ck.Source, ck.Sessions, oldest, plural(ck.Turns, "turn"), plural(ck.Items, "step"), st.Path(ck.Location))
 			}
 			if ck.Archived > 0 && ck.Newest != "" {
-				fmt.Fprintf(io.out, "  · %s of the newest read were moved in part to cold storage, where they are not read\n", plural(ck.Archived, "transcript"))
+				fmt.Fprintf(out, "  · %s of the newest read were moved in part to cold storage, where they are not read\n", plural(ck.Archived, "transcript"))
+			}
+			if ck.Retention != "" {
+				fmt.Fprintf(out, "  · %s, and they leave asq too\n", ck.Retention)
 			}
 			if len(ck.Unread) > 0 {
-				fmt.Fprintf(io.out, "  %s %s\n", st.Warn("!"), unreadLine(ck.Unread))
+				fmt.Fprintf(out, "  %s %s\n", st.Warn("!"), unreadLine(ck.Unread))
 			}
 		}
 		if stopped {
-			fmt.Fprintln(io.out, "✗ stopped before every store was looked at whole")
+			fmt.Fprintln(out, "✗ stopped before every store was looked at whole")
 		}
 	}
 	if failed {
@@ -832,6 +852,13 @@ func deepRead(ctx context.Context, store index.Store) (look, error) {
 		return lk, nil
 	}
 	sort.Slice(refs, func(i, j int) bool { return refs[i].ModTime.After(refs[j].ModTime) })
+	// The oldest is the last with a time: one at or before 1970 is a time the scan could not
+	// tell (a database row that holds none), and is no session's
+	for i := len(refs) - 1; i >= 0 && lk.oldest.IsZero(); i-- {
+		if refs[i].ModTime.Unix() > 0 {
+			lk.oldest = refs[i].ModTime
+		}
+	}
 	// The newest that holds a conversation. A session opened and closed with nothing said
 	// reads as empty and proves nothing, and a store can open with hundreds of those — a
 	// gateway that starts a session for every scheduled run, most of which say nothing —
@@ -903,8 +930,9 @@ func deepRead(ctx context.Context, store index.Store) (look, error) {
 // look is what doctor found of one store.
 type look struct {
 	sessions     int
-	newest       string // the newest that holds a conversation; "" when none was found
-	turns, items int    // of that one
+	oldest       time.Time // when the least recently written transcript was last written
+	newest       string    // the newest that holds a conversation; "" when none was found
+	turns, items int       // of that one
 	unread       map[string]int
 	archived     int // of the sessions read, how many were moved in part where they are not read
 }

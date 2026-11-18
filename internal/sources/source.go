@@ -81,6 +81,13 @@ type Spec struct {
 	Resumable func(id string) bool
 	// Store is the layout in one line, for the documentation the program prints.
 	Store string
+	// Retention is what the CLI deletes of its own history without being asked, in one
+	// clause: what it deletes, after how long by default, and the setting and the file
+	// that change it. Empty when the CLI keeps every session until someone deletes it.
+	// A session the CLI deletes is gone from its store, and the next sync takes it out of
+	// the index too, so this is how far back the CLI's history in asq goes. Doctor prints
+	// it followed by ", and they leave asq too": it names what is deleted in the plural.
+	Retention string
 	// Reads is the version of how the adapter reads its CLI's files. Raised whenever a
 	// change would read a session already in an index differently — a record now read,
 	// a figure now bounded — it has every session the index holds of the CLI, read with

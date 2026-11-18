@@ -57,6 +57,10 @@ var Spec = sources.Spec{
 	Resumable: func(id string) bool { return !strings.HasPrefix(id, "session-") },
 	Reads:     2,
 	Store:     "~/.gemini/tmp/<project>/chats/session-*.jsonl",
+	// Gemini CLI sweeps the chats of the project it starts in, by the time each was last
+	// updated (packages/cli/src/utils/sessionCleanup.ts): a project it is not started in
+	// again keeps its old sessions
+	Retention: "Gemini CLI deletes a project's sessions not used for 30 days when it next starts in that project (general.sessionRetention in ~/.gemini/settings.json)",
 }
 
 // Source is a Gemini CLI tmp directory.

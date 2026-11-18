@@ -22,6 +22,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -40,42 +41,75 @@ var Spec = sources.Spec{
 	Name:  "opencode",
 	Title: "OpenCode",
 	Locate: func(env sources.Env) string {
-		// XDG_DATA_HOME on every Unix-like — macOS included: it really is
-		// ~/.local/share/opencode there, not ~/Library/Application Support — and
-		// LOCALAPPDATA on Windows
-		if runtime.GOOS == "windows" {
-			if d := env.Getenv("LOCALAPPDATA"); d != "" {
-				return filepath.Join(d, "opencode", "opencode.db")
-			}
-			return filepath.Join(env.Home, "AppData", "Local", "opencode", "opencode.db")
+		// OPENCODE_DB names the database: as it is when it is absolute, or ":memory:" —
+		// a database kept in memory, which leaves nothing to read — and inside the data
+		// directory when it is not (packages/cli/src/database-path.ts, and the same rule
+		// in the released 1.19.6). Empty, it is not set
+		db := env.Getenv("OPENCODE_DB")
+		if db == memory || filepath.IsAbs(db) {
+			return db
 		}
-		if d := env.Getenv("XDG_DATA_HOME"); d != "" {
-			return filepath.Join(d, "opencode", "opencode.db")
-		}
-		return filepath.Join(env.Home, ".local", "share", "opencode", "opencode.db")
+		return filepath.Join(dataDir(env), kit.First(db, "opencode.db"))
 	},
 	// A --path may name the database itself or the data directory it sits in, which is
 	// the shape a redirected XDG_DATA_HOME leaves behind
-	Open: func(location string) sources.Source {
-		if filepath.Base(location) != "opencode.db" {
-			location = filepath.Join(location, "opencode.db")
-		}
-		return &Source{db: location}
-	},
+	Open:    func(location string) sources.Source { return &Source{at: location} },
 	Movable: true,
 	Resume:  "opencode --session",
 	Reads:   1,
 	Store:   "~/.local/share/opencode/opencode.db",
 }
 
+// dataDir is OpenCode's data directory: under XDG_DATA_HOME on every Unix-like — macOS
+// included: it really is ~/.local/share/opencode there, not ~/Library/Application
+// Support — and LOCALAPPDATA on Windows.
+func dataDir(env sources.Env) string {
+	if runtime.GOOS == "windows" {
+		if d := env.Getenv("LOCALAPPDATA"); d != "" {
+			return filepath.Join(d, "opencode")
+		}
+		return filepath.Join(env.Home, "AppData", "Local", "opencode")
+	}
+	if d := env.Getenv("XDG_DATA_HOME"); d != "" {
+		return filepath.Join(d, "opencode")
+	}
+	return filepath.Join(env.Home, ".local", "share", "opencode")
+}
+
+// memory is the OPENCODE_DB that keeps the database in memory.
+const memory = ":memory:"
+
 // Source is one OpenCode database.
 type Source struct {
-	db   string
+	at   string // the database, or the data directory it sits in: see path
 	list kit.Snapshot[[]sources.Ref]
 }
 
-func (s *Source) Location() string { return s.db }
-func (s *Source) Exists() bool     { return kit.Exists(s.db) }
+// path is the database. A location is the database itself — OPENCODE_DB can give it any
+// name — unless it is a directory, which is the data directory the database sits in as
+// opencode.db. Which it is is asked each time, since either can appear while asq runs.
+// A database in memory is nowhere to be read.
+func (s *Source) path() string {
+	if s.at == memory {
+		return ""
+	}
+	if info, err := os.Stat(s.at); err == nil && info.IsDir() {
+		return filepath.Join(s.at, "opencode.db")
+	}
+	return s.at
+}
+
+func (s *Source) Location() string {
+	if db := s.path(); db != "" {
+		return db
+	}
+	return s.at
+}
+
+func (s *Source) Exists() bool {
+	db := s.path()
+	return db != "" && kit.Exists(db)
+}
 
 // hasV2 reports whether the database carries the 2.x tables. Both have to exist.
 func hasV2(db *sql.DB) bool {
@@ -89,9 +123,10 @@ func hasV2(db *sql.DB) bool {
 // were last written, and how many messages it has — so a message arriving in one session
 // leaves every other session's stamp where it was.
 func (s *Source) Scan(ctx context.Context) ([]sources.Ref, error) {
-	return s.list.Load(s.db, func() ([]sources.Ref, error) {
+	path := s.path()
+	return s.list.Load(path, func() ([]sources.Ref, error) {
 		var refs []sources.Ref
-		err := kit.ReadDB(ctx, s.db, func(db *sql.DB) error {
+		err := kit.ReadDB(ctx, path, func(db *sql.DB) error {
 			refs = refs[:0]
 			v2 := hasV2(db)
 			if v2 {
@@ -104,7 +139,7 @@ func (s *Source) Scan(ctx context.Context) ([]sources.Ref, error) {
 					copies = `CASE WHEN COALESCE(s.fork_session_id, '') = '' THEN 0 ELSE
        (SELECT COUNT(*) FROM session_message m WHERE m.session_id = s.id AND ` + copied + `) END`
 				}
-				if err := s.scan(ctx, db, &refs, `
+				if err := scan(ctx, db, path, &refs, `
 SELECT s.id, s.time_updated, s.time_created,
        (SELECT COUNT(*) FROM session_message m WHERE m.session_id = s.id),
        (SELECT MAX(m.time_updated) FROM session_message m WHERE m.session_id = s.id),
@@ -119,7 +154,7 @@ FROM session_v2 s`); err != nil {
 				if v2 {
 					unmigrated = ` WHERE NOT EXISTS (SELECT 1 FROM session_v2 v WHERE v.id = s.id)`
 				}
-				return s.scan(ctx, db, &refs, `
+				return scan(ctx, db, path, &refs, `
 SELECT s.id, s.time_updated, s.time_created,
        (SELECT COUNT(*) FROM part p WHERE p.session_id = s.id),
        (SELECT MAX(m.time_updated) FROM message m WHERE m.session_id = s.id),
@@ -135,7 +170,7 @@ FROM session s`+unmigrated)
 	})
 }
 
-func (s *Source) scan(ctx context.Context, db *sql.DB, refs *[]sources.Ref, query string) error {
+func scan(ctx context.Context, db *sql.DB, path string, refs *[]sources.Ref, query string) error {
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return err
@@ -155,7 +190,7 @@ func (s *Source) scan(ctx context.Context, db *sql.DB, refs *[]sources.Ref, quer
 		if copies.Int64 > 0 {
 			stamp += ".copied" + strconv.FormatInt(copies.Int64, 36)
 		}
-		*refs = append(*refs, sources.Ref{Key: s.db + "#" + id.String, Stamp: stamp, ModTime: time.UnixMilli(at)})
+		*refs = append(*refs, sources.Ref{Key: path + "#" + id.String, Stamp: stamp, ModTime: time.UnixMilli(at)})
 	}
 	return rows.Err()
 }
@@ -174,7 +209,8 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	var sess model.Session
 	var unread []string
 	note := func(kind string) { unread = append(unread, kind) }
-	err := kit.ReadDB(ctx, s.db, func(db *sql.DB) error {
+	path := s.path()
+	err := kit.ReadDB(ctx, path, func(db *sql.DB) error {
 		msgs, sess, unread = msgs[:0], model.Session{}, unread[:0]
 		if hasV2(db) {
 			found, err := readV2(ctx, db, id, &sess, &msgs, note)
@@ -190,7 +226,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	if err != nil {
 		return err
 	}
-	sess.ID, sess.Path = id, s.db
+	sess.ID, sess.Path = id, path
 	w.S = sess
 	for _, m := range msgs {
 		w.Add(m)

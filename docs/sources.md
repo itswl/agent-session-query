@@ -8,7 +8,7 @@ whether each reads, and how far back each goes.
 | `claude` | Claude Code | `~/.claude/projects` | `CLAUDE_CONFIG_DIR` | `claude --resume` |
 | `codex` | Codex | `~/.codex/sessions`, and `archived_sessions` beside it | `CODEX_HOME` | `codex resume` |
 | `gemini` | Gemini CLI | `~/.gemini/tmp` | — | `gemini --resume` |
-| `opencode` | OpenCode | `~/.local/share/opencode/opencode.db` (`%LOCALAPPDATA%\opencode` on Windows) | `XDG_DATA_HOME` | `opencode --session` |
+| `opencode` | OpenCode | `~/.local/share/opencode/opencode.db` (`%LOCALAPPDATA%\opencode` on Windows) | `XDG_DATA_HOME`, `OPENCODE_DB` | `opencode --session` |
 | `grok` | Grok CLI | `~/.grok/sessions`, and `archived_sessions` beside it | `GROK_HOME` | `grok -r` |
 | `antigravity` | Antigravity | `~/.gemini/antigravity-cli/brain` (the `agy` CLI) and `~/.gemini/antigravity/brain` (the IDE) | — | `agy --conversation` |
 | `pi` | Pi | `~/.pi/agent/sessions` | `PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR` | `pi --session` |
@@ -17,8 +17,9 @@ whether each reads, and how far back each goes.
 | `openclaw` | OpenClaw | `~/.openclaw/agents` | `OPENCLAW_STATE_DIR` | — |
 
 Each store is found the way its CLI finds it, so a CLI whose data was moved by its own variable
-is read where the variable says. The variables are read from `asq`'s environment: a service has
-to be given the ones its CLIs run with.
+is read where the variable says. `OPENCODE_DB` names OpenCode's database file itself: an absolute
+path as it is, a relative one inside OpenCode's data directory. The variables are read from
+`asq`'s environment: a service has to be given the ones its CLIs run with.
 
 Which stores exist is checked again before every sync, not once at start. A CLI you run for the
 first time while `asq serve` is up creates its store with that first session, and its sessions

@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -282,6 +283,62 @@ func TestLocateAndOpen(t *testing.T) {
 	dir := t.TempDir()
 	if a, b := Spec.Open(dir).Location(), Spec.Open(filepath.Join(dir, "opencode.db")).Location(); a != b || filepath.Base(a) != "opencode.db" {
 		t.Errorf("open: %s / %s", a, b)
+	}
+}
+
+// OPENCODE_DB moves the database as OpenCode moves it (packages/cli/src/database-path.ts):
+// an absolute path is the database, a relative one is inside the data directory, and
+// ":memory:" keeps it where nothing can be read. The database it names is read whatever
+// it is called.
+func TestMovedByOpencodeDB(t *testing.T) {
+	data := filepath.Join(string(filepath.Separator), "data")
+	moved := filepath.Join(string(filepath.Separator), "srv", "agents", "sessions.sqlite")
+	for _, c := range []struct{ value, want string }{
+		{"", "opencode.db"},
+		{moved, moved},
+		{"work.db", "work.db"},
+		{filepath.Join("nested", "work.db"), filepath.Join("nested", "work.db")},
+		{":memory:", ":memory:"},
+	} {
+		env := sourcetest.Env("/home/u", "XDG_DATA_HOME", data, "OPENCODE_DB", c.value)
+		want := c.want
+		if !filepath.IsAbs(want) && want != ":memory:" {
+			want = filepath.Join(dataDir(env), want)
+		}
+		if got := Spec.Locate(env); got != want {
+			t.Errorf("OPENCODE_DB=%q: %s, want %s", c.value, got, want)
+		}
+	}
+	if src := Spec.Open(":memory:"); src.Exists() || src.Location() != ":memory:" {
+		t.Errorf("a database in memory: exists %v at %s", src.Exists(), src.Location())
+	}
+
+	// A database by another name is the database, not a directory to look inside
+	_, path := build(t, append([]string{schemaV1}, rowsV1...)...)
+	renamed := filepath.Join(filepath.Dir(path), "sessions.sqlite")
+	if err := os.Rename(path, renamed); err != nil {
+		t.Fatal(err)
+	}
+	src := Spec.Open(renamed)
+	if !src.Exists() || src.Location() != renamed {
+		t.Fatalf("exists %v at %s", src.Exists(), src.Location())
+	}
+	all := sourcetest.All(t, src)
+	if len(all) == 0 || all[0].Session.Path != renamed || !strings.HasPrefix(all[0].Ref.Key, renamed+"#") {
+		t.Errorf("sessions = %d, the first at %s", len(all), all[0].Session.Path)
+	}
+	// The data directory, created after asq started, is looked inside once it is there
+	later := filepath.Join(t.TempDir(), "opencode")
+	src = Spec.Open(later)
+	if src.Exists() {
+		t.Fatal("nothing is there yet")
+	}
+	if err := os.Mkdir(later, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, filepath.Join(later, "opencode.db"), append([]string{schemaV1}, rowsV1...)...)
+	if !src.Exists() || src.Location() != filepath.Join(later, "opencode.db") {
+		t.Errorf("exists %v at %s", src.Exists(), src.Location())
 	}
 }
 

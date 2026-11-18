@@ -54,6 +54,13 @@ The path an agent usually takes: `search` or `sessions` → a ref → `read` wit
 the outline → `read` with `ref#N` for the turn that matters → `read` with `seq` for the one
 output worth seeing whole.
 
+An agent is told when to take that path before it calls anything. The server's `instructions`
+name the moments — the user pointing at earlier work or another agent's, an error or an approach
+that looks familiar, a command that keeps failing, work handed to another agent or machine, a
+question about what a stretch of time did or cost — and the tool for each. A client that loads
+tools only when a model searches for them shows the model those words and the tools' names and
+nothing else of the server; Claude Code does so by default.
+
 ## How the answers are shaped
 
 **Plain text, not JSON.** The reader is a model that pays for what it reads by the token. A

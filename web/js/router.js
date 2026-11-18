@@ -11,8 +11,11 @@ const ROUTES = [
   ['digest', /^\/digest\/?$/],
 ];
 
-const LISTS = new Set(['sessions', 'search']);
+// The views a session opened from is gone back to: the lists, and the reports, which
+// open a session from what they found
+const OPENERS = new Set(['sessions', 'search', 'usage', 'failures', 'files', 'digest']);
 let render = () => {};
+let list = () => '/';
 
 function decode(s) {
   try { return decodeURIComponent(s); } catch { return s; }
@@ -26,8 +29,11 @@ export function parse(loc = location) {
   return { name: 'notfound', args: [], query: new URLSearchParams(loc.search), hash: '' };
 }
 
-export function start(fn) {
+// start draws the view the address names, and every one after it. listOf is the sessions
+// list a page opened from nowhere goes back to.
+export function start(fn, listOf = list) {
   render = fn;
+  list = listOf;
   history.scrollRestoration = 'manual';
   addEventListener('popstate', () => render(parse(), 'pop'));
   document.addEventListener('click', follow);
@@ -43,9 +49,9 @@ export function go(url, { replace = false } = {}) {
     // The entry being left keeps where it was scrolled to, for Back
     history.replaceState({ ...history.state, y: scrollY }, '');
     // A link within the page on screen — a turn of the session — is a step taken inside
-    // it: the list the page was opened from is still there, that many entries back
+    // it: the view the page was opened from is still there, that many entries back
     const within = decode(to.pathname) === decode(location.pathname) && to.search === location.search;
-    const state = within ? { fromList: cameFromList(), within: (history.state?.within || 0) + 1 } : { fromList: LISTS.has(from.name) };
+    const state = within ? { opened: cameFromView(), within: (history.state?.within || 0) + 1 } : { opened: OPENERS.has(from.name) };
     history.pushState(state, '', to.pathname + to.search + to.hash);
   }
   render(parse(), replace ? 'replace' : 'push');
@@ -53,13 +59,14 @@ export function go(url, { replace = false } = {}) {
 
 // savedY is where the current entry was scrolled to when it was left, if it was.
 export const savedY = () => history.state?.y;
-export const cameFromList = () => Boolean(history.state?.fromList);
+export const cameFromView = () => Boolean(history.state?.opened);
 
-// back leaves a page for the list it was opened from, as it was left, past the steps
-// taken within the page; a page opened from anywhere else leaves for the sessions list.
+// back leaves a page for the list or the report it was opened from, as it was left — its
+// project, its window — past the steps taken within the page; a page opened from anywhere
+// else leaves for the sessions list start was given.
 export function back() {
-  if (cameFromList()) history.go(-1 - (history.state?.within || 0));
-  else go('/');
+  if (cameFromView()) history.go(-1 - (history.state?.within || 0));
+  else go(list());
 }
 
 function follow(e) {

@@ -91,8 +91,9 @@ their own, and are found on their own pages. It is `f`, or *Find* in the session
 **On a phone** — or installed as an app, where there is no Back button and no address bar —
 the head is the title and the first line of facts, and *Details* opens the rest: when, the
 totals, the command that reopens it, the subagents. A row stays at the top while the session is
-read: back to the list it was opened from (or to the sessions list), the turn in view — type
-another number to go to that turn — the next failed turn, find, the top, and the newest turn.
+read: back to the list or report it was opened from (or to the sessions list), the turn in
+view — type another number to go to that turn — the next failed turn, find, the top, and the
+newest turn.
 
 ## Reports
 
@@ -140,7 +141,9 @@ Every report can be narrowed to one project, and a project chosen once stays cho
 sessions list's filters or a report's *Project* menu, it then goes with you between Sessions,
 Usage, Failures, Files and Digest. It is in each view's address, so a narrowed report can be
 bookmarked and Back undoes the choice; the links in the bar carry it on, through a session read
-on the way. Each report shows it beside its window, highlighted, says it in what it found —
+on the way. Esc from a session opened in a report goes back to that report as it was, its project
+and its window, and a session opened from neither a list nor a report goes back to the sessions
+of the project. Each report shows it beside its window, highlighted, says it in what it found —
 *3 failed calls in work/api in the last 7 days* — and has × beside it for all projects again.
 
 A project named in a report — a row of Usage's table, a heading of the Digest — opens its
@@ -165,7 +168,7 @@ say for themselves which stores did it — narrowed to one, they would have noth
 | `12 G` | turn 12 of a session |
 | `x` `X` | next, previous failed turn — after the one in view, and round from the end |
 | `f` | find in this session |
-| `Esc` | back to the list a session was opened from — or, with the find open, closes it |
+| `Esc` | back to the list or report a session was opened from — or, with the find open, closes it |
 | `?` | search syntax and keys |
 
 ## Dark, small, signed in

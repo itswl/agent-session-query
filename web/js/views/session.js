@@ -52,7 +52,7 @@ export function mount(main, route, ctx) {
   const failBtn = h('button', { type: 'button', class: 'icon-btn fail-next', hidden: true, 'aria-label': 'The next failed turn', title: 'The next failed turn (x)', onclick: () => toFailed(1) }, icon('alert'));
   const findBtn = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Find in this session', title: 'Find in this session (f)', 'aria-expanded': 'false', 'aria-controls': 's-find', onclick: () => openFind() }, icon('search'));
   const nav = h('nav', { class: 's-nav', 'aria-label': 'This session' },
-    h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Back to the list', title: 'Back to the list (Esc)', onclick: back }, icon('back')),
+    h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Back', title: 'Back to the list or report (Esc)', onclick: back }, icon('back')),
     h('label', { class: 'where' }, '#', where, whereOf),
     h('span', { class: 's-nav-end' }, failBtn, findBtn,
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'To the top', title: 'To the top (g g)', onclick: () => toTop() }, icon('up')),

@@ -83,7 +83,7 @@ async function boot() {
   live.start();
   document.addEventListener('keydown', onKey);
   setInterval(tick, 30000);
-  router.start(render);
+  router.start(render, listHref);
 }
 
 function showLogin() {
@@ -165,9 +165,16 @@ function runSearch() {
   router.go('/search' + qs({ q, ...keep }), { replace: cur.name === 'search' });
 }
 
+// listHref is the sessions list of the project being followed: where the brand goes, and
+// a session opened from no list or report goes back to
+function listHref() {
+  return '/' + qs({ project: followed });
+}
+
 function render(r, how) {
   if (locked) return;
   if (FOLLOW.has(r.name)) followed = r.query.get('project') || '';
+  brand.href = listHref();
   for (const a of navLinks) {
     a.href = a.dataset.path + qs({ project: followed });
     if (a.dataset.names.split(' ').includes(r.name)) a.setAttribute('aria-current', 'page');

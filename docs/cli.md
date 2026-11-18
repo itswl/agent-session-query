@@ -164,8 +164,11 @@ runs.
 
 ## Maintaining
 
-**`asq doctor`** — for each store: whether it was found, how many transcripts it lists, and
-whether its newest conversation reads whole. Listing alone proves little — a format that drifted
+**`asq doctor`** — for each store: whether it was found, how many transcripts it lists and the
+day the oldest of them was last written, and whether its newest conversation reads whole. Of a
+CLI that deletes its own old sessions — Claude Code and Gemini CLI, after 30 days unused — it
+names the setting that decides it: what the CLI deletes leaves the index too, so that day is as
+far back as `asq` goes for it. Listing alone proves little — a format that drifted
 lists fine and reads as empty — so it reads one, and then the next two, and lists what the three
 held that the adapter did not understand: records a CLI has started to write since the adapter
 was written. Those are a warning (see [Sources](sources.md#what-each-adapter-reads)). Sessions

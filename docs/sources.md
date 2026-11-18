@@ -1,7 +1,7 @@
 # Sources
 
-A *source* is one CLI's store of sessions. `asq doctor` shows which were found on this machine
-and whether each reads.
+A *source* is one CLI's store of sessions. `asq doctor` shows which were found on this machine,
+whether each reads, and how far back each goes.
 
 | `--source` | CLI | default location | moved by | resumes with |
 |---|---|---|---|---|
@@ -68,9 +68,16 @@ in it. Slash commands, hook output, task notifications and compaction summaries 
 events, not asks. The session's own cost, when Claude Code recorded one, is used as it is.
 A failed command's exit code is the line its result opens with (`Exit code 1`); a command that
 passed, or whose code means no failure (`grep` finding nothing), has none recorded. A call the
-person declined at the permission prompt, or stopped before or while it ran, is interrupted, not
-failed — newer versions say which on the row, older ones only in the words Claude Code gives the
-model in its place. A call refused by a permission rule, a hook or auto mode is a failure.
+person declined at the permission prompt, or stopped before or while it ran, is marked
+interrupted rather than an error — newer versions say which on the row, older ones only in the
+words Claude Code gives the model in its place. Like any interrupted call, it is still listed by
+`asq failures` and counted among a turn's failures. A call refused by a permission rule, a hook
+or auto mode is an error.
+Claude Code deletes the transcripts of sessions not used for 30 days by default
+(`cleanupPeriodDays` in its `settings.json`, under `~/.claude` or `CLAUDE_CONFIG_DIR`); from
+v2.1.248 it keeps those of sessions started or last continued in Claude Desktop or Cowork, unless
+`desktopSessionCleanupPeriodDays` or a managed `cleanupPeriodDays` limits them. A session it
+deletes leaves the index at the next sync.
 
 **Codex** — one rollout file per session, `.zst` included. Token usage is recorded per response
 and read that way; cached tokens are taken out of the input they were counted in. A rollout
@@ -118,7 +125,10 @@ started them. A command that ran is "success" to Gemini CLI whatever it exited w
 code, or the signal that ended it, is read from what the shell tool told the model. A call
 cancelled with Esc is one call, interrupted, however many times the file writes it. What `@file`
 added to a question is context; the question is what was typed. Resumed from the session's
-project directory, as Gemini CLI requires.
+project directory, as Gemini CLI requires. Gemini CLI deletes a project's sessions not used for
+30 days when it next starts in that project — `general.sessionRetention` in
+`~/.gemini/settings.json` sets the age, or turns it off — and a session it deletes leaves the
+index at the next sync.
 
 **Grok CLI** — the update stream, or, before a session's first line of it, the messages it keeps
 beside it. Input tokens include the cache reads, which are taken out; cache writes are read.

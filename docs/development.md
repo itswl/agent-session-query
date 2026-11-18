@@ -130,6 +130,11 @@ One package and one line.
    `internal/index/schema.go`). Each `asq` removes from the index what it does not list, so two
    that list differently and share a file would remove each other's sessions on every sync.
 
+   `Retention` is for a CLI that deletes its own old sessions by default: one clause saying what
+   it deletes, after how long, and the setting and file that change it, as the CLI's own
+   documentation gives them. What the CLI deletes leaves the index too, and `asq doctor` says so
+   under the store. A CLI that keeps its sessions leaves it empty.
+
 3. **Add it to `catalog.All`.** The list, search, briefs, usage, failures, traces, the page and
    the MCP tools now cover it.
 

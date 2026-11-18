@@ -196,7 +196,10 @@ A store somewhere else — another machine's home directory, a backup — is add
   cache directory (full-text indexed, compressed, a fraction of the transcripts' size).
   After that a command checks which transcripts changed — a `stat` each — and reads only those,
   and only their turns that changed. A search over gigabytes of history answers in
-  milliseconds. The index is a cache: `asq index rm` and it is rebuilt.
+  milliseconds. The index is a cache: `asq index rm` and it is rebuilt. It holds what the
+  stores hold, so a session a CLI deletes leaves it too — and Claude Code and Gemini CLI
+  delete the sessions not used for 30 days, unless a setting of theirs says otherwise.
+  `asq doctor` names the setting, and says how far back each store goes.
 - **Read-only.** Nothing in `asq` can write to a CLI's store.
 - **Local.** No telemetry, no network calls, no account. The two things that can send anything
   anywhere are the ones you point at a destination yourself: `asq otel`, and an agent you gave

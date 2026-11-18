@@ -220,17 +220,26 @@ var declinedPrefixes = []string{
 // which Claude Code writes as a failed result, and a stopped command's, which is its exit
 // code and the interruption notice on the line after it.
 func stopped(text string, failed bool, kind string, unread func(kind string)) bool {
+	known := true
+	switch kind {
+	case "", "user-rejected", "interrupted", "cancelled",
+		"permission-rule", "automode-blocked", "automode-unavailable", "automode-parsing-error":
+	default:
+		// A kind not known here is counted whatever the result says, so that doctor tells
+		// of it: a new one is how a change in Claude Code's records shows
+		unread("toolDenialKind:" + kind)
+		known = false
+	}
 	if strings.HasPrefix(text, interruptedPrefix) {
 		return true
 	}
-	switch kind {
-	case "user-rejected", "interrupted", "cancelled":
-		return true
-	case "permission-rule", "automode-blocked", "automode-unavailable", "automode-parsing-error":
-		return false
-	case "":
-	default:
-		unread("toolDenialKind:" + kind)
+	if known {
+		switch kind {
+		case "user-rejected", "interrupted", "cancelled":
+			return true
+		case "permission-rule", "automode-blocked", "automode-unavailable", "automode-parsing-error":
+			return false
+		}
 	}
 	if !failed {
 		return false

@@ -202,6 +202,7 @@ func TestHowACallEnded(t *testing.T) {
 		{"refused by a rule in a decline's words, by the row", M{"content": agentDeclined, "is_error": true}, M{"toolDenialKind": "permission-rule"}, model.StatusError, nil},
 		{"refused by auto mode, by the row", M{"content": classified, "is_error": true}, M{"toolDenialKind": "automode-blocked"}, model.StatusError, nil},
 		{"a kind never heard of, read by its words", M{"content": declined, "is_error": true}, M{"toolDenialKind": "hologram"}, model.StatusInterrupted, nil},
+		{"a kind never heard of, on the interruption notice", M{"content": "[Request interrupted by user for tool use]", "is_error": true}, M{"toolDenialKind": "teleport"}, model.StatusInterrupted, nil},
 	}
 
 	calls := make([]M, len(cases))
@@ -248,8 +249,8 @@ func TestHowACallEnded(t *testing.T) {
 	if turn.Failures != failed {
 		t.Errorf("failures = %d, want %d", turn.Failures, failed)
 	}
-	if len(s.Unread) != 1 || s.Unread["toolDenialKind:hologram"] != 1 {
-		t.Errorf("unread = %v, want the one kind never heard of", s.Unread)
+	if len(s.Unread) != 2 || s.Unread["toolDenialKind:hologram"] != 1 || s.Unread["toolDenialKind:teleport"] != 1 {
+		t.Errorf("unread = %v, want the two kinds never heard of, the one on the interruption notice too", s.Unread)
 	}
 }
 

@@ -148,6 +148,111 @@ func TestEventsQueuedPromptsAndInjectedRows(t *testing.T) {
 	}
 }
 
+// The words Claude Code gives the model in place of a call's output when the call did not
+// run as asked, as 2.1.112 and 2.1.327 write them; the last two only 2.1.327 writes.
+const (
+	declined         = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
+	declinedSaying   = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:\n"
+	notNow           = "The user doesn't want to take this action right now. STOP what you are doing and wait for the user to tell you how to proceed."
+	agentDeclined    = "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). Try a different approach or report the limitation to complete your task."
+	agentDeclinedSay = "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). The user said:\n"
+	ruled            = "Permission to use Bash has been denied. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal…"
+	classified       = "Permission for this action has been denied. Reason: the command deletes files outside the project."
+	noOneToAsk       = "Permission for this tool use was denied. It requires approval, and this session has no approval surface — nobody can answer a permission prompt here — so it was denied automatically."
+	skipped          = "[Tool call skipped: the turn was stopped before this call ran, by the check whose denial is on another call in this batch. Nothing refused this call and it had no effects; re-run it if still needed.]"
+)
+
+// How a call ended is read from what Claude Code wrote of it: a failed command's exit code
+// from the line its result opens with, and a call the person declined or stopped as
+// interrupted — by the row's toolDenialKind where it has one, by Claude Code's own words
+// where it has none. A failed call is what is left.
+func TestHowACallEnded(t *testing.T) {
+	code := func(n int) *int { return &n }
+	cases := []struct {
+		name   string
+		result M // the tool_result beside its type and id
+		row    M // the row's own fields
+		status string
+		exit   *int
+	}{
+		{"a command that failed", M{"content": "Exit code 1\n--- FAIL: TestOrder\nFAIL", "is_error": true},
+			M{"toolUseResult": "Error: Exit code 1\n--- FAIL: TestOrder\nFAIL"}, model.StatusError, code(1)},
+		{"one not found", M{"content": "Exit code 127\n/bin/sh: nope: command not found", "is_error": true}, nil, model.StatusError, code(127)},
+		{"a command the person stopped", M{"content": "Exit code 137\n[Request interrupted by user for tool use]\nbuilding…", "is_error": true},
+			nil, model.StatusInterrupted, code(137)},
+		{"one the row says they stopped", M{"content": "building…\n<error>Command was aborted before completion</error>", "is_error": true},
+			M{"toolUseResult": M{"stdout": "building…", "stderr": "", "interrupted": true}}, model.StatusInterrupted, nil},
+		{"a command that passed printing the CLI's line", M{"content": "Exit code 3\nis what the docs say"}, nil, model.StatusOK, nil},
+		{"an error that names a code in passing", M{"content": "Exit code 1 is what the docs say", "is_error": true}, nil, model.StatusError, nil},
+		{"a tool's error", M{"content": "<tool_use_error>File does not exist.</tool_use_error>", "is_error": true}, nil, model.StatusError, nil},
+
+		{"declined at the prompt", M{"content": declined, "is_error": true}, M{"toolUseResult": "Error: " + declined}, model.StatusInterrupted, nil},
+		{"declined, saying why", M{"content": declinedSaying + "use the staging database", "is_error": true}, nil, model.StatusInterrupted, nil},
+		{"stopped before it started", M{"content": notNow, "is_error": true}, M{"toolUseResult": notNow}, model.StatusInterrupted, nil},
+		{"a subagent's call declined", M{"content": agentDeclined, "is_error": true}, nil, model.StatusInterrupted, nil},
+		{"a subagent's call declined, saying why", M{"content": agentDeclinedSay + "not that file", "is_error": true}, nil, model.StatusInterrupted, nil},
+		{"refused by a rule", M{"content": ruled, "is_error": true}, nil, model.StatusError, nil},
+		{"refused with no one to ask", M{"content": noOneToAsk, "is_error": true}, nil, model.StatusError, nil},
+		{"the words, printed by a call that passed", M{"content": declined}, nil, model.StatusOK, nil},
+
+		{"declined, by the row", M{"content": declined, "is_error": true}, M{"toolDenialKind": "user-rejected"}, model.StatusInterrupted, nil},
+		{"skipped when the turn stopped, by the row", M{"content": skipped, "is_error": true}, M{"toolDenialKind": "cancelled"}, model.StatusInterrupted, nil},
+		{"stopped while it ran, by the row", M{"content": "Exit code 137\nbuilding…", "is_error": true}, M{"toolDenialKind": "interrupted"}, model.StatusInterrupted, code(137)},
+		{"one that timed out", M{"content": "Exit code 143\nCommand timed out after 2m 0s", "is_error": true}, nil, model.StatusError, code(143)},
+		{"refused by a rule in a decline's words, by the row", M{"content": agentDeclined, "is_error": true}, M{"toolDenialKind": "permission-rule"}, model.StatusError, nil},
+		{"refused by auto mode, by the row", M{"content": classified, "is_error": true}, M{"toolDenialKind": "automode-blocked"}, model.StatusError, nil},
+		{"a kind never heard of, read by its words", M{"content": declined, "is_error": true}, M{"toolDenialKind": "hologram"}, model.StatusInterrupted, nil},
+	}
+
+	calls := make([]M, len(cases))
+	rows := []any{userRow("u0", "2026-10-01T10:00:00Z", "clean up and build")}
+	for i := range cases {
+		calls[i] = M{"type": "tool_use", "id": fmt.Sprintf("t%d", i), "name": "Bash", "input": M{"command": fmt.Sprintf("step %d", i)}}
+	}
+	rows = append(rows, assistantRow("a1", "2026-10-01T10:00:01Z", "m1", nil, calls...))
+	failed := 0
+	for i, c := range cases {
+		result := M{"type": "tool_result", "tool_use_id": fmt.Sprintf("t%d", i)}
+		for k, v := range c.result {
+			result[k] = v
+		}
+		rows = append(rows, userRow(fmt.Sprintf("r%d", i), "2026-10-01T10:00:02Z", []M{result}, c.row))
+		if c.status != model.StatusOK {
+			failed++
+		}
+	}
+	rows = append(rows, assistantRow("a2", "2026-10-01T10:00:03Z", "m2", nil, M{"type": "text", "text": "Stopped, as asked."}))
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "proj", "sess-1.jsonl"), rows...)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.Invariants(t, s)
+
+	turn := s.Turn(t, 1)
+	tools := sourcetest.Tools(turn)
+	if len(tools) != len(cases) {
+		t.Fatalf("%d tools, want %d", len(tools), len(cases))
+	}
+	for i, c := range cases {
+		tool := tools[i]
+		if tool.Status != c.status {
+			t.Errorf("%s: status %q, want %q", c.name, tool.Status, c.status)
+		}
+		switch {
+		case c.exit == nil && tool.Exit != nil:
+			t.Errorf("%s: exit %d, want none", c.name, *tool.Exit)
+		case c.exit != nil && (tool.Exit == nil || *tool.Exit != *c.exit):
+			t.Errorf("%s: exit %v, want %d", c.name, tool.Exit, *c.exit)
+		}
+	}
+	// Stopped or failed, a call that did not do what was asked counts among the turn's
+	if turn.Failures != failed {
+		t.Errorf("failures = %d, want %d", turn.Failures, failed)
+	}
+	if len(s.Unread) != 1 || s.Unread["toolDenialKind:hologram"] != 1 {
+		t.Errorf("unread = %v, want the one kind never heard of", s.Unread)
+	}
+}
+
 func TestSavedOutputIsReadInPlaceOfItsStub(t *testing.T) {
 	root := t.TempDir()
 	saved := filepath.Join(root, "proj", "sess-1", "tool-results", "toolu_9.txt")

@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/itswl/agent-session-query/internal/model"
@@ -47,7 +48,7 @@ var Spec = sources.Spec{
 	Movable:    true,
 	Resume:     "claude --resume",
 	ResumeHere: true,
-	Reads:      1,
+	Reads:      2,
 	Store:      "~/.claude/projects/<project>/<session>.jsonl",
 }
 
@@ -135,6 +136,8 @@ type row struct {
 	} `json:"message"`
 
 	ToolUseResult json.RawMessage `json:"toolUseResult"`
+	// ToolDenialKind is why a call did not run as asked, where the CLI says: see stopped
+	ToolDenialKind string `json:"toolDenialKind"`
 
 	Attachment struct {
 		Type        string          `json:"type"`
@@ -184,6 +187,82 @@ type useResult struct {
 // "[Request interrupted by user]" as a user text block, and "[Request interrupted by user
 // for tool use]" as the content of the tool_result the stopped call never produced.
 const interruptedPrefix = "[Request interrupted by user"
+
+// declinedPrefixes open the words Claude Code gives the model in place of a call's output
+// when the person said no to it at the permission prompt, or stopped the turn before it
+// ran. In a session's own thread: "The user doesn't want to proceed with this tool use. The
+// tool use was rejected (eg. …). STOP what you are doing…", or, where the person typed why,
+// "…To tell you how to proceed, the user said:" and what they typed; and "The user doesn't
+// want to take this action right now." for a call the stop caught before it started. In a
+// subagent's, whose prompts the person answers for it: "Permission for this tool use was
+// denied. The tool use was rejected (eg. …)", with "The user said:" and what they typed, or
+// not. A call a rule refused is told in other words ("Permission to use Bash has been
+// denied.", "Permission for this tool use was denied. It requires approval…"), and failed.
+var declinedPrefixes = []string{
+	"The user doesn't want to proceed with this tool use.",
+	"The user doesn't want to take this action right now.",
+	"Permission for this tool use was denied. The tool use was rejected",
+}
+
+// stopped reports whether a tool result is a call the person stopped or said no to: an
+// interruption, not a failure.
+//
+// Newer versions of Claude Code say which on the row, in toolDenialKind: "user-rejected"
+// for a call declined at the permission prompt, "interrupted" and "cancelled" for one
+// stopped while it ran or before it started, "permission-rule" and the "automode-" kinds
+// for one a rule, a hook or auto mode's classifier refused, which failed. Where the row
+// says, that decides. Where it does not, the result's own words do: the notices above,
+// which Claude Code writes as a failed result, and a stopped command's, which is its exit
+// code and the interruption notice on the line after it.
+func stopped(text string, failed bool, kind string, unread func(kind string)) bool {
+	if strings.HasPrefix(text, interruptedPrefix) {
+		return true
+	}
+	switch kind {
+	case "user-rejected", "interrupted", "cancelled":
+		return true
+	case "permission-rule", "automode-blocked", "automode-unavailable", "automode-parsing-error":
+		return false
+	case "":
+	default:
+		unread("toolDenialKind:" + kind)
+	}
+	if !failed {
+		return false
+	}
+	if _, rest, ok := strings.Cut(text, "\n"); ok && exitCode(text) != nil && strings.HasPrefix(rest, interruptedPrefix) {
+		return true
+	}
+	for _, prefix := range declinedPrefixes {
+		if strings.HasPrefix(text, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// exitCode is the exit code a failed command's result opens with, or nil. Claude Code
+// writes a command that ended in failure as "Exit code N", then, when the person stopped
+// it, "[Request interrupted by user for tool use]", then what it printed:
+//
+//	Exit code 1
+//	--- FAIL: TestOrder
+//
+// A command that passed, or whose code says no failure (grep finding nothing exits 1), has
+// no code recorded: its toolUseResult holds what it printed and whether it was
+// interrupted, not how it exited.
+func exitCode(text string) *int {
+	first, _, _ := strings.Cut(text, "\n")
+	digits, ok := strings.CutPrefix(first, "Exit code ")
+	if !ok {
+		return nil
+	}
+	code, err := strconv.Atoi(digits)
+	if err != nil {
+		return nil
+	}
+	return transcript.ExitOf(code)
+}
 
 // Read parses one transcript.
 func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer) error {
@@ -703,15 +782,22 @@ func (s *Source) userBlocks(r *row, unread func(kind string)) []transcript.Block
 			out = append(out, transcript.TextOf(p.Text))
 		case "tool_result":
 			text := resultText(p.Content, unread)
-			// is_error is Claude's own verdict; the row-level record says when the user
-			// interrupted the command, and so does the placeholder a stopped call gets
+			head := strings.TrimSpace(text)
+			// is_error is Claude's own verdict, and a failed command's result opens with its
+			// exit code. A call the person stopped or declined is interrupted: the row-level
+			// record says so of a command they stopped, and stopped reads the rest.
 			outcome := transcript.Outcome{Status: transcript.StatusOf(p.IsError)}
-			if use.Interrupted || strings.HasPrefix(strings.TrimSpace(text), interruptedPrefix) {
-				outcome.Status = model.StatusInterrupted
+			if p.IsError {
+				outcome.Exit = exitCode(head)
 			}
 			// The row-level record speaks for the row's one result
+			kind := ""
 			if results == 1 {
 				outcome.DurMs = millis(use.DurationMs)
+				kind = r.ToolDenialKind
+			}
+			if stopped(head, p.IsError, kind, unread) || use.Interrupted {
+				outcome.Status = model.StatusInterrupted
 			}
 			// An output too large for the transcript is saved beside it, and the row keeps
 			// a stub: a line naming the file and a 2 KB preview. The output is what the

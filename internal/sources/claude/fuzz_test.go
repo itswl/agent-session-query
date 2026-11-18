@@ -44,6 +44,16 @@ func FuzzRead(f *testing.F) {
 			userRow("u2", "2026-10-01T10:00:02Z", []M{{"type": "tool_result", "tool_use_id": "t1", "content": stub}},
 				M{"toolUseResult": M{"persistedOutputPath": "/elsewhere/.claude/projects/proj/sess-1/tool-results/t1.txt", "durationMs": 1200}}),
 		},
+		{
+			userRow("u1", "2026-10-01T10:00:00Z", "clean and build"),
+			assistantRow("a1", "2026-10-01T10:00:01Z", "m1", nil,
+				M{"type": "tool_use", "id": "t1", "name": "Bash", "input": M{"command": "make"}},
+				M{"type": "tool_use", "id": "t2", "name": "Bash", "input": M{"command": "rm -rf build"}}),
+			userRow("u2", "2026-10-01T10:00:02Z", []M{{"type": "tool_result", "tool_use_id": "t1", "content": "Exit code 2\nmake: *** No rule to make target", "is_error": true}},
+				M{"toolUseResult": "Error: Exit code 2\nmake: *** No rule to make target"}),
+			userRow("u3", "2026-10-01T10:00:03Z", []M{{"type": "tool_result", "tool_use_id": "t2", "content": declined, "is_error": true}},
+				M{"toolDenialKind": "user-rejected"}),
+		},
 	} {
 		f.Add(jsonl(f, rows...))
 	}

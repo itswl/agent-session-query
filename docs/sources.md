@@ -66,6 +66,11 @@ copy of its parent's conversation; those rows are marked inherited and counted n
 output that Claude Code saved to a file beside the transcript is read in place of the stub left
 in it. Slash commands, hook output, task notifications and compaction summaries are context or
 events, not asks. The session's own cost, when Claude Code recorded one, is used as it is.
+A failed command's exit code is the line its result opens with (`Exit code 1`); a command that
+passed, or whose code means no failure (`grep` finding nothing), has none recorded. A call the
+person declined at the permission prompt, or stopped before or while it ran, is interrupted, not
+failed — newer versions say which on the row, older ones only in the words Claude Code gives the
+model in its place. A call refused by a permission rule, a hook or auto mode is a failure.
 
 **Codex** — one rollout file per session, `.zst` included. Token usage is recorded per response
 and read that way; cached tokens are taken out of the input they were counted in. A rollout

@@ -69,7 +69,8 @@ Punctuation separates words, as it does in the index: `session_query`, `session-
 word by its stem, Porter's, as SQLite's FTS5 has it: `logs` finds `log` and `logging` but not
 `login`, `deploy` finds `deployment`. A quoted word or phrase, a word of several parts
 (`session_query`), one with digits in it, and words in other scripts match as written. An
-excluded word is excluded in all the forms it would be found in.
+excluded word is excluded as typed, by how a word begins: `-windows` leaves in a turn that says
+only `window`.
 
 The session's title is searched with its first turn, so a word of it finds the session once,
 there: `webhook retries` finds the session titled *Cap webhook retries* at its first turn,

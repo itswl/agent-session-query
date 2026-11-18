@@ -252,6 +252,7 @@ func TestSearch(t *testing.T) {
 		"-sorting fix":  "",           // the one turn that says fix says sorting
 		"索引 orders":     "aaaa1111#2", // Chinese beside English, in a turn's reply
 		"ask:索引 order":  "aaaa1111#2", // … the English word in another form, in another part
+		"flaky -orders": "aaaa1111#1", // an excluded word is excluded as typed: #1 says order
 
 		// The session's title — "Fix flaky test" — is held with its first turn alone, and
 		// so is one taken from how the first ask begins: beta's, "rotate the deploy key"

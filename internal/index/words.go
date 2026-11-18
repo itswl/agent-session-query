@@ -310,7 +310,8 @@ func excluding(expr string, not []string) string {
 // ("retry"*: retry, retrying, retryable); by being the stem itself, for the words that are
 // their own stem ("log", for logs); and by the stem the table holds beside the words that
 // have another ("ǂretri": retried, retries). Terms of more than one word — session_query,
-// a quoted phrase — match as written.
+// a quoted phrase — match as written, and so does a word excluded, by how a word begins:
+// -windows leaves out a turn that says windows, and not one that says only window.
 func (t Term) expr() string {
 	toks := tokens(t.Text)
 	if len(toks) == 0 {
@@ -325,7 +326,7 @@ func (t Term) expr() string {
 	if last := toks[len(toks)-1]; !t.Exact && !(utf8.RuneCountInString(last) == 1 && spaced([]rune(last)[0])) {
 		expr += "*"
 	}
-	if w := toks[0]; !t.Exact && len(toks) == 1 && stemmable(w) {
+	if w := toks[0]; !t.Exact && !t.Not && len(toks) == 1 && stemmable(w) {
 		s := stem(w)
 		forms := []string{expr}
 		if s != w {

@@ -37,7 +37,7 @@ func TestMatchExpression(t *testing.T) {
 		`"retries"`:         `"retries"`,        // … and so does a word quoted
 		"数据库":               `"数 据 库"`,          // each character its own word; no prefix on a single one
 		"加索引 retry":         `"加 索 引" AND ("retry"* OR "retri" OR "ǂretri")`,
-		"ask:deploy -flaky": `({ask}: ("deploy"* OR "deploi" OR "ǂdeploi")) NOT ("flaky"* OR "flaki" OR "ǂflaki")`,
+		"ask:deploy -flaky": `({ask}: ("deploy"* OR "deploi" OR "ǂdeploi")) NOT "flaky"*`, // an excluded word as typed
 		"title:webhook":     `{title}: ("webhook"* OR "ǂwebhook")`,
 		"-only -negatives":  ``, // nothing to look for
 		`say "hi"`:          `("say"* OR "sai" OR "ǂsai") AND "hi"`,

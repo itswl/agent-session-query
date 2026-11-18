@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/index"
 	"github.com/itswl/agent-session-query/internal/otel"
 	"github.com/itswl/agent-session-query/internal/server"
@@ -48,7 +47,11 @@ func cmdOTel(ctx context.Context, args []string, io *streams) error {
 		return err
 	}
 	defer a.Close()
-	f, err := a.Filter(app.Query{Source: c.q.Source, Project: c.q.Project, Branch: c.q.Branch})
+	// The sessions are those every flag that selects them picks, a directory with the
+	// rest; the window is not one of them, as it picks turns (below), not sessions
+	q := c.q
+	q.Since, q.Until = "", ""
+	f, err := a.Filter(q)
 	if err != nil {
 		return usageError{err}
 	}
@@ -64,6 +67,7 @@ func cmdOTel(ctx context.Context, args []string, io *streams) error {
 			opts.DryRun = io.out
 		}
 		res, err := otel.Export(ctx, a.Index, opts)
+		defer c.lookedIn(io.err, err == nil && res.Turns+res.Current == 0)
 		if *dry {
 			fmt.Fprintf(io.err, "would send %s of %s as %s in %s\n", plural(res.Turns, "turn"), plural(res.Sessions, "transcript"), plural(res.Spans, "span"), plural(res.Requests, "request"))
 			return err

@@ -268,6 +268,7 @@ func TestHereIsTheCurrentDirectory(t *testing.T) {
 		args       []string
 		want, not  []string
 		says, from string
+		tells      string // on stderr, whole
 	}{
 		{args: []string{"ls", "--project", "."}, want: []string{"plan the release", "fix the web build"}, not: []string{"written last"}},
 		{args: []string{"ls", "--project", "./web"}, want: []string{"fix the web build"}, not: []string{"plan the release"}},
@@ -276,6 +277,13 @@ func TestHereIsTheCurrentDirectory(t *testing.T) {
 		{args: []string{"show"}, want: []string{"fix the web build"}, not: []string{"plan the release"}, says: "claude/" + web + ", the newest session in ", from: "proj"},
 		{args: []string{"brief"}, want: []string{"# Session brief", "fix the web build"}, says: "claude/" + web + ", the newest session in ", from: "proj"},
 		{args: []string{"show", "--json"}, want: []string{`"id": "` + web + `"`}, says: "the newest session in ", from: "proj"},
+		// Every command that takes the flags that select sessions keeps to the directory
+		{args: []string{"search", "the", "--project", "."}, want: []string{"plan the release", "fix the web build"}, not: []string{"written last"}},
+		{args: []string{"pack", "--project", "."}, want: []string{"plan the release", "fix the web build"}, not: []string{"written last"}},
+		{args: []string{"usage", "--by", "project", "--project", ".", "--json"}, want: []string{`"key": "` + filepath.Join(real, "proj", "web") + `"`}, not: []string{"proj-old"}},
+		{args: []string{"digest", "--project", "."}, want: []string{filepath.Join(real, "proj", "web")}, not: []string{"proj-old"}},
+		{args: []string{"otel", "--dry-run", "--content", "asks", "--project", "."}, want: []string{"plan the release", "fix the web build"}, not: []string{"written last"},
+			tells: "would send 2 turns of 2 transcripts as "},
 	} {
 		out, errs, code := asq(t, h, indexPath, tc.args...)
 		if code != 0 {
@@ -294,6 +302,9 @@ func TestHereIsTheCurrentDirectory(t *testing.T) {
 		}
 		if tc.says != "" && !strings.Contains(errs, tc.says+filepath.Join(root, tc.from)) {
 			t.Errorf("asq %s: stderr %q does not say %q", strings.Join(tc.args, " "), errs, tc.says+filepath.Join(root, tc.from))
+		}
+		if !strings.Contains(errs, tc.tells) {
+			t.Errorf("asq %s: stderr %q does not say %q", strings.Join(tc.args, " "), errs, tc.tells)
 		}
 	}
 
@@ -317,6 +328,10 @@ func TestHereIsTheCurrentDirectory(t *testing.T) {
 	out, errs, code = asq(t, h, indexPath, "failures", "--project", ".")
 	if code != 0 || !strings.Contains(errs, "looked in "+filepath.Join(root, "empty")) {
 		t.Errorf("failures --project . where nothing ran: exit %d, stdout %q, stderr %q", code, out, errs)
+	}
+	out, errs, code = asq(t, h, indexPath, "otel", "--dry-run", "--project", ".")
+	if code != 0 || out != "" || !strings.Contains(errs, "would send 0 turns") || !strings.Contains(errs, "looked in "+filepath.Join(root, "empty")) {
+		t.Errorf("otel --project . where nothing ran: exit %d, stdout %q, stderr %q", code, out, errs)
 	}
 	for _, args := range [][]string{{"show"}, {"show", "-f"}, {"brief"}} {
 		out, errs, code := asq(t, h, indexPath, args...)

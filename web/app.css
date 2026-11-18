@@ -223,6 +223,13 @@ kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width:
 .seen-line { display: flex; align-items: center; gap: 10px; padding: 12px 12px 4px; color: var(--accent); font-size: 12px; font-weight: 600; }
 .seen-line > .dots { flex: 0 1 auto; min-width: 0; }
 .seen-line::after { content: ""; flex: 1 0 24px; height: 1px; background: var(--accent); opacity: .45; }
+.seen-line > .link-btn { order: 1; flex: none; padding: 0 2px; font-size: 12px; font-weight: 500; }
+.seen-count .link-btn { padding: 0; font-size: inherit; }
+/* On a phone the words and the button take the width: the rule gives way */
+@media (max-width: 479px) {
+  .seen-line::after { display: none; }
+  .seen-line > .link-btn { margin-left: auto; }
+}
 .row { border-bottom: 1px solid var(--line); }
 .row-main { display: grid; grid-template-columns: 8px minmax(0, 1fr); column-gap: 12px; padding: 10px 12px; border-radius: 6px; color: inherit; }
 .row-main:hover { background: var(--sunk); text-decoration: none; }

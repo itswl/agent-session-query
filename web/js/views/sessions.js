@@ -171,7 +171,7 @@ export function mount(main, route, ctx) {
         const at = f.when(s.updatedAt);
         if (!lined && at <= base) {
           lined = true;
-          days.at(-1)?.rows.push(seenLine(base));
+          days.at(-1)?.rows.push(seenLine(base, () => { seen.markSeen('sessions'); renderList(); }));
         }
         const label = f.day(at || Date.now());
         if (days.at(-1)?.label !== label) days.push({ label, rows: [] });
@@ -412,9 +412,12 @@ function fresh(s, base) {
   return h('span', { class: 'fresh', title: `${began ? 'Begun' : 'Written to'} since you last looked, ${f.stamp(base)}` }, began ? 'new' : 'updated');
 }
 
-const seenLine = (base) =>
-  h('li', { class: 'seen-line', role: 'separator', 'aria-label': `Since you last looked, ${f.stamp(base)}` },
-    h('span', { class: 'dots' }, h('span', null, 'Since you last looked'), time(base, 'stamp')));
+// The line between what changed since the last visit and the rest, and the way to say it
+// has been seen: the marks are against now from then on
+const seenLine = (base, markSeen) =>
+  h('li', { class: 'seen-line', role: 'separator', 'aria-label': `Changed since your last visit, ${f.stamp(base)}` },
+    h('span', { class: 'dots' }, h('span', null, 'Changed since your last visit'), time(base, 'stamp')),
+    h('button', { type: 'button', class: 'link-btn', onclick: markSeen }, 'Mark as seen'));
 
 const quoted = (words) => words.map((w) => `“${w}”`).join(words.length === 2 ? ' or ' : ', ');
 

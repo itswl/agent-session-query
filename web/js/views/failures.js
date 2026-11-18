@@ -37,19 +37,27 @@ export function mount(main, route, ctx) {
   // A failure since the last look at this view is marked new (see seen.js)
   seen.look('failures');
   const rows = () => { const base = seen.since('failures'); return v.items.map((x) => row(x, base)); };
-  const offVisit = seen.onVisit(() => { if (v.items.length) list.replaceChildren(...rows()); });
+  // How many are new, and the way to say they have been seen
+  const fresh = h('span', { class: 'seen-count' });
+  const freshen = () => {
+    const base = seen.since('failures');
+    const n = base ? v.items.filter((x) => f.when(x.at) > base).length : 0;
+    fresh.replaceChildren(...(n ? [` ${f.num(n)} new since your last visit · `, h('button', { type: 'button', class: 'link-btn', onclick() { seen.markSeen('failures'); list.replaceChildren(...rows()); freshen(); } }, 'Mark as seen')] : []));
+  };
+  const offVisit = seen.onVisit(() => { if (v.items.length) { list.replaceChildren(...rows()); freshen(); } });
 
   function show(r, reset) {
     if (reset) v.top = r;
     v.items = reset ? r.failures : v.items.concat(r.failures);
     v.total = r.total;
     v.end = r.failures.length < PAGE;
-    summary.textContent = `${f.plural(r.total, 'failed call')}${tool ? ` of ${tool}` : ''}${projects.within(project)}${within(since)}.`;
+    summary.replaceChildren(`${f.plural(r.total, 'failed call')}${tool ? ` of ${tool}` : ''}${projects.within(project)}${within(since)}.`, fresh);
     if (reset) fill(chips,
       h('a', { class: 'chip', href: href({ tool: '' }), 'aria-current': tool ? null : 'true' }, 'All tools'),
       r.byTool.map((t) => h('a', { class: 'chip', href: href({ tool: t.tool === tool ? '' : t.tool }), 'aria-current': t.tool === tool ? 'true' : null },
         h('span', { class: 'mono' }, t.tool), h('span', { class: 'n' }, f.num(t.count)))));
     list.replaceChildren(...rows());
+    freshen();
     if (!v.items.length) list.replaceChildren(h('li', null, empty(`No failed tool calls${tool ? ` of ${tool}` : ''}${projects.within(project)}${within(since)}.`, tool ? (since === 'all' ? 'Try all tools.' : 'Try all tools, or a longer window.') : longer(since))));
     if (!body.contains(list)) body.replaceChildren(list, more);
     more.replaceChildren(v.end ? '' : h('button', { type: 'button', class: 'btn', onclick: () => load(false) }, 'Load more'));

@@ -18,12 +18,13 @@ calls, how many of those failed, subagents, project, branch. A session written i
 minutes is marked *live*.
 
 What changed since you last looked is marked too: a session begun since is *new*, one begun
-before and written to since is *updated*, and a line — *Since you last looked · Today 14:05* —
-runs above the first row that is older. The time is when you last looked at the list before this
-visit. A visit lasts while the page is looked at: a reload, Back from a session or a few minutes
-in another tab do not end it, so the marks stay while they are worked through. Five minutes away
-— the page hidden or closed, the machine asleep — does, and the next visit is marked from when
-you left. A first visit marks nothing.
+before and written to since is *updated*, and a line — *Changed since your last visit · Today
+14:05* — runs above the first row that is older. The time is when you last looked at the list
+before this visit. A visit lasts while the page is looked at: a reload, Back from a session or a
+few minutes in another tab do not end it, so the marks stay while they are worked through. Five
+minutes away — the page hidden or closed, the machine asleep — does, and the next visit is marked
+from when you left. *Mark as seen* on the line clears the marks at once. A first visit marks
+nothing.
 
 The filters on the left — store, time, project, archived sessions, subagent transcripts — live in
 the address, so a filtered view can be bookmarked and Back goes where you expect. The counts
@@ -123,7 +124,7 @@ page and [is not summed](cli.md#measuring).
 **Failures** — the tool calls that failed in the window, newest first: the
 command, how it ended, the end of what it printed, and a link to the step. The chips narrow to
 one tool. A failure since you last looked at Failures is marked *new*, by the same visits as
-[the sessions list](#sessions).
+[the sessions list](#sessions); the count above says how many, beside its *Mark as seen*.
 
 ![Failures](screenshots/failures.png)
 

@@ -62,6 +62,14 @@ export function leave(view) {
   if (looking.delete(view) && !document.hidden) lookedAt(view, Date.now());
 }
 
+// markSeen is the person saying they have seen what a view marks: its marks are against
+// now from here on, in this visit and the next. The view draws itself again without them.
+export function markSeen(view) {
+  const at = Date.now();
+  bases.set(view, at);
+  write(key(view), [visit, at, at]);
+}
+
 // onVisit calls fn when a new visit begins under an open view: its marks are against
 // another time from then on.
 export const onVisit = (fn) => { visitFns.add(fn); return () => visitFns.delete(fn); };

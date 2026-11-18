@@ -124,6 +124,13 @@ func (ix *Index) Search(ctx context.Context, q Query, f Filter, o SearchOptions)
 		return res, err
 	}
 	if total == 0 {
+		// Turns that hold every word, each with a word the query excludes: none matches, and
+		// none is called close for holding fewer
+		if w := q.words(); len(w.Terms) < len(q.Terms) {
+			if held, err := ix.holds(ctx, inTurns(w.match(), f), f); err != nil || held {
+				return res, err
+			}
+		}
 		return ix.closest(ctx, q, f, o)
 	}
 	res.Total, res.Sessions = total, sessions

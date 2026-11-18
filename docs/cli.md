@@ -93,9 +93,10 @@ Partial matches, closest first: 2 turns in 1 session, the closest holding 2 of t
    answer Each retry now waits twice as long as the one before — exponential backoff from a …
 ```
 
-A search some turn matches whole lists those turns and no others. `--recent` orders by time
-instead of relevance; `--per-session N` bounds how many turns of one session are shown
-(default 3, `0` for no bound).
+A search some turn matches whole lists those turns and no others, and one that turns would
+match whole but for a word it excludes lists none. `--recent` orders by time instead of
+relevance; `--per-session N` bounds how many turns of one session are shown (default 3, `0` for
+no bound).
 
 **`asq files <path>`** — the turns that named a file, newest first, each with the ask that led
 to it. `--changed` keeps only turns that changed it. Each says how the file stands now against

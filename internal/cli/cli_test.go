@@ -66,6 +66,7 @@ func TestCommands(t *testing.T) {
 		{[]string{"search", "ECONNREFUSED", "数据库"}, []string{"No turn holds all 2 words.", "Partial matches, closest first: 2 turns in 1 session, the closest holding 1 of the 2.", "lacks  数据库", "lacks  ECONNREFUSED"}},
 		{[]string{"search", "flaky", "nothinglikethis"}, []string{"No turn holds all 2 words; none holds “nothinglikethis”.", "lacks  nothinglikethis"}},
 		{[]string{"search", "nothinglikethis", "norethis"}, []string{"No turn holds “nothinglikethis” or “norethis”."}},
+		{[]string{"search", "keys flaky -ECONNREFUSED"}, []string{"No turn matches."}},
 		{[]string{"show", alpha}, []string{"Fix flaky test", "#1", "#2", "fix the flaky test", "/work/alpha && claude --resume", "Subagents", "Explore"}},
 		{[]string{"show", alpha + "#1"}, []string{"go test ./...", "[2]", "The test depended on map order"}},
 		{[]string{"show", alpha, "--turns", "last"}, []string{"schema.sql", "索引已加上"}},

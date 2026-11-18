@@ -296,6 +296,17 @@ func (q Query) match() string {
 	return excluding(strings.Join(must, " AND "), not)
 }
 
+// words is the query without the words it excludes.
+func (q Query) words() Query {
+	var out Query
+	for _, t := range q.Terms {
+		if !t.Not {
+			out.Terms = append(out.Terms, t)
+		}
+	}
+	return out
+}
+
 // excluding is an expression less the turns any of not matches.
 func excluding(expr string, not []string) string {
 	for _, n := range not {

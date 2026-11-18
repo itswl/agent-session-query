@@ -56,6 +56,8 @@ func TestSearchCloseToTheWords(t *testing.T) {
 			"an excluded word stays excluded"},
 		{"ECONNREFUSED 数据库 -orders", []string{"aaaa1111#1 lacks 数据库"}, &index.Partial{Words: 2, Held: 1}, nil,
 			"as typed: #2 says orders, and #1, which says order, stays"},
+		{"keys flaky -ECONNREFUSED", nil, nil, nil,
+			"the turn that holds every word holds one excluded: no turn is said to lack a word, and none is called close"},
 		{"flaky -ECONNREFUSED -数据库", nil, nil, nil,
 			"one word, which the exclusions leave nowhere: nothing to come close with"},
 		{"ECONNREFUSED flaky map order sorting keys 数据库", []string{"aaaa1111#1 lacks 数据库"}, &index.Partial{Words: 7, Held: 6}, nil,

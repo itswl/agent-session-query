@@ -105,7 +105,8 @@ When no turn holds every word, the answer is the turns that hold the most of the
 `partial` is how many words the query asks for and how many of them the closest hits hold; a
 hit's `lacks` is the words it does not hold, as typed (`ask:deploy`, `"exit status 1"`);
 `missing` the words no turn holds at all — which may come back with no hits, when there is
-nothing to come close with. A search some turn matches whole has neither.
+nothing to come close with. A search some turn matches whole has neither, and so has one that
+turns would match whole but for a word it excludes: it has no hits.
 
 ## Reports
 

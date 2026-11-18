@@ -87,10 +87,18 @@ fi
 
 echo "installed $INSTALL_DIR/asq"
 
-# Say it when what was installed is not what a new shell will run.
+# Say it when what was installed is not what a new shell will run. Debian and Ubuntu
+# put ~/.local/bin on the PATH once the directory exists, so there a re-login is all
+# it takes; elsewhere the line goes in the shell's file, named here.
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
-  *) echo "not on your PATH — add it: export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
+  *)
+    case "${SHELL:-}" in
+      *fish) echo "not on your PATH — add it once: fish_add_path $INSTALL_DIR" ;;
+      *bash) echo "not on your PATH — add it:  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.bashrc" ;;
+      *)     echo "not on your PATH — add it:  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc" ;;
+    esac
+    ;;
 esac
 other="$(command -v asq 2>/dev/null || true)"
 if [ -n "$other" ] && [ "$other" != "$INSTALL_DIR/asq" ]; then

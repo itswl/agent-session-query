@@ -68,8 +68,11 @@ so a sum across CLIs adds like with like. → [The record](docs/model.md)
 
 ## Install
 
-**macOS and Linux** — downloads the release for your machine and verifies it against the
-published checksums:
+**macOS and Linux** — downloads the release for your machine, verifies it against the
+published checksums, and installs it to `~/.local/bin` — the user's own directory, no
+sudo (what `asq` reads is that user's sessions). If the directory is not on your PATH
+the script prints the line to add; to install machine-wide instead,
+`INSTALL_DIR=/usr/local/bin sh install.sh` — that one asks for sudo:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/itswl/agent-session-query/main/install.sh | sh

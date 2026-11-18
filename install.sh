@@ -1,16 +1,19 @@
 #!/bin/sh
 # Installs asq: downloads the release for this machine, checks it against the release's
-# published checksums, and puts the binary on the PATH.
+# published checksums, and puts the binary in ~/.local/bin — the user's own directory,
+# no sudo. What asq reads is the installing user's sessions, so a system-wide install
+# is a place to name, not the default.
 #
 #   curl -fsSL https://raw.githubusercontent.com/itswl/agent-session-query/main/install.sh | sh
 #
-#   VERSION=v1.2.0 sh install.sh        a particular release instead of the latest
-#   INSTALL_DIR=~/bin sh install.sh     somewhere else than /usr/local/bin
-#   ASQ_REPO=you/fork sh install.sh     releases of a fork
+#   VERSION=v1.2.0 sh install.sh                        a particular release instead of the latest
+#   INSTALL_DIR=~/bin sh install.sh                     somewhere else than ~/.local/bin
+#   INSTALL_DIR=/usr/local/bin sh install.sh            the system-wide place, which needs sudo
+#   ASQ_REPO=you/fork sh install.sh                     releases of a fork
 set -eu
 
 REPO="${ASQ_REPO:-itswl/agent-session-query}"
-INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
 case "$(uname -s)" in
   Darwin) os=darwin ;;
@@ -67,26 +70,32 @@ fi
 tar -xzf "$tmp/$archive" -C "$tmp"
 chmod +x "$tmp/asq"
 
-if [ ! -d "$INSTALL_DIR" ]; then
-  mkdir -p "$INSTALL_DIR" 2>/dev/null || true
-fi
-if [ -d "$INSTALL_DIR" ] && [ -w "$INSTALL_DIR" ]; then
+# The default directory is the user's own and always writable. One that was named and
+# cannot be written — /usr/local/bin, say — takes sudo for the two commands that need it;
+# with NO_SUDO it is an error, not a quiet install somewhere the reader did not name.
+if mkdir -p "$INSTALL_DIR" 2>/dev/null && [ -w "$INSTALL_DIR" ]; then
   mv "$tmp/asq" "$INSTALL_DIR/asq"
-elif command -v sudo >/dev/null 2>&1 && [ -z "${NO_SUDO:-}" ]; then
+elif [ -z "${NO_SUDO:-}" ] && command -v sudo >/dev/null 2>&1; then
   echo "installing to $INSTALL_DIR needs sudo"
   sudo mkdir -p "$INSTALL_DIR"
   sudo mv "$tmp/asq" "$INSTALL_DIR/asq"
 else
-  INSTALL_DIR="$HOME/.local/bin"
-  mkdir -p "$INSTALL_DIR"
-  mv "$tmp/asq" "$INSTALL_DIR/asq"
-  case ":$PATH:" in
-    *":$INSTALL_DIR:"*) ;;
-    *) echo "add it to your PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
-  esac
+  echo "install.sh: cannot write to $INSTALL_DIR — name a directory you can:" >&2
+  echo "  INSTALL_DIR=~/bin sh install.sh" >&2
+  exit 1
 fi
 
 echo "installed $INSTALL_DIR/asq"
+
+# Say it when what was installed is not what a new shell will run.
+case ":$PATH:" in
+  *":$INSTALL_DIR:"*) ;;
+  *) echo "not on your PATH — add it: export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
+esac
+other="$(command -v asq 2>/dev/null || true)"
+if [ -n "$other" ] && [ "$other" != "$INSTALL_DIR/asq" ]; then
+  echo "another asq is on your PATH at $other — remove it, or it stays the one that runs"
+fi
 echo
 echo "  asq ls          recent sessions"
 echo "  asq serve       the page, at http://127.0.0.1:7717"

@@ -63,7 +63,10 @@ trace、网页都只写一遍，写在这份记录之上——所以对每个 CL
 
 ## 安装
 
-**macOS 与 Linux** —— 下载对应平台的发布包，并用发布的校验和验证：
+**macOS 与 Linux** —— 下载对应平台的发布包，用发布的校验和验证后装进 `~/.local/bin`
+——用户自己的目录，全程不用 sudo（`asq` 读的就是这个用户的会话）。若该目录不在 PATH
+里，脚本会给出要加的那一行；要装到全机器共享的位置，
+`INSTALL_DIR=/usr/local/bin sh install.sh`，这一种才会用到 sudo：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/itswl/agent-session-query/main/install.sh | sh

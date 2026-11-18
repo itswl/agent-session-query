@@ -187,7 +187,7 @@ shell's.
   <key>Label</key><string>io.github.itswl.asq</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/asq</string>
+    <string>/Users/YOU/.local/bin/asq</string>
     <string>serve</string>
   </array>
   <key>RunAtLoad</key><true/>

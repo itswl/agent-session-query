@@ -5,7 +5,7 @@
 //	GET  /api/sessions/{source}/{id}            one session: its outline and its subagents
 //	GET  /api/sessions/{source}/{id}/turns      turns step by step   ?turns=3 | 3-5 | last | all  ?full
 //	GET  /api/sessions/{source}/{id}/items/{seq}  one step whole
-//	GET  /api/sessions/{source}/{id}/brief      a handoff brief      ?turn ?since
+//	GET  /api/sessions/{source}/{id}/brief      a handoff brief      ?turn ?from ?since
 //	GET  /api/sessions/{source}/{id}/export     the session whole    ?format=md | json | jsonl | html
 //	GET  /api/search                            the turns that match ?q …and the list's filters ?recent ?per_session
 //	GET  /api/usage  /api/failures  /api/digest  /api/files  /api/projects  /api/pack

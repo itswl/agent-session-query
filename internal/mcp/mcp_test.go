@@ -194,6 +194,9 @@ func TestEveryToolAnswers(t *testing.T) {
 		{"read", map[string]any{"ref": "aaaa1111", "seq": 2}, []string{"ECONNREFUSED", "exit status 1"}},
 		{"brief", map[string]any{"ref": "aaaa1111"}, []string{"现在给数据库加索引", "schema.sql"}},
 		{"brief", map[string]any{"ref": "aaaa1111", "turn": 1}, []string{"fix the flaky test", "go test"}},
+		{"brief", map[string]any{"ref": "aaaa1111", "since": "all"}, []string{"## The whole session", "## Turn 1\n", "## Turn 2\n",
+			"- Failed: Bash `go test ./...` — error [step 2]\n  ```\n  --- FAIL: TestOrder\n  dial tcp: ECONNREFUSED 127.0.0.1:5432\n  exit status 1\n  ```\n"}},
+		{"brief", map[string]any{"ref": "aaaa1111", "from": 2}, []string{"## From turn 2", "## Turn 2\n", "db/schema.sql (#2)"}},
 		{"pack", map[string]any{"since": "7d"}, []string{"# Session pack", "Fix flaky test", "rotate the deploy key"}},
 		{"usage", nil, []string{"Rolling windows", "claude-opus-5", "claude-haiku-5", "/work/alpha"}},
 		{"usage", map[string]any{"by": "model"}, []string{"claude-opus-5", "total"}},
@@ -237,6 +240,9 @@ func TestWhatGoesWrongIsToldToTheModel(t *testing.T) {
 		{"read", map[string]any{"ref": "aaaa1111", "turns": "seven"}, "turns: want"},
 		{"read", map[string]any{"ref": "aaaa1111#9"}, "no such turn (it has 2)"},
 		{"read", map[string]any{"ref": "aaaa1111", "seq": 99}, "no step 99"},
+		{"brief", map[string]any{"ref": "aaaa1111", "from": 9}, "from must be 1..2"},
+		{"brief", map[string]any{"ref": "aaaa1111", "since": "soon"}, "since: unreadable time"},
+		{"brief", map[string]any{"ref": "this"}, "over HTTP"},
 		{"usage", map[string]any{"by": "colour"}, "grouped by model, day, source, project or session"},
 	} {
 		text, isErr := call(t, s, tc.tool, tc.args)
@@ -283,10 +289,72 @@ func TestAnswersKeepToTheirBudget(t *testing.T) {
 	if !strings.Contains(text, "max_chars") && !strings.Contains(text, "left out") {
 		t.Errorf("a cut answer says it was cut and what to do:\n%s", text[max(0, len(text)-300):])
 	}
+	// A brief is written to its budget rather than cut to it: where things stand at the end
+	// is the last thing it says, and the first a cut would lose
+	text, isErr = call(t, s, "brief", map[string]any{"ref": "aaaa1111", "since": "all", "max_chars": 1500})
+	if isErr || len(text) > 1500 || !strings.Contains(text, "## State at the end") || strings.Contains(text, "[Cut here") {
+		t.Errorf("a brief held to 1500 characters is %d:\n%s", len(text), text)
+	}
+
 	// Uncut, the whole output is there
 	whole, _ := call(t, s, "read", map[string]any{"ref": "bbbb2222", "seq": 1, "max_chars": 400000})
 	if strings.Count(whole, fixture.LongLine) != 400 {
 		t.Errorf("one step asked for whole has %d of its 400 lines", strings.Count(whole, fixture.LongLine))
+	}
+}
+
+// ref "this" is the session asking: the one Claude Code names to a server it starts on
+// stdio, or else the one most recently written to where the agent works — and the answer
+// says which it took, and why. Over HTTP nothing says which session is asking, and the
+// answer says that.
+func TestThisIsTheSessionAsking(t *testing.T) {
+	s := server(t)
+	alpha, beta := "claude/"+fixture.Alpha, "claude/"+fixture.Beta
+	for _, tc := range []struct {
+		caller *Caller
+		tool   string
+		args   map[string]any
+		want   []string
+	}{
+		{&Caller{Session: fixture.Alpha, Dirs: []string{"/work/beta"}}, "brief", map[string]any{"ref": "this"},
+			[]string{`[ref "this" is ` + alpha + `: the session Claude Code named when it started this server (CLAUDE_CODE_SESSION_ID).]` + "\n\n# Session brief: Fix flaky test"}},
+		{&Caller{Session: fixture.Alpha}, "read", map[string]any{"ref": "this#1"}, []string{`[ref "this" is ` + alpha, "go test ./...", "The test depended on map order"}},
+		{&Caller{Session: "cccc3333-0000-4000-8000-000000000003", Dirs: []string{"/work/beta"}}, "brief", map[string]any{"ref": "This", "since": "all"},
+			[]string{`[ref "this" is ` + beta + `: the Claude Code session most recently written to in /work/beta. The session CLAUDE_CODE_SESSION_ID names, cccc3333-0000-4000-8000-000000000003, is not in the index: Claude Code started with --continue`, "## The whole session", "rotate the deploy key"}},
+		{&Caller{Dirs: []string{"/nowhere", "/work/alpha"}}, "read", map[string]any{"ref": "this"},
+			[]string{`[ref "this" is ` + alpha + `: the session most recently written to in /work/alpha. The client did not name the session asking`, "#2", "现在给数据库加索引"}},
+	} {
+		s.Caller = tc.caller
+		text, isErr := call(t, s, tc.tool, tc.args)
+		if isErr {
+			t.Errorf("%+v %s %v: %s", tc.caller, tc.tool, tc.args, text)
+			continue
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(text, want) {
+				t.Errorf("%+v %s %v: no %q in\n%s", tc.caller, tc.tool, tc.args, want, text)
+			}
+		}
+	}
+	s.Caller = &Caller{Dirs: []string{"/nowhere"}}
+	if text, isErr := call(t, s, "brief", map[string]any{"ref": "this"}); !isErr || !strings.Contains(text, "no such session: none has run in /nowhere") {
+		t.Errorf("no session where the agent works: %v %q", isErr, text)
+	}
+
+	// Over HTTP, the server has no caller to ask
+	s.Caller = nil
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brief","arguments":{"ref":"this"}}}`)))
+	var r reply
+	if json.Unmarshal(rec.Body.Bytes(), &r) != nil || !r.Result.IsError || !strings.Contains(r.Result.Content[0].Text, "a request over HTTP carries nothing that does") {
+		t.Errorf("this, over HTTP = %s", rec.Body)
+	}
+	for _, tool := range describe() {
+		if tool["name"] == "brief" {
+			if about := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)["ref"].(map[string]any)["description"].(string); !strings.Contains(about, "over HTTP cannot") {
+				t.Errorf("the ref's description does not say \"this\" is for stdio: %q", about)
+			}
+		}
 	}
 }
 

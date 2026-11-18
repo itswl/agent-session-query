@@ -32,7 +32,7 @@ const usage = `asq — the session history of every agent CLI on this machine, a
   asq ls                       recent sessions                  (--project, --since, --source …)
   asq search <words>           the turns that hold these words  ("a phrase", -not, ask:word)
   asq show <ref>               a session as its turns; <ref>#4 one turn, step by step; -f follows it live
-  asq brief <ref>              a handoff brief of a session     (--turn N, --since 2h)
+  asq brief <ref>              a handoff brief of a session     (--turn N, --from N, --since 2h|all)
   asq pack                     several sessions as one document (--project, --since)
   asq export <ref>             a session whole                  (--format md|json|jsonl|html)
 
@@ -469,7 +469,8 @@ func followSession(ctx context.Context, a *app.App, s *index.Session, last model
 func cmdBrief(ctx context.Context, args []string, io *streams) error {
 	c := newCommand("brief", io.err)
 	turn := c.fs.Int("turn", 0, "brief this turn (default: the latest)")
-	since := c.fs.String("since", "", "brief every turn that ran after this: 2h, 2026-10-05T08:00")
+	from := c.fs.Int("from", 0, "brief this turn and every turn after it")
+	since := c.fs.String("since", "", "brief every turn that ran after this: 2h, 2026-10-05T08:00; all for the whole session")
 	rest, err := c.parse(args)
 	if err != nil {
 		return err
@@ -486,11 +487,11 @@ func cmdBrief(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return err
 	}
-	opts := render.BriefOptions{Turn: *turn}
-	if opts.Turn == 0 && named > 0 {
-		opts.Turn = named
+	if *turn == 0 && named > 0 {
+		*turn = named
 	}
-	if opts.Since, err = app.When(*since, time.Now()); err != nil {
+	opts, err := app.BriefOf(*turn, *from, *since)
+	if err != nil {
 		return usageError{err}
 	}
 	text, err := a.Brief(ctx, &s, opts)

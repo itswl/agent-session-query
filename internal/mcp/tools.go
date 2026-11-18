@@ -53,7 +53,7 @@ var (
 	pLimit   = prop{"limit", "integer", "How many to return."}
 	pOffset  = prop{"offset", "integer", "Skip this many first: the next page."}
 	pChars   = prop{"max_chars", "integer", "Cut the answer at about this many characters (default 16000)."}
-	pRef     = prop{"ref", "string", "A session as the other tools print it — claude/3f2a9c1e — or the start of its id. Append #N for a turn: claude/3f2a9c1e#4."}
+	pRef     = prop{"ref", "string", "A session as the other tools print it — claude/3f2a9c1e — or the start of its id. Append #N for a turn: claude/3f2a9c1e#4. \"this\" (or this#4) is the session you are working in, which asq mcp started on stdio can tell and asq over HTTP cannot."}
 )
 
 var tools = []tool{
@@ -110,12 +110,13 @@ var tools = []tool{
 	{
 		name:  "brief",
 		title: "Handoff brief",
-		about: "A handoff brief of a session, as Markdown: what was asked, what was done to which files, what failed, and the agent's final answer, for the latest turn (or one named, or everything since a moment). " +
-			"Use it to pick up where another agent left off, or to hand a piece of work to someone else. It is extracted from the record, not summarized by a model.",
+		about: "A handoff brief of a session, as Markdown: what was asked, which files were changed and how each stands now, what failed and whether the same command passed later, and the agent's final answer — for the latest turn, one named, a turn and those after it, everything since a moment, or the whole session. " +
+			"Use it to pick up where another agent left off, or to hand a piece of work to someone else: ref \"this\" briefs your own session. It is extracted from the record, not summarized by a model.",
 		props: []prop{
 			pRef,
 			{"turn", "integer", "Brief this turn instead of the latest."},
-			{"since", "string", "Brief every turn that ran after this moment: 2h, 2026-10-05T08:00."},
+			{"from", "integer", "Brief this turn and every turn after it."},
+			{"since", "string", "Brief every turn that ran after this moment: 2h, 2026-10-05T08:00 — or all, for the whole session."},
 			pChars,
 		},
 		need: []string{"ref"},
@@ -474,15 +475,19 @@ func runSessions(ctx context.Context, s *Server, a *args) (string, error) {
 }
 
 func runRead(ctx context.Context, s *Server, a *args) (string, error) {
-	sess, named, err := s.App.Resolve(ctx, a.str("ref"))
+	sess, named, said, err := s.session(ctx, a.str("ref"))
 	if err != nil {
-		if errors.Is(err, index.ErrNotFound) {
+		if _, this := thisRef(a.str("ref")); errors.Is(err, index.ErrNotFound) && !this {
 			err = fmt.Errorf("%w — sessions and search print the refs there are", err)
 		}
 		return "", err
 	}
 	st := style()
 	var b bytes.Buffer
+	if said != "" {
+		b.WriteString(said + "\n\n")
+		a.budget = max(a.budget-len(said), 500)
+	}
 
 	if a.has("seq") {
 		seq := a.num("seq", -1)
@@ -499,7 +504,8 @@ func runRead(ctx context.Context, s *Server, a *args) (string, error) {
 		return "", err
 	}
 	if !some {
-		return outline(ctx, s, &sess, a.budget, st)
+		text, err := outline(ctx, s, &sess, a.budget, st)
+		return b.String() + text, err
 	}
 	r.Full = a.flag("full")
 	turns, err := s.App.Index.Turns(ctx, &sess, r)
@@ -561,18 +567,26 @@ func outline(ctx context.Context, s *Server, sess *index.Session, budget int, st
 }
 
 func runBrief(ctx context.Context, s *Server, a *args) (string, error) {
-	sess, named, err := s.App.Resolve(ctx, a.str("ref"))
+	sess, named, said, err := s.session(ctx, a.str("ref"))
 	if err != nil {
 		return "", err
 	}
-	opts := render.BriefOptions{Turn: a.num("turn", 0)}
-	if opts.Turn == 0 && named > 0 {
-		opts.Turn = named
+	turn := a.num("turn", 0)
+	if turn == 0 && named > 0 {
+		turn = named
 	}
-	if opts.Since, err = app.When(a.str("since"), time.Now()); err != nil {
-		return "", fmt.Errorf("since: %w", err)
+	opts, err := app.BriefOf(turn, a.num("from", 0), a.str("since"))
+	if err != nil {
+		return "", err
 	}
-	return s.App.Brief(ctx, &sess, opts)
+	// Written to fit: cut at the budget, a brief would lose where things stand at the end
+	opts.MaxChars = a.budget
+	if said != "" {
+		said += "\n\n"
+		opts.MaxChars -= len(said)
+	}
+	text, err := s.App.Brief(ctx, &sess, opts)
+	return said + text, err
 }
 
 func runPack(ctx context.Context, s *Server, a *args) (string, error) {

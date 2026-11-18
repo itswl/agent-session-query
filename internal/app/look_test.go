@@ -12,6 +12,7 @@ import (
 
 	"github.com/itswl/agent-session-query/internal/catalog"
 	"github.com/itswl/agent-session-query/internal/index"
+	"github.com/itswl/agent-session-query/internal/render"
 )
 
 // A look at a file that does not come back — on a Mac, macOS asking on its screen whether
@@ -105,6 +106,23 @@ func TestALookThatWaitsDoesNotHoldTheAnswer(t *testing.T) {
 		if got.Now != nil || got.Waiting != guarded(proj) {
 			t.Errorf("ask %d: now %+v, waiting %q; want none, and %q", i+1, got.Now, got.Waiting, guarded(proj))
 		}
+	}
+	if n := looks.Load(); n != 1 {
+		t.Errorf("%d looks were left waiting in one folder, want 1", n)
+	}
+
+	// A brief names the file the same way, and is not held either
+	s, _, err := a.Resolve(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	brief, err := a.Brief(ctx, &s, render.BriefOptions{})
+	if took := time.Since(start); err != nil || took > 2*time.Second {
+		t.Fatalf("a brief waited %v for a look that does not come back: %v", took, err)
+	}
+	if want := "  - main.go · now: not looked at — a look in " + guarded(proj) + " is waiting"; !strings.Contains(brief, want) {
+		t.Errorf("brief: no %q in\n%s", want, brief)
 	}
 	if n := looks.Load(); n != 1 {
 		t.Errorf("%d looks were left waiting in one folder, want 1", n)

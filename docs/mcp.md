@@ -74,7 +74,7 @@ All ten only read. Each takes the selection arguments that make sense for it —
 | `search` | Where was this said? The turns that match, best first, with the lines the words were found in | `query` ([syntax](cli.md#finding)), `recent`, `per_session` |
 | `sessions` | What was worked on? Recent sessions, one line of where and when, one of what | `text`, `archived`, `agents` |
 | `read` | A session at the depth asked for: its outline; some turns step by step; one step whole | `ref`, `turns`, `seq`, `full` |
-| `brief` | A handoff brief of a session: asked, changed, failed, concluded | `ref`, `turn`, `since` |
+| `brief` | A handoff brief of a session: asked, changed and how each file stands now, failed and whether it passed later, concluded | `ref`, `turn`, `from`, `since` (`all` for the whole session) |
 | `pack` | Several sessions as one document, oldest first | `turns` |
 | `usage` | Tokens in and out, how many were reasoning, and the cache hit rate | `by` |
 | `failures` | The tool calls that failed, with the command and the end of the output — and where the same command passed later in the session | `tool` (exact, or `prefix*`) |
@@ -93,6 +93,27 @@ question about what a stretch of time did or cost — and the tool for each. A c
 tools only when a model searches for them shows the model those words and the tools' names and
 nothing else of the server; Claude Code does so by default.
 
+### `this`: the agent's own session
+
+`read` and `brief` take the ref `this` (and `this#4`): the session the agent asking is working
+in — to hand it to another agent, or to read back what it did before a compaction. The answer
+opens with a line in brackets that says which session it took, and why:
+
+- Claude Code sets `CLAUDE_CODE_SESSION_ID` in the stdio MCP servers it starts, and that session
+  is the one, when the index has it. The variable is the id the server was started with, and it
+  stays that ([Claude Code's environment variables](https://code.claude.com/docs/en/env-vars)):
+  after `/clear` the conversation goes on in a new session, and the answer then names one in the
+  same directory written to since. Started with `--continue`, or `--resume` without an id,
+  Claude Code may give the id it started with, which names no session; then —
+- otherwise, it is the session most recently written to in the directory the agent works in:
+  `CLAUDE_PROJECT_DIR`, which Claude Code sets for the servers it starts, or the directory the
+  server was started in. An agent at work writes its session as it goes, so that is its own,
+  unless another agent works in the same directory. With the variable set, only Claude Code's
+  sessions are looked at.
+
+Over HTTP nothing says which session is asking: a server reached at `/mcp` answers `this` with an
+error saying so, and the tool's description says it too. Name the session by its ref there.
+
 ## How the answers are shaped
 
 **Plain text, not JSON.** The reader is a model that pays for what it reads by the token. A
@@ -107,7 +128,9 @@ claude/3f2a9c1e  2h ago · 4 turns · 1 failed · /work/api · main
 line boundary, and says so with what to do about it — ask for fewer turns, a smaller `limit`, a
 narrower query, or raise the budget. `read` spends its budget turn by turn, so what is left out
 is whole turns that can be asked for by number, and a long outline keeps its *latest* turns,
-where the work stands.
+where the work stands. `brief` is written to its budget rather than cut to it: it spells out
+fewer of its latest turns, then says less of each, so that where things stood at the end is
+still its last section.
 
 **Masked.** Whatever is handed to a model leaves the machine with it, so secret-shaped strings
 are replaced with `[redacted]` in every answer (see [what is cleaned](model.md#what-is-cleaned-and-what-is-not)).

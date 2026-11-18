@@ -267,9 +267,14 @@ func (s *Server) handleBrief(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	opts := render.BriefOptions{Turn: turn}
-	if opts.Since, err = app.When(r.URL.Query().Get("since"), time.Now()); err != nil {
-		s.fail(w, r, badRequest{fmt.Errorf("since: %w", err)})
+	from, err := intOf(r, "from", 0)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	opts, err := app.BriefOf(turn, from, r.URL.Query().Get("since"))
+	if err != nil {
+		s.fail(w, r, badRequest{err})
 		return
 	}
 	text, err := s.app.Brief(r.Context(), &sess, opts)

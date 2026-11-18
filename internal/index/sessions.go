@@ -64,7 +64,10 @@ type Filter struct {
 	// Dirs keeps the sessions whose working directory is one of these or below one of
 	// them: one directory by every path that names it, as a CLI may have recorded it
 	// with its symbolic links resolved or as they were.
-	Dirs   []string
+	Dirs []string
+	// In keeps the sessions whose working directory is exactly one of these: the one an
+	// agent works in, by the paths that name it, and not those of the directories below.
+	In     []string
 	Branch string // part of the branch the session opened on
 	Text   string // part of the title, the id, the directory or the path
 	SID    int64  // one session alone, by its row in this index (Session.SID)
@@ -122,6 +125,12 @@ func (f Filter) where() (string, []any) {
 			args = append(args, same, under)
 		}
 		conds = append(conds, "("+strings.Join(either, " OR ")+")")
+	}
+	if len(f.In) > 0 {
+		conds = append(conds, "s.cwd IN ("+placeholders(len(f.In))+")")
+		for _, d := range f.In {
+			args = append(args, d)
+		}
 	}
 	if f.Branch != "" {
 		conds = append(conds, "instr(lower(s.branch), lower(?)) > 0")

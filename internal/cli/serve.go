@@ -108,7 +108,9 @@ func cmdMCP(ctx context.Context, args []string, io *streams) error {
 	if fromTerminal(io.in) {
 		fmt.Fprintf(io.err, "asq %s: asq mcp speaks JSON-RPC on stdin and stdout, for an MCP client to start: claude mcp add asq -- asq mcp (see 'asq mcp -h'). Ctrl+C or Ctrl+D ends it.\n", app.Version)
 	}
-	err = mcp.New(a, io.err).Serve(ctx, io.in, io.out)
+	srv := mcp.New(a, io.err)
+	srv.Caller = mcp.Stdio()
+	err = srv.Serve(ctx, io.in, io.out)
 	if ctx.Err() != nil {
 		return nil // stopped by a signal: that is how a client ends it
 	}

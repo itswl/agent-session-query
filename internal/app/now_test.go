@@ -269,6 +269,46 @@ func TestFilesSayHowTheyStandNow(t *testing.T) {
 			}
 		}
 	}
+
+	// The brief says what the two reports say: the failures that did not pass later as
+	// open ones, those that did as where they passed; each changed file as it stands now
+	s, _, err := a.Resolve(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := BriefOf(0, 0, "all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	brief, err := a.Brief(ctx, &s, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"## The whole session\n",
+		" change the files · 4 failed, 2 passed later\n",
+		"- Failed: Bash `make lint` — error [step ", "  lint failed\n",
+		"- Failed: Bash `cargo build -p core` — error [step ", "  error[E0308]: mismatched types\n",
+		"- Failed, passed later: Bash `go test ./...` — error [step ",
+		"later: #2 step ", ", as `go test ./internal/...`\n",
+		"  - edited.go (#1) · now: written since — what turn 1 wrote is still in it\n",
+		"  - edited.go · now: written since — what this turn wrote is still in it\n",
+		"  - written.txt · now: as this turn left it\n",
+		"  - gone.go · now: deleted\n",
+		"  - big.go · now: as this turn left it\n",
+		"  - " + elsewhere + "\n", // another machine's: nothing said of it
+		"- Read: read.go\n",
+	} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("brief: no %q in\n%s", want, brief)
+		}
+	}
+	if n := strings.Count(brief, "- Failed, passed later: Bash `go test ./...`"); n != 2 {
+		t.Errorf("%d of the two go test failures that passed later say so:\n%s", n, brief)
+	}
+	if strings.Contains(brief, "FAIL again") {
+		t.Errorf("a failure that passed later quotes its output, as if it were still the question:\n%s", brief)
+	}
 }
 
 func itoa(i int) string {

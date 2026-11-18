@@ -186,6 +186,14 @@ func TestRoutes(t *testing.T) {
 	if !strings.Contains(brief.Brief, "Failed: Bash `go test ./...`") {
 		t.Errorf("brief = %s", brief.Brief)
 	}
+	get(t, s, alpha+"/brief?since=all", &brief)
+	if !strings.Contains(brief.Brief, "## The whole session") || !strings.Contains(brief.Brief, "## Turn 1\n") {
+		t.Errorf("brief of the whole session = %s", brief.Brief)
+	}
+	get(t, s, alpha+"/brief?from=2", &brief)
+	if !strings.Contains(brief.Brief, "## From turn 2") || strings.Contains(brief.Brief, "## Turn 1\n") {
+		t.Errorf("brief from turn 2 = %s", brief.Brief)
+	}
 
 	var found index.SearchResult
 	get(t, s, "/api/search?q=%E6%95%B0%E6%8D%AE%E5%BA%93", &found)
@@ -218,6 +226,9 @@ func TestRoutes(t *testing.T) {
 		alpha + "/items/x":                      http.StatusBadRequest,
 		alpha + "/turns?turns=seven":            http.StatusBadRequest,
 		alpha + "/brief?turn=9":                 http.StatusBadRequest,
+		alpha + "/brief?from=9":                 http.StatusBadRequest,
+		alpha + "/brief?from=x":                 http.StatusBadRequest,
+		alpha + "/brief?since=soon":             http.StatusBadRequest,
 		alpha + "/export?format=docx":           http.StatusBadRequest,
 		"/api/sessions?limit=many":              http.StatusBadRequest,
 		"/api/sessions?since=whenever":          http.StatusBadRequest,

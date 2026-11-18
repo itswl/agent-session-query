@@ -2,6 +2,9 @@ package app_test
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -172,5 +175,68 @@ func TestAResumeNeedsItsDirectoryWhereTheCLIDoes(t *testing.T) {
 		if c.says == "" && why != "" || !strings.Contains(why, c.says) || (why == "") != (app.Resume(&s) != "") {
 			t.Errorf("%s %s in %q: no resume because %q, resume %q; want it to say %q", c.s.Source, c.s.ID, c.s.Cwd, why, app.Resume(&s), c.says)
 		}
+	}
+}
+
+// What a brief is asked to cover, as the faces are given it: "all" is the whole session,
+// not a moment — it is no bound in a filter, and a brief with no bound is of its latest turn.
+func TestBriefOf(t *testing.T) {
+	if o, err := app.BriefOf(0, 0, "all"); err != nil || !o.All || !o.Since.IsZero() {
+		t.Errorf("since all = %+v, %v", o, err)
+	}
+	if o, err := app.BriefOf(3, 2, "2h"); err != nil || o.All || o.Turn != 3 || o.From != 2 || time.Since(o.Since) < 2*time.Hour-time.Minute {
+		t.Errorf("turn 3, from 2, since 2h = %+v, %v", o, err)
+	}
+	if o, err := app.BriefOf(0, 0, ""); err != nil || o.All || !o.Since.IsZero() {
+		t.Errorf("nothing = %+v, %v", o, err)
+	}
+	if _, err := app.BriefOf(0, 0, "yesterdayish"); err == nil || !strings.HasPrefix(err.Error(), "since: ") {
+		t.Errorf("an unreadable since = %v", err)
+	}
+}
+
+// An agent asking after its own session: the one its CLI names, when the index has it;
+// else the one most recently written to in the directory it asks from.
+func TestSelf(t *testing.T) {
+	a, h := fixture.Open(t)
+	ctx := context.Background()
+	self, err := a.Self(ctx, "claude", fixture.Alpha, []string{"/work/beta"})
+	if err != nil || !self.ByID || self.ID != fixture.Alpha || self.Newer != nil || self.Resume == "" {
+		t.Errorf("by its id = %+v, %v", self, err)
+	}
+	// An id the index does not hold — Claude Code's own after --continue — or none: the
+	// directory decides
+	for _, id := range []string{"cccc3333-0000-4000-8000-000000000003", ""} {
+		self, err = a.Self(ctx, "claude", id, []string{"/nowhere", "/work/beta"})
+		if err != nil || self.ByID || self.ID != fixture.Beta {
+			t.Errorf("id %q, in /work/beta = %+v, %v", id, self, err)
+		}
+	}
+	if _, err := a.Self(ctx, "", "", []string{"/work"}); !errors.Is(err, index.ErrNotFound) {
+		t.Errorf("a directory above the sessions' = %v: a session is in one directory, exactly", err)
+	}
+	if _, err := a.Self(ctx, "codex", "", []string{"/work/alpha"}); !errors.Is(err, index.ErrNotFound) {
+		t.Errorf("a CLI this asq does not read = %v", err)
+	}
+
+	// A new session in the same directory, written to since: after /clear, the one the
+	// agent works in. The id names the old one still, and says that there is a newer
+	const newer = "dddd4444-0000-4000-8000-000000000004"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	rows := `{"type":"user","uuid":"d-u1","timestamp":"` + now + `","sessionId":"` + newer + `","cwd":"/work/alpha","message":{"role":"user","content":"carry on"}}
+{"type":"assistant","uuid":"d-a1","timestamp":"` + now + `","sessionId":"` + newer + `","message":{"id":"msg_d1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"On it."}],"stop_reason":"end_turn"}}
+`
+	if err := os.WriteFile(filepath.Join(h.Dir, "-work-alpha", newer+".jsonl"), []byte(rows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Sync(ctx, index.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	self, err = a.Self(ctx, "claude", fixture.Alpha, nil)
+	if err != nil || self.ID != fixture.Alpha || self.Newer == nil || self.Newer.ID != newer {
+		t.Errorf("named, with a newer session beside it = %+v, %v", self, err)
+	}
+	if self, err = a.Self(ctx, "", "", []string{"/work/alpha"}); err != nil || self.ID != newer {
+		t.Errorf("by its directory = %+v, %v: the session most recently written to", self, err)
 	}
 }

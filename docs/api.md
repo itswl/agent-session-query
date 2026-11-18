@@ -58,8 +58,11 @@ and the tail — with the whole size beside it (`item.bytes`, `tool.outBytes`, `
 **`GET /api/sessions/{source}/{id}/items/{seq}`** — one step whole:
 `{"session", "turn", "item"}`.
 
-**`GET /api/sessions/{source}/{id}/brief?turn=&since=`** — `{"session", "brief"}`, the
-[handoff brief](cli.md#handing-over) as Markdown.
+**`GET /api/sessions/{source}/{id}/brief?turn=&from=&since=`** — `{"session", "brief"}`, the
+[handoff brief](cli.md#handing-over) as Markdown: of the latest turn, of `turn`, of turn `from`
+and every turn after it, of every turn after `since`, or with `since=all` of the whole session.
+Its failed calls say where the same command later passed, and its changed files how they stand
+now, as `failures` and `files` [have them](#reports).
 
 **`GET /api/sessions/{source}/{id}/export?format=md|json|jsonl|html`** — the whole session, as a
 download. Always `Content-Disposition: attachment`: an exported page is a transcript's text laid

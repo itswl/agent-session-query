@@ -5,6 +5,7 @@ package render
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,55 +25,258 @@ import (
 // and factual — the ask in the person's own words, the files the tools changed, how the
 // exchange ended. Everything here is deterministic extraction from the record.
 
-// briefMaxTurns caps how many turns a brief spells out in full.
-const briefMaxTurns = 12
+// How much a brief says at most. A budget (BriefOptions.MaxChars) makes it say less.
+const (
+	briefMaxTurns    = 12 // turns spelled out in full, the latest kept
+	briefMaxFailures = 4  // failed calls one turn names
+	briefMaxFiles    = 20 // files one list names
+	briefOutputLines = 4  // lines of a failed call's output quoted: its end, where a command says why
+)
 
-// BriefOptions select what a brief covers.
+// BriefOptions select what a brief covers, and carry what is known of it now.
 type BriefOptions struct {
 	// Turn spells out one turn; zero means the latest.
 	Turn int
-	// Since spells out every turn that ran after a moment, and opens with what that
-	// stretch adds up to: the brief for handing the same session over a second time.
+	// From spells out a turn and every turn after it, Since every turn that ran after a
+	// moment, All the whole session. Each opens with what the stretch adds up to: the
+	// brief for handing a session over a second time, or whole.
+	From  int
 	Since time.Time
-	// Failures are the session's failed tool calls. A brief names the ones in the turns
-	// it spells out: "one call failed" hands over a question, the command hands over
-	// the answer.
+	All   bool
+	// Failures are the session's failed tool calls, those of the turns the brief names
+	// with where the same command later passed (index.Failure.Later). A brief names the
+	// ones in the turns it spells out: "one call failed" hands over a question, the
+	// command hands over the answer — and one that passed later is no open question.
 	Failures []index.Failure
+	// Files are the changed files the brief names (BriefPlan.Files), each with how it
+	// stands now (index.FileTouch.Now, Waiting).
+	Files []index.FileTouch
+	// MaxChars, above zero, holds the brief to about that many characters: it spells out
+	// fewer turns, then says less of each, until it fits.
+	MaxChars int
 }
 
-// briefMaxFailures caps how many failed calls a turn of a brief names.
-const briefMaxFailures = 4
+// BriefPlan is what a brief covers, worked out before it is written: what is known of it
+// only now — where a failed command later passed, how a changed file stands — is looked
+// up for what the brief names, and nothing else.
+type BriefPlan struct {
+	// Covered are the turns the brief covers, Detailed the latest of them, which it
+	// spells out, and Listed the turns its list of turns shows.
+	Covered, Detailed, Listed []int
+	// Files are the changed files it names, each against the turn whose account of the
+	// file it gives: the turn it spells out, or the last of the stretch that changed it.
+	Files []index.FileTouch
 
-// Brief renders a session's handoff brief as Markdown. turns is the session's outline —
-// its turns without their items — which is all a brief reads. The headings are the
-// interface the receiving side prompts around, not decoration.
-func Brief(s *index.Session, turns []model.Turn, o BriefOptions) (string, error) {
-	var real []model.Turn
+	s       *index.Session
+	real    []model.Turn
+	byIndex map[int]*model.Turn
+	stretch string // the heading of a brief over a stretch of turns; "" for one turn
+	// The stretch's files: those it changed, the latest first, each with the last turn
+	// that changed it; and those it only read, by name
+	changed []fileAt
+	read    []string
+}
+
+type fileAt struct {
+	path string
+	turn int
+}
+
+// Names reports whether the brief says anything of a turn: lists it, or covers it.
+func (p *BriefPlan) Names(turn int) bool {
+	return slices.Contains(p.Listed, turn) || slices.Contains(p.Detailed, turn)
+}
+
+// PlanBrief works out what a brief of a session covers. turns is the session's outline.
+func PlanBrief(s *index.Session, turns []model.Turn, o BriefOptions) (*BriefPlan, error) {
+	p := &BriefPlan{s: s, byIndex: map[int]*model.Turn{}}
 	for _, t := range turns {
 		if t.Index > 0 {
-			real = append(real, t)
+			p.real = append(p.real, t)
 		}
 	}
-	var selected []int
+	for i := range p.real {
+		p.byIndex[p.real[i].Index] = &p.real[i]
+	}
+	real := p.real
 	switch {
+	case o.All:
+		p.stretch = "The whole session"
+		for _, t := range real {
+			p.Covered = append(p.Covered, t.Index)
+		}
 	case !o.Since.IsZero():
 		// A turn still running at that moment counts: it is work the receiver has not
 		// seen either
 		for _, t := range real {
 			if end := lastOf(t); end.IsZero() || !end.Before(o.Since) {
-				selected = append(selected, t.Index)
+				p.Covered = append(p.Covered, t.Index)
 			}
 		}
-		if len(selected) == 0 {
-			return "", fmt.Errorf("no turn of this session ran since %s", o.Since.Local().Format("2006-01-02 15:04"))
+		if len(p.Covered) == 0 {
+			return nil, fmt.Errorf("no turn of this session ran since %s", o.Since.Local().Format("2006-01-02 15:04"))
 		}
+		p.stretch = "Since " + o.Since.Local().Format("2006-01-02 15:04")
+	case o.From != 0:
+		if p.byIndex[o.From] == nil {
+			return nil, fmt.Errorf("from must be 1..%d, got %d", len(real), o.From)
+		}
+		for _, t := range real {
+			if t.Index >= o.From {
+				p.Covered = append(p.Covered, t.Index)
+			}
+		}
+		p.stretch = "From turn " + strconv.Itoa(o.From)
 	case o.Turn != 0:
-		if o.Turn < 1 || o.Turn > len(real) {
-			return "", fmt.Errorf("turn must be 1..%d, got %d", len(real), o.Turn)
+		if p.byIndex[o.Turn] == nil {
+			return nil, fmt.Errorf("turn must be 1..%d, got %d", len(real), o.Turn)
 		}
-		selected = []int{o.Turn}
+		p.Covered = []int{o.Turn}
 	case len(real) > 0:
-		selected = []int{real[len(real)-1].Index}
+		p.Covered = []int{real[len(real)-1].Index}
+	}
+	if len(p.Covered) == 0 {
+		p.stretch = "" // a session with no turn yet: there is no stretch to add up
+	}
+	p.Detailed = p.Covered[max(0, len(p.Covered)-briefMaxTurns):]
+	p.Listed = p.listed(full)
+
+	// The files: each turn spelled out against what it changed, and the stretch against
+	// the last turn of it that changed each — which is the account of the file that
+	// matters now
+	seen := map[fileAt]bool{}
+	touch := func(path string, turn int) {
+		if k := (fileAt{path, turn}); !seen[k] {
+			seen[k] = true
+			p.Files = append(p.Files, touchOf(s, p.byIndex[turn], path))
+		}
+	}
+	if p.stretch != "" {
+		last, read := map[string]int{}, map[string]bool{}
+		for _, i := range p.Covered {
+			for _, f := range p.byIndex[i].Files {
+				if f.Changed {
+					last[f.Path] = i
+				} else {
+					read[f.Path] = true
+				}
+			}
+		}
+		for path, turn := range last {
+			p.changed = append(p.changed, fileAt{path, turn})
+		}
+		sort.Slice(p.changed, func(i, j int) bool {
+			a, b := p.changed[i], p.changed[j]
+			return a.turn > b.turn || a.turn == b.turn && a.path < b.path
+		})
+		for path := range read {
+			if _, changed := last[path]; !changed {
+				p.read = append(p.read, path)
+			}
+		}
+		sort.Strings(p.read)
+		for _, f := range p.changed[:min(len(p.changed), briefMaxFiles)] {
+			touch(f.path, f.turn)
+		}
+	}
+	for _, i := range p.Detailed {
+		changed := changedOf(p.byIndex[i])
+		for _, path := range changed[:min(len(changed), briefMaxFiles)] {
+			touch(path, i)
+		}
+	}
+	return p, nil
+}
+
+// touchOf is a turn's change to a file as the files report has it: what a look at the
+// file now is measured against.
+func touchOf(s *index.Session, t *model.Turn, path string) index.FileTouch {
+	at := t.StartedAt
+	if at.IsZero() {
+		at = t.LastAt
+	}
+	ended := at
+	for _, x := range []time.Time{t.EndedAt, t.LastAt} {
+		if x.After(ended) {
+			ended = x
+		}
+	}
+	return index.FileTouch{Path: path, Changed: true, Session: s.Ref, Cwd: s.Cwd, Turn: t.Index, At: at, Ended: ended}
+}
+
+func changedOf(t *model.Turn) []string {
+	var out []string
+	for _, f := range t.Files {
+		if f.Changed {
+			out = append(out, f.Path)
+		}
+	}
+	return out
+}
+
+// detail is how much a brief says. It says less, a step at a time, to fit a budget.
+type detail struct {
+	turns       int // turns spelled out, the latest kept
+	first, last int // of a long session's list of turns, how many of the first and the latest it shows
+	files       int // files one list names
+	lines       int // lines of a failed call's output quoted
+}
+
+var (
+	full  = detail{turns: briefMaxTurns, first: 5, last: 15, files: briefMaxFiles, lines: briefOutputLines}
+	least = detail{turns: 1, first: 2, last: 6, files: 6, lines: 1}
+)
+
+// listed is which turns the list of turns shows: all of them, or of a long session the
+// first few and the latest.
+func (p *BriefPlan) listed(d detail) []int {
+	var out []int
+	if len(p.real) < 2 {
+		return out
+	}
+	for i, t := range p.real {
+		if len(p.real) <= d.first+d.last || i < d.first || i >= len(p.real)-d.last {
+			out = append(out, t.Index)
+		}
+	}
+	return out
+}
+
+// Brief renders a session's handoff brief as Markdown. turns is the session's outline —
+// its turns without their items — which is all a brief reads. The headings are the
+// interface the receiving side prompts around, not decoration.
+func Brief(s *index.Session, turns []model.Turn, o BriefOptions) (string, error) {
+	p, err := PlanBrief(s, turns, o)
+	if err != nil {
+		return "", err
+	}
+	d := full
+	d.turns = min(d.turns, max(len(p.Detailed), 1))
+	text := p.write(o, d)
+	// Fewer turns spelled out, the latest kept, until it fits; then less of each
+	for o.MaxChars > 0 && len(text) > o.MaxChars && d.turns > 1 {
+		d.turns = max(1, min(d.turns-1, d.turns*o.MaxChars/len(text)))
+		text = p.write(o, d)
+	}
+	if o.MaxChars > 0 && len(text) > o.MaxChars {
+		l := least
+		l.turns = d.turns
+		text = p.write(o, l)
+	}
+	return text, nil
+}
+
+// write writes the brief at one level of detail.
+func (p *BriefPlan) write(o BriefOptions, d detail) string {
+	s, real := p.s, p.real
+	detailed := p.Detailed[max(0, len(p.Detailed)-d.turns):]
+	failures := map[int][]index.Failure{}
+	for _, f := range o.Failures {
+		failures[f.Turn] = append(failures[f.Turn], f)
+	}
+	now := map[fileAt]*index.FileTouch{}
+	for i := range o.Files {
+		now[fileAt{o.Files[i].Path, o.Files[i].Turn}] = &o.Files[i]
 	}
 
 	var b strings.Builder
@@ -100,87 +304,116 @@ func Brief(s *index.Session, turns []model.Turn, o BriefOptions) (string, error)
 		fmt.Fprintf(&b, "- %s ran beneath it\n", plural(s.Agents, "subagent"))
 	}
 
-	if len(real) > 1 {
+	if listed := p.listed(d); len(listed) > 0 {
 		b.WriteString("\n## Turns\n\n")
-		shown := real
-		if len(shown) > 20 {
-			shown = append(append([]model.Turn{}, real[:5]...), real[len(real)-15:]...)
-		}
-		for i, t := range shown {
-			if i == 5 && len(shown) < len(real) {
-				fmt.Fprintf(&b, "- … %d turns not shown\n", len(real)-len(shown))
+		for i, n := range listed {
+			if i > 0 && n != listed[i-1]+1 {
+				fmt.Fprintf(&b, "- … %d turns not shown\n", len(real)-len(listed))
 			}
+			t := p.byIndex[n]
 			mark, note := "✓", ""
-			switch {
-			case t.Failures > 0:
-				mark, note = "✗", fmt.Sprintf(" · %d failed", t.Failures)
-			case t.Interrupted:
+			if t.Interrupted {
 				mark = "⚠"
+			}
+			// A call that failed and then passed is a step of the work, not where it stands
+			if t.Failures > 0 {
+				passed := 0
+				for _, f := range failures[n] {
+					if f.Later != nil {
+						passed++
+					}
+				}
+				switch {
+				case passed == t.Failures:
+					note = fmt.Sprintf(" · %d failed, passed later", t.Failures)
+				case passed > 0:
+					mark, note = "✗", fmt.Sprintf(" · %d failed, %d passed later", t.Failures, passed)
+				default:
+					mark, note = "✗", fmt.Sprintf(" · %d failed", t.Failures)
+				}
 			}
 			fmt.Fprintf(&b, "- #%d %s %s %s%s\n", t.Index, shortTime(t.StartedAt), mark, txt.OneLine(t.Ask, 100), note)
 		}
 	}
 
-	chosen := map[int]bool{}
-	for _, i := range selected {
-		chosen[i] = true
-	}
-	// A delta covers a stretch rather than one exchange, so it opens with what the
-	// stretch adds up to: the receiver reads that first and the turns for the detail
-	if !o.Since.IsZero() {
+	// A stretch opens with what it adds up to: the receiver reads that first and the
+	// turns for the detail
+	if p.stretch != "" {
 		var sum model.Turn
-		files := map[string]bool{}
-		for _, t := range real {
-			if !chosen[t.Index] {
-				continue
-			}
+		for _, i := range p.Covered {
+			t := p.byIndex[i]
 			sum.Tools += t.Tools
 			sum.Failures += t.Failures
 			sum.Usage.Add(t.Usage)
-			for _, f := range t.Files {
-				files[f.Path] = files[f.Path] || f.Changed
+		}
+		first, last := p.byIndex[p.Covered[0]], p.byIndex[p.Covered[len(p.Covered)-1]]
+		fmt.Fprintf(&b, "\n## %s\n\n", p.stretch)
+		fmt.Fprintf(&b, "- %s: #%d → #%d · %s → %s\n", plural(len(p.Covered), "turn"), first.Index, last.Index,
+			shortTime(first.StartedAt), shortTime(workEnd(*last)))
+		if len(p.changed) > 0 {
+			paths := make([]string, len(p.changed))
+			for i, f := range p.changed {
+				paths[i] = f.path
+			}
+			shown := slices.Clone(p.changed[:min(len(p.changed), d.files)])
+			sort.Slice(shown, func(i, j int) bool { return shown[i].path < shown[j].path })
+			changedHead(&b, paths)
+			for _, f := range shown {
+				who := "turn " + strconv.Itoa(f.turn)
+				fileLine(&b, fmt.Sprintf("%s (#%d)", inProject(s.Cwd, f.path), f.turn), now[f], who)
+			}
+			if more := len(p.changed) - len(shown); more > 0 {
+				fmt.Fprintf(&b, "  - … and %d more, changed earlier\n", more)
 			}
 		}
-		for path, changed := range files {
-			sum.Files = append(sum.Files, model.File{Path: path, Changed: changed})
+		if len(p.read) > 0 {
+			fmt.Fprintf(&b, "- Read: %s\n", joinFiles(s.Cwd, p.read, d.files))
 		}
-		sort.Slice(sum.Files, func(i, j int) bool { return sum.Files[i].Path < sum.Files[j].Path })
-		first, last := real[selected[0]-1], real[selected[len(selected)-1]-1]
-		fmt.Fprintf(&b, "\n## Since %s\n\n", o.Since.Local().Format("2006-01-02 15:04"))
-		fmt.Fprintf(&b, "- %s: #%d → #%d · %s → %s\n", plural(len(selected), "turn"), first.Index, last.Index,
-			shortTime(first.StartedAt), shortTime(workEnd(last)))
-		fileLines(&b, sum.Files)
 		fmt.Fprintf(&b, "- Tools: %d calls · failed %d\n", sum.Tools, sum.Failures)
 		if line := TokenLine(sum.Usage); line != "" {
 			fmt.Fprintf(&b, "- Tokens: %s\n", line)
 		}
-		// Enough turns to follow the work, newest kept: a delta over a long absence would
-		// otherwise be the whole session again
-		if len(selected) > briefMaxTurns {
-			selected = selected[len(selected)-briefMaxTurns:]
-			chosen = map[int]bool{}
-			for _, i := range selected {
-				chosen[i] = true
-			}
-			fmt.Fprintf(&b, "- … only the latest %d turns are detailed below\n", briefMaxTurns)
+		// Enough turns to follow the work, the latest kept: a stretch over a long absence,
+		// or a whole session, would otherwise be the session again
+		switch {
+		case len(detailed) == len(p.Covered):
+		case len(detailed) == 1:
+			b.WriteString("- … only the latest turn is detailed below\n")
+		default:
+			fmt.Fprintf(&b, "- … only the latest %d turns are detailed below\n", len(detailed))
 		}
 	}
 
-	for _, t := range real {
-		if !chosen[t.Index] {
-			continue
-		}
+	for _, i := range detailed {
+		t := p.byIndex[i]
 		head := "\n## Turn " + strconv.Itoa(t.Index)
 		if t.Interrupted {
 			head += " — interrupted"
 		}
 		b.WriteString(head + "\n\n")
 		fmt.Fprintf(&b, "- Asked: %s\n", txt.Cap(t.Ask, 300))
-		fileLines(&b, t.Files)
-		if t.Tools > 0 {
-			fmt.Fprintf(&b, "- Tools: %s\n", ToolLine(&t))
+		if changed := changedOf(t); len(changed) > 0 {
+			changedHead(&b, changed)
+			for _, path := range changed[:min(len(changed), d.files)] {
+				fileLine(&b, inProject(s.Cwd, path), now[fileAt{path, i}], "this turn")
+			}
+			if more := len(changed) - d.files; more > 0 {
+				fmt.Fprintf(&b, "  - … and %d more\n", more)
+			}
 		}
-		failureLines(&b, t.Index, o.Failures)
+		var read []string
+		for _, f := range t.Files {
+			if !f.Changed {
+				read = append(read, f.Path)
+			}
+		}
+		if len(read) > 0 {
+			fmt.Fprintf(&b, "- Read: %s\n", joinFiles(s.Cwd, read, d.files))
+		}
+		if t.Tools > 0 {
+			fmt.Fprintf(&b, "- Tools: %s\n", ToolLine(t))
+		}
+		failureLines(&b, failures[i], d)
 		if line := TokenLine(t.Usage); line != "" {
 			fmt.Fprintf(&b, "- Tokens: %s\n", line)
 		}
@@ -200,71 +433,151 @@ func Brief(s *index.Session, turns []model.Turn, o BriefOptions) (string, error)
 		}
 	}
 	b.WriteString(state + "\n")
-	if len(real) > 0 {
-		fmt.Fprintf(&b, "\nDig deeper: `asq show %s#%d` reads a turn step by step (MCP: read with ref=\"%s#%d\"); `asq brief %s --since <when>` covers everything after a moment.\n",
-			s.Ref, selected[len(selected)-1], s.Ref, selected[len(selected)-1], s.Ref)
+	if len(detailed) > 0 {
+		n := detailed[len(detailed)-1]
+		fmt.Fprintf(&b, "\nDig deeper: `asq show %s#%d` reads a turn step by step (MCP: read with ref=\"%s#%d\"); `asq brief %s --since <when>` covers everything after a moment, `--since all` the whole session.\n",
+			s.Ref, n, s.Ref, n, s.Ref)
 	}
-	return b.String(), nil
+	return b.String()
 }
 
-// failureLines names a turn's failed calls: what was run, how it ended, and the last
-// thing it printed — which is where a command says why.
-func failureLines(b *strings.Builder, turn int, failures []index.Failure) {
-	n := 0
+// failureLines names a turn's failed calls: what was run and how it ended. One whose
+// command later passed says where, and that is all it needs to say; one that did not
+// quotes the end of what it printed, which is where a command says why. Those come first.
+func failureLines(b *strings.Builder, failures []index.Failure, d detail) {
+	var open, passed []index.Failure
 	for _, f := range failures {
-		if f.Turn != turn {
-			continue
+		if f.Later != nil {
+			passed = append(passed, f)
+		} else {
+			open = append(open, f)
 		}
-		if n++; n > briefMaxFailures {
-			continue
-		}
+	}
+	all := append(open, passed...)
+	for _, f := range all[:min(len(all), briefMaxFailures)] {
 		what := f.Tool
 		if f.Command != "" {
-			what += " `" + txt.OneLine(f.Command, 160) + "`"
+			what += " " + codeSpan(txt.OneLine(f.Command, 160))
 		}
 		how := f.Status
 		if f.Exit != nil {
 			how += ", exit " + strconv.Itoa(*f.Exit)
 		}
-		line := "- Failed: " + what + " — " + how
-		lines := strings.Split(strings.TrimSpace(f.Output), "\n")
-		if last := txt.OneLine(lines[len(lines)-1], 200); last != "" {
-			line += ": " + last
+		step := " [step " + strconv.Itoa(f.Seq) + "]"
+		if l := f.Later; l != nil {
+			line := "- Failed, passed later: " + what + " — " + how + step + " · passed " + laterBy(f.At, l.At) + " #" + strconv.Itoa(l.Turn) + " step " + strconv.Itoa(l.Seq)
+			if l.Command != txt.OneLine(f.Command, 0) {
+				line += ", as " + codeSpan(txt.OneLine(l.Command, 160))
+			}
+			b.WriteString(line + "\n")
+			continue
 		}
-		b.WriteString(line + " [step " + strconv.Itoa(f.Seq) + "]\n")
+		b.WriteString("- Failed: " + what + " — " + how + step + "\n")
+		quote(b, tail(f.Output, d.lines), "  ")
 	}
-	if n > briefMaxFailures {
-		fmt.Fprintf(b, "- … and %d more failed calls\n", n-briefMaxFailures)
+	if more := len(all) - briefMaxFailures; more > 0 {
+		line := fmt.Sprintf("- … and %d more failed calls", more)
+		if n := len(passed) - max(briefMaxFailures-len(open), 0); n > 0 {
+			line += fmt.Sprintf(", %d of them passed later", min(n, more))
+		}
+		b.WriteString(line + "\n")
 	}
 }
 
-// fileLines writes what a turn changed and what else it touched.
-func fileLines(b *strings.Builder, files []model.File) {
-	var changed, touched []string
-	for _, f := range files {
-		if f.Changed {
-			changed = append(changed, f.Path)
-		} else {
-			touched = append(touched, f.Path)
+// tail is the last n lines of an output that say anything, cleaned, each cut to a line.
+func tail(output string, n int) []string {
+	lines := strings.Split(strings.TrimSpace(txt.Clean(output)), "\n")
+	var out []string
+	for i := len(lines) - 1; i >= 0 && len(out) < n; i-- {
+		if line := strings.TrimRight(lines[i], " \t"); strings.TrimSpace(line) != "" {
+			out = append(out, txt.Truncate(line, 200, " …"))
 		}
 	}
-	if len(changed) > 0 {
-		fmt.Fprintf(b, "- Changed: %s\n", joinFiles(changed))
-		fmt.Fprintf(b, "- Split: %s\n", KindLine(changed))
-	}
-	if len(touched) > 0 {
-		fmt.Fprintf(b, "- Read: %s\n", joinFiles(touched))
-	}
+	slices.Reverse(out)
+	return out
 }
 
-// joinFiles lists up to twenty files and says how many more there were.
-func joinFiles(files []string) string {
+// quote writes lines as a code block, indented to sit beneath a list item, fenced with
+// more backticks than any run of them inside.
+func quote(b *strings.Builder, lines []string, indent string) {
+	if len(lines) == 0 {
+		return
+	}
+	text := strings.Join(lines, "\n")
+	ticks := "```"
+	for strings.Contains(text, ticks) {
+		ticks += "`"
+	}
+	b.WriteString(indent + ticks + "\n")
+	for _, line := range lines {
+		b.WriteString(indent + line + "\n")
+	}
+	b.WriteString(indent + ticks + "\n")
+}
+
+// codeSpan writes text as inline code, with more backticks around it than any run of
+// them inside: a command can hold one.
+func codeSpan(text string) string {
+	ticks := "`"
+	for strings.Contains(text, ticks) {
+		ticks += "`"
+	}
+	if strings.HasPrefix(text, "`") || strings.HasSuffix(text, "`") {
+		return ticks + " " + text + " " + ticks
+	}
+	return ticks + text + ticks
+}
+
+// changedHead opens a list of changed files: how many, of which kinds.
+func changedHead(b *strings.Builder, paths []string) {
+	head := "- Changed: " + plural(len(paths), "file")
+	if kinds := KindLine(paths); kinds != "" {
+		head += " — " + kinds
+	}
+	b.WriteString(head + "\n")
+}
+
+// fileLine names a changed file and how it stands now against what the turn named who
+// left; nothing more when that cannot be said.
+func fileLine(b *strings.Builder, name string, t *index.FileTouch, who string) {
+	line := "  - " + name
+	if t != nil {
+		if said := fileNowAgainst(t.Now, who); said != "" {
+			line += " · " + said
+		} else if t.Waiting != "" {
+			line += " · " + waitingLine(t.Waiting)
+		}
+	}
+	b.WriteString(line + "\n")
+}
+
+// joinFiles lists up to n files and says how many more there were.
+func joinFiles(cwd string, files []string, n int) string {
 	more := ""
-	if len(files) > 20 {
-		more = fmt.Sprintf(" … and %d more", len(files)-20)
-		files = files[:20]
+	if len(files) > n {
+		more = fmt.Sprintf(" … and %d more", len(files)-n)
+		files = files[:n]
 	}
-	return strings.Join(files, ", ") + more
+	names := make([]string, len(files))
+	for i, f := range files {
+		names[i] = inProject(cwd, f)
+	}
+	return strings.Join(names, ", ") + more
+}
+
+// inProject names a file as the project does: relative to the session's directory, which
+// the brief's head names, when it is beneath it.
+func inProject(cwd, path string) string {
+	for _, sep := range []string{"/", `\`} {
+		dir := strings.TrimRight(cwd, sep)
+		if dir == "" {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(path, dir+sep); ok && rest != "" {
+			return rest
+		}
+	}
+	return path
 }
 
 // KindLine counts changed files as "4 code · 2 tests · 1 doc".

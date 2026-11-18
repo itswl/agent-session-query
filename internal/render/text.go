@@ -630,25 +630,34 @@ func laterBy(failed, passed time.Time) string {
 
 // FileNowLine says how a file stands against what a turn left, and on what evidence; ""
 // when nothing can be said.
-func FileNowLine(n *index.FileNow) string {
+func FileNowLine(n *index.FileNow) string { return fileNowAgainst(n, "this turn") }
+
+// fileNowAgainst is FileNowLine with the turn named as the line is read: "this turn",
+// "turn 5".
+func fileNowAgainst(n *index.FileNow, turn string) string {
 	if n == nil {
 		return ""
 	}
 	switch {
 	case n.State == index.FileSame && n.By == index.ByContent:
-		return "now: as this turn left it"
+		return "now: as " + turn + " left it"
 	case n.State == index.FileSame:
 		return "now: not written since"
 	case n.State == index.FileChanged:
-		return "now: changed since — what this turn wrote is no longer all there"
+		return "now: changed since — what " + turn + " wrote is no longer all there"
 	case n.State == index.FileWritten && n.By == index.ByContent:
-		return "now: written since — what this turn wrote is still in it"
+		return "now: written since — what " + turn + " wrote is still in it"
 	case n.State == index.FileWritten:
 		return "now: written since (by its time; the text was not compared)"
 	case n.State == index.FileDeleted:
 		return "now: deleted"
 	}
 	return ""
+}
+
+// waitingLine says that a file was not looked at, because a look in its folder waits.
+func waitingLine(folder string) string {
+	return "now: not looked at — a look in " + folder + " is waiting (on a Mac, macOS asking whether asq may read it)"
 }
 
 // Digest prints what a window's work added up to, per project.
@@ -725,7 +734,7 @@ func Files(w io.Writer, list []index.FileTouch, total int, st Style) {
 			}
 			fmt.Fprintf(w, "    %s\n", paint(line))
 		} else if f.Waiting != "" {
-			fmt.Fprintf(w, "    %s\n", st.dim("now: not looked at — a look in "+f.Waiting+" is waiting (on a Mac, macOS asking whether asq may read it)"))
+			fmt.Fprintf(w, "    %s\n", st.dim(waitingLine(f.Waiting)))
 		}
 	}
 	if total > len(list) {

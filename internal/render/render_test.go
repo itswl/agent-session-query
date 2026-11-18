@@ -3,6 +3,7 @@ package render
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -194,25 +195,180 @@ func TestShortRefs(t *testing.T) {
 	}
 }
 
+// A brief names a failed call by what was run and how it ended. One whose command did
+// not pass later quotes the end of what it printed, where a command says why, fenced so
+// that what it printed cannot end the block; one that passed later says where, and is not
+// handed over as an open problem — in the turn, nor in the list of turns.
 func TestBriefNamesWhatFailed(t *testing.T) {
 	s, turns := hostile()
 	exit := 1
-	text, err := Brief(s, turns, BriefOptions{Failures: []index.Failure{
-		{Turn: 1, Seq: 2, Tool: "Bash", Status: "error", Exit: &exit, Command: "cat README.md", Output: "first line\nNo such file or directory"},
-	}})
+	failed := index.Failure{Turn: 1, Seq: 2, Tool: "Bash", Status: "error", Exit: &exit, Command: "cat README.md",
+		Output: "first line\n```\n\x1b[31mNo such file\x1b[0m\n\nkey " + "sk-" + "Zx9Qw7Lm3Pv5Tr8Kd2Nf6Hb4\n"}
+	text, err := Brief(s, turns, BriefOptions{Failures: []index.Failure{failed}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"## Turn 1", "- Asked: ", "- Failed: Bash `cat README.md` — error, exit 1: No such file or directory [step 2]", "## State at the end", "main.go"} {
+	for _, want := range []string{"## Turn 1", "- Asked: ", "- Failed: Bash `cat README.md` — error, exit 1 [step 2]\n  ````\n  first line\n  ```\n  No such file\n  key [redacted]\n  ````\n", "## State at the end", "main.go"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("brief: no %q in\n%s", want, text)
 		}
 	}
-	if _, err := Brief(s, turns, BriefOptions{Turn: 5}); err == nil {
-		t.Error("a turn the session does not have is accepted")
+	if strings.Contains(text, "\x1b") || strings.Contains(text, "Zx9Qw7") {
+		t.Errorf("a quoted output keeps its escapes or its key:\n%s", text)
+	}
+
+	// The same command passed two turns on: where, and how it was run then
+	second := turns[0]
+	second.Index, second.Failures, second.StartedAt = 2, 0, turns[0].StartedAt.Add(time.Hour)
+	third := second
+	third.Index, third.StartedAt = 3, second.StartedAt.Add(time.Hour)
+	failed.Later = &index.Later{Turn: 3, Seq: 9, At: failed.At.Add(40 * time.Minute), Command: "cat ./README.md"}
+	failed.At = turns[0].StartedAt
+	failed.Later.At = failed.At.Add(40 * time.Minute)
+	all := []model.Turn{turns[0], second, third}
+	text, err = Brief(s, all, BriefOptions{Turn: 1, Failures: []index.Failure{failed}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"- Failed, passed later: Bash `cat README.md` — error, exit 1 [step 2] · passed 40m00s later: #3 step 9, as `cat ./README.md`\n",
+		"- #1 10-01 ", " fix it · 1 failed, passed later\n"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("brief of a failure that passed later: no %q in\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "- Failed: ") || strings.Contains(text, "first line") || strings.Contains(text, "✗") {
+		t.Errorf("a failure that passed later is handed over as an open one:\n%s", text)
+	}
+
+	// More than a turn names: the open ones first, whatever their order — a failure that
+	// passed later is not what is left out of the open ones' room
+	var many []index.Failure
+	for i := range 5 {
+		f := failed
+		f.Seq, f.Command = 10+i, fmt.Sprintf("make step%d", i)
+		if i == 4 {
+			f.Later = nil
+		}
+		many = append(many, f)
+	}
+	all[0].Failures = 5
+	text, _ = Brief(s, all, BriefOptions{Turn: 1, Failures: many})
+	if !strings.Contains(text, "- Failed: Bash `make step4`") || !strings.Contains(text, "- … and 1 more failed calls, 1 of them passed later\n") ||
+		!strings.Contains(text, " fix it · 5 failed, 4 passed later\n") {
+		t.Errorf("five failures, the last of them open:\n%s", text)
+	}
+
+	// Commands are quoted whole, backticks and all
+	failed.Command, failed.Later = "echo `date` && make", nil
+	text, _ = Brief(s, turns, BriefOptions{Failures: []index.Failure{failed}})
+	if !strings.Contains(text, "Bash ``echo `date` && make`` — ") {
+		t.Errorf("a command with a backtick in it ends its own code span:\n%s", text)
+	}
+
+	for _, o := range []BriefOptions{{Turn: 5}, {From: 5}, {From: -1}} {
+		if _, err := Brief(s, turns, o); err == nil {
+			t.Errorf("%+v: a turn the session does not have is accepted", o)
+		}
 	}
 	if _, err := Brief(s, turns, BriefOptions{Since: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)}); err == nil {
 		t.Error("a delta with nothing in it is an empty brief instead of an error")
+	}
+}
+
+// long is a session of n turns, each changing a file and asking and answering at length.
+func long(n int) (*index.Session, []model.Turn) {
+	s, one := hostile()
+	s.Title, s.Cwd = "A long session", "/work/proj"
+	var turns []model.Turn
+	for i := 1; i <= n; i++ {
+		t := one[0]
+		t.Index, t.Failures, t.Items = i, 0, nil
+		t.StartedAt = one[0].StartedAt.Add(time.Duration(i) * time.Hour)
+		t.EndedAt = t.StartedAt.Add(time.Minute)
+		t.Ask = fmt.Sprintf("ask %d: %s", i, strings.Repeat("the words of a long ask ", 20))
+		t.Answer = fmt.Sprintf("answer %d: %s", i, strings.Repeat("the words of a long answer ", 30))
+		t.Files = []model.File{{Path: fmt.Sprintf("/work/proj/pkg/f%d.go", i), Changed: true}, {Path: "/work/proj/shared.go", Changed: true}, {Path: "/work/proj/README.md"}}
+		turns = append(turns, t)
+	}
+	return s, turns
+}
+
+// A brief of a stretch — a turn and every one after it, or the whole session — opens with
+// what the stretch adds up to, each file it changed against the last turn of it that
+// changed it, and spells out its latest turns.
+func TestBriefOfAStretch(t *testing.T) {
+	s, turns := long(30)
+	plan, err := PlanBrief(s, turns, BriefOptions{All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Covered) != 30 || len(plan.Detailed) != briefMaxTurns || plan.Detailed[0] != 30-briefMaxTurns+1 {
+		t.Errorf("the whole session covers %d turns and details %v", len(plan.Covered), plan.Detailed)
+	}
+	if !plan.Names(1) || !plan.Names(30) || plan.Names(10) {
+		t.Errorf("a brief names the turns it lists and details, and no others: %v %v", plan.Listed, plan.Detailed)
+	}
+	var shared *index.FileTouch
+	for i := range plan.Files {
+		if f := &plan.Files[i]; f.Path == "/work/proj/shared.go" && f.Turn == 30 && f.Session == s.Ref && !f.Ended.IsZero() {
+			shared = f
+		}
+	}
+	if shared == nil {
+		t.Fatalf("a file changed in every turn is not looked at against the last: %+v", plan.Files)
+	}
+	shared.Now = &index.FileNow{State: index.FileChanged, By: index.ByContent}
+	text, err := Brief(s, turns, BriefOptions{All: true, Files: plan.Files})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"## The whole session\n", "- 30 turns: #1 → #30", "- Changed: 31 files — 31 code\n",
+		"  - shared.go (#30) · now: changed since — what turn 30 wrote is no longer all there\n", "  - … and 11 more, changed earlier\n",
+		"- Read: README.md\n", "- … only the latest 12 turns are detailed below", "## Turn 19\n", "## Turn 30\n",
+		"  - shared.go · now: changed since — what this turn wrote is no longer all there\n", "`--since all` the whole session"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the whole session: no %q in\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "## Turn 18\n") {
+		t.Error("the whole session spells out more than its latest turns")
+	}
+
+	text, err = Brief(s, turns, BriefOptions{From: 28})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"## From turn 28\n", "- 3 turns: #28 → #30", "## Turn 28\n", "## Turn 30\n"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("from a turn: no %q in\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "## Turn 27") || strings.Contains(text, "only the latest") {
+		t.Errorf("from turn 28:\n%s", text)
+	}
+}
+
+// Held to a budget, a brief spells out fewer turns, then says less of each — and still
+// ends with where things stand.
+func TestBriefKeepsToItsBudget(t *testing.T) {
+	s, turns := long(40)
+	whole, err := Brief(s, turns, BriefOptions{All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, budget := range []int{len(whole) * 3 / 4, len(whole) / 2, 4000} {
+		text, err := Brief(s, turns, BriefOptions{All: true, MaxChars: budget})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(text) > budget || len(text) >= len(whole) {
+			t.Errorf("held to %d, a brief of %d is %d", budget, len(whole), len(text))
+		}
+		for _, want := range []string{"## The whole session", "## Turn 40\n", "## State at the end", "Dig deeper"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("held to %d: no %q in\n%s", budget, want, text)
+			}
+		}
 	}
 }
 

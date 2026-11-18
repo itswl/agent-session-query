@@ -112,14 +112,33 @@ signals are the agent's alone.
 ## Handing over
 
 **`asq brief <ref>`** — a handoff brief, in Markdown: the session's turns in one line each, then
-for the latest turn what was asked, which files changed, the tool calls that failed (command,
-exit status, last line of output), the tokens it took and how it ended, then where things stood
-at the end and how to dig deeper. It is extracted from the record, not written by a model —
-deterministic, instant, and unable to invent.
+for the latest turn what was asked, which files changed, the tool calls that failed, the tokens
+it took and how it ended, then where things stood at the end and how to dig deeper. It is
+extracted from the record, not written by a model — deterministic, instant, and unable to
+invent.
+
+It says where things stand now, as `failures` and `files` do:
+
+- **A failed call** whose command later passed in the session — `go test` after `go test`, in
+  that turn or the next three, by [the rules `failures` uses](api.md#reports) — says where
+  (`Failed, passed later: … · passed 40m later: #5 step 212`), and how it was run then if that
+  differs. It is a step of the work, not an open problem: a turn whose failures all passed later
+  is marked `✓` in the list of turns, `1 failed, passed later`. A failed call that did not pass
+  later quotes the last four lines of what it printed, which is where a command says why.
+- **A changed file** says how it stands now against what the turn left: *as this turn left it*,
+  *written since*, *changed since*, *not written since*, *deleted* — the words of `files`, judged
+  the same way, and only for this machine's files. A file in a folder macOS is asking about is
+  *not looked at*, and the brief does not wait for the answer. Files beneath the session's
+  directory are named relative to it.
+
+Which turns it spells out:
 
 - `--turn N` briefs another turn.
-- `--since 2h` briefs everything after a moment, opening with what the stretch adds up to — the
-  brief for handing the same session over a second time.
+- `--from N` briefs turn N and every turn after it; `--since 2h` everything after a moment;
+  `--since all` the whole session. Each opens with what the stretch adds up to — every file it
+  changed, against the last of its turns that changed it, the tool calls, the tokens — and then
+  spells out its latest twelve turns. This is the brief for handing the same session over a
+  second time, or whole.
 - With no ref it briefs the newest session here, [as `show` takes it](#reading).
 
 **`asq pack`** — several sessions as one document, oldest first: for each, what was asked and

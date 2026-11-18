@@ -48,8 +48,9 @@ Two ways to ask, the same answers either way:
 | "What did it do in turn 4?" | `read(ref="…#4")` — step by step: replies, reasoning, each tool call and its outcome, numbered `[seq]` |
 | "Show me the whole output of that command" | `read(ref="…", seq=57)` — one step whole |
 | "How did the last turn go?" | `read(ref="…", turns="last")` |
-| "Pick this up" / "Hand this to another agent" | `brief(ref="…")` — asked, files changed, what failed (command and last line), how it ended, the command that resumes it |
-| "What has happened since I handed it over?" | `brief(ref="…", since="2h")` |
+| "Pick this up" / "Hand this to another agent" | `brief(ref="…")` — asked, files changed and how each stands now, what failed and whether it passed later, how it ended, the command that resumes it |
+| "Hand *this* session over" | `brief(ref="this")` — your own session; the answer's first line says which it took. Over stdio only |
+| "What has happened since I handed it over?" | `brief(ref="…", since="2h")`; `from=7` from a turn on, `since="all"` the whole session |
 | "Catch me up on this project" | `pack(project="…", since="7d")` — each session's ask and conclusion, oldest first |
 | "Who changed this file, and why?" | `files(path="auth.go", changed=true)` — then `read` the turn |
 | "What keeps failing?" | `failures(since="7d")`, with `tool="Bash"` to narrow |
@@ -90,8 +91,9 @@ on a turn with build logs that is far more than is wanted.
 ## Handing work to another agent
 
 `brief` is for one session: paste it into the other agent's first message. It says what was
-asked, what changed, what failed and where things stood, and carries the ref and the resume
-command.
+asked, what changed and how each file stands now, what failed and whether the same command
+passed later, and where things stood, and carries the ref and the resume command. `ref="this"`
+is the session you are working in.
 
 `pack` is for several: a project's last week as one document. Three things to tell whoever
 receives one, because a reader will otherwise get them wrong:

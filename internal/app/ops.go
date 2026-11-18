@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/itswl/agent-session-query/internal/index"
 	"github.com/itswl/agent-session-query/internal/render"
@@ -31,6 +33,83 @@ func (a *App) Resolve(ctx context.Context, ref string) (index.Session, int, erro
 	return s, turn, nil
 }
 
+// Self is the session an agent asking after its own is working in, and how it was found.
+type Self struct {
+	index.Session
+	// ByID says the agent's CLI named the session. Otherwise it is the session most
+	// recently written to in one of the directories the agent asked from.
+	ByID bool
+	// Newer is, for a session named, another of the same CLI written to in its directory
+	// since: the name is the one the CLI gave when the agent started asking, and the agent
+	// may have moved on to a new session (Claude Code's /clear), or be working beside it.
+	Newer *index.Session
+}
+
+// Self finds the session an agent is working in. id is that session's id as the agent's
+// CLI gives it, if it does — source names the CLI — and the session is that one, when the
+// index has it. Otherwise it is the session most recently written to in one of dirs, the
+// directories the agent asks from: an agent at work writes its session as it goes, so
+// that is its own, unless another works in the same directory. Only this machine's stores
+// are looked in: a labelled store is another machine's, or a copy.
+func (a *App) Self(ctx context.Context, source, id string, dirs []string) (Self, error) {
+	var stores []string
+	for _, name := range a.Stores() {
+		if !strings.Contains(name, "@") && (source == "" || name == source) {
+			stores = append(stores, name)
+		}
+	}
+	if len(stores) == 0 {
+		return Self{}, fmt.Errorf("%w: this asq does not read %s's sessions", index.ErrNotFound, source)
+	}
+	if id != "" {
+		s, err := a.Index.Resolve(ctx, source+"/"+id, stores)
+		var amb *index.AmbiguousError
+		switch {
+		case err == nil && s.ID == id:
+			self := Self{Session: s, ByID: true}
+			if s.Cwd != "" {
+				later, _, err := a.Index.Sessions(ctx, index.Filter{Stores: stores, In: []string{s.Cwd}, Since: s.UpdatedAt}, index.Page{Limit: 2})
+				if err != nil {
+					return Self{}, err
+				}
+				for i := range later {
+					if later[i].Ref != s.Ref && later[i].UpdatedAt.After(s.UpdatedAt) {
+						self.Newer = &Listed(later[i : i+1])[0]
+						break
+					}
+				}
+			}
+			self.Resume = Resume(&self.Session)
+			return self, nil
+		case err != nil && !errors.Is(err, index.ErrNotFound) && !errors.As(err, &amb):
+			return Self{}, err
+		}
+	}
+	var where []string
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		where = append(where, filepath.Clean(d))
+		// The directory as the CLI recorded it may be the one a link points to: /tmp is
+		// /private/tmp on a Mac
+		if real, err := filepath.EvalSymlinks(d); err == nil && real != filepath.Clean(d) {
+			where = append(where, real)
+		}
+	}
+	if len(where) == 0 {
+		return Self{}, fmt.Errorf("%w: no directory to look in", index.ErrNotFound)
+	}
+	list, _, err := a.Index.Sessions(ctx, index.Filter{Stores: stores, In: where}, index.Page{Limit: 1})
+	if err != nil {
+		return Self{}, err
+	}
+	if len(list) == 0 {
+		return Self{}, fmt.Errorf("%w: none has run in %s", index.ErrNotFound, strings.Join(where, " or "))
+	}
+	return Self{Session: Listed(list)[0]}, nil
+}
+
 // Above lists the transcripts a subagent's sits beneath, the session it ran in first:
 // usually that one alone, and for an agent another agent started, the agents between.
 func (a *App) Above(ctx context.Context, s *index.Session) ([]index.Session, error) {
@@ -49,19 +128,59 @@ func (a *App) Above(ctx context.Context, s *index.Session) ([]index.Session, err
 	return Listed(chain), nil
 }
 
-// Brief renders a session's handoff brief: its outline, and the failed calls of the
-// turns the brief spells out.
+// Brief renders a session's handoff brief: its outline, the failed calls of the turns the
+// brief names, each with where the same command later passed, and the files it names as
+// changed, each with how it stands now. Both are looked up as the failures and files
+// reports look them up — a file within lookWait, and not at all in a folder a look is
+// waiting in — and for what the brief names alone.
 func (a *App) Brief(ctx context.Context, s *index.Session, o render.BriefOptions) (string, error) {
 	turns, err := a.Index.Outline(ctx, s)
 	if err != nil {
 		return "", err
 	}
+	plan, err := render.PlanBrief(s, turns, o)
+	if err != nil {
+		return "", err
+	}
+	look := newLooker(a)
+	look.sessions[s.Ref] = s
 	if s.Stats.Failures > 0 {
 		if o.Failures, err = a.Index.FailuresOf(ctx, s); err != nil {
 			return "", err
 		}
+		for i := range o.Failures {
+			if ctx.Err() != nil {
+				break
+			}
+			if plan.Names(o.Failures[i].Turn) {
+				o.Failures[i].Later = look.later(ctx, &o.Failures[i])
+			}
+		}
+	}
+	o.Files = plan.Files
+	for i := range o.Files {
+		if ctx.Err() != nil {
+			break
+		}
+		o.Files[i].Now, o.Files[i].Waiting = look.fileNow(ctx, &o.Files[i])
 	}
 	return render.Brief(s, turns, o)
+}
+
+// BriefOf reads what a brief is asked to cover as the command line, the API and the MCP
+// tool take it: one turn, the turn to start from, or a moment to start after — "all"
+// for the whole session, which is no moment at all.
+func BriefOf(turn, from int, since string) (render.BriefOptions, error) {
+	o := render.BriefOptions{Turn: turn, From: from}
+	if strings.TrimSpace(since) == "all" {
+		o.All = true
+		return o, nil
+	}
+	var err error
+	if o.Since, err = When(since, time.Now()); err != nil {
+		return o, fmt.Errorf("since: %w", err)
+	}
+	return o, nil
 }
 
 // Pack renders the sessions a query selects as one document: the most recent limit of

@@ -159,7 +159,9 @@ shell's.
   <key>RunAtLoad</key><true/>
   <!-- Restart only on an abnormal exit -->
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-  <key>ProcessType</key><string>Background</string>
+  <!-- Standard, not Background: it answers what a person or an agent asks, and Background
+       throttles it as work nobody is waiting for — a search took 17.8 s that way, 0.37 s not -->
+  <key>ProcessType</key><string>Standard</string>
   <key>StandardErrorPath</key><string>/Users/YOU/Library/Logs/asq.log</string>
 </dict>
 </plist>

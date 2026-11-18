@@ -25,8 +25,9 @@ read:
   connects from loopback, passes on what the whole network sends, and can be told to write
   `Host: localhost`. So a request that bears a proxy's mark — a forwarding header: `Forwarded`,
   `X-Forwarded-*`, `X-Real-IP`, `Via`, `CF-Connecting-IP` — is refused, with an answer that
-  says the server has no token and is being reached through a proxy; and `--proxy-header`
-  without a token is refused at start. To serve through a proxy or a tunnel, set `ASQ_TOKEN`.
+  says the server has no token and is being reached through a proxy; and `--proxy-header`, or
+  `ASQ_PROXY_HEADER`, without a token is refused at start. To serve through a proxy or a tunnel,
+  set `ASQ_TOKEN`.
 
 A proxy that adds no forwarding header cannot be told from this machine's own programs: nginx's
 `proxy_pass` adds none unless told to, a proxy may be set to remove them, and a tunnel that

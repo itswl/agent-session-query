@@ -19,6 +19,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -66,6 +67,9 @@ type Options struct {
 	// CF-Connecting-IP, X-Real-IP, an X-Forwarded-For the proxy appends to. Wrong tokens
 	// are then counted per caller rather than per proxy (see allowance).
 	ProxyHeader string
+	// ProxyHeaderSetting is how ProxyHeader was given — "--proxy-header", or
+	// "ASQ_PROXY_HEADER" — so that a refusal of it names what to change. Empty is the flag.
+	ProxyHeaderSetting string
 	// Log receives one line per request that failed, what the server has to say, and
 	// what its guards did (see door).
 	Log io.Writer
@@ -132,11 +136,12 @@ func New(a *app.App, opts Options) (*Server, error) {
 	} else if len(opts.Token) < 16 {
 		return nil, errors.New("the token is the only thing between the network and every session: make it at least 16 characters (openssl rand -hex 24)")
 	}
+	setting := cmp.Or(opts.ProxyHeaderSetting, "--proxy-header")
 	if !headerName(opts.ProxyHeader) {
-		return nil, fmt.Errorf("--proxy-header takes the name of a header (CF-Connecting-IP, X-Real-IP, X-Forwarded-For), not %q", opts.ProxyHeader)
+		return nil, fmt.Errorf("%s takes the name of a header (CF-Connecting-IP, X-Real-IP, X-Forwarded-For), not %q", setting, opts.ProxyHeader)
 	}
 	if opts.Token == "" && opts.ProxyHeader != "" {
-		return nil, errors.New("--proxy-header is for a server behind a proxy, and a server without a token refuses whatever comes through one: set a token (--token, or ASQ_TOKEN)")
+		return nil, fmt.Errorf("%s is for a server behind a proxy, and a server without a token is not to be put behind one: set a token (--token, or ASQ_TOKEN), or remove %s", setting, setting)
 	}
 	s := &Server{app: a, opts: opts, mcp: mcp.New(a, opts.Log), assets: map[string]asset{}}
 	s.door.out, s.door.began = opts.Log, time.Now()

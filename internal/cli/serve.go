@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	goio "io"
 	"net"
@@ -53,8 +54,16 @@ func cmdServe(ctx context.Context, args []string, io *streams) error {
 	}
 	defer a.Close()
 
+	// What the server refuses of the proxy header names it the way it was given: the flag,
+	// or the variable the flag defaults to
+	proxySetting := "ASQ_PROXY_HEADER"
+	c.fs.Visit(func(f *flag.Flag) {
+		if f.Name == "proxy-header" {
+			proxySetting = "--proxy-header"
+		}
+	})
 	opts := server.Options{Host: *host, Port: *port, Token: *token, Origins: origins, Page: web.Files, Log: io.err,
-		State: app.StateDir(), ProxyHeader: *proxyHeader}
+		State: app.StateDir(), ProxyHeader: *proxyHeader, ProxyHeaderSetting: proxySetting}
 	if *pageDir != "" {
 		opts.Page, opts.Live = os.DirFS(*pageDir), true
 	}

@@ -165,7 +165,7 @@ func TestWhatGoesWrong(t *testing.T) {
 		{[]string{"otel", "--dry-run", "--content", "everything"}, 2, "none, asks or all"},
 		{[]string{"serve", "--host", "0.0.0.0"}, 2, "set a token"},
 		{[]string{"serve", "--proxy-header", "X-Real-IP: 10.0.0.1"}, 2, "takes the name of a header"},
-		{[]string{"serve", "--proxy-header", "X-Real-IP"}, 2, "a server without a token refuses whatever comes through one"},
+		{[]string{"serve", "--proxy-header", "X-Real-IP"}, 2, "a server without a token is not to be put behind one"},
 	} {
 		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
@@ -191,6 +191,31 @@ func TestWhatGoesWrong(t *testing.T) {
 	out.Reset()
 	if code := Run([]string{"ls", "-h"}, nil, &out, &errs); code != 0 {
 		t.Errorf("-h is not a failure: exit %d", code)
+	}
+}
+
+// A refusal of the proxy header names it the way it was given: whoever set
+// ASQ_PROXY_HEADER in a service's environment has no --proxy-header to take out.
+func TestServeNamesTheProxyHeaderAsItWasGiven(t *testing.T) {
+	h, index := setup(t)
+	t.Setenv("ASQ_TOKEN", "")
+	const behind = " is for a server behind a proxy, and a server without a token is not to be put behind one: set a token (--token, or ASQ_TOKEN), or remove "
+	for _, tc := range []struct {
+		env  string // ASQ_PROXY_HEADER
+		args []string
+		want string
+	}{
+		{"X-Real-IP", nil, "ASQ_PROXY_HEADER" + behind + "ASQ_PROXY_HEADER\n"},
+		{"", []string{"--proxy-header", "X-Real-IP"}, "--proxy-header" + behind + "--proxy-header\n"},
+		{"CF-Connecting-IP", []string{"--proxy-header", "X-Real-IP"}, "--proxy-header" + behind + "--proxy-header\n"},
+		{"X-Real-IP: 10.0.0.1", nil, `ASQ_PROXY_HEADER takes the name of a header (CF-Connecting-IP, X-Real-IP, X-Forwarded-For), not "X-Real-IP: 10.0.0.1"` + "\n"},
+		{"", []string{"--proxy-header", "X-Real-IP: 10.0.0.1"}, `--proxy-header takes the name of a header (CF-Connecting-IP, X-Real-IP, X-Forwarded-For), not "X-Real-IP: 10.0.0.1"` + "\n"},
+	} {
+		t.Setenv("ASQ_PROXY_HEADER", tc.env)
+		_, errs, code := asq(t, h, index, append([]string{"serve"}, tc.args...)...)
+		if code != 2 || !strings.Contains(errs, "asq serve: "+tc.want) {
+			t.Errorf("ASQ_PROXY_HEADER=%q asq serve %s: exit %d, stderr %q; want exit 2 saying %q", tc.env, strings.Join(tc.args, " "), code, errs, tc.want)
+		}
 	}
 }
 

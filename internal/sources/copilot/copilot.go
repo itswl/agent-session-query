@@ -557,13 +557,20 @@ func (r *reader) userMessage(d *data, lane string, add func(transcript.Message))
 	add(m)
 }
 
-// typed reports whether a user message's source is a person's. The CLI shows the person
-// what it marks "user", or nothing, and what a command, a schedule or autopilot sent on
-// their behalf; every other source — a skill's hidden prompt, another agent's — is the
-// CLI's own. Of those it shows, autopilot's continuations are its own too: the person set
-// the objective once, and autopilot sends the next step.
+// typed reports whether a user message's source is a person's, by the CLI's own rule: what
+// it marks "user", or nothing, and what a command, a schedule or an autopilot objective sent
+// on their behalf (command-*, schedule-*, autopilot-*: /autopilot <objective> sends
+// autopilot-objective). Every other source — a skill's hidden prompt, another agent's,
+// autopilot's own — is the CLI's. The CLI counts the prompts the person typed the same way,
+// less the continuations it marks isAutopilotContinuation: the person set the objective
+// once, and autopilot sends the next step.
 func typed(source string) bool {
-	return source == "" || source == "user" || strings.HasPrefix(source, "command-") || strings.HasPrefix(source, "schedule-")
+	for _, prefix := range []string{"command-", "schedule-", "autopilot-"} {
+		if strings.HasPrefix(source, prefix) {
+			return true
+		}
+	}
+	return source == "" || source == "user"
 }
 
 // assistantMessage reads a response, or the part of one a message holds.

@@ -328,6 +328,13 @@ func TestUserMessageSources(t *testing.T) {
 		ev("e8", "user.message", "2026-11-17T09:00:07.000Z", M{"content": "then deploy", "delivery": "queued"}),
 		// no source at all, as an older CLI writes it
 		ev("e9", "user.message", "2026-11-17T09:00:08.000Z", M{"content": "plain"}),
+		// /autopilot <objective>: the person's words, sent by the command; then the run it
+		// sets off, which autopilot carries on by itself
+		ev("e10", "user.message", "2026-11-17T09:00:09.000Z", M{"content": "make every test pass", "source": "autopilot-objective"}),
+		ev("e11", "assistant.message", "2026-11-17T09:00:10.000Z", M{"messageId": "m1", "content": "Two fail; fixing the first."}),
+		ev("e12", "user.message", "2026-11-17T09:00:11.000Z", M{"content": "", "source": "autopilot", "isAutopilotContinuation": true}),
+		ev("e13", "user.message", "2026-11-17T09:00:12.000Z", M{"content": "Keep going.", "source": "autopilot", "isAutopilotContinuation": true}),
+		ev("e14", "assistant.message", "2026-11-17T09:00:13.000Z", M{"messageId": "m2", "content": "Both pass."}),
 	)
 	s := sourcetest.One(t, Spec.Open(root))
 	sourcetest.NothingUnread(t, s)
@@ -337,11 +344,14 @@ func TestUserMessageSources(t *testing.T) {
 			asks = append(asks, turn.Ask)
 		}
 	}
-	if got := strings.Join(asks, " | "); got != "typed | Review the diff | check the build | then deploy | plain" {
+	if got := strings.Join(asks, " | "); got != "typed | Review the diff | check the build | then deploy | plain | make every test pass" {
 		t.Errorf("asks = %s", got)
 	}
 	if got := sourcetest.Kinds(s.Turn(t, 1)); got != "prompt context context context" {
 		t.Errorf("turn 1 = %s", got)
+	}
+	if run := s.Turn(t, 6); sourcetest.Kinds(run) != "prompt reply context reply" || run.Answer != "Both pass." {
+		t.Errorf("the objective's run = %s, answer %q", sourcetest.Kinds(run), run.Answer)
 	}
 }
 

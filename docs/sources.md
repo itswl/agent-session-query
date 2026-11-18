@@ -168,8 +168,9 @@ $0.01 a credit, whatever the plan. A command that ran is a success to the CLI wh
 with: the exit code is read from the result, or from the `<exited with exit code N>` the shell
 tool ends its output with. A call the person declined, or that Ctrl+C stopped, is interrupted;
 one a rule or a hook refused is an error. A `/fork` copies its parent's events into the new log
-as they were, and the copies are inherited. What a command or a schedule sent on the person's
-behalf is an ask; what autopilot, a skill or another agent put in the user's seat is context.
+as they were, and the copies are inherited. What a command, a schedule or an `/autopilot`
+objective sent on the person's behalf is an ask; the steps autopilot sends itself to carry the
+objective on, and what a skill or another agent put in the user's seat, are context.
 Copilot CLI keeps every session until it is deleted.
 
 How far each adapter has been checked differs, and is worth knowing. Claude Code, Codex,

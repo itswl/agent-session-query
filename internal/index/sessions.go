@@ -63,6 +63,7 @@ type Filter struct {
 	Project string // part of the working directory
 	Branch  string // part of the branch the session opened on
 	Text    string // part of the title, the id, the directory or the path
+	SID     int64  // one session alone, by its row in this index (Session.SID)
 	Since   time.Time
 	Until   time.Time
 	// Archived includes the sessions their CLI has put away; Agents the subagents'
@@ -112,6 +113,10 @@ func (f Filter) where() (string, []any) {
 	if f.Text != "" {
 		conds = append(conds, "(instr(lower(s.title), lower(?)) > 0 OR instr(lower(s.id), lower(?)) > 0 OR instr(lower(s.cwd), lower(?)) > 0 OR instr(lower(s.path), lower(?)) > 0)")
 		args = append(args, f.Text, f.Text, f.Text, f.Text)
+	}
+	if f.SID != 0 {
+		conds = append(conds, "s.sid = ?")
+		args = append(args, f.SID)
 	}
 	if !f.Since.IsZero() {
 		conds = append(conds, "s.updated_at >= ?")

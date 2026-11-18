@@ -248,6 +248,20 @@ func TestSearch(t *testing.T) {
 	if res, _ := a.Index.Search(ctx, index.ParseQuery("ECONNREFUSED"), f, index.SearchOptions{}); res.Total != 0 {
 		t.Errorf("a search in another project found %d", res.Total)
 	}
+
+	// … and to one session: its own turns, and not those of the subagent it started,
+	// whose transcript is a session of its own
+	alpha, err := a.Index.Resolve(ctx, "claude/"+fixture.Alpha, a.Stores())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f = filter(a)
+	f.Agents = true
+	f.SID = alpha.SID()
+	res, _ = a.Index.Search(ctx, index.ParseQuery("missing indexes"), f, index.SearchOptions{})
+	if res.Total != 1 || res.Sessions != 1 || len(res.Hits) != 1 || res.Hits[0].Ref != "claude/"+fixture.Alpha+"#2" {
+		t.Errorf("in one session = %d in %d: %+v", res.Total, res.Sessions, res.Hits)
+	}
 }
 
 func sameSet(a, b []string) bool {

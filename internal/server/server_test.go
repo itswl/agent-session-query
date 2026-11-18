@@ -191,6 +191,16 @@ func TestRoutes(t *testing.T) {
 	if found.Total != 1 || found.Hits[0].Turn != 2 || found.Hits[0].Session.ID != fixture.Alpha {
 		t.Errorf("search = %+v", found)
 	}
+	// One session's own turns, named by its ref as the page names it: the words are in
+	// alpha's turn 2 and in the subagent that turn started, which is not alpha
+	get(t, s, "/api/search?q=missing+indexes", &found)
+	if found.Total != 2 {
+		t.Errorf("everywhere = %+v", found)
+	}
+	get(t, s, "/api/search?q=missing+indexes&per_session=0&session=claude/aaaa1111", &found)
+	if found.Total != 1 || found.Sessions != 1 || found.Hits[0].Turn != 2 || found.Hits[0].Session.ID != fixture.Alpha {
+		t.Errorf("in one session = %+v", found)
+	}
 
 	for _, path := range []string{"/api/usage", "/api/usage?by=day", "/api/failures", "/api/digest", "/api/files?path=schema", "/api/projects", "/api/pack?since=7d", "/api/health"} {
 		var any map[string]any
@@ -202,6 +212,7 @@ func TestRoutes(t *testing.T) {
 
 	for path, want := range map[string]int{
 		"/api/sessions/claude/zzzz":             http.StatusNotFound,
+		"/api/search?q=x&session=claude/zzzz":   http.StatusNotFound,
 		alpha + "/items/999":                    http.StatusNotFound,
 		alpha + "/items/x":                      http.StatusBadRequest,
 		alpha + "/turns?turns=seven":            http.StatusBadRequest,

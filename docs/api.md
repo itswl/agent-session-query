@@ -66,7 +66,9 @@ out as HTML, and it is not served as a page of this origin.
 
 **`GET /api/search?q=`** — the turns that match, with the [query syntax](cli.md#finding) of the
 command line. Takes the list's filters, `recent=1` (newest first), `per_session` (default 3, `0`
-for no bound), `limit` (20, at most 100), `offset`.
+for no bound), `limit` (20, at most 100), `offset`, and `session`: a session's ref, which
+confines the search to that session's own turns — archived or not, and without its subagents'
+transcripts, which are sessions of their own. A ref that names no session is `404`.
 
 ```json
 {"hits": [{"ref": "claude/3f2a…#4", "turn": 4, "at": "…", "ask": "…", "answer": "…",

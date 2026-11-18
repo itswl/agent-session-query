@@ -329,11 +329,24 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	s.fresh(r)
 	q := queryOf(r)
 	q.Agents = true // a subagent's turns are found with the rest
+	// session confines the search to one session's own turns, as the page's find in a
+	// session asks. Named, it is searched whether or not it is archived; its subagents'
+	// transcripts are sessions of their own, and are not in it.
+	var one index.Session
+	if ref := r.URL.Query().Get("session"); ref != "" {
+		var err error
+		if one, _, err = s.app.Resolve(r.Context(), ref); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		q.Archived = true
+	}
 	f, err := s.app.Filter(q)
 	if err != nil {
 		s.fail(w, r, badRequest{err})
 		return
 	}
+	f.SID = one.SID()
 	page, err := pageOf(r, 20)
 	if err != nil {
 		s.fail(w, r, err)

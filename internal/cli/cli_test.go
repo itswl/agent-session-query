@@ -79,7 +79,9 @@ func TestCommands(t *testing.T) {
 		{[]string{"files", "schema.sql", "--changed"}, []string{"changed", "/work/alpha/db/schema.sql", "#2"}},
 		{[]string{"projects"}, []string{"/work/alpha", "/work/beta"}},
 		{[]string{"resume", alpha}, []string{"/work/alpha && claude --resume " + fixture.Alpha}},
-		{[]string{"doctor"}, []string{"asq " + app.Version + "\n", "✓ claude", "3 transcripts", "1 turn, 3 steps"}},
+		// the newest is alpha's, whose last record is the history's latest: not the file
+		// written last, which a coarse filesystem clock (tmpfs) cannot tell apart (#55)
+		{[]string{"doctor"}, []string{"asq " + app.Version + "\n", "✓ claude", "3 transcripts", "2 turns, 8 steps"}},
 		{[]string{"index"}, []string{"2 sessions", "1 subagent transcript", "3 turns", "✓ claude"}},
 		{[]string{"index", "path"}, []string{index}},
 		{[]string{"otel", "--dry-run", "--content", "asks"}, []string{`"resourceSpans"`, "fix the flaky test", "invoke_agent"}},

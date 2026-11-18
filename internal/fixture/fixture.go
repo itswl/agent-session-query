@@ -98,6 +98,7 @@ func Write(t testing.TB) History {
 				"content": []m{{"type": "text", "text": "orders has no index on user_id"}}}},
 	)
 	write(t, agent+".meta.json", m{"agentType": "Explore", "description": "Survey the tables", "toolUseId": "toolu_agent"})
+	dated(t, agent+".meta.json", at(30*minute-7*second)) // written as the subagent starts
 
 	const day = 24 * time.Hour
 	write(t, filepath.Join(h.Dir, "-work-beta", Beta+".jsonl"),
@@ -112,6 +113,22 @@ func Write(t testing.TB) History {
 	return h
 }
 
+// dated gives a file a modification time: one that has no records to take it from.
+func dated(t testing.TB, path, at string) {
+	t.Helper()
+	when, err := time.Parse(time.RFC3339Nano, at)
+	if err == nil {
+		err = os.Chtimes(path, when, when)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// write writes a transcript, and gives it the modification time of its last record, as a
+// CLI that wrote it then would have: which transcript is the newest is the history's, and
+// not which the test happened to write last — a coarse filesystem clock (tmpfs) gives files
+// written together one time, and the order among them is then nobody's.
 func write(t testing.TB, path string, rows ...any) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -121,11 +138,27 @@ func write(t testing.TB, path string, rows ...any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
 	enc := json.NewEncoder(f)
 	enc.SetEscapeHTML(false)
+	var last time.Time
 	for _, row := range rows {
 		if err := enc.Encode(row); err != nil {
+			f.Close()
+			t.Fatal(err)
+		}
+		if r, ok := row.(m); ok {
+			if ts, ok := r["timestamp"].(string); ok {
+				if at, err := time.Parse(time.RFC3339Nano, ts); err == nil && at.After(last) {
+					last = at
+				}
+			}
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !last.IsZero() {
+		if err := os.Chtimes(path, last, last); err != nil {
 			t.Fatal(err)
 		}
 	}

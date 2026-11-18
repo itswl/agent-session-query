@@ -485,7 +485,7 @@ func (r *reader) line(raw []byte, linked bool) {
 	case "tool.user_requested":
 		// A tool the person ran themselves (a ! command): a call no response asked for
 		if c := r.request(d.ToolCallID, d.ToolName, d.Arguments, lane); c != nil {
-			add(transcript.Message{Role: transcript.ToolRole, Blocks: []transcript.Block{transcript.CallOf(d.ToolCallID, c.name, d.Arguments)}})
+			add(transcript.Message{Role: transcript.ToolRole, Blocks: []transcript.Block{transcript.CallOf(d.ToolCallID, c.name, arguments(d.Arguments))}})
 		}
 	case "tool.execution_start", "program.tool_execution_start":
 		// The call was asked for in a response; a tool that a program a call ran called
@@ -497,7 +497,7 @@ func (r *reader) line(raw []byte, linked bool) {
 		}
 		c.started = at
 		if !known {
-			add(transcript.Message{Role: transcript.ToolRole, Blocks: []transcript.Block{transcript.CallOf(d.ToolCallID, c.name, d.Arguments)}})
+			add(transcript.Message{Role: transcript.ToolRole, Blocks: []transcript.Block{transcript.CallOf(d.ToolCallID, c.name, arguments(d.Arguments))}})
 		}
 	case "tool.execution_complete", "program.tool_execution_complete":
 		r.complete(&d, at, add)
@@ -593,7 +593,7 @@ func (r *reader) assistantMessage(d *data, lane string, inherited bool, add func
 	}
 	for _, t := range d.ToolRequests {
 		if c := r.request(t.ToolCallID, t.Name, t.Arguments, lane); c != nil {
-			blocks = append(blocks, transcript.CallOf(t.ToolCallID, c.name, t.Arguments))
+			blocks = append(blocks, transcript.CallOf(t.ToolCallID, c.name, arguments(t.Arguments)))
 		}
 	}
 	if lane == "" && d.Model != "" && !inherited {
@@ -630,6 +630,20 @@ func callName(name string, args json.RawMessage) string {
 		}
 	}
 	return name
+}
+
+// arguments are a call's arguments as they are read: an object, as most tools take them,
+// or the text a freeform tool takes whole — apply_patch's patch, which the model is told not
+// to wrap in JSON ("This is a FREEFORM tool") — under "input", as Codex's are, and where the
+// CLI's own reader of a patch looks for it after the string itself (input, then patch).
+func arguments(raw json.RawMessage) any {
+	if trimmed := bytes.TrimSpace(raw); len(trimmed) > 0 && trimmed[0] == '"' {
+		var text string
+		if json.Unmarshal(trimmed, &text) == nil {
+			return map[string]any{"input": text}
+		}
+	}
+	return raw
 }
 
 // complete reads a call's result.

@@ -404,6 +404,47 @@ func TestStrReplaceEditor(t *testing.T) {
 	}
 }
 
+// apply_patch is a freeform tool: its arguments are the patch itself, a string, and not an
+// object around it. The files it names are what it changed.
+func TestFreeformArguments(t *testing.T) {
+	root := t.TempDir()
+	patch := func(file string) string {
+		return "*** Begin Patch\n*** Update File: /w/" + file + "\n@@\n-\tsort.Strings(keys)\n+\tslices.Sort(keys)\n*** End Patch\n"
+	}
+	sourcetest.Write(t, filepath.Join(root, "s1", "events.jsonl"),
+		ev("e1", "user.message", "2026-11-17T09:00:01.000Z", M{"content": "go"}),
+		ev("e2", "assistant.message", "2026-11-17T09:00:02.000Z", M{"messageId": "m1", "content": "", "toolRequests": []M{
+			{"toolCallId": "a", "name": "apply_patch", "type": "custom", "arguments": patch("order.go")},
+		}}),
+		ev("e3", "tool.execution_start", "2026-11-17T09:00:02.100Z", M{"toolCallId": "a", "toolName": "apply_patch", "arguments": patch("order.go")}),
+		ev("e4", "tool.execution_complete", "2026-11-17T09:00:02.200Z", M{"toolCallId": "a", "success": true, "result": M{"content": "Done"}}),
+		// a call no response asked for, which its start is the first to name
+		ev("e5", "tool.execution_start", "2026-11-17T09:00:03.000Z", M{"toolCallId": "b", "toolName": "apply_patch", "arguments": patch("report.go")}),
+		ev("e6", "tool.execution_complete", "2026-11-17T09:00:03.100Z", M{"toolCallId": "b", "success": true, "result": M{"content": "Done"}}),
+		// the object the CLI takes them in too
+		ev("e7", "assistant.message", "2026-11-17T09:00:04.000Z", M{"messageId": "m2", "content": "", "toolRequests": []M{
+			{"toolCallId": "c", "name": "apply_patch", "arguments": M{"input": patch("main.go")}},
+		}}),
+		ev("e8", "tool.execution_complete", "2026-11-17T09:00:04.100Z", M{"toolCallId": "c", "success": true, "result": M{"content": "Done"}}),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	turn := s.Turn(t, 1)
+	tools := sourcetest.Tools(turn)
+	if len(tools) != 3 {
+		t.Fatalf("tools = %+v", tools)
+	}
+	for i, file := range []string{"order.go", "report.go", "main.go"} {
+		if got := tools[i]; got.Kind != model.ToolWrite || len(got.Files) != 1 || got.Files[0] != "/w/"+file ||
+			string(got.Input) != `{"input":`+strconv.Quote(patch(file))+`}` {
+			t.Errorf("%s: %+v, input %s", file, got, got.Input)
+		}
+	}
+	if len(turn.Files) != 3 || !turn.Files[0].Changed || !turn.Files[1].Changed || !turn.Files[2].Changed {
+		t.Errorf("files = %+v", turn.Files)
+	}
+}
+
 // A command's exit code is on its result's shellExecution, and before that only at the end
 // of what the shell tool printed. Only a shell tool's output is read for it.
 func TestExitCodes(t *testing.T) {

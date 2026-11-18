@@ -499,8 +499,13 @@ func (l *limiter) know(key string, now time.Time) {
 	l.known[key] = now
 }
 
-// relayHeaders are what a proxy adds to a request it passes on.
-var relayHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-Ip", "Via", "Cf-Connecting-Ip"}
+// relayHeaders are what a proxy adds to a request it passes on, beside the headers that
+// begin with relayPrefix.
+var relayHeaders = []string{"Forwarded", "X-Real-Ip", "Via", "Cf-Connecting-Ip"}
+
+// relayPrefix begins a family of forwarding headers: -For, -Host and -Proto, and -Port,
+// -Server, -Prefix, -Ssl and the rest, any of which a proxy may add without the others.
+const relayPrefix = "X-Forwarded-"
 
 // relayed reports whether a request bears a proxy's mark: a forwarding header, or the
 // header Options.ProxyHeader names. The mark is taken by its presence alone: a client can
@@ -512,6 +517,11 @@ func (s *Server) relayed(r *http.Request) bool {
 	}
 	for _, name := range relayHeaders {
 		if len(r.Header.Values(name)) > 0 {
+			return true
+		}
+	}
+	for name := range r.Header {
+		if len(name) > len(relayPrefix) && strings.EqualFold(name[:len(relayPrefix)], relayPrefix) {
 			return true
 		}
 	}

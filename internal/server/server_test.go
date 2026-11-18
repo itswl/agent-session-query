@@ -384,6 +384,12 @@ func TestOnlyThisMachineWithoutAToken(t *testing.T) {
 	}
 }
 
+// forwardingHeaders are the marks a proxy leaves, each of which alone says a request was
+// passed on: X-Forwarded- headers beyond the three everyone knows included, since a proxy
+// may add one of those and none of the others.
+var forwardingHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto",
+	"X-Forwarded-Port", "X-Forwarded-Server", "X-Forwarded-Prefix", "X-Forwarded-Ssl", "X-Real-IP", "Via", "CF-Connecting-IP"}
+
 // A proxy or a tunnel on this machine connects from loopback and may write Host:
 // localhost — cloudflared's httpHostHeader, ngrok's host-header rewrite, Caddy's
 // header_up Host — and pass on what the whole network sends. Without a token, whatever
@@ -419,7 +425,7 @@ func TestWithoutATokenNothingComesThroughAProxy(t *testing.T) {
 		refusedAs(name, c)
 		refusals++
 	}
-	for _, name := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "Via", "CF-Connecting-IP"} {
+	for _, name := range forwardingHeaders {
 		refusedAs(name+" alone", call{path: "/api/sessions", header: map[string]string{"Host": "127.0.0.1:7717", name: "x"}, remote: local})
 		refusals++
 	}
@@ -682,7 +688,7 @@ func TestGuessesAreChargedToWhoMadeThem(t *testing.T) {
 			t.Errorf("signing in from a program here = %d", rec.Code)
 		}
 		// Each mark a proxy leaves is one, and a header no proxy means anything by is not
-		for _, name := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "Via", "CF-Connecting-IP"} {
+		for _, name := range forwardingHeaders {
 			if c := code(s, local, right, map[string]string{name: "x"}); c != http.StatusTooManyRequests {
 				t.Errorf("%s does not mark a request as relayed (%d)", name, c)
 			}

@@ -126,3 +126,37 @@ func TestThePageNeedsNothingInline(t *testing.T) {
 		t.Error("index.html loads no module")
 	}
 }
+
+// What the page keeps in the browser beyond its own life is the theme and, for the marks
+// of what changed since the last look, times: never an answer, a text or an id of the
+// record, which would be there for whoever opens the browser next. Each is written in
+// one place, and seen.js writes numbers whatever it is given: a write anywhere else is
+// a decision to review, not a line to slip in.
+func TestTheBrowserKeepsOnlyTheThemeAndTimes(t *testing.T) {
+	writes := regexp.MustCompile(`\blocalStorage\s*(?:\.\s*setItem\b|\[|\.\s*\w+\s*=[^=])`)
+	want := map[string]int{
+		"app.js":     1, // the theme
+		"js/seen.js": 1, // when views were last looked at
+	}
+	got := map[string]int{}
+	for name, body := range files(t) {
+		if !strings.HasSuffix(name, ".js") {
+			continue
+		}
+		for i, line := range strings.Split(body, "\n") {
+			code, _, _ := strings.Cut(line, "//")
+			if !writes.MatchString(code) {
+				continue
+			}
+			got[name]++
+			if want[name] == 0 {
+				t.Errorf("%s:%d writes to localStorage: %s", name, i+1, strings.TrimSpace(line))
+			}
+		}
+	}
+	for name, n := range want {
+		if got[name] != n {
+			t.Errorf("%s writes to localStorage in %d places, want %d", name, got[name], n)
+		}
+	}
+}

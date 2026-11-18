@@ -8,6 +8,7 @@ import { health, coalesce, onStatus, status } from '../live.js';
 import { needles, highlight } from '../md.js';
 import * as f from '../format.js';
 import { WINDOWS } from '../windows.js';
+import * as seen from '../seen.js';
 
 const PAGE = 50;
 const HITS = 20;
@@ -42,7 +43,7 @@ function hrefWith(route, changes) {
 }
 
 export function mount(main, route, ctx) {
-  const v = { route, items: [], total: 0, sessions: 0, end: false, sel: null, busy: null, rows: new Map(), renew: false, failed: false };
+  const v = { route, items: [], total: 0, sessions: 0, end: false, sel: null, busy: null, rows: new Map(), renew: false, failed: false, base: 0 };
   const aside = h('aside', { class: 'filters', id: 'filters', 'aria-label': 'Filters' });
   const toggle = h('button', { type: 'button', class: 'btn filters-toggle', 'aria-expanded': 'false', 'aria-controls': 'filters' }, icon('filter'), 'Filters');
   toggle.addEventListener('click', () => {
@@ -74,6 +75,8 @@ export function mount(main, route, ctx) {
     renderFilters();
     if (saidEmpty && !v.busy) renderList();
   });
+  // A new visit marks the list against the last look of the one before
+  const offVisit = seen.onVisit(() => { if (!v.busy && v.items.length) renderList(); });
 
   const searching = () => v.route.name === 'search';
   const words = () => needles(v.route.query.get('q') || '');
@@ -135,7 +138,7 @@ export function mount(main, route, ctx) {
     const sig = JSON.stringify(item);
     const had = v.rows.get(key);
     if (had?.sig === sig) return had.el;
-    const el = searching() ? hitRow(item, words()) : sessionRow(item);
+    const el = searching() ? hitRow(item, words()) : sessionRow(item, v.base);
     v.rows.set(key, { sig, el });
     return el;
   }
@@ -149,9 +152,19 @@ export function mount(main, route, ctx) {
     } else if (searching()) {
       list.replaceChildren(h('ol', { class: 'rows' }, v.items.map(rowOf)));
     } else {
+      // What changed since the last look is marked, and a line runs above the first row
+      // older than it: at the foot of its day when that row begins the next
+      const base = seen.since('sessions');
+      if (base !== v.base) { v.base = base; v.rows.clear(); }
       const days = [];
+      let lined = !base;
       for (const s of v.items) {
-        const label = f.day(f.when(s.updatedAt) || Date.now());
+        const at = f.when(s.updatedAt);
+        if (!lined && at <= base) {
+          lined = true;
+          days.at(-1)?.rows.push(seenLine(base));
+        }
+        const label = f.day(at || Date.now());
         if (days.at(-1)?.label !== label) days.push({ label, rows: [] });
         days.at(-1).rows.push(rowOf(s));
       }
@@ -277,6 +290,9 @@ export function mount(main, route, ctx) {
   }
 
   function start(how) {
+    // A search is not a look at what changed: it is ranked, not dated, and is not marked
+    if (searching()) seen.leave('sessions');
+    else seen.look('sessions');
     renderFilters();
     note.say();
     const was = kept.get(keyOf(v.route));
@@ -335,13 +351,15 @@ export function mount(main, route, ctx) {
     unmount() {
       io.disconnect();
       offStatus();
+      offVisit();
+      seen.leave('sessions');
       changes.cancel();
       remember();
     },
   };
 }
 
-function sessionRow(s) {
+function sessionRow(s, base) {
   const title = s.title || s.lastAsk || 'Untitled session';
   const sub = s.title ? [s.lastAsk, s.answer] : [s.answer];
   const st = s.stats || {};
@@ -353,6 +371,7 @@ function sessionRow(s) {
       h('span', { class: 'row-facts dots' },
         h('span', { class: 'store-name' }, s.source),
         time(s.updatedAt),
+        fresh(s, base),
         h('span', null, f.plural(st.turns, 'turn')),
         st.tools > 0 && h('span', null, f.plural(st.tools, 'tool call')),
         st.failures > 0 && h('span', { class: 'bad' }, `${f.num(st.failures)} failed`),
@@ -363,6 +382,18 @@ function sessionRow(s) {
         s.archived && h('span', null, 'archived'),
         s.active && h('span', { class: 'live', title: 'Written to in the last two minutes' }, 'live'))));
 }
+
+// fresh marks a session written to since the last look: new if it began since, updated
+// if it began before.
+function fresh(s, base) {
+  if (!base || !(f.when(s.updatedAt) > base)) return null;
+  const began = f.when(s.startedAt) > base;
+  return h('span', { class: 'fresh', title: `${began ? 'Begun' : 'Written to'} since you last looked, ${f.stamp(base)}` }, began ? 'new' : 'updated');
+}
+
+const seenLine = (base) =>
+  h('li', { class: 'seen-line', role: 'separator', 'aria-label': `Since you last looked, ${f.stamp(base)}` },
+    h('span', { class: 'dots' }, h('span', null, 'Since you last looked'), time(base, 'stamp')));
 
 function hitRow(hit, words) {
   const s = hit.session;

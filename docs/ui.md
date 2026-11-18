@@ -17,16 +17,29 @@ ask and how it was answered, and the facts worth scanning for: which CLI, how ma
 calls, how many of those failed, subagents, project, branch. A session written in the last two
 minutes is marked *live*.
 
+What changed since you last looked is marked too: a session begun since is *new*, one begun
+before and written to since is *updated*, and a line — *Since you last looked · Today 14:05* —
+runs above the first row that is older. The time is when you last looked at the list before this
+visit. A visit lasts while the page is looked at: a reload, Back from a session or a few minutes
+in another tab do not end it, so the marks stay while they are worked through. Five minutes away
+— the page hidden or closed, the machine asleep — does, and the next visit is marked from when
+you left. A first visit marks nothing.
+
 The filters on the left — store, time, project, archived sessions, subagent transcripts — live in
 the address, so a filtered view can be bookmarked and Back goes where you expect. The counts
-beside each store are what the list shows of it.
+beside each store are what the list shows of it. A filtered list is marked from the same time,
+and looking at it counts as looking at the list: if it did not, someone who always reads one
+project would find everything in it marked.
 
 ## Search
 
 Type in the box (`/` focuses it). Results are **turns**, best match first, each with what was
 asked there and the lines the words were found in — a reply, the reasoning, a tool's input or its
 output — with the matches marked. The query syntax is the [command line's](cli.md#finding);
-`?` shows it. A result opens its session at that turn, on the step that matched.
+`?` shows it. A result opens its session at that turn, on the step that matched. Nothing in the
+results is marked as new: they are ranked, not dated, so there is no line where the older ones
+begin. A search is not a look at the list either, and does not move the time the list is marked
+from.
 
 ![Search results](screenshots/search.png)
 
@@ -84,7 +97,8 @@ page and [is not summed](cli.md#measuring).
 
 **Failures** — the tool calls that failed in the window, newest first: the
 command, how it ended, the end of what it printed, and a link to the step. The chips narrow to
-one tool.
+one tool. A failure since you last looked at Failures is marked *new*, by the same visits as
+[the sessions list](#sessions).
 
 ![Failures](screenshots/failures.png)
 
@@ -155,7 +169,8 @@ server says now: what was kept below it may no longer match — the last 24 hour
 or be gone. A search comes back whole on Back too, but is asked for afresh any other
 way, since what it found is ranked rather than dated and cannot be brought up to date row by row.
 Pointing at a view's link asks for it before the click lands. Nothing of this outlives the page,
-and all of it is dropped when the sign-in is lost.
+and all of it is dropped when the sign-in is lost. What the browser keeps longer is the theme and,
+for the marks of what changed since you last looked, times: no answer, no text, no id.
 
 **The status says one of three things**: *up to date*; *reading 412 of 1,276…* while the index
 catches up — a first read, or many transcripts after a while away; *reconnecting…* if the

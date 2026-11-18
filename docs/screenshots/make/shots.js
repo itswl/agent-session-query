@@ -13,7 +13,9 @@ async (page) => {
   };
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(BASE + '/');
-  await page.evaluate(() => localStorage.removeItem('asq-theme'));
+  // No theme chosen before, and no look before: a browser that has seen this history
+  // would mark what changed since, and the pictures are of a first visit
+  await page.evaluate(() => localStorage.clear());
   const shot = async (url, file) => {
     await page.goto(BASE + url);
     await ready(page);

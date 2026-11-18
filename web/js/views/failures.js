@@ -5,6 +5,7 @@ import { api, qs, sessionHref, isAbort, last } from '../api.js';
 import { coalesce } from '../live.js';
 import * as f from '../format.js';
 import { WINDOWS, windowOf as windowIn, within, longer } from '../windows.js';
+import * as seen from '../seen.js';
 
 const PAGE = 50;
 
@@ -30,6 +31,10 @@ export function mount(main, route, ctx) {
     h('header', { class: 'page-head' }, h('h1', { tabIndex: -1 }, 'Failures'),
       choices('Window', WINDOWS.map(([k, name]) => [href({ since: k }), name, k === since]))),
     note.el, summary, chips, body));
+  // A failure since the last look at this view is marked new (see seen.js)
+  seen.look('failures');
+  const rows = () => { const base = seen.since('failures'); return v.items.map((x) => row(x, base)); };
+  const offVisit = seen.onVisit(() => { if (v.items.length) list.replaceChildren(...rows()); });
 
   function show(r, reset) {
     if (reset) v.top = r;
@@ -41,7 +46,7 @@ export function mount(main, route, ctx) {
       h('a', { class: 'chip', href: href({ tool: '' }), 'aria-current': tool ? null : 'true' }, 'All tools'),
       r.byTool.map((t) => h('a', { class: 'chip', href: href({ tool: t.tool === tool ? '' : t.tool }), 'aria-current': t.tool === tool ? 'true' : null },
         h('span', { class: 'mono' }, t.tool), h('span', { class: 'n' }, f.num(t.count)))));
-    list.replaceChildren(...v.items.map(row));
+    list.replaceChildren(...rows());
     if (!v.items.length) list.replaceChildren(h('li', null, empty(`No failed tool calls${tool ? ` of ${tool}` : ''}${within(since)}.`, tool ? (since === 'all' ? 'Try all tools.' : 'Try all tools, or a longer window.') : longer(since))));
     if (!body.contains(list)) body.replaceChildren(list, more);
     more.replaceChildren(v.end ? '' : h('button', { type: 'button', class: 'btn', onclick: () => load(false) }, 'Load more'));
@@ -68,15 +73,22 @@ export function mount(main, route, ctx) {
   // What it showed last time is shown at once; the fresh list replaces it when it comes
   if (last(first(route.query))) show(last(first(route.query)), true);
   load(true);
-  return { changes: coalesce(() => { if (v.items.length <= PAGE) load(true); }, 5000) };
+  return {
+    changes: coalesce(() => { if (v.items.length <= PAGE) load(true); }, 5000),
+    unmount() {
+      offVisit();
+      seen.leave('failures');
+    },
+  };
 }
 
-function row(x) {
+function row(x, base) {
   const lines = (x.output || '').trimEnd().split('\n');
   const tail = lines.slice(-12).join('\n');
   return h('li', { class: 'fail' },
     h('div', { class: 'f-head dots' },
       time(x.at),
+      base > 0 && f.when(x.at) > base && h('span', { class: 'fresh', title: `Failed since you last looked, ${f.stamp(base)}` }, 'new'),
       h('a', { href: sessionHref(x.session, `${x.turn}.${x.seq}`), title: x.cwd || null }, x.title || x.session, h('span', { class: 'turn-no' }, ' #' + x.turn)),
       h('span', { class: 'mono tool-name' }, x.tool),
       h('span', { class: 'bad' }, x.status, x.exit != null && ` · exit ${x.exit}`)),

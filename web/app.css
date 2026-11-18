@@ -219,6 +219,10 @@ kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width:
   border-bottom: 1px solid var(--line); font-size: 12px; font-weight: 600; color: var(--muted);
 }
 .rows { margin: 0; padding: 0; list-style: none; }
+/* The line above the first row older than the last look (see .fresh for the rows above it) */
+.seen-line { display: flex; align-items: center; gap: 10px; padding: 12px 12px 4px; color: var(--accent); font-size: 12px; font-weight: 600; }
+.seen-line > .dots { flex: 0 1 auto; min-width: 0; }
+.seen-line::after { content: ""; flex: 1 0 24px; height: 1px; background: var(--accent); opacity: .45; }
 .row { border-bottom: 1px solid var(--line); }
 .row-main { display: grid; grid-template-columns: 8px minmax(0, 1fr); column-gap: 12px; padding: 10px 12px; border-radius: 6px; color: inherit; }
 .row-main:hover { background: var(--sunk); text-decoration: none; }
@@ -253,6 +257,8 @@ kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width:
 [data-store="hermes"] { --store: #d4a017; }
 [data-store="openclaw"] { --store: #ef4444; }
 .live { padding-left: 11px; color: var(--ok); background: radial-gradient(circle at 3.5px 50%, var(--ok) 3px, transparent 3.5px) no-repeat; }
+/* Written to since the last look: a session new or updated, a failure new */
+.fresh { color: var(--accent); font-weight: 600; }
 .branch, .path { font-family: var(--mono); font-size: 11.5px; }
 
 /* One session */

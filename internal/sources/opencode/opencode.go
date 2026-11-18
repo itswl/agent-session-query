@@ -24,7 +24,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -60,16 +59,11 @@ var Spec = sources.Spec{
 	Store:   "~/.local/share/opencode/opencode.db",
 }
 
-// dataDir is OpenCode's data directory: under XDG_DATA_HOME on every Unix-like — macOS
-// included: it really is ~/.local/share/opencode there, not ~/Library/Application
-// Support — and LOCALAPPDATA on Windows.
+// dataDir is OpenCode's data directory: under XDG_DATA_HOME, or ~/.local/share, on every
+// system — macOS, where it is not ~/Library/Application Support, and Windows, where it is
+// not %LOCALAPPDATA% (packages/util/src/global-roots.ts; xdg-basedir, which has no rule for
+// either, in the released 1.19.6).
 func dataDir(env sources.Env) string {
-	if runtime.GOOS == "windows" {
-		if d := env.Getenv("LOCALAPPDATA"); d != "" {
-			return filepath.Join(d, "opencode")
-		}
-		return filepath.Join(env.Home, "AppData", "Local", "opencode")
-	}
 	if d := env.Getenv("XDG_DATA_HOME"); d != "" {
 		return filepath.Join(d, "opencode")
 	}

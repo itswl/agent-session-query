@@ -8,7 +8,7 @@ whether each reads, and how far back each goes.
 | `claude` | Claude Code | `~/.claude/projects` | `CLAUDE_CONFIG_DIR` | `claude --resume` |
 | `codex` | Codex | `~/.codex/sessions`, and `archived_sessions` beside it | `CODEX_HOME` | `codex resume` |
 | `gemini` | Gemini CLI | `~/.gemini/tmp` | — | `gemini --resume` |
-| `opencode` | OpenCode | `~/.local/share/opencode/opencode.db` (`%LOCALAPPDATA%\opencode` on Windows) | `XDG_DATA_HOME`, `OPENCODE_DB` | `opencode --session` |
+| `opencode` | OpenCode | `~/.local/share/opencode/opencode.db`, on Windows too | `XDG_DATA_HOME`, `OPENCODE_DB` | `opencode --session` |
 | `grok` | Grok CLI | `~/.grok/sessions`, and `archived_sessions` beside it | `GROK_HOME` | `grok -r` |
 | `antigravity` | Antigravity | `~/.gemini/antigravity-cli/brain` (the `agy` CLI) and `~/.gemini/antigravity/brain` (the IDE) | — | `agy --conversation` |
 | `pi` | Pi | `~/.pi/agent/sessions` | `PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR` | `pi --session` |

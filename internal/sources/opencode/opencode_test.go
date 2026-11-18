@@ -276,8 +276,16 @@ func TestUnreadableLayoutIsAnErrorNotAnEmptyStore(t *testing.T) {
 }
 
 func TestLocateAndOpen(t *testing.T) {
-	if got := Spec.Locate(sourcetest.Env("/home/u", "XDG_DATA_HOME", "/data")); filepath.ToSlash(got) != "/data/opencode/opencode.db" && !strings.Contains(got, "AppData") {
+	// OpenCode has one rule on every system, Windows too (packages/util/src/global-roots.ts):
+	// XDG_DATA_HOME, or ~/.local/share. %LOCALAPPDATA% is not where it writes
+	if got := Spec.Locate(sourcetest.Env("/home/u", "XDG_DATA_HOME", "/data", "LOCALAPPDATA", "/appdata")); filepath.ToSlash(got) != "/data/opencode/opencode.db" {
 		t.Errorf("relocated = %s", got)
+	}
+	if got := Spec.Locate(sourcetest.Env("/home/u", "LOCALAPPDATA", "/appdata")); filepath.ToSlash(got) != "/home/u/.local/share/opencode/opencode.db" {
+		t.Errorf("default = %s", got)
+	}
+	if got := Spec.Locate(sourcetest.Env("/home/u", "LOCALAPPDATA", "/appdata", "OPENCODE_DB", "work.db")); filepath.ToSlash(got) != "/home/u/.local/share/opencode/work.db" {
+		t.Errorf("OPENCODE_DB=work.db: %s", got)
 	}
 	// A --path may name the data directory or the database itself
 	dir := t.TempDir()

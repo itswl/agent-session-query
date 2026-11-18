@@ -24,12 +24,44 @@ The server lives as long as its client wants it: it ends when its input closes, 
 the answers in flight, and on a TERM or Ctrl+C, giving them up. Started by hand at a terminal it says what it is for,
 since a server waiting for JSON-RPC on stdin otherwise looks like a program that hung.
 
-Over HTTP, a running `asq serve` answers MCP at `POST /mcp` — one JSON-RPC message per request,
-a JSON reply, no session to keep — behind the same token as the rest of the API:
+### Over HTTP
+
+A running `asq serve` answers MCP at `POST /mcp` — one JSON-RPC message per request, a JSON
+reply, no session to keep — behind the same guards and token as the rest of the API. On this
+machine, with no token:
 
 ```sh
-claude mcp add --transport http asq http://127.0.0.1:7717/mcp
+claude mcp add --transport http --scope user asq http://127.0.0.1:7717/mcp
 ```
+
+A server with a token ([Deploying](deploy.md#who-may-ask)) answers only a request that carries
+`Authorization: Bearer <token>`; one without it is answered `401`. Below, the token is in
+`ASQ_TOKEN` where the agent runs, and the server is reached at `https://asq.example.com`:
+
+```sh
+# Claude Code
+claude mcp add --transport http --scope user asq https://asq.example.com/mcp \
+  --header "Authorization: Bearer $ASQ_TOKEN"
+
+# Codex
+codex mcp add asq --url https://asq.example.com/mcp --bearer-token-env-var ASQ_TOKEN
+```
+
+- **Claude Code** is given the header itself: the shell writes the token into the command, and
+  Claude Code keeps it in its configuration, `~/.claude.json`. `--header` comes after the URL,
+  because it takes the words that follow it as more headers.
+- **Codex** is given the variable's name and reads the token from its own environment, so
+  `ASQ_TOKEN` must be set wherever Codex runs; when it is not, the server fails to start, with
+  a message that names the variable. The command writes this to `~/.codex/config.toml`, where
+  it can as well be written by hand:
+
+  ```toml
+  [mcp_servers.asq]
+  url = "https://asq.example.com/mcp"
+  bearer_token_env_var = "ASQ_TOKEN"
+  ```
+
+Any other client: the URL, and that header in whatever form the client takes headers.
 
 ## The tools
 

@@ -23,7 +23,8 @@ refused with `403` before anything is read.
 **With a token** — `ASQ_TOKEN`, at least 16 characters; `openssl rand -hex 24` makes a good one
 — it may listen anywhere, and every request to the API proves it holds the token:
 
-- programs send `Authorization: Bearer <token>`;
+- programs send `Authorization: Bearer <token>` — an agent's MCP client as well, set up as
+  [MCP](mcp.md#over-http) shows;
 - the page trades the token once, at `POST /api/login`, for a cookie script never sees —
   `HttpOnly`, `SameSite=Strict`, good for 180 days. The cookie holds no secret: it is an expiry
   and its signature, and the server keeps nothing about it. The key it is signed with is made

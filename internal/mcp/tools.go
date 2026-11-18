@@ -45,7 +45,7 @@ type prop struct {
 
 // The arguments that select sessions, shared by every tool that takes a selection.
 var (
-	pSource  = prop{"source", "string", "Only one CLI's sessions (claude, codex, gemini, opencode, grok, antigravity, pi, dsh, hermes, openclaw) or one labeled store (claude@box2)."}
+	pSource  = prop{"source", "string", "Only one CLI's sessions (claude, codex, gemini, opencode, grok, antigravity, pi, dsh, hermes, openclaw, copilot) or one labeled store (claude@box2)."}
 	pProject = prop{"project", "string", "Only sessions whose working directory contains this, e.g. a repository's name."}
 	pBranch  = prop{"branch", "string", "Only sessions that opened on a git branch containing this."}
 	pSince   = prop{"since", "string", "Only after this: a span back from now (90m, 12h, 7d, 2w) or a date (2026-09-01)."}

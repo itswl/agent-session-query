@@ -256,6 +256,7 @@ kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width:
 [data-store="dsh"] { --store: #0ea5e9; }
 [data-store="hermes"] { --store: #d4a017; }
 [data-store="openclaw"] { --store: #ef4444; }
+[data-store="copilot"] { --store: #65a30d; }
 .live { padding-left: 11px; color: var(--ok); background: radial-gradient(circle at 3.5px 50%, var(--ok) 3px, transparent 3.5px) no-repeat; }
 /* Written to since the last look: a session new or updated, a failure new */
 .fresh { color: var(--accent); font-weight: 600; }

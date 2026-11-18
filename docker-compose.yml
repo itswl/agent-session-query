@@ -54,6 +54,7 @@ services:
       # included. One more reason this stays read-only and off the network.
       - ~/.hermes:/root/.hermes:ro
       - ~/.openclaw/agents:/root/.openclaw/agents:ro
+      - ~/.copilot/session-state:/root/.copilot/session-state:ro
       # A store somewhere else — another machine's home, a backup: mount it anywhere
       # and name it, and its sessions appear as "claude@box2".
       #   - /srv/box2/.claude/projects:/mnt/box2:ro

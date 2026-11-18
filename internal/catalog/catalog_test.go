@@ -35,7 +35,7 @@ func TestEverySpecIsWhole(t *testing.T) {
 			t.Errorf("%s lists %d sessions in an empty home", spec.Name, len(refs))
 		}
 	}
-	if len(All) != 10 {
+	if len(All) != 11 {
 		t.Errorf("%d CLIs", len(All))
 	}
 }

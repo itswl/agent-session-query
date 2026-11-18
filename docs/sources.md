@@ -15,6 +15,7 @@ whether each reads, and how far back each goes.
 | `dsh` | DeepSeek Harness | `~/.dsh/sessions` | `DSH_HOME` | — |
 | `hermes` | Hermes | `~/.hermes/state.db` (and the older `sessions/`) | `HERMES_HOME` | `hermes --resume` |
 | `openclaw` | OpenClaw | `~/.openclaw/agents` | `OPENCLAW_STATE_DIR` | — |
+| `copilot` | GitHub Copilot CLI | `~/.copilot/session-state` | `COPILOT_HOME` | `copilot --resume` |
 
 Each store is found the way its CLI finds it, so a CLI whose data was moved by its own variable
 is read where the variable says. `OPENCODE_DB` names OpenCode's database file itself: an absolute
@@ -154,6 +155,23 @@ whole-second time each line was written.
 calls carry no ids; the steps that answer them follow their order. A command's exit code is in
 the step that answers it.
 
+**GitHub Copilot CLI** — a directory per session: its event log, `events.jsonl`, and beside it
+`workspace.yaml`, which holds the session's name (one the person gave it, or the CLI's summary).
+A log the CLI rotated is read from its first part on, and the copies of earlier events it starts
+the log again with are not read twice. A subagent writes into the session's own log: its tool
+calls, failures and model calls are those of the turn it ran in, and what it says is that turn's
+reasoning — the turn's answer stays the session's own agent's. A run a session starts detached,
+to carry on without it, is read beneath that session. What a call used is recorded per model
+call; Copilot counts the prompt tokens read from and written to the cache inside the input, and
+they are taken out of it. The cost is what Copilot counts the call at in AI credits, at GitHub's
+$0.01 a credit, whatever the plan. A command that ran is a success to the CLI whatever it exited
+with: the exit code is read from the result, or from the `<exited with exit code N>` the shell
+tool ends its output with. A call the person declined, or that Ctrl+C stopped, is interrupted;
+one a rule or a hook refused is an error. A `/fork` copies its parent's events into the new log
+as they were, and the copies are inherited. What a command or a schedule sent on the person's
+behalf is an ask; what autopilot, a skill or another agent put in the user's seat is context.
+Copilot CLI keeps every session until it is deleted.
+
 How far each adapter has been checked differs, and is worth knowing. Claude Code, Codex,
 OpenCode, Pi and Hermes were verified against real stores — some 1,300 transcripts in all —
 with their token totals matching independent sums exactly. OpenClaw (2026.11.3), DeepSeek
@@ -162,7 +180,10 @@ verified against sessions run for the purpose on those releases — commands tha
 written and edited, turns cancelled and killed, conversations resumed — and every one of them
 turned out to write things the earlier samples did not show; the tests keep trimmed copies of
 what they wrote. Antigravity was run against a model of its own (an API key's), not one Google
-hosts, which may write its steps differently.
+hosts, which may write its steps differently. GitHub Copilot CLI's adapter was written against
+Copilot CLI 1.0.114 from what that release ships — the schema of every event it writes, and the
+code that writes and reads them — and is tested with sessions written to that schema. It has not
+yet been checked against a session Copilot CLI recorded.
 
 If a CLI changes how it writes, nothing fails. An adapter passes over a record it does not know —
 a new row type, a renamed block — and the session reads as less than it holds: a turn short, a

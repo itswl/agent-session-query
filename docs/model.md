@@ -1,9 +1,9 @@
 # The record
 
-Ten CLIs write ten shapes. What they all describe is the same thing: a person asked, an agent
-worked, the agent answered. `asq` converts every transcript into one record built around that
-exchange, and everything it offers — the list, search, briefs, usage, failures, traces, the page
-— is a projection of this record and of nothing else.
+Eleven CLIs write eleven shapes. What they all describe is the same thing: a person asked, an
+agent worked, the agent answered. `asq` converts every transcript into one record built around
+that exchange, and everything it offers — the list, search, briefs, usage, failures, traces, the
+page — is a projection of this record and of nothing else.
 
 The types are in [`internal/model/model.go`](../internal/model/model.go); their JSON tags are
 the field names of `--json`, the HTTP API and the JSON exports.

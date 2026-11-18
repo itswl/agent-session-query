@@ -4,9 +4,10 @@
 
 [中文说明](README.zh-CN.md)
 
-Claude Code, Codex, Gemini CLI, OpenCode, Grok, Antigravity, Pi, DeepSeek Harness, Hermes and
-OpenClaw each keep a transcript of what they did — in ten different shapes, in ten different
-places. `asq` reads them all into one model and answers the questions you actually have:
+Claude Code, Codex, Gemini CLI, OpenCode, Grok, Antigravity, Pi, DeepSeek Harness, Hermes,
+OpenClaw and GitHub Copilot CLI each keep a transcript of what they did — in eleven different
+shapes, in eleven different places. `asq` reads them all into one model and answers the
+questions you actually have:
 
 - *How did I fix this last time?* — full-text search over every turn of every session
 - *What was that agent doing?* — read any session as a list of turns, then step by step
@@ -184,6 +185,7 @@ conversation is sent** — `--content asks` or `all` opts in. → [Telemetry](do
 | `dsh` | DeepSeek Harness | `~/.dsh/sessions` |
 | `hermes` | Hermes | `~/.hermes/state.db` |
 | `openclaw` | OpenClaw | `~/.openclaw/agents` |
+| `copilot` | GitHub Copilot CLI | `~/.copilot/session-state` |
 
 Each CLI's own variable for moving its store is honoured (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …).
 A store somewhere else — another machine's home directory, a backup — is added by name:

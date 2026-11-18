@@ -1,8 +1,8 @@
 // Package model is the one record every agent CLI's transcript converges on.
 //
-// Ten CLIs write ten shapes. What they all describe is the same thing: a person asked,
-// an agent worked, the agent answered. That exchange is the unit here — a Turn — and a
-// Session is its turns in order. Everything the program offers (the list, search, briefs,
+// Eleven CLIs write eleven shapes. What they all describe is the same thing: a person
+// asked, an agent worked, the agent answered. That exchange is the unit here — a Turn — and
+// a Session is its turns in order. Everything the program offers (the list, search, briefs,
 // usage, failures, traces) is a projection of this record and of nothing else.
 //
 //	Session ─┬─ Turn 0   what came before the first ask: injected context, a fork's copy

@@ -4,8 +4,9 @@
 
 [English](README.md)
 
-Claude Code、Codex、Gemini CLI、OpenCode、Grok、Antigravity、Pi、DeepSeek Harness、Hermes、OpenClaw
-各自都记录了自己做过的事——十种格式，十个位置。`asq` 把它们读进同一个模型，回答你真正会问的问题：
+Claude Code、Codex、Gemini CLI、OpenCode、Grok、Antigravity、Pi、DeepSeek Harness、Hermes、OpenClaw、
+GitHub Copilot CLI 各自都记录了自己做过的事——十一种格式，十一个位置。
+`asq` 把它们读进同一个模型，回答你真正会问的问题：
 
 - *上次这个问题我是怎么解决的？* —— 对所有会话的每一轮做全文搜索
 - *那个 agent 当时在干什么？* —— 任意会话先看成一串「轮次」，再逐步展开
@@ -171,6 +172,7 @@ LANGFUSE_PUBLIC_KEY=… LANGFUSE_SECRET_KEY=… asq otel --content asks --every 
 | `dsh` | DeepSeek Harness | `~/.dsh/sessions` |
 | `hermes` | Hermes | `~/.hermes/state.db` |
 | `openclaw` | OpenClaw | `~/.openclaw/agents` |
+| `copilot` | GitHub Copilot CLI | `~/.copilot/session-state` |
 
 各 CLI 自己用来挪动存储位置的环境变量都会被遵守（`CLAUDE_CONFIG_DIR`、`CODEX_HOME` 等）。别处的存储——另一台机器的
 home 目录、一份备份——按名字加进来：`asq ls --path claude@box2=/mnt/box2/.claude/projects`，其中的会话显示为

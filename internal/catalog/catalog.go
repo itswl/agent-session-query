@@ -15,6 +15,7 @@ import (
 	"github.com/itswl/agent-session-query/internal/sources/antigravity"
 	"github.com/itswl/agent-session-query/internal/sources/claude"
 	"github.com/itswl/agent-session-query/internal/sources/codex"
+	"github.com/itswl/agent-session-query/internal/sources/copilot"
 	"github.com/itswl/agent-session-query/internal/sources/dsh"
 	"github.com/itswl/agent-session-query/internal/sources/gemini"
 	"github.com/itswl/agent-session-query/internal/sources/grok"
@@ -37,6 +38,7 @@ var All = []sources.Spec{
 	dsh.Spec,
 	hermes.Spec,
 	openclaw.Spec,
+	copilot.Spec,
 }
 
 // Find returns the spec of the CLI with that name.

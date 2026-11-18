@@ -27,9 +27,10 @@ codex/bbbb2222   2d ago · 1 turn · /work/beta · release
 $ asq search ECONNREFUSED
 1 turn in 1 session
 
-1. claude/aaaa1111-0000-4000-8000-000000000001#1  2026-11-13 17:43 · /work/alpha
+1. claude/aaaa1111-0000-4000-8000-000000000001#1  2026-11-13 17:43 · /work/alpha  ✗1 failed
    ask    fix the flaky test
    output Bash › --- FAIL: TestOrder dial tcp: ECONNREFUSED 127.0.0.1:5432 exit status 1
+   answer The test depended on map order; fixed by sorting the keys.
 
 $ asq show claude/aaaa1111#1
 claude/aaaa1111-0000-4000-8000-000000000001#1 · 2026-11-13 17:43 · 20s · exec 1 · failed 1 · 2.1k in · 70 out · cache 92%
@@ -102,13 +103,13 @@ asq ls         # the first run indexes your history: about ten seconds per gigab
 | | |
 |---|---|
 | `asq ls` | recent sessions — `--project`, `--since 7d`, `--source codex`, `--branch`, or a word of the title |
-| `asq search <words>` | the turns that hold these words: asks, replies, reasoning, tool input and output |
+| `asq search <words>` | the turns that hold these words: asks, replies, reasoning, tool input and output, the session's title |
 | `asq show <ref>` | a session as its turns; `<ref>#4` one turn step by step; `--seq 12` one step whole; `-f` follows it live |
 | `asq brief <ref>` | a handoff brief: what was asked, changed, failed and concluded, and how it stands now — `--turn N`, `--from N`, `--since 2h`, `--since all` |
 | `asq pack` | several sessions as one document, oldest first — `--project`, `--since` |
 | `asq export <ref>` | a session whole — `--format md \| json \| jsonl \| html` |
 | `asq usage` | what the model calls consumed — `--by model \| day \| source \| project \| session` |
-| `asq failures` | the tool calls that failed — `--tool Bash`, `--since` |
+| `asq failures [words]` | the tool calls that failed — `--tool Bash`, `--since`, or words their command or output holds |
 | `asq digest` | what a stretch of work added up to, per project |
 | `asq files <path>` | the turns that touched a file — `--changed` |
 | `asq projects` | the directories sessions ran in |
@@ -121,9 +122,12 @@ asq ls         # the first run indexes your history: about ten seconds per gigab
 A **ref** is what `ls` and `search` print: `claude/3f2a9c1e`, or just the start of a session's
 id, the way a commit is named. `#4` names a turn. Every command takes `--json`.
 
-**Search** understands `"a phrase"`, `-not`, and `ask:` `reply:` `thinking:` `tool:` `output:` to
-confine a word to one part of a turn. Bare words match as prefixes (`rebind` finds `rebinding`).
-Chinese, Japanese, Korean and Thai are matched by substring: `asq search 数据库` works.
+**Search** understands `"a phrase"`, `-not`, and `ask:` `reply:` `thinking:` `tool:` `output:`
+`title:` to confine a word to one part of a turn or to the session's title. Bare words match as
+prefixes (`rebind` finds `rebinding`) and in their other English forms (`retries` finds
+`retried`). Chinese, Japanese, Korean and Thai are matched by substring: `asq search 数据库`
+works. When no turn holds every word, the answer says which word is missing and lists the turns
+that come closest, marked as partial matches.
 → [Command line](docs/cli.md)
 
 ## The page

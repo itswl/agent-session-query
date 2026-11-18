@@ -36,11 +36,15 @@ someone who always reads one project would find everything in it marked.
 
 ## Search
 
-Type in the box (`/` focuses it). Results are **turns**, best match first, each with what was
-asked there and the lines the words were found in — a reply, the reasoning, a tool's input or its
-output — with the matches marked. The query syntax is the [command line's](cli.md#finding);
-`?` shows it. A search keeps the list's filters, and from a report the project it is narrowed
-to. A result opens its session at that turn, on the step that matched. Nothing in the
+Type in the box (`/` focuses it). Results are **turns**, best match first, each under its
+session's title with what was asked there and the lines the words were found in — a reply, the
+reasoning, a tool's input or its output — with the matches marked, the other forms of a word
+found (*retried* for retries) among them, and how many of its calls failed and how many of those
+passed later. The query syntax is the [command line's](cli.md#finding); `?` shows it. A search
+keeps the list's filters, and from a report the project it is narrowed to. When no turn holds
+every word, a note above the results says so and names any word no turn holds, and the results
+are the turns that come closest, each saying which words it lacks. A result opens its session at
+that turn, on the step that matched. Nothing in the
 results is marked as new: they are ranked, not dated, so there is no line where the older ones
 begin. A search is not a look at the list either, and does not move the time the list is marked
 from.
@@ -86,7 +90,8 @@ the button at the bottom takes you back to the newest turn, or turns following o
 **Find** looks in this session alone, in every turn — the browser's own find sees only the steps
 of the turns that are open. It takes the [search's syntax](cli.md#finding) and lists the turns
 that hold the words in the order of the session, each with the lines they were found in; one
-opens its turn at that step. Enter or the arrows beside the box step through them, the first
+opens its turn at that step. When no turn of the session holds them all, it lists those that
+come closest, and says what each lacks. Enter or the arrows beside the box step through them, the first
 step from the turn in view, and Shift+Enter steps back. A session's subagents are sessions of
 their own, and are found on their own pages. It is `f`, or *Find* in the session's head, after *Brief* and *Export*.
 

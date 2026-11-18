@@ -47,22 +47,54 @@ the command happened to run.
 **`asq ls [word]`** — recent sessions, newest first. A word narrows to sessions whose title, id
 or directory contains it.
 
-**`asq search <query>`** — the turns that match, best first. Each hit shows the turn's ref, the
-ask, and the lines the words were found in, labelled with where: `reply`, `thinking`, a tool's
-`input`, `command` or `output`.
+**`asq search <query>`** — the turns that match, best first. Each hit shows the turn's ref and
+how the turn ended — `✓`, `✗2 failed` (with how many of those calls the same command passed
+later, in that turn or the three after it: `✗2 failed, 1 passed later`), `⚠ interrupted` —
+then the ask, the lines the words were found in, labelled with where (`reply`, `thinking`, a
+tool's `input`, `command` or `output`, the session's `title`), and the turn's `answer`: enough
+to tell which turn to open without opening each.
 
 | query | finds turns where |
 |---|---|
-| `retry backoff` | both words appear, anywhere in the turn |
+| `retry backoff` | both words appear, anywhere in the turn or in the session's title |
 | `"exit status 1"` | the phrase appears as written |
 | `flaky -windows` | `flaky` appears and `windows` does not |
-| `ask:deploy` | the person's ask has the word; also `reply:` `thinking:` `tool:` (a tool's input) `output:` (a tool's output) |
-| `rebind` | any word *starting* with it — bare words are prefixes; a quoted phrase is exact |
+| `ask:deploy` | the person's ask has the word; also `reply:` `thinking:` `tool:` (a tool's input) `output:` (a tool's output) `title:` (the session's title) |
+| `rebind` | any word *starting* with it — bare words are prefixes |
+| `retries` | … or any other form of the same English word: `retried`, `retry`, `retrying` |
 | `数据库` | the characters appear together, in any position |
 
 Punctuation separates words, as it does in the index: `session_query`, `session-query` and
-`session query` are the same search. `--recent` orders by time instead of relevance;
-`--per-session N` bounds how many turns of one session are shown (default 3, `0` for no bound).
+`session query` are the same search. A word alone, unquoted, finds the other forms of an English
+word by its stem, Porter's, as SQLite's FTS5 has it: `logs` finds `log` and `logging` but not
+`login`, `deploy` finds `deployment`. A quoted word or phrase, a word of several parts
+(`session_query`), one with digits in it, and words in other scripts match as written. An
+excluded word is excluded in all the forms it would be found in.
+
+The session's title is in each of its turns, so a word of it finds the session's turns
+together with the others — `webhook retries` finds a turn that says retried in a session
+titled *Cap webhook retries*. It decides which turns are found, not which come first: that is
+for their own words. A title that is only how the first ask begins — what a session its CLI
+did not name is titled by — is the first turn's already, and is not held beside the others.
+
+When no turn holds every word, the answer says so, names any word no turn holds at all, and
+lists the turns that hold the most of the rest instead, closest first, each marked with the
+words it `lacks`:
+
+```console
+$ asq search webhook retries queue
+No turn holds all 3 words; none holds “queue”.
+Partial matches, closest first: 2 turns in 1 session, the closest holding 2 of the 3.
+
+1. claude/8a80b919-fbeb-4925-968b-46642528af23#1  2026-11-13 10:04 · ~/work/billing-api  ✓
+   lacks  queue
+   ask    Failed webhook deliveries are retried every minute, forever. Cap the attempts and back …
+   answer Each retry now waits twice as long as the one before — exponential backoff from a …
+```
+
+A search some turn matches whole lists those turns and no others. `--recent` orders by time
+instead of relevance; `--per-session N` bounds how many turns of one session are shown
+(default 3, `0` for no bound).
 
 **`asq files <path>`** — the turns that named a file, newest first, each with the ask that led
 to it. `--changed` keeps only turns that changed it. Each says how the file stands now against
@@ -160,10 +192,13 @@ figure would read as the cost of tokens it is not the cost of. What every CLI do
 what moves a bill most, is the last column — how much of the prompt was served from cache. A
 session's own cost, where its CLI recorded one, is shown with the session (`asq show`).
 
-**`asq failures`** — tool calls that failed or were interrupted in the last 7 days (`--since`),
-newest first, with the count per tool on top. `--tool Bash` narrows to one tool, named exactly —
-Claude Code's `Bash` is not Pi's `bash` — and `--tool 'mcp__playwright*'` to every tool whose
-name begins that way.
+**`asq failures [words]`** — tool calls that failed or were interrupted in the last 7 days
+(`--since`), newest first, with the count per tool on top. `--tool Bash` narrows to one tool,
+named exactly — Claude Code's `Bash` is not Pi's `bash` — and `--tool 'mcp__playwright*'` to
+every tool whose name begins that way. Words narrow to the calls whose command or the end of
+whose output (the part shown) holds each of them, anywhere and in any case: `asq failures
+ECONNREFUSED`, or `asq failures '"go test" -race'` for a phrase as written and a word that must
+not be there.
 When the same program and subcommand succeeded later in the session — `go test` after
 `go test`, in that turn or the next three — the failure says where
 (`↳ passed 40m later: claude/3f2a…#5 step 212`), and how it was run if that differs; the turns
@@ -214,7 +249,9 @@ of `asq` that read them, which is what a report of a store that will not read ne
 `asq index rebuild` reads everything again; `asq index rm` deletes it (the next command rebuilds
 it), and with it any index an earlier version of `asq` left beside it, which `asq index` names. A
 new release that reads a CLI's files differently has that CLI's sessions read again by itself, at
-the first sync after the upgrade; a rebuild is not needed for that.
+the first sync after the upgrade; a rebuild is not needed for that. One that keeps a search's
+words differently writes them again from what the index holds, at the first sync too, reading
+no transcript; until it is done a search finds what has been written so far.
 
 ## Environment
 

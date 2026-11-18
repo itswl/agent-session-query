@@ -71,13 +71,13 @@ All ten only read. Each takes the selection arguments that make sense for it —
 
 | tool | answers | key arguments |
 |---|---|---|
-| `search` | Where was this said? The turns that match, best first, with the lines the words were found in | `query` ([syntax](cli.md#finding)), `recent`, `per_session` |
+| `search` | Where was this said? The turns that match, best first, each with how it ended, the lines the words were found in and its answer — or, when no turn holds every word, the closest, marked with what each lacks | `query` ([syntax](cli.md#finding)), `recent`, `per_session` |
 | `sessions` | What was worked on? Recent sessions, one line of where and when, one of what | `text`, `archived`, `agents` |
 | `read` | A session at the depth asked for: its outline; some turns step by step; one step whole | `ref`, `turns`, `seq`, `full` |
 | `brief` | A handoff brief of a session: asked, changed and how each file stands now, failed and whether it passed later, concluded | `ref`, `turn`, `from`, `since` (`all` for the whole session) |
 | `pack` | Several sessions as one document, oldest first | `turns` |
 | `usage` | Tokens in and out, how many were reasoning, and the cache hit rate | `by` |
-| `failures` | The tool calls that failed, with the command and the end of the output — and where the same command passed later in the session | `tool` (exact, or `prefix*`) |
+| `failures` | The tool calls that failed, with the command and the end of the output — and where the same command passed later in the session | `tool` (exact, or `prefix*`), `query` (words the command or output holds) |
 | `digest` | What a stretch of work added up to, per project | |
 | `files` | Which turns read or changed a file, what was asked there, and whether the file is still as that turn left it | `path`, `changed` |
 | `projects` | The directories sessions ran in | |
@@ -85,6 +85,23 @@ All ten only read. Each takes the selection arguments that make sense for it —
 The path an agent usually takes: `search` or `sessions` → a ref → `read` with the ref alone for
 the outline → `read` with `ref#N` for the turn that matters → `read` with `seq` for the one
 output worth seeing whole.
+
+`search` is written for an agent's way of asking — in its own words, which are seldom the
+history's: a word finds its other forms (*retries* finds *retried*), a session's title is
+searched with its turns, and a query no turn matches whole is answered with the turns that come
+closest, each saying which words it lacks, rather than with nothing. Each hit ends its first line
+with how the turn ended — `✓`, `✗2 failed, 1 passed later`, `⚠ interrupted` — and shows the
+turn's answer, so that which turn to `read` can be decided without reading each.
+
+```
+No turn holds all 3 words; none holds “queue”.
+Partial matches, closest first: 2 turns in 1 session, the closest holding 2 of the 3.
+
+1. claude/8a80b919-fbeb-4925-968b-46642528af23#1  2026-11-13 10:04 · ~/work/billing-api  ✓
+   lacks  queue
+   ask    Failed webhook deliveries are retried every minute, forever. Cap the attempts and back off exponentially.
+   answer Each retry now waits twice as long as the one before — exponential backoff from a minute, capped at six hours …
+```
 
 An agent is told when to take that path before it calls anything. The server's `instructions`
 name the moments — the user pointing at earlier work or another agent's, an error or an approach

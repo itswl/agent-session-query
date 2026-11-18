@@ -78,14 +78,34 @@ transcripts, which are sessions of their own. A ref that names no session is `40
 
 ```json
 {"hits": [{"ref": "claude/3f2a…#4", "turn": 4, "at": "…", "ask": "…", "answer": "…",
-           "tools": 12, "failures": 1, "score": 14.2,
+           "tools": 12, "failures": 2, "passedLater": 1, "score": 14.2,
            "session": {"ref": "claude/3f2a…", "title": "…", "cwd": "…"},
-           "matches": [{"kind": "tool", "part": "output", "tool": "Bash", "seq": 57, "snippet": "… ECONNREFUSED 127.0.0.1:5432 …"}]}],
+           "matches": [{"kind": "tool", "part": "output", "tool": "Bash", "seq": 57, "snippet": "… ECONNREFUSED 127.0.0.1:5432 …"},
+                       {"kind": "reply", "seq": 61, "snippet": "… the pool retried twice …", "word": "retried"}]}],
  "total": 29, "sessions": 24}
 ```
 
 `total` is turns that matched across all pages; `sessions` how many sessions they are in. A
-match's `seq` is the step to open (`/items/{seq}`).
+match's `seq` is the step to open (`/items/{seq}`); `kind` is `title` for one in the session's
+title, which is no step (its `seq` is 0). `word` is the word the snippet was cut around when it
+is another form of the one searched for, for a page to mark.
+
+How the turn ended: `failures` is its calls that failed or were interrupted, `passedLater` how
+many of those were followed — in that turn or the three after it — by the same command
+succeeding ([as failures judge it](#reports)), and `interrupted` says the person stopped it.
+
+When no turn holds every word, the answer is the turns that hold the most of them, and says so:
+
+```json
+{"hits": [{"ref": "claude/8a80…#1", "lacks": ["queue"], …}],
+ "total": 2, "sessions": 1,
+ "partial": {"words": 3, "held": 2}, "missing": ["queue"]}
+```
+
+`partial` is how many words the query asks for and how many of them the closest hits hold; a
+hit's `lacks` is the words it does not hold, as typed (`ask:deploy`, `"exit status 1"`);
+`missing` the words no turn holds at all — which may come back with no hits, when there is
+nothing to come close with. A search some turn matches whole has neither.
 
 ## Reports
 
@@ -93,7 +113,7 @@ match's `seq` is the step to open (`/items/{seq}`).
 |---|---|
 | `GET /api/usage` | `{"total", "windows", "byModel", "byDay", "bySource", "byProject"}` — the rolling windows are 24h, 7d, 30d, all; `byDay` is the last 30 days — or, when `until` is in the past, the days from `since` to `until`, or the 30 before `until` with no `since`; the rest cover `since` and `until` |
 | `GET /api/usage?by=model\|day\|source\|project\|session` | `{"by", "rows", "total"}` |
-| `GET /api/failures?tool=` | `{"failures", "total", "byTool"}` — the last 7 days unless `since` says otherwise. `tool` names one tool exactly (`Bash` is not `bash`), or with a trailing `*` by how its name begins; `byTool` counts every tool of the window whichever is asked for |
+| `GET /api/failures?tool=&q=` | `{"failures", "total", "byTool"}` — the last 7 days unless `since` says otherwise. `tool` names one tool exactly (`Bash` is not `bash`), or with a trailing `*` by how its name begins; `q` keeps the calls whose command or the end of whose output holds each of its words, in any case (`"a phrase"` as written, `-word` not there); `byTool` counts every tool of the window whichever is asked for |
 | `GET /api/digest` | `{"projects", "total"}` — likewise |
 | `GET /api/files?path=&changed=1` | `{"files", "total"}` — each file with `now`, how it stands against what that turn left (below); `waiting` instead names the folder a look at it is waiting in, as macOS asks on the Mac whether `asq` may read it |
 | `GET /api/projects` | `{"projects"}` |

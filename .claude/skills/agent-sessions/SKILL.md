@@ -39,10 +39,10 @@ Two ways to ask, the same answers either way:
 
 | The user is asking | Reach for |
 |---|---|
-| "How did I solve X before?" / "Where did that error come up?" | `search(query="…")` — hits are turns, each with the lines the words were found in |
+| "How did I solve X before?" / "Where did that error come up?" | `search(query="…")` — hits are turns, each with how it ended, the lines the words were found in, and its answer. Words match their other forms (*retries* finds *retried*) and the session's title; when no turn holds them all, the closest come back marked with the words they lack — try another word for those |
 | "…in this repo" / "…with Codex" / "…last month" | add `project="…"`, `source="codex"`, `since="30d"` — narrow rather than raise `limit` |
-| "What did I *ask* about X?" | `search(query="ask:X")`. Also `reply:` `thinking:` `tool:` (a tool's input) `output:` (what a tool printed) |
-| "The exact message was …" | `search(query="\"exit status 1\"")` — quotes match a phrase; bare words match as prefixes; `-word` excludes |
+| "What did I *ask* about X?" | `search(query="ask:X")`. Also `reply:` `thinking:` `tool:` (a tool's input) `output:` (what a tool printed) `title:` (the session's title) |
+| "The exact message was …" | `search(query="\"exit status 1\"")` — quotes match a phrase as written; bare words match as prefixes and in their other forms; `-word` excludes |
 | "What was I working on?" / "…last week?" | `sessions(since="7d")`, with `project` / `source` / `branch` / `text` |
 | "What happened in that session?" | `read(ref="…")` — the outline: every turn's ask and how it ended, plus its subagents |
 | "What did it do in turn 4?" | `read(ref="…#4")` — step by step: replies, reasoning, each tool call and its outcome, numbered `[seq]` |
@@ -53,7 +53,7 @@ Two ways to ask, the same answers either way:
 | "What has happened since I handed it over?" | `brief(ref="…", since="2h")`; `from=7` from a turn on, `since="all"` the whole session |
 | "Catch me up on this project" | `pack(project="…", since="7d")` — each session's ask and conclusion, oldest first |
 | "Who changed this file, and why?" | `files(path="auth.go", changed=true)` — then `read` the turn |
-| "What keeps failing?" | `failures(since="7d")`, with `tool="Bash"` to narrow |
+| "What keeps failing?" | `failures(since="7d")`, with `tool="Bash"` or `query="ECONNREFUSED"` (words of the command or its output) to narrow |
 | "What did this week add up to?" | `digest(since="7d")` — per project: sessions, turns, failures, tokens, files changed |
 | "Where did the tokens go?" / "Which model is eating them?" | `usage()`, or `usage(by="model"\|"day"\|"project"\|"session")` |
 | "Which repos have I used agents on?" | `projects()` |

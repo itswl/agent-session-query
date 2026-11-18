@@ -26,8 +26,9 @@ codex/bbbb2222   2d ago · 1 turn · /work/beta · release
 $ asq search 数据库
 1 turn in 1 session
 
-1. claude/aaaa1111-0000-4000-8000-000000000001#2  2026-11-13 18:13 · /work/alpha
+1. claude/aaaa1111-0000-4000-8000-000000000001#2  2026-11-13 18:13 · /work/alpha  ✓
    ask    现在给数据库加索引
+   answer 索引已加上，另外 orders 表也缺一个。
 
 $ asq show claude/aaaa1111#1
 claude/aaaa1111-0000-4000-8000-000000000001#1 · 2026-11-13 17:43 · 20s · exec 1 · failed 1 · 2.1k in · 70 out · cache 92%
@@ -95,13 +96,13 @@ asq ls         # 第一次运行会建索引：每 GB 历史大约十秒
 | | |
 |---|---|
 | `asq ls` | 最近的会话 —— `--project`、`--since 7d`、`--source codex`、`--branch`，或标题里的一个词 |
-| `asq search <词>` | 包含这些词的轮次：提问、回复、思考、工具输入与输出 |
+| `asq search <词>` | 包含这些词的轮次：提问、回复、思考、工具输入与输出、会话标题 |
 | `asq show <ref>` | 把会话看成轮次列表；`<ref>#4` 逐步展开某一轮；`--seq 12` 完整看某一步；`-f` 实时跟随 |
 | `asq brief <ref>` | 交接简报：问了什么、改了什么、什么失败了、结论是什么，以及现在怎样了 —— `--turn N`、`--from N`、`--since 2h`、`--since all` |
 | `asq pack` | 把多个会话合成一份文档，由旧到新 —— `--project`、`--since` |
 | `asq export <ref>` | 导出整个会话 —— `--format md \| json \| jsonl \| html` |
 | `asq usage` | 模型调用消耗 —— `--by model \| day \| source \| project \| session` |
-| `asq failures` | 失败的工具调用 —— `--tool Bash`、`--since` |
+| `asq failures [词]` | 失败的工具调用 —— `--tool Bash`、`--since`，或命令与输出中包含的词 |
 | `asq digest` | 一段时间的工作按项目汇总 |
 | `asq files <路径>` | 碰过某个文件的轮次 —— `--changed` 只看修改 |
 | `asq projects` | 会话所在的工作目录 |
@@ -114,8 +115,9 @@ asq ls         # 第一次运行会建索引：每 GB 历史大约十秒
 **ref** 就是 `ls` 和 `search` 打印的东西：`claude/3f2a9c1e`，或者只写会话 id 的开头，像引用一个 commit
 那样。`#4` 指第 4 轮。所有命令都支持 `--json`。
 
-**搜索**支持 `"短语"`、`-排除词`，以及 `ask:` `reply:` `thinking:` `tool:` `output:` 把某个词限定在一轮的某个部分。
-裸词按前缀匹配（`rebind` 能找到 `rebinding`）。中文、日文、韩文、泰文按子串匹配：`asq search 数据库` 可以直接用。
+**搜索**支持 `"短语"`、`-排除词`，以及 `ask:` `reply:` `thinking:` `tool:` `output:` `title:` 把某个词限定在一轮的某个部分或会话标题。
+裸词按前缀匹配（`rebind` 能找到 `rebinding`），英文词也匹配它的其他词形（`retries` 能找到 `retried`）。中文、日文、韩文、泰文按子串匹配：`asq search 数据库` 可以直接用。
+没有哪一轮包含全部的词时，结果会说明缺的是哪个词，并列出最接近的几轮，标为部分匹配。
 → [命令行](docs/cli.md)
 
 ## 网页

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -85,16 +86,18 @@ func (a *App) Self(ctx context.Context, source, id string, dirs []string) (Self,
 			return Self{}, err
 		}
 	}
-	var where []string
+	// Each directory by every path that may name it as a CLI recorded it: as it was given,
+	// cleaned — which on Windows also writes each / as \ — and with its links resolved, as
+	// /tmp is /private/tmp on a Mac. The answer names them as they were given.
+	var where, named []string
 	for _, d := range dirs {
 		if d == "" {
 			continue
 		}
-		where = append(where, filepath.Clean(d))
-		// The directory as the CLI recorded it may be the one a link points to: /tmp is
-		// /private/tmp on a Mac
-		if real, err := filepath.EvalSymlinks(d); err == nil && real != filepath.Clean(d) {
-			where = append(where, real)
+		named = appendNew(named, d)
+		where = appendNew(where, d, filepath.Clean(d))
+		if real, err := filepath.EvalSymlinks(d); err == nil {
+			where = appendNew(where, real)
 		}
 	}
 	if len(where) == 0 {
@@ -105,9 +108,19 @@ func (a *App) Self(ctx context.Context, source, id string, dirs []string) (Self,
 		return Self{}, err
 	}
 	if len(list) == 0 {
-		return Self{}, fmt.Errorf("%w: none has run in %s", index.ErrNotFound, strings.Join(where, " or "))
+		return Self{}, fmt.Errorf("%w: none has run in %s", index.ErrNotFound, strings.Join(named, " or "))
 	}
 	return Self{Session: Listed(list)[0]}, nil
+}
+
+// appendNew appends to list each of paths it does not hold yet.
+func appendNew(list []string, paths ...string) []string {
+	for _, p := range paths {
+		if !slices.Contains(list, p) {
+			list = append(list, p)
+		}
+	}
+	return list
 }
 
 // Above lists the transcripts a subagent's sits beneath, the session it ran in first:

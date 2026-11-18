@@ -276,6 +276,11 @@ func TestHereIsTheCurrentDirectory(t *testing.T) {
 		t.Chdir(filepath.Join(root, filepath.FromSlash(dir)))
 	}
 
+	// A path in JSON, as --json writes it: a backslash, Windows's separator, doubled
+	jsonText := func(s string) string {
+		b, _ := json.Marshal(s)
+		return string(b)
+	}
 	in("proj")
 	for _, tc := range []struct {
 		args       []string
@@ -293,7 +298,7 @@ func TestHereIsTheCurrentDirectory(t *testing.T) {
 		// Every command that takes the flags that select sessions keeps to the directory
 		{args: []string{"search", "the", "--project", "."}, want: []string{"plan the release", "fix the web build"}, not: []string{"written last"}},
 		{args: []string{"pack", "--project", "."}, want: []string{"plan the release", "fix the web build"}, not: []string{"written last"}},
-		{args: []string{"usage", "--by", "project", "--project", ".", "--json"}, want: []string{`"key": "` + filepath.Join(real, "proj", "web") + `"`}, not: []string{"proj-old"}},
+		{args: []string{"usage", "--by", "project", "--project", ".", "--json"}, want: []string{`"key": ` + jsonText(filepath.Join(real, "proj", "web"))}, not: []string{"proj-old"}},
 		{args: []string{"digest", "--project", "."}, want: []string{filepath.Join(real, "proj", "web")}, not: []string{"proj-old"}},
 		{args: []string{"otel", "--dry-run", "--content", "asks", "--project", "."}, want: []string{"plan the release", "fix the web build"}, not: []string{"written last"},
 			tells: "would send 2 turns of 2 transcripts as "},

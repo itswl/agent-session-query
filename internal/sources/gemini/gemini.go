@@ -628,9 +628,12 @@ func (rd *reader) add(m *message, wentOn bool) {
 		// Quota exceeded …]"), a stream that broke off, a command that could not be run.
 		// Gemini CLI records a model row only once its response has arrived whole
 		// (packages/core/src/core/geminiChat.ts), so an error while the model owed an
-		// answer, after which it wrote nothing, is where the turn ended
+		// answer, after which it wrote nothing, is where the turn ended. Any other is not
+		// where the work got to, and does not move the turn's end: one after the answer —
+		// a command typed hours later that failed — would stretch the turn to it
 		event := transcript.EventOf(eventError, strings.TrimSpace(kit.ContentText(m.Content)))
 		event.Stops = rd.owed && !wentOn
+		event.After = !event.Stops
 		rd.w.Add(transcript.Message{ID: m.ID, Role: transcript.System, At: at, Blocks: []transcript.Block{event}})
 		if event.Stops {
 			rd.owed = false

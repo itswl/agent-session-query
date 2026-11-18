@@ -334,6 +334,17 @@ func TestToolKind(t *testing.T) {
 		"Read": model.ToolRead, "Grep": model.ToolSearch, "WebFetch": model.ToolNet, "Agent": model.ToolAgent,
 		"publish": model.ToolOther, "runbook": model.ToolOther, "mcp__x__list_things": model.ToolSearch,
 		"local_shell": model.ToolExec, "TodoWrite": model.ToolWrite, "powershell": model.ToolExec, "read_powershell": model.ToolExec,
+		// ripgrep by its command's name, as GitHub Copilot CLI names its search tool
+		"rg": model.ToolSearch,
+		// what is done to an agent is the agents' work: messaging one, reading what it said,
+		// listing them (Copilot CLI's write_agent, read_agent, list_agents; Codex's
+		// collaboration.list_agents; Claude Code's ListAgents), and an agent called as a tool
+		// of its own name (Gemini CLI's browser_agent)
+		"write_agent": model.ToolAgent, "read_agent": model.ToolAgent, "list_agents": model.ToolAgent,
+		"collaboration.list_agents": model.ToolAgent, "ListAgents": model.ToolAgent, "browser_agent": model.ToolAgent,
+		"spawn_agent": model.ToolAgent, "list_subagents": model.ToolAgent,
+		// a name that only begins with one is not, and TaskCreate's task is a to-do
+		"TaskCreate": model.ToolWrite, "agent_write_file": model.ToolWrite,
 	} {
 		if got := ToolKind(name); got != want {
 			t.Errorf("ToolKind(%q) = %q, want %q", name, got, want)

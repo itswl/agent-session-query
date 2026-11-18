@@ -459,6 +459,28 @@ func TestFreeformArguments(t *testing.T) {
 	}
 }
 
+// Copilot CLI searches with rg, and its tools for the agents it runs in the background act on
+// an agent: messaging one writes no file, and reading what one said reads none.
+func TestToolKinds(t *testing.T) {
+	root := t.TempDir()
+	call := func(id, name string, args M) M { return M{"toolCallId": id, "name": name, "arguments": args} }
+	sourcetest.Write(t, filepath.Join(root, "s1", "events.jsonl"),
+		ev("e1", "user.message", "2026-11-17T09:00:01.000Z", M{"content": "go"}),
+		ev("e2", "assistant.message", "2026-11-17T09:00:02.000Z", M{"messageId": "m1", "content": "", "toolRequests": []M{
+			call("a", "rg", M{"pattern": "sort.Strings", "path": "/w"}),
+			call("b", "write_agent", M{"agent_id": "explore-1", "message": "look in /w/report.go too"}),
+			call("c", "read_agent", M{"agent_id": "explore-1", "since_turn": 1}),
+			call("d", "list_agents", M{"include_completed": false}),
+		}}),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	turn := s.Turn(t, 1)
+	if len(turn.ToolKinds) != 2 || turn.ToolKinds[model.ToolSearch] != 1 || turn.ToolKinds[model.ToolAgent] != 3 {
+		t.Errorf("kinds = %v", turn.ToolKinds)
+	}
+}
+
 // A command's exit code is on its result's shellExecution, and before that only at the end
 // of what the shell tool printed. Only a shell tool's output is read for it.
 func TestExitCodes(t *testing.T) {

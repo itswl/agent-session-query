@@ -12,8 +12,15 @@ import (
 
 // ToolKind sorts a tool by what it is for. Matching is whole-token, so publish does not
 // read as run and runbook does not read as sh.
+//
+// A name that ends in an agent names what the tool acts on, and it is the agents' work
+// whatever it does to one: write_agent messages an agent and read_agent reads what one
+// said; they write and read no file.
 func ToolKind(name string) string {
 	tokens := nameTokens(name)
+	if n := len(tokens); n > 0 && agentNouns[tokens[n-1]] {
+		return model.ToolAgent
+	}
 	for _, kind := range kindOrder {
 		for _, token := range tokens {
 			if kindWords[kind][token] {
@@ -30,10 +37,13 @@ var kindWords = map[string]map[string]bool{
 	model.ToolExec:   setOf("bash", "sh", "zsh", "shell", "powershell", "pwsh", "terminal", "exec", "run", "cmd", "command", "process", "container", "docker"),
 	model.ToolWrite:  setOf("write", "edit", "patch", "replace", "create", "delete", "remove", "move", "rename", "apply", "save", "notebook"),
 	model.ToolRead:   setOf("read", "view", "cat", "open", "show"),
-	model.ToolSearch: setOf("grep", "glob", "search", "find", "list", "scan", "ls"),
+	model.ToolSearch: setOf("grep", "rg", "glob", "search", "find", "list", "scan", "ls"),
 	model.ToolNet:    setOf("fetch", "web", "url", "download", "browser", "http", "curl"),
 	model.ToolAgent:  setOf("task", "agent", "dispatch", "delegate", "subagent", "workflow"),
 }
+
+// agentNouns: the words a tool's name ends in when what it acts on is an agent.
+var agentNouns = setOf("agent", "agents", "subagent", "subagents")
 
 func setOf(words ...string) map[string]bool {
 	out := make(map[string]bool, len(words))

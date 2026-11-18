@@ -48,7 +48,7 @@ var Spec = sources.Spec{
 	Movable:    true,
 	Resume:     "claude --resume",
 	ResumeHere: true,
-	Reads:      2,
+	Reads:      3,
 	Store:      "~/.claude/projects/<project>/<session>.jsonl",
 	// Claude Code sweeps every project after a session starts; from v2.1.248 it keeps the
 	// sessions started or last continued in Claude Desktop or Cowork, unless

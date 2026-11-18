@@ -7,13 +7,14 @@ import { coalesce } from '../live.js';
 import { go } from '../router.js';
 import * as f from '../format.js';
 import { WINDOWS, windowOf as windowIn, within, longer } from '../windows.js';
+import * as projects from '../projects.js';
 
 const PAGE = 50;
 
 const windowOf = (query) => windowIn(query, '7d');
 const readToo = (query) => query.get('read') === '1';
 const pageAt = (query, offset) =>
-  '/api/files' + qs({ since: windowOf(query), path: query.get('path') || '', changed: !readToo(query), limit: PAGE, offset });
+  '/api/files' + qs({ since: windowOf(query), path: query.get('path') || '', changed: !readToo(query), project: query.get('project'), limit: PAGE, offset });
 
 // first is what the view asks for when it opens, so that it can be asked for ahead.
 export const first = (query) => pageAt(query, 0);
@@ -38,7 +39,8 @@ export function mount(main, route, ctx) {
   const since = windowOf(route.query);
   const path = route.query.get('path') || '';
   const read = readToo(route.query);
-  const href = (changes) => '/files' + qs({ since, path, read, ...changes });
+  const project = route.query.get('project') || '';
+  const href = (changes) => '/files' + qs({ since, path, read, project, ...changes });
   const v = { items: [], total: 0, end: false, busy: false, top: null };
   const summary = h('p', { class: 'dim summary' });
   const waiting = h('div', { class: 'waiting' });
@@ -54,7 +56,8 @@ export function mount(main, route, ctx) {
   });
   main.append(h('div', { class: 'page' },
     h('header', { class: 'page-head' }, h('h1', { tabIndex: -1 }, 'Files'),
-      choices('Window', WINDOWS.map(([k, name]) => [href({ since: k }), name, k === since]))),
+      choices('Window', WINDOWS.map(([k, name]) => [href({ since: k }), name, k === since])),
+      projects.picker(project, (p) => href({ project: p }))),
     form,
     h('nav', { class: 'chips', 'aria-label': 'Which turns' },
       h('a', { class: 'chip', href: href({ read: false }), 'aria-current': read ? null : 'true' }, 'Changed'),
@@ -73,9 +76,9 @@ export function mount(main, route, ctx) {
     const folders = [...new Set(v.items.filter((x) => x.waiting && !x.now).map((x) => x.waiting))];
     waiting.replaceChildren(...folders.map((dir) => h('div', { class: 'notice warn', role: 'status' }, icon('alert'),
       h('p', null, 'How files in ', h('code', null, dir), ' stand now is not shown: asq is waiting to read that folder. On a Mac, macOS is asking on the Mac’s screen whether asq may — answer it there, or allow asq in System Settings › Privacy & Security › Files and Folders. asq reads only the files the sessions changed, to say how they stand, and never writes to them.'))));
-    summary.textContent = `${f.plural(r.total, 'file')}${path ? ` whose path contains “${path}”` : ''} ${read ? 'read or changed' : 'changed'}${within(since)}.`;
+    summary.textContent = `${f.plural(r.total, 'file')}${path ? ` whose path contains “${path}”` : ''} ${read ? 'read or changed' : 'changed'}${projects.within(project)}${within(since)}.`;
     list.replaceChildren(...v.items.map(row));
-    if (!v.items.length) list.replaceChildren(h('li', null, empty(path ? `No file whose path contains “${path}”${within(since)}.` : `No files ${read ? 'read or changed' : 'changed'}${within(since)}.`, longer(since))));
+    if (!v.items.length) list.replaceChildren(h('li', null, empty(path ? `No file whose path contains “${path}”${projects.within(project)}${within(since)}.` : `No files ${read ? 'read or changed' : 'changed'}${projects.within(project)}${within(since)}.`, longer(since))));
     if (!body.contains(list)) body.replaceChildren(list, more);
     more.replaceChildren(v.end ? '' : h('button', { type: 'button', class: 'btn', onclick: () => load(false) }, 'Load more'));
   }

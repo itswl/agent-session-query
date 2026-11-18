@@ -6,11 +6,12 @@ import { coalesce } from '../live.js';
 import * as f from '../format.js';
 import { WINDOWS, windowOf as windowIn, within, longer } from '../windows.js';
 import * as seen from '../seen.js';
+import * as projects from '../projects.js';
 
 const PAGE = 50;
 
 const windowOf = (query) => windowIn(query, '7d');
-const pageAt = (query, offset) => '/api/failures' + qs({ since: windowOf(query), tool: query.get('tool') || '', limit: PAGE, offset });
+const pageAt = (query, offset) => '/api/failures' + qs({ since: windowOf(query), tool: query.get('tool') || '', project: query.get('project'), limit: PAGE, offset });
 
 // first is what the view asks for when it opens, so that it can be asked for ahead.
 export const first = (query) => pageAt(query, 0);
@@ -19,7 +20,8 @@ export function mount(main, route, ctx) {
   document.title = 'Failures · asq';
   const since = windowOf(route.query);
   const tool = route.query.get('tool') || '';
-  const href = (changes) => '/failures' + qs({ since, tool, ...changes });
+  const project = route.query.get('project') || '';
+  const href = (changes) => '/failures' + qs({ since, tool, project, ...changes });
   const v = { items: [], total: 0, end: false, busy: false, top: null };
   const summary = h('p', { class: 'dim summary' });
   const chips = h('nav', { class: 'chips', 'aria-label': 'Tools' });
@@ -29,7 +31,8 @@ export function mount(main, route, ctx) {
   const note = stale();
   main.append(h('div', { class: 'page' },
     h('header', { class: 'page-head' }, h('h1', { tabIndex: -1 }, 'Failures'),
-      choices('Window', WINDOWS.map(([k, name]) => [href({ since: k }), name, k === since]))),
+      choices('Window', WINDOWS.map(([k, name]) => [href({ since: k }), name, k === since])),
+      projects.picker(project, (p) => href({ project: p }))),
     note.el, summary, chips, body));
   // A failure since the last look at this view is marked new (see seen.js)
   seen.look('failures');
@@ -41,13 +44,13 @@ export function mount(main, route, ctx) {
     v.items = reset ? r.failures : v.items.concat(r.failures);
     v.total = r.total;
     v.end = r.failures.length < PAGE;
-    summary.textContent = `${f.plural(r.total, 'failed call')}${tool ? ` of ${tool}` : ''}${within(since)}.`;
+    summary.textContent = `${f.plural(r.total, 'failed call')}${tool ? ` of ${tool}` : ''}${projects.within(project)}${within(since)}.`;
     if (reset) fill(chips,
       h('a', { class: 'chip', href: href({ tool: '' }), 'aria-current': tool ? null : 'true' }, 'All tools'),
       r.byTool.map((t) => h('a', { class: 'chip', href: href({ tool: t.tool === tool ? '' : t.tool }), 'aria-current': t.tool === tool ? 'true' : null },
         h('span', { class: 'mono' }, t.tool), h('span', { class: 'n' }, f.num(t.count)))));
     list.replaceChildren(...rows());
-    if (!v.items.length) list.replaceChildren(h('li', null, empty(`No failed tool calls${tool ? ` of ${tool}` : ''}${within(since)}.`, tool ? (since === 'all' ? 'Try all tools.' : 'Try all tools, or a longer window.') : longer(since))));
+    if (!v.items.length) list.replaceChildren(h('li', null, empty(`No failed tool calls${tool ? ` of ${tool}` : ''}${projects.within(project)}${within(since)}.`, tool ? (since === 'all' ? 'Try all tools.' : 'Try all tools, or a longer window.') : longer(since))));
     if (!body.contains(list)) body.replaceChildren(list, more);
     more.replaceChildren(v.end ? '' : h('button', { type: 'button', class: 'btn', onclick: () => load(false) }, 'Load more'));
   }

@@ -5,17 +5,20 @@ import { api, qs, isAbort, last } from '../api.js';
 import { coalesce } from '../live.js';
 import * as f from '../format.js';
 import { WINDOWS, windowOf as windowIn, within, longer } from '../windows.js';
+import * as projects from '../projects.js';
 
 const KINDS = ['code', 'test', 'docs', 'config'];
 
 const windowOf = (query) => windowIn(query, '7d');
 
 // first is what the view asks for when it opens, so that it can be asked for ahead.
-export const first = (query) => '/api/digest' + qs({ since: windowOf(query) });
+export const first = (query) => '/api/digest' + qs({ since: windowOf(query), project: query.get('project') });
 
 export function mount(main, route, ctx) {
   document.title = 'Digest · asq';
   const since = windowOf(route.query);
+  const project = route.query.get('project') || '';
+  const href = (changes) => '/digest' + qs({ since, project, ...changes });
   const path = first(route.query);
   let shown = null;
   const summary = h('p', { class: 'summary' });
@@ -23,7 +26,8 @@ export function mount(main, route, ctx) {
   const note = stale();
   main.append(h('div', { class: 'page' },
     h('header', { class: 'page-head' }, h('h1', { tabIndex: -1 }, 'Digest'),
-      choices('Window', WINDOWS.map(([k, name]) => ['/digest' + qs({ since: k }), name, k === since]))),
+      choices('Window', WINDOWS.map(([k, name]) => [href({ since: k }), name, k === since])),
+      projects.picker(project, (p) => href({ project: p }))),
     note.el, summary, body));
 
   function show(r) {
@@ -38,8 +42,8 @@ export function mount(main, route, ctx) {
       h('span', { title: f.num(f.totalTokens(t.usage)) }, `${f.tokens(f.totalTokens(t.usage))} tokens`),
       h('span', null, `${f.plural(KINDS.reduce((n, k) => n + (t.changed?.[k] || 0), 0), 'file')} changed`)));
     body.replaceChildren(r.projects.length
-      ? h('ol', { class: 'digest' }, r.projects.map(project))
-      : empty(`Nothing was asked${within(since)}.`, longer(since)));
+      ? h('ol', { class: 'digest' }, r.projects.map((d) => entry(d, since)))
+      : empty(`Nothing was asked${projects.within(project)}${within(since)}.`, longer(since)));
   }
 
   async function load() {
@@ -61,13 +65,14 @@ export function mount(main, route, ctx) {
   return { changes: coalesce(load, 5000) };
 }
 
-function project(d) {
+function entry(d, since) {
   const tok = f.totalTokens(d.usage);
   const changed = KINDS.filter((k) => d.changed?.[k]);
   const models = Object.entries(d.models || {}).sort((a, b) => b[1] - a[1]);
   const stores = Object.entries(d.sources || {}).sort((a, b) => b[1] - a[1]);
   return h('li', { class: 'd-project' },
-    h('h2', null, d.cwd ? h('a', { href: '/' + qs({ project: d.cwd }), title: d.cwd }, f.shortPath(d.cwd)) : '(no directory)'),
+    // the project's sessions, in the window its figures are of; all time is no window
+    h('h2', null, d.cwd ? h('a', { href: '/' + qs({ project: d.cwd, since: since === 'all' ? '' : since }), title: d.cwd }, f.shortPath(d.cwd)) : '(no directory)'),
     d.cwd && h('p', { class: 'path dim' }, d.cwd),
     h('p', { class: 'dots' },
       h('span', null, f.plural(d.sessions, 'session')),

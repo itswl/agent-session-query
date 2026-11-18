@@ -27,16 +27,20 @@ you left. A first visit marks nothing.
 
 The filters on the left — store, time, project, archived sessions, subagent transcripts — live in
 the address, so a filtered view can be bookmarked and Back goes where you expect. The counts
-beside each store are what the list shows of it. A filtered list is marked from the same time,
-and looking at it counts as looking at the list: if it did not, someone who always reads one
-project would find everything in it marked.
+beside each store are what the list shows of it. A row's branch is a filter too: a tap on it
+narrows the list to the sessions on that branch (a branch whose name contains it, as on the
+command line), the filters name it, and *All branches* takes it off. A project chosen here stays
+chosen in the reports — see [one project throughout](#one-project-throughout). A filtered list
+is marked from the same time, and looking at it counts as looking at the list: if it did not,
+someone who always reads one project would find everything in it marked.
 
 ## Search
 
 Type in the box (`/` focuses it). Results are **turns**, best match first, each with what was
 asked there and the lines the words were found in — a reply, the reasoning, a tool's input or its
 output — with the matches marked. The query syntax is the [command line's](cli.md#finding);
-`?` shows it. A result opens its session at that turn, on the step that matched. Nothing in the
+`?` shows it. A search keeps the list's filters, and from a report the project it is narrowed
+to. A result opens its session at that turn, on the step that matched. Nothing in the
 results is marked as new: they are ranked, not dated, so there is no line where the older ones
 begin. A search is not a look at the list either, and does not move the time the list is marked
 from.
@@ -129,6 +133,24 @@ narrows to paths that contain what is typed; *Read or changed* adds the turns th
 changed by kind, which models and CLIs did the work.
 
 ![Digest](screenshots/digest.png)
+
+### One project throughout
+
+Every report can be narrowed to one project, and a project chosen once stays chosen: in the
+sessions list's filters or a report's *Project* menu, it then goes with you between Sessions,
+Usage, Failures, Files and Digest. It is in each view's address, so a narrowed report can be
+bookmarked and Back undoes the choice; the links in the bar carry it on, through a session read
+on the way. Each report shows it beside its window, highlighted, says it in what it found —
+*3 failed calls in work/api in the last 7 days* — and has × beside it for all projects again.
+
+A project named in a report — a row of Usage's table, a heading of the Digest — opens its
+sessions in the window the report is of, since that is what its figures count.
+
+The window and the store do not travel. Each view keeps its own window, because they differ by
+design: the list and Usage read all time unless told otherwise, Failures, Files and the Digest
+the last week, and a window carried from one to the next would undo that on every move. The
+store stays a filter of the list: the reports are of a project's work, and Usage and the Digest
+say for themselves which stores did it — narrowed to one, they would have nothing to compare.
 
 ## Keys
 

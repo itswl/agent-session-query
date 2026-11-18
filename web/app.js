@@ -16,7 +16,11 @@ import { login } from './js/views/login.js';
 const VIEWS = { sessions, search: sessions, session, usage, failures, files, digest };
 const RELEASES = 'https://github.com/itswl/agent-session-query/releases/tag/';
 const NAV = [['/', 'Sessions', 'sessions search session'], ['/usage', 'Usage', 'usage'], ['/failures', 'Failures', 'failures'], ['/files', 'Files', 'files'], ['/digest', 'Digest', 'digest']];
-const LIST_FILTERS = ['source', 'project', 'since', 'archived'];
+const LIST_FILTERS = ['source', 'project', 'branch', 'since', 'archived'];
+// The views a project is followed through. Each says in its address which project it is
+// narrowed to, and the links in the bar carry that one on to the others; a session read on
+// the way, whose address says nothing of it, leaves it as it was.
+const FOLLOW = new Set(['sessions', 'search', 'usage', 'failures', 'files', 'digest']);
 const HELP = [
   ['Search', [['deploy', 'words match what they begin: deployment, deployed'], ['"exit status 1"', 'a phrase, word for word'], ['-flaky', 'leave out turns that hold this word'],
     ['ask: reply: thinking:', 'look in one part of a turn'], ['tool: output:', '…or in what tools were given and gave back']]],
@@ -37,12 +41,13 @@ const syncText = h('span', { class: 'sync-text' });
 const brand = h('a', { class: 'brand', href: '/', 'aria-label': 'asq — sessions' }, h('img', { src: '/icons/icon-192.png', alt: '', width: 20, height: 20 }), h('span', null, 'asq'));
 const versionEl = h('p', { class: 'help-foot' });
 let loadedVersion = ''; // the server's version when this page was loaded: what its script is
-const navLinks = NAV.map(([href, label, names]) => h('a', { href, dataset: { names } }, label));
+const navLinks = NAV.map(([href, label, names]) => h('a', { href, dataset: { names, path: href } }, label));
+let followed = ''; // the project the bar's links carry
 // Pointing at a view asks for what it will show, so that it is there when the click lands
 for (const a of navLinks) {
   const first = VIEWS[a.dataset.names.split(' ').pop()]?.first;
   if (!first) continue;
-  const ask = () => { if (!locked && a.getAttribute('aria-current') !== 'page') ahead(first(new URLSearchParams())); };
+  const ask = () => { if (!locked && a.getAttribute('aria-current') !== 'page') ahead(first(new URL(a.href).searchParams)); };
   a.addEventListener('pointerenter', ask);
   a.addEventListener('focus', ask);
 }
@@ -145,11 +150,12 @@ async function signOut() {
   location.assign('/');
 }
 
-// The search keeps the list's filters: a search is a narrower look at the same sessions
+// The search keeps the list's filters, a narrower look at the same sessions, and from
+// anywhere else the project being followed
 function runSearch() {
   const q = search.value.trim();
   const cur = router.parse();
-  const keep = {};
+  const keep = { project: followed };
   if (cur.name === 'sessions' || cur.name === 'search') for (const k of LIST_FILTERS) keep[k] = cur.query.get(k);
   if (!q) {
     if (cur.name === 'search') router.go('/' + qs(keep), { replace: true });
@@ -161,7 +167,9 @@ function runSearch() {
 
 function render(r, how) {
   if (locked) return;
+  if (FOLLOW.has(r.name)) followed = r.query.get('project') || '';
   for (const a of navLinks) {
+    a.href = a.dataset.path + qs({ project: followed });
     if (a.dataset.names.split(' ').includes(r.name)) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   }

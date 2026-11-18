@@ -233,6 +233,17 @@ kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width:
 .row-sub { overflow: hidden; color: var(--muted); font-size: 13px; white-space: nowrap; text-overflow: ellipsis; }
 .row-facts { margin-top: 2px; color: var(--faint); font-size: 12px; }
 .row-facts .store-name { color: var(--muted); }
+/* A session's row is its title's link, stretched over the row. Its branch is a link of its
+   own above it, and the facts that say more on hover sit above it too, so that they can. */
+div.row-main { position: relative; }
+.row-link:hover { text-decoration: none; }
+.row-link::after { content: ""; position: absolute; inset: 0; border-radius: 6px; }
+.row-link:focus-visible { outline: none; }
+.row-link:focus-visible::after { outline: 2px solid var(--accent); outline-offset: -2px; }
+.row-facts > a, .row-facts > [title] { position: relative; z-index: 1; }
+/* the branch is a small word: its padding, given back by its margin, is the finger's room */
+.row-facts > a.branch { margin: -6px -4px; padding: 6px 4px; color: var(--muted); }
+.row-facts > a.branch:hover, .row-facts > a.branch[aria-current="true"] { color: var(--accent); text-decoration: none; }
 .hit-ask { display: -webkit-box; white-space: normal; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .turn-no { color: var(--faint); font: 400 12px var(--mono); }
 .matches { display: grid; gap: 1px; margin: -6px 0 0; padding: 0 12px 10px 32px; list-style: none; }
@@ -431,6 +442,19 @@ kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width:
 
 /* Reports: usage, failures, digest */
 .page-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; margin-bottom: 14px; }
+/* A report's project: one chosen stands out, with the way to clear it beside it. The menu
+   of the others scrolls rather than runs off the screen. */
+.project-pick { display: inline-flex; align-items: center; gap: 2px; min-width: 0; max-width: 100%; }
+.project-pick > .dropdown { min-width: 0; }
+.project-btn { max-width: 100%; }
+.project-btn .icon { flex: none; width: 14px; height: 14px; color: var(--faint); }
+.project-btn.on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.project-name { min-width: 0; overflow: hidden; font: 12.5px var(--mono); white-space: nowrap; text-overflow: ellipsis; }
+.project-menu { max-width: min(440px, calc(100vw - 24px)); max-height: min(60vh, 440px); overflow-y: auto; overscroll-behavior: contain; }
+.project-menu.flip { left: auto; right: 0; }
+.project-menu a { align-items: baseline; }
+.project-menu a[aria-current="true"] { background: var(--raised); }
+.project-menu .n { color: var(--faint); font-size: 12px; }
 .section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; margin: 30px 0 10px; }
 .section-head h2 { font-size: 15px; font-weight: 650; }
 .section-head .seg-group { margin-left: auto; }

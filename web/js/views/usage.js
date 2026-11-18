@@ -6,6 +6,7 @@ import { api, qs, last } from '../api.js';
 import { coalesce } from '../live.js';
 import * as f from '../format.js';
 import { WINDOWS, windowOf, label, span } from '../windows.js';
+import * as projects from '../projects.js';
 
 // Stacked bottom to top in this order; the colours are the chart palette's first four
 const PARTS = [['cacheRead', 'Cache read'], ['cacheWrite', 'Cache write'], ['input', 'Input'], ['output', 'Output']];
@@ -13,18 +14,22 @@ const PARTS = [['cacheRead', 'Cache read'], ['cacheWrite', 'Cache write'], ['inp
 const windowIn = (query) => windowOf(query, 'all');
 
 // first is what the view asks for when it opens, so that it can be asked for ahead.
-export const first = (query) => '/api/usage' + qs({ since: windowIn(query) });
+export const first = (query) => '/api/usage' + qs({ since: windowIn(query), project: query.get('project') });
 
 export function mount(main, route, ctx) {
   document.title = 'Usage · asq';
   const since = windowIn(route.query);
+  const project = route.query.get('project') || '';
+  // All time, the view's own window, is no since in its address
+  const href = (changes) => '/usage' + qs({ since: since === 'all' ? '' : since, project, ...changes });
   // What it showed last time is shown at once; the fresh report replaces it when it comes
   const state = { withCache: true, table: false, report: last(first(route.query)) };
   const body = h('div', { class: 'page-body' }, state.report ? null : skeleton(6, 'line'));
   const note = stale();
   main.append(h('div', { class: 'page' },
     h('header', { class: 'page-head' }, h('h1', { tabIndex: -1 }, 'Usage'),
-      choices('Window', WINDOWS.map(([k, name]) => ['/usage' + qs({ since: k === 'all' ? '' : k }), name, k === since]))),
+      choices('Window', WINDOWS.map(([k, name]) => [href({ since: k === 'all' ? '' : k }), name, k === since])),
+      projects.picker(project, (p) => href({ project: p }))),
     note.el, body));
 
   async function load() {

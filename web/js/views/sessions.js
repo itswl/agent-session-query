@@ -9,6 +9,7 @@ import { needles, highlight } from '../md.js';
 import * as f from '../format.js';
 import { WINDOWS } from '../windows.js';
 import * as seen from '../seen.js';
+import * as projects from '../projects.js';
 
 const PAGE = 50;
 const HITS = 20;
@@ -22,13 +23,12 @@ const TOP_PROJECTS = 8;
 const KEPT = 12;
 const kept = new Map();
 const keyOf = (route) => (route.name === 'search' ? '/search?' : '/?') + route.query.toString();
-let projectsP = null;
-onForget(() => { kept.clear(); projectsP = null; });
+onForget(() => { kept.clear(); });
 
 function apiFilters(q) {
   const since = q.get('since');
   return {
-    source: q.get('source'), project: q.get('project'),
+    source: q.get('source'), project: q.get('project'), branch: q.get('branch'),
     since: since === 'today' ? f.localDate() : since,
     archived: q.get('archived') === '1',
   };
@@ -58,9 +58,16 @@ export function mount(main, route, ctx) {
   main.append(h('div', { class: 'browse' }, h('header', { class: 'results-head' }, title, count, toggle), aside,
     h('section', { class: 'results', 'aria-labelledby': 'list-title' }, note.el, list, more)));
 
+  // A row is selected by its own link; its branch is a filter, as one at the side is
   list.addEventListener('focusin', (e) => {
     const row = e.target.closest('.row');
-    if (row) select(row, false);
+    if (row && !e.target.matches('.branch')) select(row, false);
+  });
+  // A fact raised above a session's row link, so that its title shows on hover, opens the
+  // session when clicked, as the rest of the row does
+  list.addEventListener('click', (e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.target.closest('a, button')) return;
+    e.target.closest('.row')?.querySelector('.row-link')?.click();
   });
   const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting) && !v.busy && !v.end && v.items.length) load(false); }, { rootMargin: '600px' });
   io.observe(more);
@@ -88,15 +95,14 @@ export function mount(main, route, ctx) {
     count.textContent = !v.items.length && !v.total ? '' : searching()
       ? `${f.plural(v.total, 'turn')} in ${f.plural(v.sessions, 'session')}`
       : f.plural(v.total, 'session');
-    const active = ['source', 'project', 'since', 'archived', 'agents'].filter((k) => v.route.query.get(k)).length;
+    const active = ['source', 'project', 'branch', 'since', 'archived', 'agents'].filter((k) => v.route.query.get(k)).length;
     toggle.lastChild.textContent = active ? `Filters (${active})` : 'Filters';
   }
 
   async function renderFilters() {
     const q = v.route.query;
     const hl = await health().catch(() => null);
-    projectsP ||= api('/api/projects').then((r) => r.projects).catch(() => { projectsP = null; return []; });
-    const projects = await projectsP;
+    const dirs = await projects.list();
     const option = (key, value, label, extra) => {
       const now = q.get(key) || '';
       const on = (key === 'since' && now === 'all' ? '' : now) === value; // since=all is all time too
@@ -110,9 +116,10 @@ export function mount(main, route, ctx) {
     const oddSince = sinceNow && sinceNow !== 'all' && !WHEN.some(([k]) => k === sinceNow) ? sinceNow : '';
     const stores = (hl?.stores || []).filter((s) => s.found);
     const chosen = q.get('project');
-    let shown = projects.slice(0, TOP_PROJECTS);
+    const branch = q.get('branch');
+    let shown = dirs.slice(0, TOP_PROJECTS);
     if (chosen && !shown.some((p) => p.cwd === chosen)) shown = [{ cwd: chosen }, ...shown];
-    const rest = projects.slice(TOP_PROJECTS).filter((p) => p.cwd !== chosen);
+    const rest = dirs.slice(TOP_PROJECTS).filter((p) => p.cwd !== chosen);
     const projectOpt = (p) => option('project', p.cwd, f.shortPath(p.cwd) || '(no directory)', { title: p.cwd, n: p.sessions });
     const restList = h('ul', { class: 'opts', hidden: true }, rest.map(projectOpt));
     const restBtn = rest.length > 0 && h('button', { type: 'button', class: 'link-btn', 'aria-expanded': 'false', onclick() {
@@ -129,7 +136,9 @@ export function mount(main, route, ctx) {
         // date — is shown as the one in force, until another is chosen
         oddSince && option('since', oddSince, oddSince === 'today' ? 'Today' : oddSince))),
       h('section', null, h('h2', null, 'Include'), h('ul', { class: 'opts' }, flag('archived', 'Archived'), !searching() && flag('agents', 'Subagent transcripts'))),
-      projects.length > 0 && h('section', null, h('h2', null, 'Project'), h('ul', { class: 'opts' }, option('project', '', 'All projects'), shown.map(projectOpt)), restList, restBtn),
+      dirs.length > 0 && h('section', null, h('h2', null, 'Project'), h('ul', { class: 'opts' }, option('project', '', 'All projects'), shown.map(projectOpt)), restList, restBtn),
+      // A branch is chosen on a row; here it is said, and taken off
+      branch && h('section', null, h('h2', null, 'Branch'), h('ul', { class: 'opts' }, option('branch', '', 'All branches'), option('branch', branch, h('span', { class: 'branch' }, branch)))),
     );
   }
 
@@ -138,7 +147,7 @@ export function mount(main, route, ctx) {
     const sig = JSON.stringify(item);
     const had = v.rows.get(key);
     if (had?.sig === sig) return had.el;
-    const el = searching() ? hitRow(item, words()) : sessionRow(item, v.base);
+    const el = searching() ? hitRow(item, words()) : sessionRow(item, v.base, v.route);
     v.rows.set(key, { sig, el });
     return el;
   }
@@ -177,9 +186,9 @@ export function mount(main, route, ctx) {
 
   function emptyState() {
     const q = v.route.query.get('q') || '';
-    const filtered = ['source', 'project', 'since'].some((k) => v.route.query.get(k));
+    const filtered = ['source', 'project', 'branch', 'since'].some((k) => v.route.query.get(k));
     const warned = (status.health?.warnings || []).length;
-    const clear = filtered && h('a', { href: hrefWith(v.route, { source: '', project: '', since: '' }) }, 'Clear the filters');
+    const clear = filtered && h('a', { href: hrefWith(v.route, { source: '', project: '', branch: '', since: '' }) }, 'Clear the filters');
     if (searching() && !q.trim()) {
       return empty('Search every turn of every session.', 'Type in the search box above. Words match what they begin: "deploy" finds "deployment".',
         'Use "a phrase" in quotes, -word to exclude, and ask: reply: thinking: tool: output: to search one part of a turn.');
@@ -328,7 +337,8 @@ export function mount(main, route, ctx) {
       const moved = was.query.toString() !== r.query.toString() || was.name !== r.name;
       if (moved) remember();
       v.route = r;
-      if (was.name !== r.name) v.rows.clear();
+      // a row links to its branch in the list as it is filtered
+      if (moved) v.rows.clear();
       if (moved) {
         aside.classList.remove('open');
         start(how);
@@ -359,14 +369,17 @@ export function mount(main, route, ctx) {
   };
 }
 
-function sessionRow(s, base) {
+// A session's row opens it from anywhere on the row, by its title's link stretched over
+// the whole; its branch is a link of its own above that, to the list on that branch.
+function sessionRow(s, base, route) {
   const title = s.title || s.lastAsk || 'Untitled session';
   const sub = s.title ? [s.lastAsk, s.answer] : [s.answer];
   const st = s.stats || {};
+  const onBranch = s.branch && route.query.get('branch') === s.branch;
   return h('li', { class: 'row', dataset: { key: s.ref } },
-    h('a', { class: 'row-main', href: sessionHref(s.ref) },
+    h('div', { class: 'row-main' },
       mark(s.source, s.agent),
-      h('span', { class: 'row-title' }, title),
+      h('a', { class: 'row-title row-link', href: sessionHref(s.ref) }, title),
       sub.some(Boolean) && h('span', { class: 'row-sub' }, sub.filter(Boolean).join('  →  ')),
       h('span', { class: 'row-facts dots' },
         h('span', { class: 'store-name' }, s.source),
@@ -378,7 +391,8 @@ function sessionRow(s, base) {
         s.agents > 0 && h('span', null, f.plural(s.agents, 'subagent')),
         s.parent && h('span', null, s.parent.type || 'subagent'),
         s.cwd && h('span', { class: 'path', title: s.cwd }, f.shortPath(s.cwd)),
-        s.branch && h('span', { class: 'branch' }, s.branch),
+        s.branch && h('a', { class: 'branch', href: hrefWith(route, { branch: onBranch ? '' : s.branch }), 'aria-current': onBranch ? 'true' : null,
+          title: onBranch ? 'All branches' : `Only the sessions on ${s.branch}` }, s.branch),
         s.archived && h('span', null, 'archived'),
         s.active && h('span', { class: 'live', title: 'Written to in the last two minutes' }, 'live'))));
 }

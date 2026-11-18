@@ -78,6 +78,21 @@ function show() {
   // A beat that comes this late was held up by the machine sleeping, which no browser
   // need report: the page was hidden from the last beat that came
   if (shown && now - last >= AWAY) hide(last);
+  // While this tab was hidden another of the page's may have been looked at: the visit
+  // went on there, and is not over for this one — or a newer one began there, which this
+  // one joins
+  let joined = false;
+  if (!shown) {
+    const [sv = 0, sl = 0] = read(VISIT);
+    if (sl > last && now - sl < AWAY) {
+      if (sv !== visit) {
+        visit = sv;
+        bases.clear();
+        joined = true;
+      }
+      last = sl;
+    }
+  }
   const fresh = !(now - last < AWAY);
   if (fresh) {
     visit = now;
@@ -86,7 +101,7 @@ function show() {
   last = now;
   shown = true;
   write(VISIT, [visit, last]);
-  if (fresh) visitFns.forEach((fn) => fn());
+  if (fresh || joined) visitFns.forEach((fn) => fn());
 }
 
 document.addEventListener('visibilitychange', () => (document.hidden ? hide(Date.now()) : show()));

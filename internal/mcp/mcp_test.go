@@ -187,7 +187,12 @@ func TestEveryToolAnswers(t *testing.T) {
 		{"sessions", nil, []string{"claude/aaaa1111", "claude/bbbb2222", "Fix flaky test", "/work/alpha"}},
 		{"sessions", map[string]any{"project": "beta", "limit": "1"}, []string{"claude/bbbb2222"}},
 		{"search", map[string]any{"query": "数据库"}, []string{alpha + "#2", "现在给数据库加索引"}},
-		{"search", map[string]any{"query": "ECONNREFUSED", "since": "7d"}, []string{alpha + "#1", "output", "Bash"}},
+		{"search", map[string]any{"query": "ECONNREFUSED", "since": "7d"}, []string{alpha + "#1", "output", "Bash", "✗1 failed", "answer The test depended on map order"}},
+		{"search", map[string]any{"query": "rotating keys"}, []string{"claude/" + fixture.Beta + "#1", "rotate the deploy key"}},
+		{"search", map[string]any{"query": "ECONNREFUSED 数据库 postgres"}, []string{
+			"No turn holds all 3 words; none holds “postgres”.", "Partial matches, closest first", "lacks  数据库 postgres", "lacks  ECONNREFUSED postgres", "another word for what one lacks"}},
+		{"failures", map[string]any{"query": "econnrefused"}, []string{"1 failure", "go test ./..."}},
+		{"failures", map[string]any{"query": "econnrefused -5432"}, []string{"No failed calls hold those words. In this window: Bash 1"}},
 		{"read", map[string]any{"ref": "aaaa1111"}, []string{"Fix flaky test", "#1", "#2", "fix the flaky test", "Subagents", "Explore"}},
 		{"read", map[string]any{"ref": "aaaa1111#1"}, []string{"go test ./...", "[2]", "The test depended on map order"}},
 		{"read", map[string]any{"ref": "aaaa1111", "turns": "1-2", "full": true}, []string{"go test ./...", "schema.sql", "索引已加上"}},

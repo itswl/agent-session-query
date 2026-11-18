@@ -37,6 +37,15 @@ export function pct(x) {
 
 export const cost = (usd) => (!usd ? '' : usd < 0.01 ? '<$0.01' : '$' + usd.toFixed(2));
 
+// failed says how many of a turn a search found had calls fail, and how many of those the
+// same command passed later: "2 failed, 1 passed later".
+export function failed(hit) {
+  const n = hit.failures || 0, p = hit.passedLater || 0;
+  if (!n) return '';
+  const later = !p ? '' : p < n ? `, ${num(p)} passed later` : n === 1 ? ', passed later' : ', all passed later';
+  return `${num(n)} failed${later}`;
+}
+
 export function dur(ms) {
   if (!(ms > 0)) return '';
   if (ms < 1000) return Math.round(ms) + 'ms';

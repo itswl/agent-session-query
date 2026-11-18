@@ -160,8 +160,8 @@ func (a *App) Files(ctx context.Context, f index.Filter, w index.Window, path st
 
 // Failures is the index's Failures, each command with where it next succeeded in its
 // session (see index.Failure.Later).
-func (a *App) Failures(ctx context.Context, f index.Filter, w index.Window, tool string, p index.Page) (index.FailureReport, error) {
-	rep, err := a.Index.Failures(ctx, f, w, tool, p)
+func (a *App) Failures(ctx context.Context, f index.Filter, w index.Window, tool, text string, p index.Page) (index.FailureReport, error) {
+	rep, err := a.Index.Failures(ctx, f, w, tool, text, p)
 	if err != nil {
 		return rep, err
 	}
@@ -173,6 +173,50 @@ func (a *App) Failures(ctx context.Context, f index.Filter, w index.Window, tool
 		rep.Failures[i].Later = look.later(ctx, &rep.Failures[i])
 	}
 	return rep, nil
+}
+
+// Search is the index's Search, each hit whose turn had calls fail saying how many of them
+// were followed by the same command succeeding (index.Hit.PassedLater): what a reader
+// weighing which turn to open wants to know, and would otherwise open each to learn.
+func (a *App) Search(ctx context.Context, q index.Query, f index.Filter, o index.SearchOptions) (index.SearchResult, error) {
+	res, err := a.Index.Search(ctx, q, f, o)
+	if err != nil {
+		return res, err
+	}
+	look := newLooker(a)
+	for i := range res.Hits {
+		h := &res.Hits[i]
+		if ctx.Err() != nil {
+			break
+		}
+		if h.Failed == 0 {
+			continue
+		}
+		ref := h.Session.Ref
+		if _, ok := look.sessions[ref]; !ok {
+			s := h.Session
+			look.sessions[ref] = &s
+		}
+		for _, t := range look.turns(ctx, ref, h.Turn, h.Turn+laterTurns) { // the turns later looks in, read once
+			if t.Index != h.Turn {
+				continue
+			}
+			for _, item := range t.Items {
+				tool := item.Tool
+				if tool == nil || item.Inherited || !tool.Failed() {
+					continue
+				}
+				f := index.Failure{Session: ref, Turn: h.Turn, Seq: item.Seq, At: item.At, Tool: tool.Name, Command: tool.Command}
+				if !tool.EndAt.IsZero() {
+					f.At = tool.EndAt
+				}
+				if look.later(ctx, &f) != nil {
+					h.PassedLater++
+				}
+			}
+		}
+	}
+	return res, nil
 }
 
 // looker reads what one answer needs once: a session resolved, a turn read, a file

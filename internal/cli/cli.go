@@ -37,7 +37,7 @@ const usage = `asq — the session history of every agent CLI on this machine, a
   asq export <ref>             a session whole                  (--format md|json|jsonl|html)
 
   asq usage                    what the model calls consumed    (--by model|day|source|project)
-  asq failures                 the tool calls that failed       (--tool, --since)
+  asq failures [words]         the tool calls that failed       (--tool, --since)
   asq digest                   what a stretch of work added up to, per project
   asq files <path>             the turns that touched a file    (--changed)
   asq projects                 the directories sessions ran in
@@ -262,7 +262,7 @@ func cmdSearch(ctx context.Context, args []string, io *streams) error {
 	if *per == 0 {
 		*per = -1
 	}
-	res, err := a.Index.Search(ctx, index.ParseQuery(strings.Join(rest, " ")), f,
+	res, err := a.Search(ctx, index.ParseQuery(strings.Join(rest, " ")), f,
 		index.SearchOptions{Limit: c.limit, Offset: c.offset, PerSession: *per, Recent: *recent})
 	if err != nil {
 		return err
@@ -613,7 +613,8 @@ func cmdUsage(ctx context.Context, args []string, io *streams) error {
 func cmdFailures(ctx context.Context, args []string, io *streams) error {
 	c := newCommand("failures", io.err).selection(20)
 	tool := c.fs.String("tool", "", "only this tool's calls, named exactly (Bash) or by how the name begins (mcp__playwright*)")
-	if _, err := c.parse(args); err != nil {
+	rest, err := c.parse(args)
+	if err != nil {
 		return err
 	}
 	a, err := open(ctx, c, io)
@@ -629,7 +630,7 @@ func cmdFailures(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return usageError{err}
 	}
-	rep, err := a.Failures(ctx, f, w, *tool, index.Page{Limit: c.limit, Offset: c.offset})
+	rep, err := a.Failures(ctx, f, w, *tool, strings.Join(rest, " "), index.Page{Limit: c.limit, Offset: c.offset})
 	if err != nil {
 		return err
 	}

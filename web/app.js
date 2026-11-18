@@ -22,8 +22,9 @@ const LIST_FILTERS = ['source', 'project', 'branch', 'since', 'archived'];
 // the way, whose address says nothing of it, leaves it as it was.
 const FOLLOW = new Set(['sessions', 'search', 'usage', 'failures', 'files', 'digest']);
 const HELP = [
-  ['Search', [['deploy', 'words match what they begin: deployment, deployed'], ['"exit status 1"', 'a phrase, word for word'], ['-flaky', 'leave out turns that hold this word'],
-    ['ask: reply: thinking:', 'look in one part of a turn'], ['tool: output:', '…or in what tools were given and gave back']]],
+  ['Search', [['deploy', 'words match what they begin: deployment, deployed'], ['retries', '…and other forms of an English word: retried, retry'],
+    ['"exit status 1"', 'a phrase, word for word'], ['-flaky', 'leave out turns that hold this word'],
+    ['ask: reply: thinking:', 'look in one part of a turn'], ['tool: output:', '…or in what tools were given and gave back'], ['title:', '…or in the session\'s title']]],
   ['Keys', [['/', 'search'], ['j  k', 'next, previous'], ['Enter', 'open'], ['o', "show or hide a turn's steps"], ['e', 'expand every step of the opened turns'],
     ['g g   G', 'top, bottom'], ['12 G', 'turn 12 of a session'], ['x  X', 'next, previous failed turn'], ['f', 'find in this session'],
     ['Esc', 'back to the list'], ['?', 'this help']]],

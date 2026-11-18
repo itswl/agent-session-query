@@ -108,12 +108,19 @@ export function md(text) {
 // bare words as their letters, without the excluded terms and the column prefixes.
 export function needles(query) {
   const out = [];
-  for (const m of String(query).matchAll(/(-?)(?:(?:ask|reply|thinking|tool|output):)?(?:"([^"]*)"?|(\S+))/giu)) {
+  for (const m of String(query).matchAll(/(-?)(?:(?:ask|reply|thinking|tool|output|title):)?(?:"([^"]*)"?|(\S+))/giu)) {
     if (m[1]) continue;
     if (m[2] != null) { if (m[2].trim()) out.push(m[2].trim().replace(/\s+/g, ' ')); }
     else out.push(...(m[3].match(/[\p{L}\p{N}]+/gu) || []));
   }
   return [...new Set(out.map((s) => s.toLowerCase()))].sort((a, b) => b.length - a.length);
+}
+
+// formsIn adds to a query's words the other forms of them a hit was found by — "retried",
+// for retries — which the server names, as a match's word.
+export function formsIn(words, hit) {
+  const forms = (hit.matches || []).map((m) => m.word && m.word.toLowerCase()).filter(Boolean);
+  return forms.length ? [...new Set([...words, ...forms])].sort((a, b) => b.length - a.length) : words;
 }
 
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, '\\s+');

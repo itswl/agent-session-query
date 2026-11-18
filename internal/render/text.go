@@ -170,13 +170,29 @@ func Sessions(w io.Writer, list []index.Session, total int, st Style) {
 	}
 }
 
-// Hits prints search results: the turn, what was asked there, and where the words are.
+// Hits prints search results: each turn with how it ended, what was asked there, where
+// the words are and what it concluded. A search no turn matched whole says which words
+// no turn holds, and marks its hits as partial matches, each with the words it lacks.
 func Hits(w io.Writer, res index.SearchResult, offset int, st Style) {
 	if len(res.Hits) == 0 {
-		fmt.Fprintln(w, "No turn matches.")
+		if len(res.Missing) > 0 {
+			fmt.Fprintf(w, "No turn holds %s.\n", quoted(res.Missing, "or"))
+		} else {
+			fmt.Fprintln(w, "No turn matches.")
+		}
 		return
 	}
-	fmt.Fprintln(w, st.dim(fmt.Sprintf("%s in %s", plural(res.Total, "turn"), plural(res.Sessions, "session"))))
+	if p := res.Partial; p != nil {
+		line := fmt.Sprintf("No turn holds all %d words", p.Words)
+		if len(res.Missing) > 0 {
+			line += "; none holds " + quoted(res.Missing, "or")
+		}
+		fmt.Fprintln(w, line+".")
+		fmt.Fprintln(w, st.Warn(fmt.Sprintf("Partial matches, closest first: %s in %s, the closest holding %d of the %d.",
+			plural(res.Total, "turn"), plural(res.Sessions, "session"), p.Held, p.Words)))
+	} else {
+		fmt.Fprintln(w, st.dim(fmt.Sprintf("%s in %s", plural(res.Total, "turn"), plural(res.Sessions, "session"))))
+	}
 	for i, h := range res.Hits {
 		where := []string{h.At.Local().Format("2006-01-02 15:04")}
 		if h.Session.Cwd != "" {
@@ -185,13 +201,19 @@ func Hits(w io.Writer, res index.SearchResult, offset int, st Style) {
 		if h.Session.Parent != nil {
 			where = append(where, "subagent of "+h.Session.Root)
 		}
-		fmt.Fprintf(w, "\n%s %s  %s\n", st.dim(strconv.Itoa(offset+i+1)+"."), st.cyan(h.Ref), st.dim(strings.Join(where, " · ")))
+		fmt.Fprintf(w, "\n%s %s  %s  %s\n", st.dim(strconv.Itoa(offset+i+1)+"."), st.cyan(h.Ref), st.dim(strings.Join(where, " · ")), ending(h, st))
+		if len(h.Lacks) > 0 {
+			fmt.Fprintf(w, "   %s %s\n", st.dim("lacks "), st.Warn(st.fit(strings.Join(h.Lacks, " "), 10)))
+		}
 		fmt.Fprintf(w, "   %s %s\n", st.dim("ask   "), st.fit(txt.OneLine(h.Ask, 0), 10))
+		answer := st.fit(txt.OneLine(h.Answer, 0), 10)
 		for _, m := range h.Matches {
 			label := string(m.Kind)
 			switch {
 			case m.Kind == model.Prompt:
 				continue // the ask is already there, whole
+			case m.Kind == model.Reply && answer != "" && strings.Contains(answer, strings.Trim(m.Snippet, "…")):
+				continue // and so is the answer, below
 			case m.Kind == model.ToolUse:
 				label = m.Part
 			}
@@ -201,13 +223,50 @@ func Hits(w io.Writer, res index.SearchResult, offset int, st Style) {
 			}
 			fmt.Fprintf(w, "   %s %s\n", st.dim(fmt.Sprintf("%-6s", label)), st.fit(text, 10))
 		}
-		if len(h.Matches) == 0 && h.Answer != "" {
-			fmt.Fprintf(w, "   %s %s\n", st.dim("reply "), st.fit(txt.OneLine(h.Answer, 0), 10))
+		if answer != "" {
+			fmt.Fprintf(w, "   %s %s\n", st.dim("answer"), answer)
 		}
 	}
 	if shown := offset + len(res.Hits); shown < res.Total {
 		fmt.Fprintln(w, st.dim(fmt.Sprintf("\n… more turns match: %s %d for the next page, or narrow the search", st.opt("offset"), shown)))
 	}
+}
+
+// ending says how a hit's turn ended: the calls that failed, and how many of them the same
+// command passed later; that the person stopped it; or, neither, ✓.
+func ending(h index.Hit, st Style) string {
+	var parts []string
+	if h.Failed > 0 {
+		s := st.red("✗" + strconv.Itoa(h.Failed) + " failed")
+		switch {
+		case h.PassedLater == h.Failed && h.Failed == 1:
+			s += st.green(", passed later")
+		case h.PassedLater == h.Failed:
+			s += st.green(", all passed later")
+		case h.PassedLater > 0:
+			s += st.green(", " + strconv.Itoa(h.PassedLater) + " passed later")
+		}
+		parts = append(parts, s)
+	}
+	if h.Interrupted {
+		parts = append(parts, st.yellow("⚠ interrupted"))
+	}
+	if len(parts) == 0 {
+		return st.green("✓")
+	}
+	return strings.Join(parts, st.dim(" · "))
+}
+
+// quoted lists words in quotation marks: “a”, “b” or “c”.
+func quoted(words []string, and string) string {
+	q := make([]string, len(words))
+	for i, w := range words {
+		q[i] = "“" + w + "”"
+	}
+	if len(q) == 1 {
+		return q[0]
+	}
+	return strings.Join(q[:len(q)-1], ", ") + " " + and + " " + q[len(q)-1]
 }
 
 // Outline prints a session as its turns: what was asked in each, and how it ended.
@@ -582,7 +641,14 @@ func Failures(w io.Writer, rep index.FailureReport, st Style) {
 	case rep.Total == 0 && len(by) > 0:
 		// A tool is named exactly, and the same tool has another name in another CLI:
 		// say what there is rather than "nothing"
-		fmt.Fprintln(w, "No failed calls of that tool. In this window: "+strings.Join(by, " · "))
+		none := "No failed calls of that tool"
+		switch {
+		case rep.Tool != "" && strings.TrimSpace(rep.Query) != "":
+			none += " hold those words"
+		case rep.Tool == "":
+			none = "No failed calls hold those words"
+		}
+		fmt.Fprintln(w, none+". In this window: "+strings.Join(by, " · "))
 		return
 	case rep.Total == 0:
 		fmt.Fprintln(w, "No failed tool calls.")

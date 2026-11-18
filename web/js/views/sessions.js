@@ -5,7 +5,7 @@ import { h, icon, mark, time, skeleton, errorBox, empty, fill, stale } from '../
 import { api, qs, sessionHref, isAbort, onForget } from '../api.js';
 import { go, savedY } from '../router.js';
 import { health, coalesce, onStatus, status } from '../live.js';
-import { needles, highlight } from '../md.js';
+import { needles, highlight, formsIn } from '../md.js';
 import * as f from '../format.js';
 import { WINDOWS } from '../windows.js';
 import * as seen from '../seen.js';
@@ -43,7 +43,7 @@ function hrefWith(route, changes) {
 }
 
 export function mount(main, route, ctx) {
-  const v = { route, items: [], total: 0, sessions: 0, end: false, sel: null, busy: null, rows: new Map(), renew: false, failed: false, base: 0 };
+  const v = { route, items: [], total: 0, sessions: 0, partial: null, missing: [], end: false, sel: null, busy: null, rows: new Map(), renew: false, failed: false, base: 0 };
   const aside = h('aside', { class: 'filters', id: 'filters', 'aria-label': 'Filters' });
   const toggle = h('button', { type: 'button', class: 'btn filters-toggle', 'aria-expanded': 'false', 'aria-controls': 'filters' }, icon('filter'), 'Filters');
   toggle.addEventListener('click', () => {
@@ -159,7 +159,7 @@ export function mount(main, route, ctx) {
     if (!v.items.length) {
       list.replaceChildren(emptyState());
     } else if (searching()) {
-      list.replaceChildren(h('ol', { class: 'rows' }, v.items.map(rowOf)));
+      list.replaceChildren(v.partial ? partialNote(v) : '', h('ol', { class: 'rows' }, v.items.map(rowOf)));
     } else {
       // What changed since the last look is marked, and a line runs above the first row
       // older than it: at the foot of its day when that row begins the next
@@ -190,8 +190,11 @@ export function mount(main, route, ctx) {
     const warned = (status.health?.warnings || []).length;
     const clear = filtered && h('a', { href: hrefWith(v.route, { source: '', project: '', branch: '', since: '' }) }, 'Clear the filters');
     if (searching() && !q.trim()) {
-      return empty('Search every turn of every session.', 'Type in the search box above. Words match what they begin: "deploy" finds "deployment".',
-        'Use "a phrase" in quotes, -word to exclude, and ask: reply: thinking: tool: output: to search one part of a turn.');
+      return empty('Search every turn of every session.', 'Type in the search box above. Words match what they begin, and other forms of an English word: "deploy" finds "deployment", "retries" finds "retried".',
+        'Use "a phrase" in quotes, -word to exclude, and ask: reply: thinking: tool: output: title: to search one part of a turn.');
+    }
+    if (searching() && v.missing.length) {
+      return empty(`No turn holds ${quoted(v.missing)}.`, 'Check the spelling, or try another word for it.', clear);
     }
     if (searching()) {
       return empty(`No turns match “${q}”.`, 'Try fewer words, a shorter word (words match what they begin), or drop a column prefix.', clear);
@@ -211,6 +214,8 @@ export function mount(main, route, ctx) {
     if (reset) {
       v.items = [];
       v.total = 0;
+      v.partial = null;
+      v.missing = [];
       v.end = false;
       saidEmpty = false;
       note.say();
@@ -226,6 +231,8 @@ export function mount(main, route, ctx) {
         v.items.push(...r.hits);
         v.total = r.total;
         v.sessions = r.sessions;
+        v.partial = r.partial || null;
+        v.missing = r.missing || [];
         v.end = r.hits.length < HITS;
       } else {
         const r = await api('/api/sessions' + qs({ ...apiFilters(v.route.query), agents: v.route.query.get('agents') === '1', limit: PAGE, offset: v.items.length }), { signal });
@@ -325,7 +332,7 @@ export function mount(main, route, ctx) {
     if (!v.items.length) return;
     const key = keyOf(v.route);
     kept.delete(key);
-    kept.set(key, { items: v.items, total: v.total, sessions: v.sessions, end: v.end, sel: v.sel });
+    kept.set(key, { items: v.items, total: v.total, sessions: v.sessions, partial: v.partial, missing: v.missing, end: v.end, sel: v.sel });
     if (kept.size > KEPT) kept.delete(kept.keys().next().value);
   }
   start(ctx.how);
@@ -409,21 +416,33 @@ const seenLine = (base) =>
   h('li', { class: 'seen-line', role: 'separator', 'aria-label': `Since you last looked, ${f.stamp(base)}` },
     h('span', { class: 'dots' }, h('span', null, 'Since you last looked'), time(base, 'stamp')));
 
-function hitRow(hit, words) {
+const quoted = (words) => words.map((w) => `“${w}”`).join(words.length === 2 ? ' or ' : ', ');
+
+// partialNote says that no turn holds every word of a search, and what the turns listed
+// are instead: the closest, each with the words it lacks.
+const partialNote = (v) => h('p', { class: 'notice warn partial-note', role: 'note' },
+  `No turn holds all ${v.partial.words} words${v.missing.length ? `; none holds ${quoted(v.missing)}` : ''}. ` +
+  `These are partial matches, closest first: the closest hold ${v.partial.held} of the ${v.partial.words}.`);
+
+function hitRow(hit, query) {
   const s = hit.session;
+  const words = formsIn(query, hit);
   const kind = (m) => (m.kind === 'tool' ? [m.tool || 'tool', m.part].filter(Boolean).join(' ') : m.kind);
-  // A match in the ask is already marked in the ask shown above it
-  const matches = (hit.matches || []).filter((m) => !(hit.ask && m.kind === 'prompt'));
+  // A match in the ask is already marked in the ask shown above it, and one in the title in
+  // the title
+  const matches = (hit.matches || []).filter((m) => !(hit.ask && m.kind === 'prompt') && m.kind !== 'title');
   return h('li', { class: 'row hit', dataset: { key: hit.ref } },
     h('a', { class: 'row-main', href: sessionHref(s.ref, hit.turn) },
       mark(s.source, s.agent),
-      h('span', { class: 'row-title' }, s.title || 'Untitled session', h('span', { class: 'turn-no' }, ' #' + hit.turn)),
+      h('span', { class: 'row-title' }, s.title ? highlight(s.title, words) : 'Untitled session', h('span', { class: 'turn-no' }, ' #' + hit.turn)),
       hit.ask && h('span', { class: 'row-sub hit-ask' }, highlight(hit.ask, words)),
       h('span', { class: 'row-facts dots' },
+        hit.lacks?.length > 0 && h('span', { class: 'lacks', title: 'A partial match: this turn does not hold these words' }, 'lacks ' + hit.lacks.join(' ')),
         h('span', { class: 'store-name' }, s.source),
         time(hit.at),
         hit.tools > 0 && h('span', null, f.plural(hit.tools, 'tool call')),
-        hit.failures > 0 && h('span', { class: 'bad' }, `${f.num(hit.failures)} failed`),
+        hit.failures > 0 && h('span', { class: 'bad', title: 'Calls that failed, and how many of them the same command passed later, in that turn or the three after' }, f.failed(hit)),
+        hit.interrupted && h('span', { class: 'lacks' }, 'interrupted'),
         s.cwd && h('span', { class: 'path', title: s.cwd }, f.shortPath(s.cwd)))),
     matches.length > 0 && h('ul', { class: 'matches' }, matches.map((m) =>
       h('li', null, h('a', { href: sessionHref(s.ref, `${hit.turn}.${m.seq}`) },

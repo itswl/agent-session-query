@@ -241,7 +241,7 @@ func TestFilesSayHowTheyStandNow(t *testing.T) {
 
 	// Where the same command next succeeded: not the failure's own retry, which failed
 	// too; not a different command; the run of the next turn that passed
-	rep, err := a.Failures(ctx, f, index.Window{}, "", index.Page{Limit: 50})
+	rep, err := a.Failures(ctx, f, index.Window{}, "", "", index.Page{Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,6 +308,13 @@ func TestFilesSayHowTheyStandNow(t *testing.T) {
 	}
 	if strings.Contains(brief, "FAIL again") {
 		t.Errorf("a failure that passed later quotes its output, as if it were still the question:\n%s", brief)
+	}
+
+	// A search's hit says the same of its turn: four calls failed, and the two go tests
+	// passed later
+	res, err := a.Search(ctx, index.ParseQuery("change files"), f, index.SearchOptions{})
+	if err != nil || len(res.Hits) != 1 || res.Hits[0].Failed != 4 || res.Hits[0].PassedLater != 2 {
+		t.Errorf("hits = %+v, %v: want the first turn, its four failures, two passed later", res.Hits, err)
 	}
 }
 

@@ -68,6 +68,7 @@ type turnRow struct {
 	files                      []model.File
 	failed                     []failureRow
 	words                      [5]string // ask, reply, thinking, tool, output
+	ask                        string    // as the head keeps it
 }
 
 type bodyRow struct {
@@ -182,7 +183,7 @@ func (ix *Index) turnRow(rd *reading, t *model.Turn) turnRow {
 	if len(t.Items) > 0 {
 		row.firstSeq = t.Items[0].Seq
 	}
-	var words [5]strings.Builder
+	row.words = turnWords(t.Items)
 	h := sha256.New()
 
 	for i := range t.Items {
@@ -193,36 +194,12 @@ func (ix *Index) turnRow(rd *reading, t *model.Turn) turnRow {
 			}
 			rd.lastID = it.ID
 		}
-		// The words: what each side said, what was run and what came back. A fork's copy of
-		// its parent's rows is the parent's to be found in, and injected context is the
-		// same text in every session.
-		if !it.Inherited {
-			switch it.Kind {
-			case model.Prompt:
-				addWords(&words[0], it.Text, textInline)
-			case model.Reply:
-				addWords(&words[1], it.Text, textInline)
-			case model.Thinking:
-				addWords(&words[2], it.Text, textInline)
-			case model.Event:
-				addWords(&words[2], it.Text, inputWords)
-			case model.ToolUse:
-				tool := it.Tool
-				addWords(&words[3], tool.Name, 0)
-				if tool.Command != "" {
-					addWords(&words[3], tool.Command, inputWords)
-				} else {
-					addWords(&words[3], inputText(tool.Input), inputWords)
-				}
-				addWords(&words[4], tool.Output, outputWords)
-				if tool.Failed() {
-					row.failed = append(row.failed, failureRow{
-						seq: it.Seq, at: ms(firstTime(tool.EndAt, it.At)), tool: tool.Name, kind: tool.Kind,
-						status: tool.Status, exit: tool.Exit, command: txt.Truncate(tool.Command, 2000, "…"),
-						output: tailPreview(tool.Output, failureOut),
-					})
-				}
-			}
+		if tool := it.Tool; !it.Inherited && it.Kind == model.ToolUse && tool.Failed() {
+			row.failed = append(row.failed, failureRow{
+				seq: it.Seq, at: ms(firstTime(tool.EndAt, it.At)), tool: tool.Name, kind: tool.Kind,
+				status: tool.Status, exit: tool.Exit, command: txt.Truncate(tool.Command, 2000, "…"),
+				output: tailPreview(tool.Output, failureOut),
+			})
 		}
 
 		// What is too long to keep in line goes to the bodies table whole
@@ -277,9 +254,7 @@ func (ix *Index) turnRow(rd *reading, t *model.Turn) turnRow {
 	row.head = string(headJSON)
 	row.hash = h.Sum(nil)
 
-	for i := range words {
-		row.words[i] = words[i].String()
-	}
+	row.ask = head.Ask
 	if t.Index > 0 {
 		rd.lastAsk = head.Ask
 	}
@@ -294,6 +269,79 @@ func firstTime(a, b time.Time) time.Time {
 		return a
 	}
 	return b
+}
+
+// turnWords is what a turn gives the words table, by column — ask, reply, thinking, tool,
+// output: what each side said, what was run and what came back, each column's words
+// followed by their stems. A fork's copy of its parent's rows is the parent's to be found
+// in, and injected context is the same text in every session. The items are whole: a turn
+// written again from the index (see Index.refill) has what the index keeps as a preview
+// read whole first, so that its words come out as they did.
+func turnWords(items []model.Item) [5]string {
+	var words [5]strings.Builder
+	for i := range items {
+		it := &items[i]
+		if it.Inherited {
+			continue
+		}
+		switch it.Kind {
+		case model.Prompt:
+			addWords(&words[0], it.Text, textInline)
+		case model.Reply:
+			addWords(&words[1], it.Text, textInline)
+		case model.Thinking:
+			addWords(&words[2], it.Text, textInline)
+		case model.Event:
+			addWords(&words[2], it.Text, inputWords)
+		case model.ToolUse:
+			tool := it.Tool
+			addWords(&words[3], tool.Name, 0)
+			if tool.Command != "" {
+				addWords(&words[3], tool.Command, inputWords)
+			} else {
+				addWords(&words[3], inputText(tool.Input), inputWords)
+			}
+			addWords(&words[4], tool.Output, outputWords)
+		}
+	}
+	var out [5]string
+	for i := range words {
+		out[i] = withStems(words[i].String())
+	}
+	return out
+}
+
+// titleWords is a session's title as the words table holds it, beside every turn's words:
+// none when the title is only how its first ask begins (see ownTitle).
+func titleWords(title, firstAsk string) string {
+	return withStems(segment(ownTitle(title, firstAsk)))
+}
+
+// ownTitle is a session's title when it is one of its own: "" when it is only how the
+// first ask begins, which is what a session its CLI did not name is titled by. The first
+// turn holds those words already, and held beside every turn they would have each match
+// what the session was first asked.
+func ownTitle(title, firstAsk string) string {
+	t := strings.Join(strings.Fields(strings.TrimSuffix(title, "…")), " ")
+	if t == "" || strings.HasPrefix(strings.Join(strings.Fields(firstAsk), " "), t) {
+		return ""
+	}
+	return title
+}
+
+// firstAsk is what a session was first asked, as its first turn's head keeps it.
+func firstAsk(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, sid int64) string {
+	var head string
+	if q.QueryRowContext(ctx, `SELECT head FROM turns WHERE sid = ? AND idx > 0 ORDER BY idx LIMIT 1`, sid).Scan(&head) != nil {
+		return ""
+	}
+	var t struct {
+		Ask string `json:"ask"`
+	}
+	json.Unmarshal([]byte(head), &t)
+	return t.Ask
 }
 
 // addWords appends text for the words table, keeping the head and the tail of anything
@@ -457,11 +505,39 @@ RETURNING sid`,
 			return err
 		}
 
+		// The turns whose words are to be written again though their rows are not: those
+		// another asq wrote, and every one of the session when its title changed — which
+		// the upsert above has just named, if it did (see wordsStale)
+		stale, err := staleTurns(ctx, tx, sid)
+		if err != nil {
+			return err
+		}
+		var title *string // the title's words, worked out once if any turn needs them
+		words := func(t *turnRow, again bool) error {
+			if title == nil {
+				first := ""
+				for i := range rd.turns {
+					if rd.turns[i].idx > 0 {
+						first = rd.turns[i].ask
+						break
+					}
+				}
+				w := titleWords(s.Title, first)
+				title = &w
+			}
+			return putWords(ctx, tx, sid, t, *title, again)
+		}
+
 		for i := range rd.turns {
 			t := &rd.turns[i]
 			old, known := have[t.idx]
 			delete(have, t.idx)
 			if known && bytes.Equal(old, t.hash) {
+				if stale[t.idx] {
+					if err := words(t, true); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 			changed = true
@@ -473,6 +549,9 @@ RETURNING sid`,
 			if err := insertTurn(ctx, tx, sid, t); err != nil {
 				return err
 			}
+			if err := words(t, false); err != nil {
+				return err
+			}
 		}
 		for idx := range have { // turns the transcript no longer has
 			changed = true
@@ -480,9 +559,47 @@ RETURNING sid`,
 				return err
 			}
 		}
-		return nil
+		// Every turn the session has now holds the words this asq writes
+		_, err = tx.ExecContext(ctx, `DELETE FROM words_stale WHERE sid = ?`, sid)
+		return err
 	})
 	return sid, changed, err
+}
+
+// staleTurns are the turns of a session words_stale names.
+func staleTurns(ctx context.Context, tx *sql.Tx, sid int64) (map[int]bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT idx FROM words_stale WHERE sid = ?`, sid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int]bool{}
+	for rows.Next() {
+		var idx int
+		if err := rows.Scan(&idx); err != nil {
+			return nil, err
+		}
+		out[idx] = true
+	}
+	return out, rows.Err()
+}
+
+// putWords writes a turn's row of the words table, with its session's title: a turn with
+// no words of its own has none, and is not found by its title alone. again says the turn
+// may have a row already, which goes.
+func putWords(ctx context.Context, tx *sql.Tx, sid int64, t *turnRow, title string, again bool) error {
+	id := turnRowID(sid, t.idx)
+	if again {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM words WHERE rowid = ?`, id); err != nil {
+			return err
+		}
+	}
+	if t.words == [5]string{} {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO words (rowid, ask, reply, thinking, tool, output, title) VALUES (?,?,?,?,?,?,?)`,
+		id, t.words[0], t.words[1], t.words[2], t.words[3], t.words[4], title)
+	return err
 }
 
 func insertTurn(ctx context.Context, tx *sql.Tx, sid int64, t *turnRow) error {
@@ -528,12 +645,6 @@ INSERT OR REPLACE INTO failures (sid, seq, idx, at, tool, kind, status, exit_cod
 			return err
 		}
 	}
-	if t.words != [5]string{} {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO words (rowid, ask, reply, thinking, tool, output) VALUES (?,?,?,?,?,?)`,
-			turnRowID(sid, t.idx), t.words[0], t.words[1], t.words[2], t.words[3], t.words[4]); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -544,6 +655,7 @@ func deleteTurn(ctx context.Context, tx *sql.Tx, sid int64, idx int) error {
 		`DELETE FROM usage WHERE sid = ? AND idx = ?`,
 		`DELETE FROM files WHERE sid = ? AND idx = ?`,
 		`DELETE FROM failures WHERE sid = ? AND idx = ?`,
+		`DELETE FROM words_stale WHERE sid = ? AND idx = ?`,
 	} {
 		if _, err := tx.ExecContext(ctx, q, sid, idx); err != nil {
 			return err
@@ -558,7 +670,7 @@ func deleteSession(ctx context.Context, tx *sql.Tx, sid int64) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM words WHERE rowid >= ? AND rowid <= ?`, turnRowID(sid, 0), turnRowID(sid, maxTurnIndex)); err != nil {
 		return err
 	}
-	for _, table := range []string{"turns", "bodies", "usage", "files", "failures", "sessions"} {
+	for _, table := range []string{"turns", "bodies", "usage", "files", "failures", "words_stale", "sessions"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE sid = ?`, sid); err != nil {
 			return err
 		}

@@ -199,14 +199,53 @@ CREATE TABLE IF NOT EXISTS source_state (
   scanned_at INTEGER NOT NULL DEFAULT 0
 ) WITHOUT ROWID;
 
--- The words of each turn, by who said them. The rowid is the turn's: sid * 2^20 + idx.
--- Contentless: the words themselves are in the turn, and are not stored twice.
-CREATE VIRTUAL TABLE IF NOT EXISTS words USING fts5 (
-  ask, reply, thinking, tool, output,
+` + wordsTable + `;
+
+-- The turns whose row in the words table is to be written again from what the index
+-- holds: see wordsStale.
+CREATE TABLE IF NOT EXISTS words_stale (
+  sid INTEGER NOT NULL,
+  idx INTEGER NOT NULL,
+  PRIMARY KEY (sid, idx)
+) WITHOUT ROWID;
+`
+
+// wordsTable is the words of each turn, by who said them, and the title of its session.
+// The rowid is the turn's: sid * 2^20 + idx. Contentless: the words themselves are in
+// the turn, and are not stored twice. Each column holds a part's words and, after them,
+// their stems (see stemsOf). The title is last: an older asq names the five columns it
+// writes, and weighs five in the order it knows them, so a sixth after them changes
+// nothing for it.
+const wordsTable = `CREATE VIRTUAL TABLE IF NOT EXISTS words USING fts5 (
+  ask, reply, thinking, tool, output, title,
   content = '', contentless_delete = 1,
   tokenize = "unicode61 remove_diacritics 2"
-);
-`
+)`
+
+// wordsVersion names what the words table holds, in the meta table under "words". An index
+// whose table holds anything else — an older asq made it — has it made anew when it is
+// opened, empty, and every turn named in words_stale: the next sync writes them all again
+// from what the index holds, without reading a transcript (see Index.refill).
+//
+// 2: the session's title, and the stems of English words.
+const wordsVersion = "2"
+
+// wordsStale names, in words_stale, the turns whose words another asq wrote: a turn it
+// inserted, or every turn of a session whose title it changed. One that does not know of
+// titles and stems in the words table writes the row without them; this one writes such a
+// row again at its next sync (see Index.refill), and clears its own turns from the table as
+// it writes them (see Index.write). The triggers are in the file, and fire whichever asq
+// writes.
+const wordsStale = `
+CREATE TRIGGER IF NOT EXISTS words_stale_turn AFTER INSERT ON turns
+BEGIN
+  INSERT OR IGNORE INTO words_stale (sid, idx) VALUES (NEW.sid, NEW.idx);
+END;
+CREATE TRIGGER IF NOT EXISTS words_stale_title AFTER UPDATE OF title ON sessions
+WHEN NEW.title IS NOT OLD.title
+BEGIN
+  INSERT OR IGNORE INTO words_stale (sid, idx) SELECT sid, idx FROM turns WHERE sid = NEW.sid;
+END`
 
 // turnRowID is the words table's rowid for a turn.
 func turnRowID(sid int64, idx int) int64 { return sid<<20 | int64(idx) }

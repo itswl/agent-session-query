@@ -234,12 +234,22 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 	for fresh < len(jobs) && !jobs[fresh].again {
 		fresh++
 	}
+	// Sessions with turns whose words are to be written again from the index (see refill):
+	// before anything is read, since after the words table was made anew such a turn is
+	// not found by a search at all
+	var stale int
+	if err := ix.rw.QueryRowContext(ctx, `SELECT count(DISTINCT sid) FROM words_stale`).Scan(&stale); err != nil {
+		return res, err
+	}
 	found := hex.EncodeToString(condition.Sum(nil)[:5])
 	ix.setState(func(s *SyncState) {
-		s.Running, s.Total, s.Done, s.Began, s.Stores = true, len(jobs), 0, start, found
+		s.Running, s.Total, s.Done, s.Began, s.Stores = true, stale+len(jobs), 0, start, found
 	})
 
 	var firstErr error
+	if stale > 0 {
+		firstErr = ix.refill(ctx, func() { ix.setState(func(s *SyncState) { s.Done++ }) })
+	}
 	published := 0
 	// settle makes what has been written so far whole: the sessions linked to one another
 	// and the counts let go of

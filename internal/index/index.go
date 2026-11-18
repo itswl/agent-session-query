@@ -3,6 +3,7 @@ package index
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,6 +122,47 @@ func addColumn(db *sql.DB, table, column, decl string) error {
 	return tx.Commit()
 }
 
+// newWords makes the words table anew when what it holds is not what wordsVersion names:
+// dropped and created again, empty, with every turn the index holds named in words_stale
+// for the next sync to write its words from what the index holds (see Index.refill).
+// Nothing is read from a transcript for it, and an asq that does not know the table's
+// new shape goes on using it: the columns it writes are the first five, as they were.
+// The look is made again under the write lock, as in addColumn.
+func newWords(db *sql.DB) error {
+	current := func(q interface {
+		QueryRow(string, ...any) *sql.Row
+	}) (bool, error) {
+		var v string
+		err := q.QueryRow(`SELECT value FROM meta WHERE key = 'words'`).Scan(&v)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return v == wordsVersion, err
+	}
+	if ok, err := current(db); err != nil || ok {
+		return err
+	}
+	tx, err := db.Begin() // BEGIN IMMEDIATE: see Open
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if ok, err := current(tx); err != nil || ok {
+		return err
+	}
+	for _, q := range []string{
+		`DROP TABLE IF EXISTS words`,
+		wordsTable,
+		`INSERT OR IGNORE INTO words_stale (sid, idx) SELECT sid, idx FROM turns`,
+		`INSERT OR REPLACE INTO meta (key, value) VALUES ('words', '` + wordsVersion + `')`,
+	} {
+		if _, err := tx.Exec(q); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // DefaultPath is where the index lives unless told otherwise: the user's cache
 // directory, since everything in it can be rebuilt. ASQ_INDEX moves it.
 func DefaultPath() string {
@@ -180,9 +222,15 @@ func Open(path string) (*Index, error) {
 			return nil, fmt.Errorf("index: %s: %w", path, err)
 		}
 	}
-	if _, err := rw.Exec(readsTrigger); err != nil {
-		rw.Close()
-		return nil, fmt.Errorf("index: %s: %w", path, err)
+	for _, step := range []func(*sql.DB) error{
+		func(db *sql.DB) error { _, err := db.Exec(readsTrigger); return err },
+		func(db *sql.DB) error { _, err := db.Exec(wordsStale); return err },
+		newWords,
+	} {
+		if err := step(rw); err != nil {
+			rw.Close()
+			return nil, fmt.Errorf("index: %s: %w", path, err)
+		}
 	}
 	ro, err := sql.Open("sqlite", uri+"?mode=ro&_pragma=busy_timeout(10000)&_pragma=query_only(1)&_pragma=cache_size(-32768)")
 	if err != nil {

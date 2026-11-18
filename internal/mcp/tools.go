@@ -60,11 +60,12 @@ var tools = []tool{
 	{
 		name:  "search",
 		title: "Search the history",
-		about: "Full-text search over every turn of every session: what was asked, what the agent replied and thought, the tools it called and what they printed. " +
-			"Returns the matching turns, best first, each with its ref (store/id#turn) and the lines the words were found in. " +
+		about: "Full-text search over every turn of every session: what was asked, what the agent replied and thought, the tools it called and what they printed, and the title of the session the turn is in. " +
+			"Returns the matching turns, best first, each with its ref (store/id#turn), how the turn ended (✓ no call failed; ✗N failed, and how many of those the same command passed later; ⚠ interrupted), the lines the words were found in, and the turn's final answer. " +
+			"When no turn holds every word, it says which words no turn holds at all and returns the turns that hold the most of them, marked as partial matches, each with the words it lacks. " +
 			"Use it for \"how did I solve this before\", \"where did that error come up\", \"which session touched X\". " +
-			"Query syntax: bare words must all appear, each matching as a prefix; \"quoted words\" match as a phrase; -word excludes; " +
-			"ask:word, reply:word, thinking:word, tool:word and output:word confine a word to the person's ask, the agent's reply, its reasoning, a tool's input, or a tool's output.",
+			"Query syntax: bare words must all appear, each matching as a prefix and in any form of the English word (retries finds retried); \"quoted words\" match as a phrase, as written; -word excludes; " +
+			"ask:word, reply:word, thinking:word, tool:word, output:word and title:word confine a word to the person's ask, the agent's reply, its reasoning, a tool's input, a tool's output, or the session's title.",
 		props: []prop{
 			{"query", "string", "What to look for, e.g.  connection refused  ·  \"rate limit\" -test  ·  ask:deploy output:ECONNREFUSED"},
 			pSource, pProject, pBranch, pSince, pUntil,
@@ -154,6 +155,7 @@ var tools = []tool{
 			"When the same program and subcommand (go test, pnpm build, git push) later succeeded in the same session, a line says where (\"passed 40m later: <ref>#<turn> step <n>\") and, if it was run differently, how (\"as $ go test ./internal/x\"): judge from that whether it is the same thing passing. What changed in between is how it was got past — read those turns rather than guess.",
 		props: []prop{
 			{"tool", "string", "Only this tool's calls, named exactly as the answer prints it (Bash is not bash); a trailing * matches by prefix: mcp__playwright*."},
+			{"query", "string", "Only the calls whose command or the end of whose output holds these words, anywhere, in any case: ECONNREFUSED · \"go test\" · migrate -dry. Each word must be there; -word must not; \"a phrase\" as written."},
 			pSource, pProject, pBranch, pSince, pUntil, pLimit, pOffset, pChars,
 		},
 		run: runFailures,
@@ -448,7 +450,7 @@ func runSearch(ctx context.Context, s *Server, a *args) (string, error) {
 		per = -1
 	}
 	opts := index.SearchOptions{Limit: a.limit(8), Offset: a.offset(), PerSession: per, Recent: a.flag("recent")}
-	res, err := s.App.Index.Search(ctx, index.ParseQuery(a.str("query")), f, opts)
+	res, err := s.App.Search(ctx, index.ParseQuery(a.str("query")), f, opts)
 	if err != nil {
 		return "", err
 	}
@@ -456,6 +458,9 @@ func runSearch(ctx context.Context, s *Server, a *args) (string, error) {
 	render.Hits(&b, res, opts.Offset, style())
 	if len(res.Hits) > 0 {
 		b.WriteString("\nread with ref=\"<ref>\" opens a turn step by step.\n")
+	}
+	if res.Partial != nil {
+		b.WriteString("These turns lack some of the words: another word for what one lacks may find a turn that holds them all.\n")
 	}
 	return b.String(), nil
 }
@@ -636,7 +641,7 @@ func runFailures(ctx context.Context, s *Server, a *args) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	rep, err := s.App.Failures(ctx, f, w, a.str("tool"), index.Page{Limit: a.limit(10), Offset: a.offset()})
+	rep, err := s.App.Failures(ctx, f, w, a.str("tool"), a.str("query"), index.Page{Limit: a.limit(10), Offset: a.offset()})
 	if err != nil {
 		return "", err
 	}

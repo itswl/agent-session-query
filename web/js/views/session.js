@@ -5,7 +5,7 @@ import { h, icon, mark, time, copyButton, clamp, skeleton, errorBox, empty, fact
 import { api, qs, sessionApi, sessionHref, isAbort } from '../api.js';
 import { go, savedY, back } from '../router.js';
 import { coalesce } from '../live.js';
-import { md, needles, highlight } from '../md.js';
+import { md, needles, highlight, formsIn } from '../md.js';
 import { steps, text } from './steps.js';
 import * as f from '../format.js';
 
@@ -454,7 +454,7 @@ export function mount(main, route, ctx) {
     findSaid.textContent = '…';
     try {
       const r = await api('/api/search' + qs({ q, session: v.sess.ref, per_session: 0, limit: FOUND }), { signal: AbortSignal.any([ctx.signal, c.signal]) });
-      v.found = { q, words: needles(q), hits: r.hits.sort((a, b) => a.turn - b.turn), total: r.total, at: -1 };
+      v.found = { q, words: needles(q), hits: r.hits.sort((a, b) => a.turn - b.turn), total: r.total, partial: r.partial, missing: r.missing || [], at: -1 };
       renderFound();
       showList(true);
     } catch (e) {
@@ -486,8 +486,9 @@ export function mount(main, route, ctx) {
 
   // Where a turn found opens: at the first step the words are in, past the ask, which the
   // outline shows
+  // (a match in the session's title is in no step)
   const placeOf = (hit) => {
-    const m = (hit.matches || []).find((x) => x.kind !== 'prompt');
+    const m = (hit.matches || []).find((x) => x.kind !== 'prompt' && x.kind !== 'title');
     return m ? `${hit.turn}.${m.seq}` : String(hit.turn);
   };
 
@@ -497,21 +498,26 @@ export function mount(main, route, ctx) {
     if (!fd) { findSaid.textContent = ''; return; }
     findSaid.textContent = !fd.hits.length ? 'none' : fd.at >= 0 ? `${fd.at + 1} / ${fd.hits.length}` : f.plural(fd.total, 'turn');
     const left = fd.total - fd.hits.length;
+    // No turn holding every word, the turns listed are the closest, and say what they lack
+    const none = fd.missing.length ? `none holds ${fd.missing.map((w) => `“${w}”`).join(', ')}` : '';
+    const partial = fd.partial && `No turn of this session holds all ${fd.partial.words} words${none ? '; ' + none : ''}. The closest hold ${fd.partial.held}: `;
     fill(findList,
-      h('p', { class: 'find-note' }, !fd.total ? 'No turn of this session holds these words.'
-        : left > 0 ? [`The ${f.num(fd.hits.length)} that match best of ${f.plural(fd.total, 'turn')}, in the order of the session. `,
+      h('p', { class: 'find-note' }, !fd.total ? (none ? `No turn of this session: ${none}.` : 'No turn of this session holds these words.')
+        : left > 0 ? [partial || '', `The ${f.num(fd.hits.length)} that match best of ${f.plural(fd.total, 'turn')}, in the order of the session. `,
           h('button', { type: 'button', class: 'link-btn', onclick: moreFound }, `${f.num(Math.min(left, FOUND))} more`)]
-          : `${f.plural(fd.total, 'turn')}, in the order of the session.`),
+          : (partial || '') + `${f.plural(fd.total, 'turn')}, in the order of the session.`),
       fd.hits.length > 0 && h('ol', { class: 'find-hits' }, fd.hits.map((hit, i) => {
-        const matches = (hit.matches || []).filter((m) => !(hit.ask && m.kind === 'prompt'));
+        const words = formsIn(fd.words, hit);
+        const matches = (hit.matches || []).filter((m) => !(hit.ask && m.kind === 'prompt') && m.kind !== 'title');
         return h('li', { dataset: { i }, 'aria-current': i === fd.at ? 'true' : null },
           h('a', { class: 'find-hit', href: sessionHref(ref, placeOf(hit)) },
             h('span', { class: 't-num' }, '#' + hit.turn),
-            h('span', { class: 'find-ask' }, hit.ask ? highlight(hit.ask, fd.words) : h('span', { class: 'dim' }, 'Before the first ask')),
-            hit.failures > 0 && h('span', { class: 'bad find-failed' }, `${f.num(hit.failures)} failed`)),
+            h('span', { class: 'find-ask' }, hit.ask ? highlight(hit.ask, words) : h('span', { class: 'dim' }, 'Before the first ask')),
+            hit.lacks?.length > 0 && h('span', { class: 'lacks find-failed' }, 'lacks ' + hit.lacks.join(' ')),
+            hit.failures > 0 && h('span', { class: 'bad find-failed' }, f.failed(hit))),
           matches.length > 0 && h('ul', { class: 'matches' }, matches.map((m) =>
             h('li', null, h('a', { href: sessionHref(ref, `${hit.turn}.${m.seq}`) },
-              h('span', { class: 'kind' }, kindOf(m)), h('span', { class: 'snippet' }, highlight(m.snippet, fd.words)))))));
+              h('span', { class: 'kind' }, kindOf(m)), h('span', { class: 'snippet' }, highlight(m.snippet, words)))))));
       })));
   }
 

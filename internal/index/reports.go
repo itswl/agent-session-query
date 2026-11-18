@@ -157,13 +157,19 @@ type FailureReport struct {
 	Failures []Failure      `json:"failures"`
 	Total    int            `json:"total"`
 	ByTool   []FailureCount `json:"byTool"`
+	// What the failures were narrowed to, for a reader to be told why there are none
+	Tool  string `json:"-"`
+	Query string `json:"-"`
 }
 
 // Failures lists the tool calls that failed in a window. tool, when set, keeps one
-// tool's calls — named exactly, or with a trailing * by how its name begins. ByTool
+// tool's calls — named exactly, or with a trailing * by how its name begins. text, when
+// set, keeps the calls whose command or output holds its words — each word, or "a
+// phrase", anywhere in either, without regard to case; -word keeps those that do not. The
+// output is the end of it the table keeps, where a command says why it failed. ByTool
 // counts every tool of the window regardless.
-func (ix *Index) Failures(ctx context.Context, f Filter, w Window, tool string, p Page) (FailureReport, error) {
-	rep := FailureReport{Failures: []Failure{}, ByTool: []FailureCount{}}
+func (ix *Index) Failures(ctx context.Context, f Filter, w Window, tool, text string, p Page) (FailureReport, error) {
+	rep := FailureReport{Failures: []Failure{}, ByTool: []FailureCount{}, Tool: tool, Query: text}
 	where, args := ix.widen(ctx, reportFilter(f), !w.Since.IsZero()).where()
 	when, whenArgs := w.where("x.at")
 	args = append(args, whenArgs...)
@@ -194,6 +200,14 @@ func (ix *Index) Failures(ctx context.Context, f Filter, w Window, tool string, 
 	} else if tool != "" {
 		from += ` AND x.tool = ?`
 		args = append(args, tool)
+	}
+	for _, t := range ParseQuery(text).Terms {
+		has := `(instr(lower(x.command), lower(?)) > 0 OR instr(lower(x.output), lower(?)) > 0)`
+		if t.Not {
+			has = `NOT ` + has
+		}
+		from += ` AND ` + has
+		args = append(args, t.Text, t.Text)
 	}
 	if err := ix.ro.QueryRowContext(ctx, `SELECT count(*)`+from, args...).Scan(&rep.Total); err != nil {
 		return rep, err

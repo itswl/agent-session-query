@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -209,6 +210,23 @@ func TestRoutes(t *testing.T) {
 	get(t, s, "/api/search?q=missing+indexes&per_session=0&session=claude/aaaa1111", &found)
 	if found.Total != 1 || found.Sessions != 1 || found.Hits[0].Turn != 2 || found.Hits[0].Session.ID != fixture.Alpha {
 		t.Errorf("in one session = %+v", found)
+	}
+	// No turn holds every word: the closest, marked, each with what it lacks, and the word
+	// no turn holds at all
+	found = index.SearchResult{}
+	get(t, s, "/api/search?q=ECONNREFUSED+flaky+postgres", &found)
+	if p := found.Partial; p == nil || p.Words != 3 || p.Held != 2 || found.Total != 1 || !reflect.DeepEqual(found.Missing, []string{"postgres"}) ||
+		!reflect.DeepEqual(found.Hits[0].Lacks, []string{"postgres"}) || found.Hits[0].Failed != 1 {
+		t.Errorf("a partial match = %+v", found)
+	}
+	var fails index.FailureReport
+	get(t, s, "/api/failures?q=econnrefused", &fails)
+	if fails.Total != 1 {
+		t.Errorf("failures holding a word = %+v", fails)
+	}
+	get(t, s, "/api/failures?q=postgres", &fails)
+	if fails.Total != 0 || len(fails.ByTool) != 1 {
+		t.Errorf("failures holding a word none holds = %+v", fails)
 	}
 
 	for _, path := range []string{"/api/usage", "/api/usage?by=day", "/api/failures", "/api/digest", "/api/files?path=schema", "/api/projects", "/api/pack?since=7d", "/api/health"} {

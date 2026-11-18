@@ -369,7 +369,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if per == 0 {
 		per = -1
 	}
-	res, err := s.app.Index.Search(r.Context(), index.ParseQuery(r.URL.Query().Get("q")), f,
+	res, err := s.app.Search(r.Context(), index.ParseQuery(r.URL.Query().Get("q")), f,
 		index.SearchOptions{Limit: min(page.Limit, 100), Offset: page.Offset, PerSession: per, Recent: flagOf(r, "recent")})
 	if err != nil {
 		s.fail(w, r, err)
@@ -439,7 +439,7 @@ func (s *Server) handleFailures(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	rep, err := s.app.Failures(r.Context(), f, win, r.URL.Query().Get("tool"), page)
+	rep, err := s.app.Failures(r.Context(), f, win, r.URL.Query().Get("tool"), r.URL.Query().Get("q"), page)
 	if err != nil {
 		s.fail(w, r, err)
 		return

@@ -27,18 +27,61 @@ func TestParseQuery(t *testing.T) {
 
 func TestMatchExpression(t *testing.T) {
 	for in, want := range map[string]string{
-		"retry":             `"retry"*`,
-		"session_query":     `"session query"*`, // punctuation splits, as it does in the index
+		// A word alone: by how a word begins, as the stem itself, and as the stem the
+		// table holds beside the words that have another
+		"retry":             `("retry"* OR "retri" OR "ǂretri")`,
+		"webhook":           `("webhook"* OR "ǂwebhook")`, // its own stem: no second form of it
+		"RETRIES":           `("retries"* OR "retri" OR "ǂretri")`,
+		"session_query":     `"session query"*`, // punctuation splits, as it does in the index; two words match as written
 		`"exit status"`:     `"exit status"`,    // a phrase matches as written
+		`"retries"`:         `"retries"`,        // … and so does a word quoted
 		"数据库":               `"数 据 库"`,          // each character its own word; no prefix on a single one
-		"加索引 retry":         `"加 索 引" AND "retry"*`,
-		"ask:deploy -flaky": `({ask}: "deploy"*) NOT "flaky"*`,
+		"加索引 retry":         `"加 索 引" AND ("retry"* OR "retri" OR "ǂretri")`,
+		"ask:deploy -flaky": `({ask}: ("deploy"* OR "deploi" OR "ǂdeploi")) NOT ("flaky"* OR "flaki" OR "ǂflaki")`,
+		"title:webhook":     `{title}: ("webhook"* OR "ǂwebhook")`,
 		"-only -negatives":  ``, // nothing to look for
-		`say "hi"`:          `"say"* AND "hi"`,
+		`say "hi"`:          `("say"* OR "sai" OR "ǂsai") AND "hi"`,
+		"go1 v2 ab":         `"go1"* AND "v2"* AND "ab"*`, // digits, and words too short to stem, as they were
+		"café":              `"café"*`,
 		"!!!":               ``,
 	} {
 		if got := ParseQuery(in).match(); got != want {
 			t.Errorf("match(%q) = %s, want %s", in, got, want)
+		}
+	}
+}
+
+func TestStemsBesideTheWords(t *testing.T) {
+	for in, want := range map[string]string{
+		"Retried the retries; retry the webhook": "ǂretri", // once, for every form; "the" and "webhook" are their own stems
+		"logs logging LOGGED login":              "ǂlog",
+		"go1.26 utf8 数据库 café ab":                "", // digits, other scripts, accents and short words are left alone
+		"":                                       "",
+	} {
+		if got := stemsOf(in); got != want {
+			t.Errorf("stemsOf(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := withStems("it retried"); got != "it retried\nǂretri" {
+		t.Errorf("withStems = %q: the stems follow the words, on a line of their own", got)
+	}
+
+	// A snippet is cut around the typed form, or failing that around another form of it
+	for _, c := range []struct {
+		needle   needle
+		text     string
+		at, size int
+		word     string
+		why      string
+	}{
+		{needle{text: "retry", stem: "retri"}, "we Retry here", 3, 5, "", "the typed form, any case"},
+		{needle{text: "retry", stem: "retri"}, "it was Retried twice", 7, 7, "Retried", "another form, as written"},
+		{needle{text: "retry", stem: "retri"}, "retriever retrieval", -1, 0, "", "words that only begin alike"},
+		{needle{text: "数据库"}, "给数据库加索引", 3, 9, "", "a CJK run, by substring"},
+	} {
+		at, size, word := c.needle.find(c.text)
+		if at != c.at || size != c.size || word != c.word {
+			t.Errorf("%s: find(%q) = %d, %d, %q; want %d, %d, %q", c.why, c.text, at, size, word, c.at, c.size, c.word)
 		}
 	}
 }

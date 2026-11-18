@@ -39,7 +39,7 @@ output, a compaction summary) is not an ask and opens nothing.
 | `ask` | the person's words, without what a harness wrapped around them |
 | `answer` | the last thing the agent said |
 | `startedAt`, `endedAt` | the ask, and the last thing the agent *did* — a notification dropped in hours later does not stretch the turn |
-| `interrupted` | the person stopped it |
+| `interrupted` | it stopped before the agent was done: the person stopped it, or, where the CLI records it, an error cut it off — an `error` event in the turn says which |
 | `tools`, `failures`, `toolKinds` | tool calls, how many failed, and what they were for (`exec` `write` `read` `search` `net` `agent` `other`) |
 | `files` | every file a tool named, and whether it was changed — a write counts only if it did not fail |
 | `calls` | the model responses, in order, each with its usage |

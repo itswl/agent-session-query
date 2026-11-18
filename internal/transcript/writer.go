@@ -440,7 +440,7 @@ func (w *Writer) pushEvent(cur *turn, m Message, b Block) {
 		kind = "event"
 	}
 	w.push(cur, model.Item{Kind: model.Event, At: m.At, ID: m.ID, Event: kind, Text: b.Text, Inherited: m.Inherited})
-	if kind == model.EventInterrupted && !m.Inherited {
+	if (kind == model.EventInterrupted || b.Stops) && !m.Inherited {
 		cur.t.Interrupted = true
 	}
 }

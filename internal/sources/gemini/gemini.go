@@ -55,7 +55,7 @@ var Spec = sources.Spec{
 	// A file with no metadata line goes by its own name (session-<time>-<id>), which is
 	// not an id --resume takes
 	Resumable: func(id string) bool { return !strings.HasPrefix(id, "session-") },
-	Reads:     2,
+	Reads:     3,
 	Store:     "~/.gemini/tmp/<project>/chats/session-*.jsonl",
 	// Gemini CLI sweeps the chats of the project it starts in, by the time each was last
 	// updated (packages/cli/src/utils/sessionCleanup.ts): a project it is not started in
@@ -318,11 +318,13 @@ func absolute(path string) bool {
 // $patch.
 type row struct {
 	message
-	SessionID   string `json:"sessionId"`
-	StartTime   string `json:"startTime"`
-	LastUpdated string `json:"lastUpdated"`
+	SessionID   string          `json:"sessionId"`
+	StartTime   string          `json:"startTime"`
+	LastUpdated string          `json:"lastUpdated"`
+	Summary     json.RawMessage `json:"summary"`
 	Set         *struct {
 		LastUpdated string            `json:"lastUpdated"`
+		Summary     json.RawMessage   `json:"summary"`
 		Messages    []json.RawMessage `json:"messages"`
 	} `json:"$set"`
 	RewindTo string          `json:"$rewindTo"`
@@ -392,6 +394,11 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 
 	rd := &reader{w: w, answered: map[string]bool{}, issued: map[string]bool{}, statuses: map[string]string{}}
 	var meta time.Time // the latest time the metadata lines claim, the last resort for "updated"
+	// The summary Gemini CLI writes of a session — the person's intent, in a sentence a
+	// model made of it — is what its session list shows in place of the first message
+	// (packages/cli/src/utils/sessionUtils.ts). Later metadata is laid over earlier: the
+	// last summary written is the session's
+	var summary string
 	// The file is a log of writes, and a message can be written more than once: a patch
 	// that sets the messages again, a row rewritten when its tool call finishes. A
 	// message is what its id last said, where its id first stood — read any other way,
@@ -426,9 +433,11 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				if at := kit.Time(r.Set.LastUpdated); !at.IsZero() {
 					rd.last = at
 				}
-				// The rest of what a patch sets — the summary the session list shows, the
-				// directories added to the workspace, the memory scratchpad — is not
-				// something said in the conversation
+				if r.Set.Summary != nil {
+					summary = stringOf(r.Set.Summary)
+				}
+				// The rest of what a patch sets — the directories added to the workspace,
+				// the memory scratchpad — is not something said in the conversation
 				for _, raw := range r.Set.Messages {
 					var m message
 					switch {
@@ -442,6 +451,9 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			case r.SessionID != "":
 				if w.S.ID == "" {
 					w.S.ID = r.SessionID
+				}
+				if r.Summary != nil {
+					summary = stringOf(r.Summary)
 				}
 				if start := kit.Time(r.StartTime); !start.IsZero() {
 					if w.S.StartedAt.IsZero() {
@@ -478,12 +490,28 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		}
 	}
 	patched := rd.last // a patch's own time, where it carried one
-	for _, m := range msgs {
-		rd.add(m)
+	// Whether the model went on after each row, before the person spoke again: what tells
+	// an error that ended a turn from one the work got past
+	wentOn := make([]bool, len(msgs))
+	next := ""
+	for i := len(msgs) - 1; i >= 0; i-- {
+		wentOn[i] = next == "gemini"
+		if t := msgs[i].Type; t == "user" || t == "gemini" {
+			next = t
+		}
+	}
+	for i, m := range msgs {
+		rd.add(m, wentOn[i])
 	}
 	rd.last = laterOf(rd.last, patched)
 	if w.S.ID == "" {
 		w.S.ID = stemOf(files[0])
+	}
+	// The summary is the session's title. A subagent's is not: Gemini CLI writes there the
+	// start of what the agent concluded (packages/core/src/agents/local-executor.ts), and
+	// the task it was given, its first ask, names it better
+	if w.S.Parent == nil {
+		w.S.Title = summary
 	}
 	// The metadata's lastUpdated is its value when the file was opened; the patch rows
 	// move it on afterwards (measured: 29 of 33 sessions had a stale first-line time, off
@@ -522,11 +550,15 @@ type reader struct {
 	issued   map[string]bool   // call id → its call is in the transcript already
 	statuses map[string]string // call id → a status that came without its output
 	last     time.Time         // the time on the latest row that had one
+	// owed says the model has yet to answer: the person or a tool's result spoke last, or
+	// the model last asked for calls, whose results go back to it
+	owed bool
 }
 
-// add files one message row. Only the two sides' rows are the conversation, and the notice
-// that the person stopped a turn.
-func (rd *reader) add(m *message) {
+// add files one message row. Only the two sides' rows are the conversation, and what
+// ended a turn: the notice that the person stopped it, or an error that cut it off.
+// wentOn says the model wrote a row after this one, before the person did.
+func (rd *reader) add(m *message, wentOn bool) {
 	at := kit.Time(m.Timestamp)
 	if !at.IsZero() {
 		rd.last = at
@@ -554,8 +586,17 @@ func (rd *reader) add(m *message) {
 			rd.w.Add(transcript.Message{ID: m.ID, Role: transcript.User, At: at, Injected: true,
 				Blocks: []transcript.Block{transcript.TextOf(added)}})
 		}
+		rd.owed = true
 	case "gemini":
 		blocks, answers := rd.blocks(m)
+		// A row with calls hands their results back to the model; one that says something
+		// and calls nothing is its answer. A row of only thinking is neither
+		switch {
+		case len(kit.List(m.ToolCalls)) > 0 || has(blocks, transcript.Call):
+			rd.owed = true
+		case has(blocks, transcript.Text):
+			rd.owed = false
+		}
 		// A row of only tokens is still a model call, and has to be counted. A row with
 		// neither tokens nor anything said is not one: it is the CLI writing calls again —
 		// a call the person cancelled is, on a row of its own — and brings at most their
@@ -580,9 +621,22 @@ func (rd *reader) add(m *message) {
 		if text := strings.TrimSpace(kit.ContentText(m.Content)); cancelNotices[text] {
 			rd.w.Add(transcript.Message{ID: m.ID, Role: transcript.System, At: at,
 				Blocks: []transcript.Block{transcript.EventOf(model.EventInterrupted, text)}})
+			rd.owed = false
 		}
-	case "warning", "error":
-		// A warning or an error the CLI showed the person: neither side said it
+	case "error":
+		// An error the CLI showed the person: a request the API refused ("[API Error: …
+		// Quota exceeded …]"), a stream that broke off, a command that could not be run.
+		// Gemini CLI records a model row only once its response has arrived whole
+		// (packages/core/src/core/geminiChat.ts), so an error while the model owed an
+		// answer, after which it wrote nothing, is where the turn ended
+		event := transcript.EventOf(eventError, strings.TrimSpace(kit.ContentText(m.Content)))
+		event.Stops = rd.owed && !wentOn
+		rd.w.Add(transcript.Message{ID: m.ID, Role: transcript.System, At: at, Blocks: []transcript.Block{event}})
+		if event.Stops {
+			rd.owed = false
+		}
+	case "warning":
+		// A warning the CLI showed the person: neither side said it
 	default:
 		rd.w.Unread("row:" + m.Type)
 	}
@@ -591,6 +645,29 @@ func (rd *reader) add(m *message) {
 // cancelNotices are the info rows Gemini CLI writes when the person stops a turn: Esc or
 // Ctrl+C while the model or a tool is at work.
 var cancelNotices = map[string]bool{"Request cancelled.": true, "User cancelled the request.": true}
+
+// eventError is the event an error row is: the kind the adapters give an error the CLI
+// reports in a session.
+const eventError = "error"
+
+// has reports whether any of the blocks is of the type, with something in it.
+func has(blocks []transcript.Block, kind transcript.BlockType) bool {
+	for _, b := range blocks {
+		if b.Type == kind && (kind == transcript.Call || b.Text != "") {
+			return true
+		}
+	}
+	return false
+}
+
+// stringOf is a JSON string's value, or "" for anything else.
+func stringOf(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	return s
+}
 
 // says reports whether a model row's blocks hold anything the model produced: words,
 // thinking, a call.

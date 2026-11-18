@@ -70,6 +70,10 @@ type Block struct {
 	Input  any    // a call's arguments: a JSON object, json.RawMessage, or a string
 	Outcome
 	Run string // the workflow run a call's result names
+
+	// Stops, on an event, says the turn ended there before the agent was done: an error
+	// that cut the work off. The turn is marked interrupted, as one the person stopped is.
+	Stops bool
 }
 
 // Outcome is what a CLI recorded about how a tool call ended. Zero values mean "not

@@ -331,8 +331,10 @@ func TestRowsThatAreNotTheConversation(t *testing.T) {
 	if s.Stats.Turns != 1 || s.Turn(t, 1).Ask != "a plain string content" || s.Turn(t, 1).Answer != "ok" {
 		t.Errorf("turns = %+v", s.Turns)
 	}
-	if got := sourcetest.Kinds(s.Turn(t, 1)); got != "prompt reply" {
-		t.Errorf("items = %s: info and error rows are the CLI's own", got)
+	// An info row is the CLI's own; an error is an event, and one the model answered after
+	// ended nothing
+	if got := sourcetest.Kinds(s.Turn(t, 1)); got != "prompt event reply" || s.Turn(t, 1).Interrupted {
+		t.Errorf("items = %s, interrupted %v", got, s.Turn(t, 1).Interrupted)
 	}
 }
 
@@ -589,6 +591,102 @@ func TestTheFormatAsGeminiCLIWritesIt(t *testing.T) {
 	}
 	if s.Stats.Calls != 5 || s.Stats.Usage.CacheRead != 6000 {
 		t.Errorf("%d calls, usage %+v", s.Stats.Calls, s.Stats.Usage)
+	}
+	// The summary the session list shows is the title. The error came after the turn was
+	// answered: it is shown, and stopped nothing
+	if s.Session.Title != "Recolour the login button" {
+		t.Errorf("title = %q", s.Session.Title)
+	}
+	if three := s.Turn(t, 3); sourcetest.Kinds(three) != "prompt reply event" || three.Interrupted || three.Items[2].Text != "Quota exceeded." {
+		t.Errorf("turn 3 = %s interrupted %v", sourcetest.Kinds(three), three.Interrupted)
+	}
+}
+
+// An error Gemini CLI showed the person is an event where it happened. One that came while
+// the model owed an answer — after the ask, or after the results of the calls it made — and
+// after which it wrote nothing is how the turn ended: the turn is marked stopped by it, at
+// its time. One after the answer, such as a command typed between turns that failed, ends
+// nothing. The rows are built from packages/core/src/services/chatRecordingTypes.ts, the
+// error's words from packages/core/src/utils/errorParsing.ts.
+func TestAnErrorThatEndedTheTurn(t *testing.T) {
+	root := t.TempDir()
+	quota := `[API Error: Quota exceeded for quota metric 'Generate Content API requests per minute' (Status: RESOURCE_EXHAUSTED)]\nPlease wait and try again later. To increase your limits, request a quota increase through AI Studio, or switch to another /auth method`
+	sourcetest.Write(t, filepath.Join(root, "9f2c", "chats", "session-2026-11-03T09-00-1c2d3e4f.jsonl"),
+		`{"sessionId":"1c2d3e4f-5a6b","projectHash":"9f2c","startTime":"2026-11-03T09:00:00.000Z","lastUpdated":"2026-11-03T09:00:00.000Z","kind":"main"}`,
+		`{"id":"u1","timestamp":"2026-11-03T09:00:01.000Z","type":"user","content":[{"text":"run the tests and fix what fails"}]}`,
+		`{"id":"g1","timestamp":"2026-11-03T09:00:04.000Z","type":"gemini","content":"","thoughts":[],"model":"gemini-3-pro-preview","tokens":{"input":1500,"output":12,"cached":0,"thoughts":0,"tool":0,"total":1512},`+
+			`"toolCalls":[{"id":"run-1","name":"run_shell_command","args":{"command":"npm test"},"result":[{"functionResponse":{"id":"run-1","name":"run_shell_command","response":{"output":"Output: 1 failing\nExit Code: 1"}}}],"status":"success","timestamp":"2026-11-03T09:00:09.000Z","resultDisplay":"1 failing","displayName":"Shell","description":"npm test","renderOutputAsMarkdown":false}]}`,
+		`{"id":"u2","timestamp":"2026-11-03T09:00:09.100Z","type":"user","content":[{"functionResponse":{"id":"run-1","name":"run_shell_command","response":{"output":"Output: 1 failing\nExit Code: 1"}}}]}`,
+		`{"id":"e1","timestamp":"2026-11-03T09:00:10.000Z","type":"error","content":"`+quota+`"}`,
+		`{"$set":{"lastUpdated":"2026-11-03T09:00:10.000Z"}}`,
+		`{"id":"u3","timestamp":"2026-11-03T09:05:00.000Z","type":"user","content":[{"text":"try again"}]}`,
+		`{"id":"e2","timestamp":"2026-11-03T09:05:01.000Z","type":"error","content":"`+quota+`"}`,
+		`{"id":"u4","timestamp":"2026-11-03T10:00:00.000Z","type":"user","content":[{"text":"now?"}]}`,
+		`{"id":"g2","timestamp":"2026-11-03T10:00:03.000Z","type":"gemini","content":"The test is fixed.","thoughts":[],"model":"gemini-3-pro-preview","tokens":{"input":1600,"output":6,"cached":1500,"thoughts":0,"tool":0,"total":1606}}`,
+		`{"id":"e3","timestamp":"2026-11-03T10:00:20.000Z","type":"error","content":"Unknown command: /deploy"}`,
+		`{"id":"w1","timestamp":"2026-11-03T10:00:21.000Z","type":"warning","content":"Some settings could not be saved."}`,
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	if s.Stats.Turns != 3 {
+		t.Fatalf("turns = %d", s.Stats.Turns)
+	}
+	one, two, three := s.Turn(t, 1), s.Turn(t, 2), s.Turn(t, 3)
+	if got := sourcetest.Kinds(one); got != "prompt tool event" {
+		t.Errorf("turn 1 = %s", got)
+	}
+	last := one.Items[len(one.Items)-1]
+	if !one.Interrupted || last.Event != "error" || !strings.HasPrefix(last.Text, "[API Error: Quota exceeded") ||
+		!one.EndedAt.Equal(time.Date(2026, 11, 3, 9, 0, 10, 0, time.UTC)) {
+		t.Errorf("turn 1 interrupted %v, ended %v, last %+v: the error cut off the work", one.Interrupted, one.EndedAt, last)
+	}
+	if got := sourcetest.Kinds(two); got != "prompt event" || !two.Interrupted {
+		t.Errorf("turn 2 = %s, interrupted %v: refused before any answer", got, two.Interrupted)
+	}
+	if got := sourcetest.Kinds(three); got != "prompt reply event" || three.Interrupted || three.Answer != "The test is fixed." {
+		t.Errorf("turn 3 = %s, interrupted %v: the error after the answer ended nothing", got, three.Interrupted)
+	}
+	// Without a summary the first ask is the title
+	if s.Session.Title != "run the tests and fix what fails" {
+		t.Errorf("title = %q", s.Session.Title)
+	}
+}
+
+// The summary Gemini CLI writes of a session is what its session list shows: it is the
+// session's title, the last one written over any before it, whether on a metadata line or
+// in a patch. A subagent's summary is the start of what it concluded, and its title stays
+// the task it was given.
+func TestTheSummaryIsTheTitle(t *testing.T) {
+	root := t.TempDir()
+	chats := filepath.Join(root, "9f2c", "chats")
+	sourcetest.Write(t, filepath.Join(chats, "session-2026-11-04T09-00-aaaa1111.jsonl"),
+		`{"sessionId":"aaaa1111","projectHash":"9f2c","startTime":"2026-11-04T09:00:00.000Z","lastUpdated":"2026-11-04T09:00:00.000Z","kind":"main"}`,
+		`{"id":"u1","timestamp":"2026-11-04T09:00:01.000Z","type":"user","content":[{"text":"why does the login page flash white?"}]}`,
+		`{"id":"g1","timestamp":"2026-11-04T09:00:05.000Z","type":"gemini","content":"The theme loads after the first paint.","model":"gemini-3-pro-preview","tokens":{"input":900,"output":9}}`,
+		`{"$set":{"summary":"Investigate login page flash","memoryScratchpad":{"version":1,"toolSequence":[]}}}`,
+	)
+	// --resume opens with the metadata again, the summary in it, and a later one replaces it
+	sourcetest.Write(t, filepath.Join(chats, "session-2026-11-04T10-00-bbbb2222.jsonl"),
+		`{"sessionId":"bbbb2222","projectHash":"9f2c","startTime":"2026-11-04T10:00:00.000Z","lastUpdated":"2026-11-04T10:00:00.000Z","summary":"Rename the config keys","kind":"main"}`,
+		`{"id":"u1","timestamp":"2026-11-04T10:00:01.000Z","type":"user","content":[{"text":"and the env vars too"}]}`,
+		`{"$set":{"summary":"Rename config keys and environment variables"}}`,
+	)
+	sourcetest.Write(t, filepath.Join(chats, "aaaa1111", "agent-1.jsonl"),
+		`{"sessionId":"agent-1","projectHash":"9f2c","startTime":"2026-11-04T09:00:02.000Z","kind":"subagent"}`,
+		`{"id":"u1","timestamp":"2026-11-04T09:00:02.000Z","type":"user","content":[{"text":"Find where the theme is loaded"}]}`,
+		`{"id":"g1","timestamp":"2026-11-04T09:00:04.000Z","type":"gemini","content":"In app.tsx, after mount.","model":"gemini-3-flash-preview"}`,
+		`{"$set":{"summary":"In app.tsx, after mount."}}`,
+	)
+	all := sourcetest.All(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, all...)
+	for id, want := range map[string]string{
+		"aaaa1111": "Investigate login page flash",
+		"bbbb2222": "Rename config keys and environment variables",
+		"agent-1":  "Find where the theme is loaded",
+	} {
+		if got := sourcetest.ByID(t, all, id).Session.Title; got != want {
+			t.Errorf("%s: title %q, want %q", id, got, want)
+		}
 	}
 }
 

@@ -124,11 +124,15 @@ beside them, and subagents (`chats/<session>/<agent>.jsonl`) as sessions beneath
 started them. A command that ran is "success" to Gemini CLI whatever it exited with: the exit
 code, or the signal that ended it, is read from what the shell tool told the model. A call
 cancelled with Esc is one call, interrupted, however many times the file writes it. What `@file`
-added to a question is context; the question is what was typed. Resumed from the session's
-project directory, as Gemini CLI requires. Gemini CLI deletes a project's sessions not used for
-30 days when it next starts in that project — `general.sessionRetention` in
-`~/.gemini/settings.json` sets the age, or turns it off — and a session it deletes leaves the
-index at the next sync.
+added to a question is context; the question is what was typed. A session's title is the summary
+Gemini CLI writes of it, which its own session list shows, and its first ask until there is one;
+a subagent's summary is the start of its conclusion, so a subagent is titled by the task it was
+given. An error Gemini CLI showed — a request refused for quota, a stream cut off — is an `error`
+event; one that came while the model owed an answer, with nothing from the model after it, ended
+the turn, which is marked interrupted. Resumed from the session's project directory, as Gemini
+CLI requires. Gemini CLI deletes a project's sessions not used for 30 days when it next starts in
+that project — `general.sessionRetention` in `~/.gemini/settings.json` sets the age, or turns it
+off — and a session it deletes leaves the index at the next sync.
 
 **Grok CLI** — the update stream, or, before a session's first line of it, the messages it keeps
 beside it. Input tokens include the cache reads, which are taken out; cache writes are read.

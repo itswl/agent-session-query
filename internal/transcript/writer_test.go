@@ -218,6 +218,38 @@ func TestResultsWithoutIDsFindTheirCall(t *testing.T) {
 	}
 }
 
+// An event that ended the turn before the agent was done marks it interrupted, wherever
+// the work had got to; one that did not, an error the work went on past, marks nothing.
+// A fork's copy of either is the parent's.
+func TestAnEventThatStopsTheTurn(t *testing.T) {
+	stopped := EventOf("error", "[API Error: Quota exceeded. (Status: RESOURCE_EXHAUSTED)]")
+	stopped.Stops = true
+	got := collect(t,
+		Message{Role: User, At: at(0), Inherited: true, Blocks: []Block{TextOf("the parent's ask")}},
+		Message{Role: System, At: at(1), Inherited: true, Blocks: []Block{stopped}},
+		user(2, "build it"),
+		Message{Role: Assistant, At: at(3), Blocks: []Block{CallOf("c1", "run_shell_command", map[string]any{"command": "make"})}},
+		Message{Role: ToolRole, At: at(4), Blocks: []Block{ResultOf("c1", "", "ok", Outcome{Status: model.StatusOK})}},
+		Message{Role: System, At: at(5), Blocks: []Block{stopped}},
+		user(6, "try again"),
+		Message{Role: System, At: at(7), Blocks: []Block{EventOf("error", "a retry went through")}},
+		Message{Role: Assistant, At: at(8), Blocks: []Block{TextOf("Built.")}},
+	)
+	if len(got.Turns) != 3 {
+		t.Fatalf("turns = %d, want the copy and two asks", len(got.Turns))
+	}
+	if got.Turns[0].Interrupted {
+		t.Error("the copy's stop is the parent's turn's, not this session's")
+	}
+	one, two := got.Turns[1], got.Turns[2]
+	if !one.Interrupted || !one.EndedAt.Equal(at(5)) || one.Items[len(one.Items)-1].Event != "error" {
+		t.Errorf("turn 1 interrupted=%v ended %v: the error ended it there", one.Interrupted, one.EndedAt)
+	}
+	if two.Interrupted || two.Answer != "Built." {
+		t.Errorf("turn 2 interrupted=%v answer %q: an error that stopped nothing marks nothing", two.Interrupted, two.Answer)
+	}
+}
+
 func TestQueuedPromptOpensNoTurn(t *testing.T) {
 	got := collect(t,
 		user(0, "first"),

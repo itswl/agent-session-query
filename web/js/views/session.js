@@ -560,31 +560,55 @@ export function mount(main, route, ctx) {
     pill.replaceChildren(mode === 'away' ? icon('down') : h('span', { class: 'dot' }), { on: 'Following', away: 'Latest', off: 'Follow' }[mode]);
   }
 
+  // The brief covers the latest turn, the turn in view and every turn after it, or the
+  // whole session: what to hand over is where the reader has got to as often as where the
+  // session ended
   async function openBrief(opener) {
     let brief = '';
-    const body = h('div', { class: 'sheet-body' }, skeleton(6, 'line'));
+    let ctrl = null;
+    const body = h('div', { class: 'sheet-body' });
     const close = () => {
+      ctrl?.abort();
       v.sheet?.remove();
       v.sheet = null;
       for (const el of document.querySelectorAll('[data-inert]')) { el.inert = false; delete el.dataset.inert; }
       opener.focus();
     };
+    const latest = v.recs.at(-1)?.t.index ?? 0;
+    const here = v.recs.length ? v.recs[current()].t.index : 0;
+    const scopes = [
+      { key: 'latest', label: 'Latest turn', params: {} },
+      here > 1 && here < latest && { key: 'from', label: `From #${here}`, params: { from: here } },
+      { key: 'all', label: 'Whole session', params: { since: 'all' } },
+    ].filter(Boolean);
+    const seg = h('div', { class: 'seg-group', role: 'group', 'aria-label': 'What the brief covers' });
+    const load = async (scope) => {
+      for (const b of seg.children) b.setAttribute('aria-pressed', String(b.dataset.key === scope.key));
+      ctrl?.abort();
+      const c = (ctrl = new AbortController());
+      brief = '';
+      body.replaceChildren(skeleton(6, 'line'));
+      try {
+        brief = (await api(base + '/brief' + qs(scope.params), { signal: AbortSignal.any([ctx.signal, c.signal]) })).brief || '';
+        body.replaceChildren(md(brief));
+        body.scrollTop = 0;
+      } catch (e) {
+        if (!isAbort(e)) body.replaceChildren(errorBox(e, () => load(scope)));
+      }
+    };
+    seg.append(...scopes.map((sc) => h('button', { type: 'button', class: 'seg-btn', dataset: { key: sc.key }, 'aria-pressed': 'false', onclick: () => load(sc) }, sc.label)));
     const closeBtn = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close the brief', onclick: close }, icon('x'));
     const sheet = h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'brief-title' },
       h('header', { class: 'sheet-head' }, h('h2', { id: 'brief-title' }, 'Brief'), h('span', { class: 'dim' }, 'a handoff in Markdown'),
         copyButton(() => brief, 'Copy the brief'), closeBtn),
+      h('div', { class: 'sheet-bar' }, seg),
       body);
     v.sheet = h('div', { class: 'sheet-wrap' }, h('div', { class: 'scrim', onclick: close }), sheet);
     v.sheet.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } });
     for (const el of document.body.children) { if (!el.inert) { el.inert = true; el.dataset.inert = '1'; } }
     document.body.append(v.sheet);
     closeBtn.focus();
-    try {
-      brief = (await api(base + '/brief', { signal: ctx.signal })).brief || '';
-      body.replaceChildren(md(brief));
-    } catch (e) {
-      if (!isAbort(e)) body.replaceChildren(errorBox(e));
-    }
+    load(scopes[0]);
   }
 
   // A change to this session: the outline again, each turn compared by what it adds up

@@ -58,13 +58,20 @@ export function md(text) {
   };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const fence = line.match(/^\s{0,3}(`{3,}|~{3,})\s*([^\s`]*)/);
+    const fence = line.match(/^( {0,3})(`{3,}|~{3,})\s*([^\s`]*)/);
     if (fence) {
       flush();
-      list = null;
+      // The fence's own indent is not the code's: a block beneath a list item is indented
+      // to sit in it, and is part of it
+      const pad = new RegExp(`^ {0,${fence[1].length}}`);
       const body = [];
-      for (i++; i < lines.length && !lines[i].trimStart().startsWith(fence[1]); i++) body.push(lines[i]);
-      out.push(code(body.join('\n'), fence[2]));
+      for (i++; i < lines.length && !lines[i].trimStart().startsWith(fence[2]); i++) body.push(lines[i].replace(pad, ''));
+      const block = code(body.join('\n'), fence[3]);
+      if (list && fence[1].length >= 2) list.el.lastChild.append(block);
+      else {
+        list = null;
+        out.push(block);
+      }
       continue;
     }
     const head = line.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/);

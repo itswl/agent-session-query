@@ -54,8 +54,10 @@ step 31 in it. Any of these can be pasted to someone with the same history.
 
 The head says what the session is: title, ref, project, branch, when, totals, and the command
 that reopens it in its own CLI. **Brief** opens the [handoff brief](cli.md#handing-over) with a
-copy button; **Export** downloads the session as Markdown, JSON, JSON Lines or a standalone
-page. A subagent's transcript links to the session it ran in, and a session lists its subagents.
+copy button, of the latest turn — or, chosen above it, of the turn in view and every turn after
+it (*From #7*), or of the whole session; **Export** downloads the session as Markdown, JSON,
+JSON Lines or a standalone page. A subagent's transcript links to the session it ran in, and a
+session lists its subagents.
 
 ![A session](screenshots/session.png)
 

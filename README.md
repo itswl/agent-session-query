@@ -101,6 +101,26 @@ asq doctor     # which stores were found, and whether each reads
 asq ls         # the first run indexes your history: about ten seconds per gigabyte
 ```
 
+## Uninstall
+
+None of what asq wrote is your history — the stores belong to the CLIs and are never
+touched. What there is to remove, in any order, on macOS and Linux:
+
+```sh
+rm ~/.local/bin/asq                          # sudo rm /usr/local/bin/asq, if that is where it went
+rm -rf ~/Library/Caches/asq ~/.cache/asq     # the index, rebuilt when needed
+rm -rf "$HOME/Library/Application Support/asq" ~/.local/state/asq   # the state: the sign-in key, what a collector was sent
+```
+
+On Windows, delete `%LOCALAPPDATA%\Programs\asq`, `%LocalAppData%\asq` and `%AppData%\asq`,
+and remove the `asq` entry from your user PATH. `ASQ_INDEX` or `ASQ_STATE` moved the last
+two elsewhere — remove them where you put them. A line added to the shell's rc for the
+PATH can go too.
+
+If `asq serve` was kept running, take the service down before the binary — the launchd
+agent, the systemd unit or the scheduled task, each named in [Deploying](docs/deploy.md);
+a container is `docker rm` and its `/data` volume.
+
 ## Commands
 
 | | |

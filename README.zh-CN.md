@@ -94,6 +94,24 @@ asq doctor     # 找到了哪些存储，各自是否能读
 asq ls         # 第一次运行会建索引：每 GB 历史大约十秒
 ```
 
+## 卸载
+
+asq 写下的任何东西都不是你的历史——各 CLI 的存储归它们自己，asq 从不改动。要删的只有
+这些，顺序随意（macOS 与 Linux）：
+
+```sh
+rm ~/.local/bin/asq                          # 装到了 /usr/local/bin 的话：sudo rm /usr/local/bin/asq
+rm -rf ~/Library/Caches/asq ~/.cache/asq     # 索引，需要时会自动重建
+rm -rf "$HOME/Library/Application Support/asq" ~/.local/state/asq   # 状态：登录签名密钥、已发给 collector 的清单
+```
+
+Windows：删除 `%LOCALAPPDATA%\Programs\asq`、`%LocalAppData%\asq` 和 `%AppData%\asq`，并把
+用户 PATH 里的 `asq` 条目移除。若设过 `ASQ_INDEX` 或 `ASQ_STATE`，后两项在你说的地方，照那里
+删。为 PATH 加过的 shell rc 那一行也可以一并删掉。
+
+若 `asq serve` 是常驻运行的，先按[部署](docs/deploy.md)里写的那样停掉服务——launchd、
+systemd 或计划任务——再删二进制；容器则是 `docker rm` 加它的 `/data` 卷。
+
 ## 命令
 
 | | |

@@ -36,6 +36,8 @@ func TestWorkspaceYAML(t *testing.T) {
 			map[string]string{"name": "n", "cwd": "/w"}},
 		{"never closed", "name: \"open\nsummary: 'open\ncwd: /w\n", map[string]string{"cwd": "/w"}},
 		{"bad escapes", "name: \"\\q\"\nsummary: \"\\x4\"\ncwd: \"\\uD800\"\n", map[string]string{}},
+		{"escapes past the last character", "name: \"\\U00110000\"\nsummary: \"\\U80000041\"\ncwd: \"\\UFFFFFFFF\"\nid: \"\\U0010FFFF\"\n",
+			map[string]string{"id": "\U0010FFFF"}},
 		{"windows line ends", "name: crlf\r\ncwd: /w\r\n", map[string]string{"name": "crlf", "cwd": "/w"}},
 	} {
 		got := yamlScalars(c.doc)

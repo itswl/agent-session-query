@@ -238,9 +238,15 @@ func unescape(s string) (rune, int, bool) {
 	if digits == 0 || len(s) < 1+digits {
 		return 0, 0, false
 	}
+	// Past utf8.MaxRune it is no character, and is turned down before it is made a rune:
+	// eight digits can say more than a rune holds.
 	n, err := strconv.ParseUint(s[1:1+digits], 16, 32)
-	if err != nil || !utf8.ValidRune(rune(n)) {
+	if err != nil || n > utf8.MaxRune {
 		return 0, 0, false
 	}
-	return rune(n), 1 + digits, true
+	r := rune(n)
+	if !utf8.ValidRune(r) {
+		return 0, 0, false
+	}
+	return r, 1 + digits, true
 }

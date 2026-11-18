@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"database/sql"
 	"math"
 	"slices"
 	"sort"
@@ -118,7 +119,7 @@ func (ix *Index) Search(ctx context.Context, q Query, f Filter, o SearchOptions)
 	if o.PerSession == 0 {
 		o.PerSession = 3
 	}
-	total, sessions, cands, err := ix.candidates(ctx, inTurns(match, f), f, o)
+	total, sessions, cands, err := ix.candidates(ctx, wordsQuery{match: inTurns(match, f)}, f, o)
 	if err != nil {
 		return res, err
 	}
@@ -151,13 +152,37 @@ type cand struct {
 	at    int64
 }
 
-// candidates counts the turns an expression matches, and ranks enough of them that the
-// page asked for is filled after one session's surplus is set aside.
-func (ix *Index) candidates(ctx context.Context, match string, f Filter, o SearchOptions) (total, sessions int, cands []cand, err error) {
-	where, args := f.where()
-	from := ` FROM words JOIN turns t ON t.sid = (words.rowid >> 20) AND t.idx = (words.rowid & 1048575)
-JOIN sessions s ON s.sid = t.sid WHERE words MATCH ? AND ` + where
-	args = append([]any{match}, args...)
+// wordsFrom joins each row of the words table to its turn, as t, and the turn's session, as s.
+const wordsFrom = ` FROM words JOIN turns t ON t.sid = (words.rowid >> 20) AND t.idx = (words.rowid & 1048575)
+JOIN sessions s ON s.sid = t.sid`
+
+// wordsQuery is what a search asks of the words table: the rows an expression matches —
+// and, for a partial match of more words than are spelled out (see atLeast), how many of
+// terms each of those rows must match as well.
+type wordsQuery struct {
+	match string
+	terms []string
+	least int
+}
+
+// where renders the query as conditions on the words table, with their arguments.
+func (w wordsQuery) where() (string, []any) {
+	cond, args := `words MATCH ?`, []any{w.match}
+	if w.least > 0 {
+		n, more := heldCount(w.terms)
+		cond += ` AND ` + n + ` >= ?`
+		args = append(append(args, more...), w.least)
+	}
+	return cond, args
+}
+
+// candidates counts the turns a query matches, and ranks enough of them that the page
+// asked for is filled after one session's surplus is set aside.
+func (ix *Index) candidates(ctx context.Context, w wordsQuery, f Filter, o SearchOptions) (total, sessions int, cands []cand, err error) {
+	cond, args := w.where()
+	where, more := f.where()
+	from := wordsFrom + ` WHERE ` + cond + ` AND ` + where
+	args = append(args, more...)
 
 	if err := ix.ro.QueryRowContext(ctx, `SELECT count(*), count(DISTINCT t.sid)`+from, args...).Scan(&total, &sessions); err != nil {
 		return 0, 0, nil, err
@@ -265,17 +290,17 @@ func (ix *Index) hits(ctx context.Context, cands []cand, q Query, o SearchOption
 }
 
 // maxChoices is how many ways of choosing some of a query's words closest spells out in
-// one expression. Past it, the turns that hold any of the words are taken, and ordered
-// by how many they hold.
+// one expression. Past it, the turns that hold any of the words are taken, and each is
+// counted the words it holds (see heldCount).
 const maxChoices = 16
 
 // closest answers a search no turn matched whole: with the turns that hold the most of
 // its words, best first, each saying which words it lacks — and with the words no turn
 // holds at all. The words a query excludes stay excluded.
 //
-// It asks for the turns that hold all the words but one, then all but two, and so on,
-// leaving out from the start any word no turn holds: the first that some turn answers is
-// the closest there is.
+// How many words those turns hold is found first, leaving out from the start any word no
+// turn holds (see most); the turns that hold that many are then ranked as any search's
+// are, and paged alike, however many words the query has.
 func (ix *Index) closest(ctx context.Context, q Query, f Filter, o SearchOptions) (SearchResult, error) {
 	res := SearchResult{Hits: []Hit{}}
 	var words []Term
@@ -303,59 +328,74 @@ func (ix *Index) closest(ctx context.Context, q Query, f Filter, o SearchOptions
 			res.Missing = append(res.Missing, t.String())
 		}
 	}
-	if len(words) < 2 {
+	if len(words) < 2 || len(present) == 0 {
 		return res, nil
 	}
-	for k := min(len(present), len(words)-1); k >= 1; k-- {
-		total, sessions, cands, err := ix.candidates(ctx, excluding(atLeast(exprs, k), not), f, o)
-		if err != nil {
-			return res, err
-		}
-		if total == 0 {
-			continue
-		}
-		held, err := ix.held(ctx, exprs, cands)
-		if err != nil {
-			return res, err
-		}
-		count := func(c cand) int {
-			n := 0
-			for _, ok := range held[turnRowID(c.sid, c.idx)] {
-				if ok {
-					n++
-				}
-			}
-			return n
-		}
-		sort.SliceStable(cands, func(i, j int) bool { return count(cands[i]) > count(cands[j]) })
-		lacks := map[int64][]string{}
-		for _, c := range cands {
-			id := turnRowID(c.sid, c.idx)
-			has := held[id]
-			var l []string
-			for i, t := range present {
-				if !has[i] {
-					l = append(l, t.String())
-				}
-			}
-			lacks[id] = append(l, res.Missing...)
-		}
-		res.Total, res.Sessions = total, sessions
-		res.Partial = &Partial{Words: len(words), Held: count(cands[0])}
-		res.Hits = ix.hits(ctx, cands, q, o, lacks, f.SID == 0)
-		return res, nil
+	k, err := ix.most(ctx, exprs, not, f, min(len(present), len(words)-1))
+	if err != nil || k == 0 {
+		return res, err
 	}
+	total, sessions, cands, err := ix.candidates(ctx, atLeast(exprs, k, not), f, o)
+	if err != nil || total == 0 {
+		return res, err
+	}
+	held, err := ix.held(ctx, exprs, cands)
+	if err != nil {
+		return res, err
+	}
+	lacks := map[int64][]string{}
+	for _, c := range cands {
+		id := turnRowID(c.sid, c.idx)
+		var l []string
+		for i, t := range present {
+			if !held[id][i] {
+				l = append(l, t.String())
+			}
+		}
+		lacks[id] = append(l, res.Missing...)
+	}
+	res.Total, res.Sessions = total, sessions
+	res.Partial = &Partial{Words: len(words), Held: k}
+	res.Hits = ix.hits(ctx, cands, q, o, lacks, f.SID == 0)
 	return res, nil
 }
 
-// atLeast is an expression for the turns that hold at least k of the terms' expressions:
-// any k of them together. Where there are more than maxChoices ways to choose, it is any one.
-func atLeast(exprs []string, k int) string {
+// most is how many of the terms' expressions the turns that hold the most of them hold,
+// among those the filter selects and none of not matches: at most k, which no turn holds
+// more than, and 0 when none holds any. It asks for k of them together, then k-1, and so
+// on, while there are few ways to choose them; past that, it counts them in each turn
+// that holds any.
+func (ix *Index) most(ctx context.Context, exprs, not []string, f Filter, k int) (int, error) {
+	for ; k >= 1; k-- {
+		w := atLeast(exprs, k, not)
+		if w.least == 0 {
+			ok, err := ix.holds(ctx, w.match, f)
+			if err != nil || ok {
+				return k, err
+			}
+			continue
+		}
+		n, args := heldCount(exprs)
+		where, more := f.where()
+		var most sql.NullInt64
+		err := ix.ro.QueryRowContext(ctx, `SELECT max(`+n+`)`+wordsFrom+` WHERE words MATCH ? AND `+where,
+			append(append(args, w.match), more...)...).Scan(&most)
+		return min(int(most.Int64), k), err
+	}
+	return 0, nil
+}
+
+// atLeast is what a search asks of the words table for the turns that hold at least k of
+// the terms' expressions and none of not: any k of them together — or, where there are
+// more than maxChoices ways to choose them, any of them, each turn counted (see heldCount).
+func atLeast(exprs []string, k int, not []string) wordsQuery {
 	switch {
 	case k >= len(exprs):
-		return strings.Join(exprs, " AND ")
-	case k <= 1 || choices(len(exprs), k) > maxChoices:
-		return strings.Join(exprs, " OR ")
+		return wordsQuery{match: excluding(strings.Join(exprs, " AND "), not)}
+	case k <= 1:
+		return wordsQuery{match: excluding(strings.Join(exprs, " OR "), not)}
+	case choices(len(exprs), k) > maxChoices:
+		return wordsQuery{match: excluding(strings.Join(exprs, " OR "), not), terms: exprs, least: k}
 	}
 	var groups []string
 	pick := make([]int, k)
@@ -375,7 +415,19 @@ func atLeast(exprs []string, k int) string {
 		}
 	}
 	choose(0, 0)
-	return strings.Join(groups, " OR ")
+	return wordsQuery{match: excluding(strings.Join(groups, " OR "), not)}
+}
+
+// heldCount is SQL for how many of the expressions a row of the words table matches, with
+// its arguments. The rows each expression matches are looked up once for the statement.
+func heldCount(exprs []string) (string, []any) {
+	parts := make([]string, len(exprs))
+	args := make([]any, len(exprs))
+	for i, e := range exprs {
+		parts[i] = `(words.rowid IN (SELECT rowid FROM words WHERE words MATCH ?))`
+		args[i] = e
+	}
+	return "(" + strings.Join(parts, " + ") + ")", args
 }
 
 // choices is n choose k.
@@ -391,8 +443,8 @@ func choices(n, k int) int {
 func (ix *Index) holds(ctx context.Context, match string, f Filter) (bool, error) {
 	where, args := f.where()
 	var n int
-	err := ix.ro.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM words JOIN turns t ON t.sid = (words.rowid >> 20) AND t.idx = (words.rowid & 1048575)
-JOIN sessions s ON s.sid = t.sid WHERE words MATCH ? AND `+where+` LIMIT 1)`, append([]any{match}, args...)...).Scan(&n)
+	err := ix.ro.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1`+wordsFrom+` WHERE words MATCH ? AND `+where+` LIMIT 1)`,
+		append([]any{match}, args...)...).Scan(&n)
 	return n > 0, err
 }
 

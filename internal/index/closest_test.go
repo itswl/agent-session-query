@@ -60,8 +60,8 @@ func TestSearchCloseToTheWords(t *testing.T) {
 			"one word, which the exclusions leave nowhere: nothing to come close with"},
 		{"ECONNREFUSED flaky map order sorting keys 数据库", []string{"aaaa1111#1 lacks 数据库"}, &index.Partial{Words: 7, Held: 6}, nil,
 			"all the words but one"},
-		// Eight words, the best turns holding three: past the ways of choosing six that are
-		// spelled out, the turns holding any are taken and ordered by how many they hold
+		// Eight words, the best turns holding three: past the ways of choosing them that are
+		// spelled out, the turns are counted
 		{"ECONNREFUSED sorting map 数据库 indexes tables rotate finished", nil, &index.Partial{Words: 8, Held: 3}, nil,
 			"many words"},
 	} {
@@ -84,14 +84,14 @@ func TestSearchCloseToTheWords(t *testing.T) {
 		}
 	}
 
-	// Many words: the turns holding three first, then those holding two
+	// Many words: the turns holding three, and not those holding two
 	res, _ := a.Index.Search(ctx, index.ParseQuery("ECONNREFUSED sorting map 数据库 indexes tables rotate finished"), f, index.SearchOptions{PerSession: -1})
 	var held []int
 	for _, h := range res.Hits {
 		held = append(held, 8-len(h.Lacks))
 	}
-	if !reflect.DeepEqual(held, []int{3, 3, 2, 2}) {
-		t.Errorf("many words: the hits hold %v of them, want the most first: %q", held, hitNames(res))
+	if !reflect.DeepEqual(held, []int{3, 3}) {
+		t.Errorf("many words: the hits hold %v of them, want those that hold the most: %q", held, hitNames(res))
 	}
 
 	// A word a hit lacks is not shown as found where it is only part of another word: uild
@@ -374,5 +374,37 @@ func TestATitleFindsItsSessionOnce(t *testing.T) {
 	res, _ = a.Index.Search(ctx, index.ParseQuery("billing step"), f, index.SearchOptions{PerSession: -1, Limit: 100})
 	if res.Partial == nil || !reflect.DeepEqual(res.Missing, []string{"billing"}) {
 		t.Errorf("billing step in the session = %q, partial %+v, missing %q: no turn says billing", hitNames(res), res.Partial, res.Missing)
+	}
+}
+
+func TestPartialMatchesOfManyWords(t *testing.T) {
+	// One long turn holds three of six words; three hundred short ones hold one each, and
+	// each of them weighs more than the long one by the ranking
+	h := fixture.Write(t)
+	const id = "eeee5555-0000-4000-8000-000000000005"
+	log := strings.Repeat("a line of a long build log with nothing in it\n", 200)
+	turns := []turnSaid{{ask: "build it", output: log + "alpha bravo charlie\n" + log, reply: "Built."}}
+	for i := range 300 {
+		turns = append(turns, turnSaid{ask: []string{"delta", "echo", "foxtrot"}[i%3], reply: "ok"})
+	}
+	writeSession(t, h, id, "", turns)
+	a := openSynced(t, h)
+	q := index.ParseQuery("alpha bravo charlie delta echo foxtrot")
+	for _, offset := range []int{0, 10, 50} {
+		res, err := a.Index.Search(context.Background(), q, filter(a), index.SearchOptions{Limit: 10, Offset: offset, PerSession: -1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p := res.Partial; p == nil || p.Words != 6 || p.Held != 3 || res.Total != 1 {
+			t.Errorf("offset %d: partial %+v, total %d: want the one turn that holds three", offset, p, res.Total)
+		}
+		for _, h := range res.Hits {
+			if len(h.Lacks) != 3 {
+				t.Errorf("offset %d: %s lacks %q, and the closest lack three", offset, h.Ref, h.Lacks)
+			}
+		}
+		if names := hitNames(res); offset == 0 && (len(names) != 1 || !strings.HasPrefix(names[0], "eeee5555#1 ")) || offset > 0 && len(names) > 0 {
+			t.Errorf("offset %d: %q", offset, names)
+		}
 	}
 }

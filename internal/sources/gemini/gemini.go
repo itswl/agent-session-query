@@ -491,12 +491,13 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	}
 	patched := rd.last // a patch's own time, where it carried one
 	// Whether the model went on after each row, before the person spoke again: what tells
-	// an error that ended a turn from one the work got past
+	// an error that ended a turn from one the work got past. The row Gemini CLI writes in
+	// place of a response that never came is not the model going on
 	wentOn := make([]bool, len(msgs))
 	next := ""
 	for i := len(msgs) - 1; i >= 0; i-- {
 		wentOn[i] = next == "gemini"
-		if t := msgs[i].Type; t == "user" || t == "gemini" {
+		if t := msgs[i].Type; (t == "user" || t == "gemini") && !standIn(msgs[i]) {
 			next = t
 		}
 	}
@@ -588,6 +589,11 @@ func (rd *reader) add(m *message, wentOn bool) {
 		}
 		rd.owed = true
 	case "gemini":
+		if standIn(m) {
+			// Not the model's: what ended the turn — an error, the person — is already
+			// filed, and the words would read as its answer
+			return
+		}
 		blocks, answers := rd.blocks(m)
 		// A row with calls hands their results back to the model; one that says something
 		// and calls nothing is its answer. A row of only thinking is neither
@@ -652,6 +658,21 @@ var cancelNotices = map[string]bool{"Request cancelled.": true, "User cancelled 
 // eventError is the event an error row is: the kind the adapters give an error the CLI
 // reports in a session.
 const eventError = "error"
+
+// interruptedResponse is what Gemini CLI writes as the model's when a tool's result was
+// never answered — the request failed, the stream broke off — so that the next prompt is
+// a turn of its own (packages/core/src/utils/historyHardening.ts).
+const interruptedResponse = "[The previous response was interrupted before it completed.]"
+
+// standIn reports whether a model row is the one Gemini CLI makes of its own in place of a
+// response that never came: closeUnansweredToolResponseTurn in
+// packages/core/src/core/geminiChat.ts writes it as the next prompt is sent, through
+// recordSyntheticMessage — no model, no tokens, no thinking, nothing but those words. A row
+// the model wrote has a model.
+func standIn(m *message) bool {
+	return m.Type == "gemini" && m.Model == "" && usageOf(m.Tokens) == nil && thoughtText(m.Thoughts) == "" &&
+		len(kit.List(m.ToolCalls)) == 0 && strings.TrimSpace(kit.ContentText(m.Content)) == interruptedResponse
+}
 
 // has reports whether any of the blocks is of the type, with something in it.
 func has(blocks []transcript.Block, kind transcript.BlockType) bool {

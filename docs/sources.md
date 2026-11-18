@@ -137,10 +137,12 @@ Gemini CLI writes of it, which its own session list shows, and its first ask unt
 a subagent's summary is the start of its conclusion, so a subagent is titled by the task it was
 given. An error Gemini CLI showed — a request refused for quota, a stream cut off — is an `error`
 event; one that came while the model owed an answer, with nothing from the model after it, ended
-the turn, which is marked interrupted. Resumed from the session's project directory, as Gemini
-CLI requires. Gemini CLI deletes a project's sessions not used for 30 days when it next starts in
-that project — `general.sessionRetention` in `~/.gemini/settings.json` sets the age, or turns it
-off — and a session it deletes leaves the index at the next sync.
+the turn, which is marked interrupted. The row Gemini CLI writes in the model's place once such a
+turn is over ("The previous response was interrupted…") is not the model's, and is not read. An
+error that ended nothing does not move the turn's end. Resumed from the session's project
+directory, as Gemini CLI requires. Gemini CLI deletes a project's sessions not used for 30 days
+when it next starts in that project — `general.sessionRetention` in `~/.gemini/settings.json`
+sets the age, or turns it off — and a session it deletes leaves the index at the next sync.
 
 **Grok CLI** — the update stream, or, before a session's first line of it, the messages it keeps
 beside it. Input tokens include the cache reads, which are taken out; cache writes are read.

@@ -608,9 +608,28 @@ func TestTheFormatAsGeminiCLIWritesIt(t *testing.T) {
 // its time. One after the answer, such as a command typed between turns that failed, ends
 // nothing. The rows are built from packages/core/src/services/chatRecordingTypes.ts, the
 // error's words from packages/core/src/utils/errorParsing.ts.
+//
+// A turn cut off after a tool's result is closed, as the next prompt is sent, with a model
+// row Gemini CLI makes of its own — no model, no tokens, only the words that say the
+// response was interrupted (closeUnansweredToolResponseTurn in
+// packages/core/src/core/geminiChat.ts, written to the file as it is made since
+// 0.69.0-preview.0). It is not the model going on, nor its answer, nor a model call: the
+// turn still ended at the error.
 func TestAnErrorThatEndedTheTurn(t *testing.T) {
+	for _, closed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "as 0.68 writes it", true: "closed as 0.69 writes it"}[closed], func(t *testing.T) {
+			anErrorThatEndedTheTurn(t, closed)
+		})
+	}
+}
+
+func anErrorThatEndedTheTurn(t *testing.T, closed bool) {
 	root := t.TempDir()
 	quota := `[API Error: Quota exceeded for quota metric 'Generate Content API requests per minute' (Status: RESOURCE_EXHAUSTED)]\nPlease wait and try again later. To increase your limits, request a quota increase through AI Studio, or switch to another /auth method`
+	placeholder := ``
+	if closed {
+		placeholder = `{"id":"p1","timestamp":"2026-11-03T09:04:59.990Z","type":"gemini","content":[{"text":"[The previous response was interrupted before it completed.]"}],"thoughts":[],"tokens":null}`
+	}
 	sourcetest.Write(t, filepath.Join(root, "9f2c", "chats", "session-2026-11-03T09-00-1c2d3e4f.jsonl"),
 		`{"sessionId":"1c2d3e4f-5a6b","projectHash":"9f2c","startTime":"2026-11-03T09:00:00.000Z","lastUpdated":"2026-11-03T09:00:00.000Z","kind":"main"}`,
 		`{"id":"u1","timestamp":"2026-11-03T09:00:01.000Z","type":"user","content":[{"text":"run the tests and fix what fails"}]}`,
@@ -619,6 +638,7 @@ func TestAnErrorThatEndedTheTurn(t *testing.T) {
 		`{"id":"u2","timestamp":"2026-11-03T09:00:09.100Z","type":"user","content":[{"functionResponse":{"id":"run-1","name":"run_shell_command","response":{"output":"Output: 1 failing\nExit Code: 1"}}}]}`,
 		`{"id":"e1","timestamp":"2026-11-03T09:00:10.000Z","type":"error","content":"`+quota+`"}`,
 		`{"$set":{"lastUpdated":"2026-11-03T09:00:10.000Z"}}`,
+		placeholder,
 		`{"id":"u3","timestamp":"2026-11-03T09:05:00.000Z","type":"user","content":[{"text":"try again"}]}`,
 		`{"id":"e2","timestamp":"2026-11-03T09:05:01.000Z","type":"error","content":"`+quota+`"}`,
 		`{"id":"u4","timestamp":"2026-11-03T10:00:00.000Z","type":"user","content":[{"text":"now?"}]}`,
@@ -637,8 +657,9 @@ func TestAnErrorThatEndedTheTurn(t *testing.T) {
 	}
 	last := one.Items[len(one.Items)-1]
 	if !one.Interrupted || last.Event != "error" || !strings.HasPrefix(last.Text, "[API Error: Quota exceeded") ||
-		!one.EndedAt.Equal(time.Date(2026, 11, 3, 9, 0, 10, 0, time.UTC)) {
-		t.Errorf("turn 1 interrupted %v, ended %v, last %+v: the error cut off the work", one.Interrupted, one.EndedAt, last)
+		!one.EndedAt.Equal(time.Date(2026, 11, 3, 9, 0, 10, 0, time.UTC)) || one.Answer != "" || len(one.Calls) != 1 {
+		t.Errorf("turn 1 interrupted %v, ended %v, answer %q, %d calls, last %+v: the error cut off the work",
+			one.Interrupted, one.EndedAt, one.Answer, len(one.Calls), last)
 	}
 	if got := sourcetest.Kinds(two); got != "prompt event" || !two.Interrupted {
 		t.Errorf("turn 2 = %s, interrupted %v: refused before any answer", got, two.Interrupted)

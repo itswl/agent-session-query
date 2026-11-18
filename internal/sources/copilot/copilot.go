@@ -478,9 +478,16 @@ func (r *reader) line(raw []byte, linked bool) {
 		if lane == "" && u.Model != "" && !inherited {
 			r.answered = u.Model
 		}
-		add(transcript.Message{Role: transcript.Assistant, Response: u.APICallID, Model: u.Model,
+		// The record is written once the call is done, which is when its duration is
+		// known: the call began that long before it
+		dur := millis(u.Duration)
+		began := at
+		if !at.IsZero() {
+			began = at.Add(-time.Duration(dur) * time.Millisecond)
+		}
+		add(transcript.Message{Role: transcript.Assistant, At: began, Response: u.APICallID, Model: u.Model,
 			Usage: u.canonical(), CostUSD: u.costUSD(), Stop: u.FinishReason,
-			DurMs: millis(u.Duration), TTFTMs: millis(u.TimeToFirstTokenMs)})
+			DurMs: dur, TTFTMs: millis(u.TimeToFirstTokenMs)})
 
 	case "tool.user_requested":
 		// A tool the person ran themselves (a ! command): a call no response asked for

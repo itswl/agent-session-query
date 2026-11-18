@@ -130,6 +130,26 @@ func TestOneCallPerResponse(t *testing.T) {
 	}
 }
 
+// A response measured on a row of its own, written once it was done, and given the time the
+// response began: the measure is the call's, which ends that long after, and so does the turn.
+func TestAResponseMeasuredOnALaterRow(t *testing.T) {
+	got := collect(t,
+		user(0, "go"),
+		Message{Role: Assistant, At: at(5), Response: "r1", Model: "m", Blocks: []Block{TextOf("done")}},
+		Message{Role: Assistant, At: at(2), Response: "r1", Model: "m", Usage: &model.Usage{Input: 3, Output: 4}, DurMs: 4000, TTFTMs: 700},
+	)
+	turn := got.Turns[0]
+	if len(turn.Calls) != 1 {
+		t.Fatalf("calls = %+v", turn.Calls)
+	}
+	if c := turn.Calls[0]; c.DurMs != 4000 || c.TTFTMs != 700 || !c.At.Equal(at(5)) || !c.EndAt.Equal(at(6)) || c.Usage == nil {
+		t.Errorf("call = %+v", c)
+	}
+	if !turn.EndedAt.Equal(at(6)) {
+		t.Errorf("turn ended %v", turn.EndedAt)
+	}
+}
+
 // What a CLI totalled for the session is the session's total where it can be: where it
 // holds at least what the responses add up to.
 func TestRecordedTotals(t *testing.T) {

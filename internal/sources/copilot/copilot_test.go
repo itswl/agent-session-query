@@ -107,6 +107,20 @@ func TestSession(t *testing.T) {
 	if turn.Items[1].Call != 1 || turn.Items[4].Call != 3 {
 		t.Errorf("the thinking and the reply are not their calls': %+v", turn.Items)
 	}
+	// What a call took, and how soon its first token came, are on the record of what it
+	// used, written once it was done: the call ends then, and so does the turn, with the
+	// last call's record — not that long after it
+	for _, c := range turn.Calls {
+		if c.DurMs != 1500 || c.TTFTMs != 420 {
+			t.Errorf("%s: took %d ms, first token at %d ms", c.ID, c.DurMs, c.TTFTMs)
+		}
+	}
+	if got := first.EndAt.Format("15:04:05.000"); got != "09:00:07.600" {
+		t.Errorf("the first call ended %s", got)
+	}
+	if got := turn.EndedAt.Format("15:04:05.000"); got != "09:00:15.100" {
+		t.Errorf("the turn ended %s", got)
+	}
 }
 
 func near(a, b float64) bool { return a-b < 1e-12 && b-a < 1e-12 }

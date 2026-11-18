@@ -310,8 +310,20 @@ func (w *Writer) callOf(cur *turn, m Message) int {
 			if m.Stop != "" {
 				c.Stop = m.Stop
 			}
-			if m.At.After(c.EndAt) {
-				c.EndAt = m.At
+			// A CLI that measures a response may write the measure on a row of its own,
+			// once the response is done: the call has it, when no row before had one
+			if c.DurMs == 0 {
+				c.DurMs = m.DurMs
+			}
+			if c.TTFTMs == 0 {
+				c.TTFTMs = m.TTFTMs
+			}
+			end := m.At
+			if m.DurMs > 0 && !m.At.IsZero() {
+				end = m.At.Add(time.Duration(m.DurMs) * time.Millisecond)
+			}
+			if end.After(c.EndAt) {
+				c.EndAt = end
 			}
 			return i + 1
 		}

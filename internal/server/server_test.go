@@ -99,6 +99,7 @@ func TestARecordIsNotPublishedByAccident(t *testing.T) {
 		"a LAN address, no token":    {Host: "192.168.1.20"},
 		"any origin, no token":       {Origins: []string{"*"}},
 		"a token someone could type": {Host: "0.0.0.0", Token: "hunter2"},
+		"a proxy in front, no token": {ProxyHeader: "X-Real-IP"},
 	} {
 		if _, err := New(a, opts); err == nil {
 			t.Errorf("%s: the server started", name)
@@ -380,6 +381,73 @@ func TestOnlyThisMachineWithoutAToken(t *testing.T) {
 	}
 	if !ok(call{path: "/", header: map[string]string{"Sec-Fetch-Site": "cross-site"}}) {
 		t.Error("a link to the page from elsewhere is refused: the page itself holds nothing")
+	}
+}
+
+// A proxy or a tunnel on this machine connects from loopback and may write Host:
+// localhost — cloudflared's httpHostHeader, ngrok's host-header rewrite, Caddy's
+// header_up Host — and pass on what the whole network sends. Without a token, whatever
+// bears a proxy's mark is refused, and written down; what reached the port directly is
+// served as it was.
+func TestWithoutATokenNothingComesThroughAProxy(t *testing.T) {
+	var said bytes.Buffer
+	s, _, _ := build(t, Options{Log: &said})
+	const local = "127.0.0.1:50000"
+	const ping = `{"jsonrpc":"2.0","id":1,"method":"ping"}`
+	tunnel := map[string]string{"Host": "localhost", "X-Forwarded-For": "203.0.113.9", "Cf-Connecting-Ip": "203.0.113.9"}
+	refusedAs := func(name string, c call) {
+		t.Helper()
+		rec := c.do(s)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s = %d, want 403", name, rec.Code)
+			return
+		}
+		var body struct{ Error string }
+		json.Unmarshal(rec.Body.Bytes(), &body)
+		if !strings.Contains(body.Error, "has no token") || !strings.Contains(body.Error, "through a proxy") || !strings.Contains(body.Error, "ASQ_TOKEN") {
+			t.Errorf("%s: the refusal does not say why, or what to do: %q", name, body.Error)
+		}
+	}
+	refusals := 0
+	for name, c := range map[string]call{
+		"the API, through a tunnel that writes Host: localhost": {path: "/api/sessions", header: tunnel, remote: local},
+		"the page, through it":                {path: "/", header: tunnel, remote: local},
+		"the MCP endpoint, through it":        {method: http.MethodPost, path: "/mcp", body: ping, header: tunnel, remote: local},
+		"the health check, through it":        {path: "/healthz", header: tunnel, remote: local},
+		"through a proxy that keeps the Host": {path: "/api/sessions", header: map[string]string{"Host": "sessions.example.com", "X-Forwarded-Proto": "https"}, remote: local},
+	} {
+		refusedAs(name, c)
+		refusals++
+	}
+	for _, name := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "Via", "CF-Connecting-IP"} {
+		refusedAs(name+" alone", call{path: "/api/sessions", header: map[string]string{"Host": "127.0.0.1:7717", name: "x"}, remote: local})
+		refusals++
+	}
+
+	// What reached the port directly is served: the page and its requests, an agent's MCP
+	// client, a script
+	for name, c := range map[string]call{
+		"a program":                           {path: "/api/sessions", remote: local},
+		"the page":                            {path: "/", remote: local},
+		"the page's own request":              {path: "/api/sessions", header: map[string]string{"Origin": "http://127.0.0.1:7717", "Sec-Fetch-Site": "same-origin"}, remote: local},
+		"an MCP client in Node":               {method: http.MethodPost, path: "/mcp", body: ping, header: map[string]string{"Sec-Fetch-Mode": "cors", "User-Agent": "node"}, remote: local},
+		"a header no proxy means anything by": {path: "/api/sessions", header: map[string]string{"X-Request-Id": "x"}, remote: local},
+	} {
+		if rec := c.do(s); rec.Code != http.StatusOK {
+			t.Errorf("%s = %d %s", name, rec.Code, rec.Body)
+		}
+	}
+
+	// Written down once for the minute, under the name the limiter gives the caller, and
+	// counted
+	lines := strings.Split(strings.TrimSpace(said.String()), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], `refused "local relayed": this server has no token`) {
+		t.Errorf("what was said of %d refusals: %q", refusals, said.String())
+	}
+	var health struct{ Guard guardCounts }
+	get(t, s, "/api/health", &health)
+	if g := health.Guard; g.Refused != refusals || g.WrongTokens != 0 || g.SignIns != 0 {
+		t.Errorf("counted %+v, after %d refusals", g, refusals)
 	}
 }
 
@@ -902,6 +970,145 @@ func TestGuessesAreChargedToWhoMadeThem(t *testing.T) {
 	}
 }
 
+// A wrong token, a caller refused for too many, a sign-in: each is a line in the log,
+// naming the caller as the limiter does and never what it brought, and a count in
+// /api/health for those the guards let in.
+func TestWhatTheGuardsDidIsWrittenDown(t *testing.T) {
+	var said bytes.Buffer
+	s, _, _ := build(t, Options{Host: "0.0.0.0", Token: token, Log: &said})
+	const guesser, local = "198.51.100.7:40000", "127.0.0.1:50000"
+	const guess = "a-guess-at-the-token-0000"
+	bearer := func(tok string) map[string]string { return map[string]string{"Authorization": "Bearer " + tok} }
+
+	// A caller guesses past its allowance: its first wrong token and its first refusal are
+	// written, the rest of the minute counted
+	for range attemptsMax + 5 {
+		call{path: "/api/sessions", header: bearer(guess), remote: guesser}.do(s)
+	}
+	// Another tries the form once; the page here signs in; an agent asks with the token,
+	// and the page with its cookie, which are not news
+	if rec := (call{method: http.MethodPost, path: "/api/login", body: `{"token":"` + guess + `"}`, remote: "192.0.2.50:40000"}).do(s); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a wrong token at sign-in = %d", rec.Code)
+	}
+	browser := map[string]string{"Origin": "http://127.0.0.1:7717", "Sec-Fetch-Site": "same-origin"}
+	rec := call{method: http.MethodPost, path: "/api/login", body: `{"token":"` + token + `"}`, header: browser, remote: local}.do(s)
+	if rec.Code != http.StatusOK || len(rec.Result().Cookies()) != 1 {
+		t.Fatalf("sign-in = %d", rec.Code)
+	}
+	cookie := rec.Result().Cookies()[0]
+	for name, h := range map[string]map[string]string{"an agent": bearer(token), "the page": {"Cookie": cookie.Name + "=" + cookie.Value}} {
+		if c := (call{path: "/api/sessions", header: h, remote: local}).do(s).Code; c != http.StatusOK {
+			t.Fatalf("%s = %d", name, c)
+		}
+	}
+
+	log := said.String()
+	want := []string{
+		`a wrong token from "198.51.100.7", in an Authorization header`,
+		`refused "198.51.100.7": too many wrong tokens from this caller`,
+		`a wrong token from "192.0.2.50", at sign-in`,
+		`signed in: "local browser"`,
+	}
+	lines := strings.Split(strings.TrimSpace(log), "\n")
+	if len(lines) != len(want) {
+		t.Errorf("%d lines, want %d: %s", len(lines), len(want), log)
+	}
+	for i, line := range lines {
+		if i < len(want) && !strings.HasSuffix(line, " "+want[i]) {
+			t.Errorf("line %d = %q, want it to end %q", i+1, line, want[i])
+		}
+		at, _, _ := strings.Cut(line, " ")
+		if _, err := time.Parse(time.RFC3339, at); err != nil {
+			t.Errorf("line %d does not start with when: %q", i+1, line)
+		}
+	}
+	for what, secret := range map[string]string{"the token": token, "a wrong token": guess, "the cookie": cookie.Value} {
+		if strings.Contains(log, secret) {
+			t.Errorf("the log holds %s: %s", what, log)
+		}
+	}
+
+	// Counted, for those let in and nobody else
+	var health struct{ Guard guardCounts }
+	if err := json.Unmarshal(call{path: "/api/health", header: bearer(token), remote: local}.do(s).Body.Bytes(), &health); err != nil {
+		t.Fatal(err)
+	}
+	if g := health.Guard; g.WrongTokens != attemptsMax+1 || g.Refused != 5 || g.SignIns != 1 || time.Since(g.Since) > time.Minute {
+		t.Errorf("counted %+v", g)
+	}
+	for _, open := range []string{"/api/auth", "/healthz"} {
+		if body := (call{path: open, remote: guesser}).do(s).Body.String(); strings.Contains(body, "wrongTokens") || strings.Contains(body, "guard") {
+			t.Errorf("%s tells anyone what the guards did: %s", open, body)
+		}
+	}
+	if c := (call{path: "/api/health", remote: guesser}).do(s).Code; c != http.StatusUnauthorized {
+		t.Errorf("/api/health without the token = %d", c)
+	}
+}
+
+// A flood is the log's to sum up, not to hold: a caller's first line of each kind in a
+// minute, linesMax lines in all, and once the minute is over a line that says what was
+// not written. The counts go back a day, by the hour.
+func TestTheLogIsNotFloodedByWhatItReportsOn(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 11, 18, 15, 4, 5, 0, time.UTC)
+	d := door{out: &out, began: now.Add(-48 * time.Hour)}
+	written := func() int { return strings.Count(out.String(), "\n") }
+
+	for i := range 100 { // one caller, all minute long
+		d.note(now.Add(time.Duration(i)*500*time.Millisecond), wrongToken, "198.51.100.7", "in an Authorization header")
+	}
+	if n := written(); n != 1 {
+		t.Errorf("one caller, a hundred wrong tokens in a minute: %d lines", n)
+	}
+	for i := range 1000 { // a thousand callers, once each
+		d.note(now.Add(30*time.Second), refused, fmt.Sprintf("2001:db8:%x::/64", i), "too many wrong tokens from this caller")
+	}
+	if n := written(); n != linesMax {
+		t.Errorf("a thousand callers in a minute: %d lines, want %d", n, linesMax)
+	}
+	d.flush(now.Add(59 * time.Second))
+	if n := written(); n != linesMax {
+		t.Errorf("the minute was summed up before it was over: %s", &out)
+	}
+	d.flush(now.Add(time.Minute))
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if want := "the minute from 15:04:05 held more than was written: 99 wrong tokens, 991 refusals"; len(lines) != linesMax+1 || !strings.HasSuffix(lines[linesMax], want) {
+		t.Errorf("the summing up = %q, want %q", lines[len(lines)-1], want)
+	}
+	d.flush(now.Add(2 * time.Minute))
+	if n := written(); n != linesMax+1 {
+		t.Errorf("a minute summed up twice: %s", &out)
+	}
+	// The next minute starts over
+	d.note(now.Add(2*time.Minute), wrongToken, "198.51.100.7", "in an Authorization header")
+	if n := written(); n != linesMax+2 {
+		t.Errorf("the caller's next minute was not written: %s", &out)
+	}
+
+	for name, tc := range map[string]struct {
+		at              time.Time
+		wrong, refusals int
+	}{
+		"a moment later":            {now.Add(3 * time.Minute), 101, 1000},
+		"in the 23rd hour after":    {now.Add(23 * time.Hour), 101, 1000},
+		"the same hour a day after": {now.Add(24 * time.Hour), 0, 0},
+	} {
+		c := d.counts(tc.at)
+		if c.WrongTokens != tc.wrong || c.Refused != tc.refusals || c.SignIns != 0 {
+			t.Errorf("%s: counted %+v, want %d wrong, %d refused", name, c, tc.wrong, tc.refusals)
+		}
+		if want := tc.at.Truncate(time.Hour).Add(-23 * time.Hour); !c.Since.Equal(want) {
+			t.Errorf("%s: counted since %v, want %v", name, c.Since, want)
+		}
+	}
+	// No further back than the server's start
+	fresh := door{began: now}
+	if c := fresh.counts(now.Add(time.Hour)); !c.Since.Equal(now) {
+		t.Errorf("a server started an hour ago counts since %v", c.Since)
+	}
+}
+
 // The callers known — that showed the right token in the last day — outlive a restart, so
 // that someone keeping a proxy's allowance spent cannot shut out, by waiting for an
 // upgrade, a remote agent that was asking a minute before it.
@@ -1064,6 +1271,16 @@ func TestSignInsOutliveARestart(t *testing.T) {
 	takes := func(s *Server, cookie string) bool {
 		return call{path: "/api/sessions", header: map[string]string{"Cookie": cookie}}.do(s).Code == http.StatusOK
 	}
+	// What the server said of its secret: every sign-in is written down as well
+	complaints := func() string {
+		var kept []string
+		for _, line := range strings.Split(strings.TrimSpace(said.String()), "\n") {
+			if line != "" && !strings.Contains(line, " signed in: ") {
+				kept = append(kept, line)
+			}
+		}
+		return strings.Join(kept, "\n")
+	}
 
 	cookie := signIn(start(Options{Token: token, State: dir}), token)
 	if !takes(start(Options{Token: token, State: dir}), cookie) {
@@ -1101,8 +1318,8 @@ func TestSignInsOutliveARestart(t *testing.T) {
 	}
 
 	// Nowhere to keep it: the server runs, sign-ins last as long as it does, and it says so
-	if said.Len() != 0 {
-		t.Errorf("said, with a directory that works: %s", &said)
+	if said := complaints(); said != "" {
+		t.Errorf("said, with a directory that works: %s", said)
 	}
 	blocker := filepath.Join(t.TempDir(), "a-file")
 	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
@@ -1157,8 +1374,9 @@ func TestSignInsOutliveARestart(t *testing.T) {
 			t.Fatal(err)
 		}
 		cookie = signIn(start(Options{Token: token, State: mine}), token)
-		if !takes(start(Options{Token: token, State: mine}), cookie) || said.Len() != 0 {
-			t.Errorf("a directory its group may write was refused: %q", &said)
+		took := takes(start(Options{Token: token, State: mine}), cookie)
+		if said := complaints(); !took || said != "" {
+			t.Errorf("a directory its group may write was refused: %q", said)
 		}
 	}
 

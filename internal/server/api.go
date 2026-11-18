@@ -157,7 +157,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, r, http.StatusOK, h)
+	// What the guards did is for those they let in, as the rest of the report is
+	writeJSON(w, r, http.StatusOK, struct {
+		app.Health
+		Guard guardCounts `json:"guard"`
+	}{h, s.door.counts(time.Now())})
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {

@@ -29,7 +29,7 @@ func cmdServe(ctx context.Context, args []string, io *streams) error {
 	token := c.fs.String("token", "", "what every caller must hold (ASQ_TOKEN; prefer the variable: a flag shows in the process list)")
 	var origins multi
 	c.fs.Var(&origins, "cors-origin", "another origin whose pages may call the API (repeatable; ASQ_CORS_ORIGIN, comma-separated)")
-	proxyHeader := c.fs.String("proxy-header", os.Getenv("ASQ_PROXY_HEADER"), "the header in which a proxy in front names the caller, so that wrong tokens are counted per caller (ASQ_PROXY_HEADER): CF-Connecting-IP behind Cloudflare, X-Real-IP behind nginx")
+	proxyHeader := c.fs.String("proxy-header", os.Getenv("ASQ_PROXY_HEADER"), "the header in which a proxy in front names the caller, so that wrong tokens are counted per caller (ASQ_PROXY_HEADER; takes a token): CF-Connecting-IP behind Cloudflare, X-Real-IP behind nginx")
 	open := c.fs.Bool("open", false, "open the page in the browser once it is up")
 	pageDir := c.fs.String("page-dir", "", "serve the page from this directory, read afresh on every request (for working on it)")
 	if _, err := c.parse(args); err != nil {

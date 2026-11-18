@@ -165,6 +165,7 @@ func TestWhatGoesWrong(t *testing.T) {
 		{[]string{"otel", "--dry-run", "--content", "everything"}, 2, "none, asks or all"},
 		{[]string{"serve", "--host", "0.0.0.0"}, 2, "set a token"},
 		{[]string{"serve", "--proxy-header", "X-Real-IP: 10.0.0.1"}, 2, "takes the name of a header"},
+		{[]string{"serve", "--proxy-header", "X-Real-IP"}, 2, "a server without a token refuses whatever comes through one"},
 	} {
 		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")

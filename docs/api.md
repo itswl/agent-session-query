@@ -14,8 +14,10 @@ signing in and the MCP endpoint. The page is a client of this API and uses nothi
   them back as the characters; a reader that took a reply for a page would find no tag in it.
   A reply carries other people's text and quotes what the caller sent, so this holds for all of
   it, beside the content type and `nosniff`.
-- Who may call is in [Deploying](deploy.md#who-may-ask). In short: no token, loopback only; with
-  a token, `Authorization: Bearer <token>`.
+- Who may call is in [Deploying](deploy.md#who-may-ask). In short: no token, loopback only, and
+  nothing that came through a proxy or a tunnel — `403`, saying so; with a token,
+  `Authorization: Bearer <token>`. Wrong tokens, callers refused for too many and sign-ins are
+  written to the server's log, and counted in [`/api/health`](#status).
 
 ## Sessions
 
@@ -185,6 +187,19 @@ archived and empty ones), and `warnings`: the stores that could not be read, in 
 part. Without it, "no sessions" reads the same whether there are none or the store broke. A
 store that could be read only in part keeps everything known of it: what a short listing leaves
 out is not taken for deleted.
+
+It also says what the guards did over the last day, for a caller they let in:
+
+```json
+"guard": {"since": "…", "wrongTokens": 12, "refused": 3, "signIns": 1}
+```
+
+`wrongTokens` is how many tokens offered, in a header or at sign-in, were not the token;
+`refused`, how many requests were turned away whatever they brought — past the limit on wrong
+tokens (`429`), or, without a token, through a proxy (`403`); `signIns`, how many traded the
+token for the cookie. They are counted by the hour, from `since`: the start of the hour 23 hours
+before this one, or the server's start if that is later. The server's log has them too, a line
+at a time and never a flood ([Deploying](deploy.md#who-may-ask)).
 
 **`GET /healthz`** — `200 ok` while the process serves. No token needed; it says nothing else.
 

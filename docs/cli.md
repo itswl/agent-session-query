@@ -151,7 +151,7 @@ failures, tokens, files changed by kind (code / test / docs / config), models an
 | `--host`, `--port` | where to listen (`ASQ_HOST`, `ASQ_PORT`). Anything but loopback requires a token |
 | `--token` | what every caller must hold. Prefer `ASQ_TOKEN`: a flag shows in the process list |
 | `--cors-origin URL` | another origin whose pages may call the API (repeatable; `ASQ_CORS_ORIGIN`) |
-| `--proxy-header NAME` | behind a proxy: the header in which it names the caller, so that wrong tokens are counted per caller (`ASQ_PROXY_HEADER`). See [Deploying](deploy.md#who-may-ask) |
+| `--proxy-header NAME` | behind a proxy: the header in which it names the caller, so that wrong tokens are counted per caller (`ASQ_PROXY_HEADER`). Takes a token: without one, whatever comes through a proxy is refused. See [Deploying](deploy.md#who-may-ask) |
 | `--open` | open the page in the browser |
 | `--page-dir DIR` | serve the page from a directory, re-read on every request — for working on it |
 

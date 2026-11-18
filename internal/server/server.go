@@ -66,7 +66,8 @@ type Options struct {
 	// CF-Connecting-IP, X-Real-IP, an X-Forwarded-For the proxy appends to. Wrong tokens
 	// are then counted per caller rather than per proxy (see allowance).
 	ProxyHeader string
-	// Log receives one line per request that failed, and what the server has to say.
+	// Log receives one line per request that failed, what the server has to say, and
+	// what its guards did (see door).
 	Log io.Writer
 }
 
@@ -82,6 +83,7 @@ type Server struct {
 	keepsKnown bool
 	keepMu     sync.Mutex
 	keepFailed time.Time // when keeping the callers known last failed; under keepMu
+	door       door      // what the guards did, written down and counted
 
 	mux     *http.ServeMux
 	assets  map[string]asset
@@ -133,7 +135,11 @@ func New(a *app.App, opts Options) (*Server, error) {
 	if !headerName(opts.ProxyHeader) {
 		return nil, fmt.Errorf("--proxy-header takes the name of a header (CF-Connecting-IP, X-Real-IP, X-Forwarded-For), not %q", opts.ProxyHeader)
 	}
+	if opts.Token == "" && opts.ProxyHeader != "" {
+		return nil, errors.New("--proxy-header is for a server behind a proxy, and a server without a token refuses whatever comes through one: set a token (--token, or ASQ_TOKEN)")
+	}
 	s := &Server{app: a, opts: opts, mcp: mcp.New(a, opts.Log), assets: map[string]asset{}}
+	s.door.out, s.door.began = opts.Log, time.Now()
 	// The MCP endpoint answers as the rest of the API does: from the index the watcher
 	// keeps, without waiting for a read that is only following the stores
 	s.mcp.MaxAge = maxAge
@@ -493,6 +499,9 @@ func (s *Server) watch(ctx context.Context) {
 			}
 			looked = time.Now()
 		}
+		// A minute of the guards' lines that is over is summed up now, and not only when
+		// the next caller comes along
+		s.door.flush(time.Now())
 		select {
 		case <-ctx.Done():
 			return

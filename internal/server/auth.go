@@ -6,10 +6,14 @@ package server
 // an agent printed. There are two ways to run it and each has its own guard.
 //
 // Without a token it listens on loopback only — binding anywhere else is refused at
-// start — and what protects it is that only this machine can connect. The hole in that
-// is the browser: any page the person visits can make their browser connect to
-// localhost. So a request must name a loopback Host (a DNS name rebound to 127.0.0.1
-// does not), and must not come from another site (Origin, Sec-Fetch-Site).
+// start — and what protects it is that only this machine can connect. There are two
+// holes in that. One is the browser: any page the person visits can make their browser
+// connect to localhost. So a request must name a loopback Host (a DNS name rebound to
+// 127.0.0.1 does not), and must not come from another site (Origin, Sec-Fetch-Site). The
+// other is a proxy or a tunnel on this machine: it connects from loopback, writes
+// whatever Host it is told to, and passes on what the whole network sends. So a request
+// that bears a proxy's mark is refused (see relayed), and a server told of a proxy in
+// front (Options.ProxyHeader) does not start.
 //
 // With a token, every request to the API proves it holds the token: an Authorization
 // header for programs, a cookie for the page. A browser cannot keep a secret that script
@@ -22,7 +26,8 @@ package server
 //
 // A wrong token is counted against whoever offered it, and ten in a minute shut that
 // caller out for the rest of the minute. Who "that caller" is takes more saying than it
-// seems to: see caller.
+// seems to: see caller. What the guards turn away, and who signs in, is written to the
+// log and counted (see door).
 
 import (
 	"crypto/hmac"
@@ -497,23 +502,36 @@ func (l *limiter) know(key string, now time.Time) {
 // relayHeaders are what a proxy adds to a request it passes on.
 var relayHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-Ip", "Via", "Cf-Connecting-Ip"}
 
-// caller is the allowance a request's wrong token is charged to (see allowance).
+// relayed reports whether a request bears a proxy's mark: a forwarding header, or the
+// header Options.ProxyHeader names. The mark is taken by its presence alone: a client can
+// write anything into one, but cannot take away the one its proxy adds. A proxy that adds
+// none, and a tunnel that passes bytes through, leave no mark.
+func (s *Server) relayed(r *http.Request) bool {
+	if header := s.opts.ProxyHeader; header != "" && len(r.Header.Values(header)) > 0 {
+		return true
+	}
+	for _, name := range relayHeaders {
+		if len(r.Header.Values(name)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// caller is the allowance a request's wrong token is charged to (see allowance), and its
+// key is the name the log gives the caller (see door).
 //
-// A forwarding header is taken as a sign of a proxy by its presence alone: a client can
-// write anything into one, but cannot take away the one its proxy adds. What the header
-// says is believed only when it is the header Options.ProxyHeader names, on a connection
-// from this machine or a private network — where a proxy of the owner's connects from —
-// and only the last address in it, the one the nearest proxy wrote.
+// What a forwarding header says is believed only when it is the header
+// Options.ProxyHeader names, on a connection from this machine or a private network —
+// where a proxy of the owner's connects from — and only the last address in it, the one
+// the nearest proxy wrote.
 func (s *Server) caller(r *http.Request) allowance {
 	peer, ok := addrOf(r.RemoteAddr)
 	if !ok {
 		return allowance{key: "unknown " + r.RemoteAddr, kind: "unknown"}
 	}
 	header := s.opts.ProxyHeader
-	relayed := header != "" && len(r.Header.Values(header)) > 0
-	for _, name := range relayHeaders {
-		relayed = relayed || len(r.Header.Values(name)) > 0
-	}
+	relayed := s.relayed(r)
 	local := peer.IsLoopback()
 	if !relayed {
 		switch {
@@ -606,7 +624,7 @@ func (s *Server) authorize(r *http.Request) (verdict, time.Duration, string) {
 		return unauthorized, 0, ""
 	}
 	right := subtle.ConstantTimeCompare([]byte(given), []byte(s.opts.Token)) == 1
-	if blocked, wait, whose := s.attempts.attempt(s.caller(r), right, now); blocked {
+	if blocked, wait, whose := s.offer(s.caller(r), right, "in an Authorization header", now); blocked {
 		return throttled, wait, whose // right or not: past the limit the answer does not say
 	}
 	if right {
@@ -615,6 +633,26 @@ func (s *Server) authorize(r *http.Request) (verdict, time.Duration, string) {
 	}
 	return unauthorized, 0, ""
 }
+
+// offer settles a token a caller offers (see limiter.attempt), and writes down what came
+// of it that the owner should hear of: a wrong token, or a caller refused whatever it
+// brought. on says where the token was offered.
+func (s *Server) offer(a allowance, right bool, on string, now time.Time) (bool, time.Duration, string) {
+	blocked, wait, whose := s.attempts.attempt(a, right, now)
+	switch {
+	case blocked:
+		s.door.note(now, refused, a.key, "too many wrong tokens "+whom(whose))
+	case !right:
+		s.door.note(now, wrongToken, a.key, on)
+	}
+	return blocked, wait, whose
+}
+
+// noToken is the answer to a request that came through a proxy to a server without a
+// token.
+const noToken = "this server has no token, and this request came to it through a proxy or a tunnel: " +
+	"without a token it answers this machine only. To reach it through one, give it a token " +
+	"(ASQ_TOKEN, at least 16 characters; openssl rand -hex 24 makes a good one) and start it again"
 
 // isLoopbackHost reports whether a Host header names this machine by a name that cannot
 // be made to mean it from outside.
@@ -661,6 +699,13 @@ func (s *Server) originListed(origin string) bool {
 // guard is what stands in front of every route: it reports why a request is refused, or
 // "" when it may go on. It runs before authentication and does not depend on it.
 func (s *Server) guard(r *http.Request) string {
+	if s.opts.Token == "" && s.relayed(r) {
+		// Only this machine can connect, and this is something on it passing on what
+		// others sent: a tunnel that writes Host: localhost (cloudflared's httpHostHeader,
+		// ngrok's host-header rewrite) would otherwise put the record on the network
+		s.door.note(time.Now(), refused, s.caller(r).key, "this server has no token, and the request came through a proxy")
+		return noToken
+	}
 	if s.opts.Token == "" && !isLoopbackHost(r.Host) {
 		// Only this machine can connect, so a Host that is not a loopback name is a name
 		// someone pointed at 127.0.0.1 to borrow this machine's browser
@@ -725,7 +770,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Counted once the body is in, with the token it brings: see limiter.attempt
 	now := time.Now()
 	right := subtle.ConstantTimeCompare([]byte(body.Token), []byte(s.opts.Token)) == 1
-	if blocked, wait, whose := s.attempts.attempt(s.caller(r), right, now); blocked {
+	caller := s.caller(r)
+	if blocked, wait, whose := s.offer(caller, right, "at sign-in", now); blocked {
 		tooMany(w, r, wait, whose)
 		return
 	}
@@ -734,6 +780,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.keepKnown()
+	s.door.note(now, signedIn, caller.key, "")
 	expires := now.Add(cookieLifetime)
 	http.SetCookie(w, &http.Cookie{
 		Name: cookieName, Value: sign(s.key, expires), Path: "/",
@@ -764,12 +811,16 @@ func isHTTPS(r *http.Request) bool {
 func tooMany(w http.ResponseWriter, r *http.Request, wait time.Duration, whose string) {
 	secs := max(1, int(wait.Round(time.Second).Seconds()))
 	w.Header().Set("Retry-After", strconv.Itoa(secs))
-	from := "from this caller"
+	writeError(w, r, http.StatusTooManyRequests, fmt.Sprintf("too many wrong tokens %s: try again in %ds", whom(whose), secs))
+}
+
+// whom says whose allowance ran out, as the answer and the log put it.
+func whom(whose string) string {
 	switch whose {
 	case byProxy:
-		from = "through this proxy"
+		return "through this proxy"
 	case byKind:
-		from = "from callers this server cannot tell apart, of whom there are too many"
+		return "from callers this server cannot tell apart, of whom there are too many"
 	}
-	writeError(w, r, http.StatusTooManyRequests, fmt.Sprintf("too many wrong tokens %s: try again in %ds", from, secs))
+	return "from this caller"
 }

@@ -208,9 +208,9 @@ A store somewhere else — another machine's home directory, a backup — is add
   they reach your terminal. Anything assembled for someone else — a brief, a pack, an MCP
   answer, a trace — has secret-shaped strings masked (API keys, tokens, private keys: the
   shapes that announce themselves; a password in prose is not detectable, and the docs say so).
-- **Guarded when served.** No token: loopback only, with DNS-rebinding and cross-site requests
-  refused. With a token: an `Authorization` header for programs, an `HttpOnly` cookie for the
-  page, wrong guesses throttled.
+- **Guarded when served.** No token: loopback only, with DNS-rebinding, cross-site requests and
+  anything that came through a proxy or a tunnel refused. With a token: an `Authorization`
+  header for programs, an `HttpOnly` cookie for the page, wrong guesses throttled and logged.
 
 ## Documentation
 

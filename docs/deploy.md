@@ -14,11 +14,24 @@ What `asq serve` reads out is private: every prompt you typed, every file an age
 There are two ways to run it, and each has its own guard.
 
 **Without a token** it listens on loopback only — starting it on any other address is refused,
-not warned about — and what protects it is that only this machine can connect. The hole in that
-is the browser: any web page you visit can make your browser connect to `localhost`. So a
-request must name a loopback `Host` (a DNS name rebound to `127.0.0.1` does not), and must not
-come from another site: a foreign `Origin`, or a browser's `Sec-Fetch-Site: cross-site`, is
-refused with `403` before anything is read.
+not warned about — and what protects it is that only this machine can connect. Two things on
+this machine can undo that, and what comes by either is refused with `403` before anything is
+read:
+
+- **The browser.** Any web page you visit can make your browser connect to `localhost`. So a
+  request must name a loopback `Host` (a DNS name rebound to `127.0.0.1` does not), and must not
+  come from another site: a foreign `Origin`, or a browser's `Sec-Fetch-Site: cross-site`.
+- **A proxy or a tunnel running here** — nginx, Caddy, `cloudflared`, ngrok, Tailscale Serve. It
+  connects from loopback, passes on what the whole network sends, and can be told to write
+  `Host: localhost`. So a request that bears a proxy's mark — a forwarding header: `Forwarded`,
+  `X-Forwarded-*`, `X-Real-IP`, `Via`, `CF-Connecting-IP` — is refused, with an answer that
+  says the server has no token and is being reached through a proxy; and `--proxy-header`
+  without a token is refused at start. To serve through a proxy or a tunnel, set `ASQ_TOKEN`.
+
+A proxy that adds no forwarding header cannot be told from this machine's own programs: nginx's
+`proxy_pass` adds none unless told to, a proxy may be set to remove them, and a tunnel that
+passes bytes through unchanged (`ssh -R`, a TCP forward) has none to add. Put none of them in
+front of a server without a token.
 
 **With a token** — `ASQ_TOKEN`, at least 16 characters; `openssl rand -hex 24` makes a good one
 — it may listen anywhere, and every request to the API proves it holds the token:
@@ -84,6 +97,25 @@ does not know share one allowance of their kind; the callers on this machine are
 A tunnel that passes bytes through unchanged (`ssh -R`, a TCP forward) marks nothing, and what
 comes through it cannot be told from this machine's own.
 
+**What is written down.** Each wrong token, each caller refused for too many, and each sign-in
+is a line in the server's log — its standard error: `journalctl --user -u asq` under systemd, the
+`StandardErrorPath` file under launchd, `docker logs` in a container — with the time, and the
+caller as the limit above counts it: `local`, `local browser`, `203.0.113.9`,
+`198.51.100.7 relayed`, `named 203.0.113.9 via local`. Never a token, right or wrong, nor the
+cookie. Without a token, each request refused for coming through a proxy is a line too.
+
+```
+2026-11-18T15:04:05+01:00 a wrong token from "named 203.0.113.9 via local", in an Authorization header
+2026-11-18T15:04:09+01:00 refused "named 203.0.113.9 via local": too many wrong tokens from this caller
+2026-11-18T15:05:07+01:00 the minute from 15:04:05 held more than was written: 9 wrong tokens, 37 refusals
+```
+
+The callers the log reports on cannot fill it: a caller's first line of each kind in a minute is
+written and the rest of that minute only counted, no more than ten lines are written in a minute
+in all, and once the minute is over one line says how many of each kind were not. `/api/health`
+counts them over the last day, under `guard` ([HTTP API](api.md#status)) — for a caller the
+guards let in, as the rest of it is.
+
 Keep the token in the environment, not in `--token`: a flag shows in the process list.
 
 **TLS.** `asq` speaks plain HTTP. On loopback that is what it should speak. Anywhere else, put
@@ -118,7 +150,8 @@ After=network.target
 
 [Service]
 ExecStart=%h/.local/bin/asq serve
-# For anything but loopback: ASQ_HOST=0.0.0.0 and ASQ_TOKEN=… in this file, mode 600
+# For anything but loopback, or behind a proxy or a tunnel: ASQ_TOKEN=… in this file, mode 600
+# (and ASQ_HOST=0.0.0.0 to listen on every address)
 EnvironmentFile=-%h/.config/asq/env
 Restart=on-failure
 NoNewPrivileges=true

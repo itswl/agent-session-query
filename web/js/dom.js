@@ -51,6 +51,9 @@ const ICONS = {
   arrow: 'M5 12h14M13 6l6 6-6 6',
   doc: 'M7 3h7l5 5v13H7zM14 3v5h5M10 13h6M10 17h6',
   up: 'M12 19V5M6 11l6-6 6 6',
+  back: 'M19 12H5M11 6l-6 6 6 6',
+  prev: 'm6 15 6-6 6 6',
+  next: 'm6 9 6 6 6-6',
 };
 
 export function icon(name, cls = '') {

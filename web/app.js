@@ -21,7 +21,8 @@ const HELP = [
   ['Search', [['deploy', 'words match what they begin: deployment, deployed'], ['"exit status 1"', 'a phrase, word for word'], ['-flaky', 'leave out turns that hold this word'],
     ['ask: reply: thinking:', 'look in one part of a turn'], ['tool: output:', '…or in what tools were given and gave back']]],
   ['Keys', [['/', 'search'], ['j  k', 'next, previous'], ['Enter', 'open'], ['o', "show or hide a turn's steps"], ['e', 'expand every step of the opened turns'],
-    ['g g   G', 'top, bottom'], ['Esc', 'back to the list'], ['?', 'this help']]],
+    ['g g   G', 'top, bottom'], ['12 G', 'turn 12 of a session'], ['x  X', 'next, previous failed turn'], ['f', 'find in this session'],
+    ['Esc', 'back to the list'], ['?', 'this help']]],
 ];
 
 const main = document.getElementById('main');

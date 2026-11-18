@@ -42,7 +42,11 @@ export function go(url, { replace = false } = {}) {
   } else {
     // The entry being left keeps where it was scrolled to, for Back
     history.replaceState({ ...history.state, y: scrollY }, '');
-    history.pushState({ fromList: LISTS.has(from.name) }, '', to.pathname + to.search + to.hash);
+    // A link within the page on screen — a turn of the session — is a step taken inside
+    // it: the list the page was opened from is still there, that many entries back
+    const within = decode(to.pathname) === decode(location.pathname) && to.search === location.search;
+    const state = within ? { fromList: cameFromList(), within: (history.state?.within || 0) + 1 } : { fromList: LISTS.has(from.name) };
+    history.pushState(state, '', to.pathname + to.search + to.hash);
   }
   render(parse(), replace ? 'replace' : 'push');
 }
@@ -50,6 +54,13 @@ export function go(url, { replace = false } = {}) {
 // savedY is where the current entry was scrolled to when it was left, if it was.
 export const savedY = () => history.state?.y;
 export const cameFromList = () => Boolean(history.state?.fromList);
+
+// back leaves a page for the list it was opened from, as it was left, past the steps
+// taken within the page; a page opened from anywhere else leaves for the sessions list.
+export function back() {
+  if (cameFromList()) history.go(-1 - (history.state?.within || 0));
+  else go('/');
+}
 
 function follow(e) {
   if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;

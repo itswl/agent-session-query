@@ -77,6 +77,19 @@ While a session is being written the page follows it: new turns appear, open tur
 if you were reading at the end you stay at the end. Scroll up and it leaves you where you are;
 the button at the bottom takes you back to the newest turn, or turns following off.
 
+**Find** looks in this session alone, in every turn — the browser's own find sees only the steps
+of the turns that are open. It takes the [search's syntax](cli.md#finding) and lists the turns
+that hold the words in the order of the session, each with the lines they were found in; one
+opens its turn at that step. Enter or the arrows beside the box step through them, the first
+step from the turn in view, and Shift+Enter steps back. A session's subagents are sessions of
+their own, and are found on their own pages. It is `f`, or *Find* beside *Brief*.
+
+**On a phone** — or installed as an app, where there is no Back button and no address bar —
+the head is the title and the first line of facts, and *Details* opens the rest: when, the
+totals, the command that reopens it, the subagents. A row stays at the top while the session is
+read: back to the list it was opened from (or to the sessions list), the turn in view — type
+another number to go to that turn — the next failed turn, find, the top, and the newest turn.
+
 ## Reports
 
 Every view that reads a window of time offers the same ones, in the same words: **24 hours, 7
@@ -127,7 +140,10 @@ changed by kind, which models and CLIs did the work.
 | `o` | show or hide a turn's steps |
 | `e` | expand every step of the opened turns |
 | `g g` · `G` | top · bottom |
-| `Esc` | back to the list |
+| `12 G` | turn 12 of a session |
+| `x` `X` | next, previous failed turn — after the one in view, and round from the end |
+| `f` | find in this session |
+| `Esc` | back to the list a session was opened from — or, with the find open, closes it |
 | `?` | search syntax and keys |
 
 ## Dark, small, signed in

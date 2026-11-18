@@ -277,6 +277,7 @@ kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width:
 .resume { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; padding: 3px 3px 3px 10px; background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; }
 .resume code { flex: 1; min-width: 0; overflow-x: auto; font-size: 12px; white-space: nowrap; scrollbar-width: none; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.details-btn { display: none; }
 .s-info .notice { margin-top: 14px; }
 .s-agents { margin-top: 20px; }
 .s-agents h2 { margin-bottom: 6px; color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
@@ -289,10 +290,39 @@ kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width:
 .agent-title { flex: 1 1 200px; min-width: 0; }
 .agents .dots { font-size: 12px; }
 
+/* What stays at the top of a session as it is read: on a phone a row of ways to move
+   (below), and the find, on a desk too while it is open. The find hangs from it rather
+   than standing in the page, so that opening and closing it moves nothing beneath. */
+.s-dock { position: sticky; top: var(--bar-h); z-index: 10; }
+.s-nav { display: none; }
+.s-find {
+  position: absolute; top: 4px; left: 0; right: 0; overflow: hidden;
+  background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: var(--shadow);
+}
+.find-bar { display: flex; align-items: center; gap: 2px; padding: 3px 3px 3px 10px; color: var(--muted); }
+.find-bar input { flex: 1; min-width: 0; height: 30px; margin-left: 6px; padding: 0; background: none; border: 0; outline: none; color: var(--text); }
+.find-bar input::-webkit-search-cancel-button { display: none; }
+.find-bar .icon-btn:disabled { opacity: .4; cursor: default; background: none; }
+.find-said { flex: none; padding: 0 6px; color: var(--faint); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.find-list { max-height: min(60dvh, 520px); overflow-y: auto; overscroll-behavior: contain; padding: 4px 4px 8px; border-top: 1px solid var(--line); }
+.find-list .error-box { margin: 4px; }
+.find-note { padding: 4px 8px 6px; color: var(--muted); font-size: 12.5px; }
+.find-note .link-btn { padding: 0; font-size: inherit; }
+.find-hits { margin: 0; padding: 0; list-style: none; }
+.find-hit { display: flex; align-items: baseline; gap: 10px; padding: 5px 8px; border-radius: 6px; color: var(--text); font-size: 13px; }
+.find-hit:hover { background: var(--sunk); text-decoration: none; }
+.find-hits > [aria-current] > .find-hit { background: var(--accent-soft); }
+.find-hit .t-num { flex: none; min-width: 3.2em; }
+.find-ask { flex: 1; min-width: 0; display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.find-failed { flex: none; font-size: 12px; }
+.find-hits .matches { margin: 0; padding: 0 4px 4px 3.2em; }
+.find-hits .matches a { padding-left: 18px; }
+.find-hits .snippet { -webkit-line-clamp: 3; }
+
 .timeline { position: relative; margin: 28px 0 0; padding: 0; list-style: none; }
 .timeline::before { content: ""; position: absolute; left: 5px; top: 10px; bottom: 0; width: 1px; background: var(--line-strong); }
 .t-day { position: relative; padding: 16px 0 4px 24px; color: var(--muted); font-size: 12px; font-weight: 600; }
-.turn { position: relative; padding: 10px 0 18px 24px; scroll-margin-top: calc(var(--bar-h) + 8px); }
+.turn { position: relative; padding: 10px 0 18px 24px; scroll-margin-top: calc(var(--bar-h) + var(--dock-h, 0px) + 8px); }
 .turn::before {
   content: ""; position: absolute; left: 1px; top: 18px; width: 9px; height: 9px; border-radius: 50%;
   background: var(--bg); border: 2px solid var(--faint);
@@ -333,7 +363,7 @@ kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width:
 .plain { font-size: 13px; }
 
 /* The steps of an opened turn */
-.step { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; column-gap: 8px; padding: 3px 0; border-radius: 4px; scroll-margin-top: calc(var(--bar-h) + 48px); }
+.step { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; column-gap: 8px; padding: 3px 0; border-radius: 4px; scroll-margin-top: calc(var(--bar-h) + var(--dock-h, 0px) + 48px); }
 .step > .seq { grid-column: 2; grid-row: 1; padding-top: 3px; color: var(--faint); font: 11px var(--mono); opacity: .55; }
 .step:hover > .seq, .step > .seq:focus-visible { opacity: 1; }
 .step.reply > .text { padding: 4px 0; }
@@ -537,6 +567,30 @@ th.n, td.n { text-align: right; }
   .tool-disc > .disc { grid-template-columns: 14px 8px auto minmax(0, 1fr); }
   .tool-meta { grid-column: 3 / -1; }
   .matches { padding-left: 12px; }
+  /* A session keeps at the top what the bar took away with it, and what a desk has keys
+     for: the way back, the turn in view, the next failed turn, find, the top, the newest */
+  .session { padding-top: 0; }
+  .s-dock { margin: 0 -12px 14px; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+  .s-nav { display: flex; align-items: center; gap: 2px; height: 44px; padding: 0 6px; }
+  .s-nav .icon-btn { width: 36px; height: 36px; }
+  .s-nav-end { display: flex; margin-left: auto; }
+  .fail-next { color: var(--bad); }
+  .where { display: inline-flex; align-items: center; gap: 4px; margin-left: 2px; color: var(--faint); font: 12.5px var(--mono); white-space: nowrap; }
+  .where input { width: 5.5ch; height: 30px; padding: 0 4px; background: var(--sunk); border: 1px solid transparent; border-radius: 6px; color: var(--text); font: inherit; text-align: center; }
+  .where input:focus { background: var(--surface); border-color: var(--accent); outline: none; }
+  .s-find { top: calc(100% + 4px); left: 8px; right: 8px; }
+  /* The head is the title and the first facts, then its buttons; Details opens the rest */
+  .s-info { display: flex; flex-direction: column; }
+  .s-info > .actions { order: 1; margin-top: 10px; }
+  .s-info > .s-details { order: 2; margin-top: 12px; }
+  .s-info > .s-extra { order: 3; }
+  .s-info.folded > .s-details, .s-info.folded .s-agents { display: none; }
+  .details-btn { display: inline-flex; }
+  .find-btn { display: none; }
+  .timeline { margin-top: 16px; }
+}
+@media (max-width: 359px) {
+  .where-of { display: none; }
 }
 @media (max-width: 479px) {
   /* Five views do not fit beside the name and the status on a phone: the bar is three
@@ -554,7 +608,7 @@ th.n, td.n { text-align: right; }
    installed app leaves it zoomed: on a touch screen every field is 16px or more. Zooming is not
    turned off — pinching stays the reader's own. */
 @media (pointer: coarse) {
-  input, textarea, select, .search input, .file-filter input, .login input { font-size: 16px; }
+  input, textarea, select, .search input, .file-filter input, .login input, .where input, .find-bar input { font-size: 16px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }

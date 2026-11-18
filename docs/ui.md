@@ -82,7 +82,7 @@ of the turns that are open. It takes the [search's syntax](cli.md#finding) and l
 that hold the words in the order of the session, each with the lines they were found in; one
 opens its turn at that step. Enter or the arrows beside the box step through them, the first
 step from the turn in view, and Shift+Enter steps back. A session's subagents are sessions of
-their own, and are found on their own pages. It is `f`, or *Find* beside *Brief*.
+their own, and are found on their own pages. It is `f`, or *Find* in the session's head, after *Brief* and *Export*.
 
 **On a phone** — or installed as an app, where there is no Back button and no address bar —
 the head is the title and the first line of facts, and *Details* opens the rest: when, the

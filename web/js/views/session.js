@@ -19,6 +19,8 @@ const fine = matchMedia('(pointer: fine)');
 const FOUND = 100; // the turns a find asks for at a time: the most a search answers
 const kindOf = (m) => (m.kind === 'tool' ? [m.tool || 'tool', m.part].filter(Boolean).join(' ') : m.kind);
 
+const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'AltGraph']);
+
 export function mount(main, route, ctx) {
   const ref = route.args.join('/');
   const base = sessionApi(ref);
@@ -649,6 +651,9 @@ export function mount(main, route, ctx) {
     },
     key(e) {
       if (v.sheet) return false;
+      // A modifier pressed on its own is part of the next key — Shift for G, or for the
+      // digits on a keyboard that needs it — and lets go of nothing
+      if (MODIFIERS.has(e.key)) return false;
       // A number typed before G is the turn to go to; any other key lets go of it
       const count = Date.now() - v.countAt < 1500 ? v.count : '';
       v.count = '';

@@ -189,8 +189,9 @@ home 目录、一份备份——按名字加进来：`asq ls --path claude@box2=
 - **展示时小心。** 工具输出里的终端转义序列在到达你的终端之前就被去掉。凡是给别人看的东西——简报、pack、MCP 回答、
   trace——都会遮掉形似密钥的字符串（API key、token、私钥：那些“自报家门”的形状；一段散文里的密码无法识别，文档里
   也如实说明）。
-- **对外服务时有防护。** 没有 token：只监听回环地址，并拒绝 DNS rebinding、跨站请求，以及经代理或隧道转来的
-  一切请求。有 token：程序用 `Authorization` 头，网页用 `HttpOnly` cookie，猜错会被限速并记入日志。
+- **对外服务时有防护。** 没有 token：只监听回环地址，并拒绝 DNS rebinding、跨站请求，以及代理或隧道加了转发头
+  （`X-Forwarded-*` 之类）的请求。不加这类头的代理或隧道，与本机自己的程序无从区分：不要把它们放在没有 token
+  的服务前面。有 token：程序用 `Authorization` 头，网页用 `HttpOnly` cookie，猜错会被限速并记入日志。
 
 ## 文档
 

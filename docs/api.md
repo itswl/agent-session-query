@@ -15,7 +15,8 @@ signing in and the MCP endpoint. The page is a client of this API and uses nothi
   A reply carries other people's text and quotes what the caller sent, so this holds for all of
   it, beside the content type and `nosniff`.
 - Who may call is in [Deploying](deploy.md#who-may-ask). In short: no token, loopback only, and
-  nothing that came through a proxy or a tunnel — `403`, saying so; with a token,
+  nothing a proxy or a tunnel marks with a forwarding header — `403`, saying so (one that adds
+  none cannot be told from this machine's own programs); with a token,
   `Authorization: Bearer <token>`. Wrong tokens, callers refused for too many and sign-ins are
   written to the server's log, and counted in [`/api/health`](#status).
 
@@ -196,10 +197,10 @@ It also says what the guards did over the last day, for a caller they let in:
 
 `wrongTokens` is how many tokens offered, in a header or at sign-in, were not the token;
 `refused`, how many requests were turned away whatever they brought — past the limit on wrong
-tokens (`429`), or, without a token, through a proxy (`403`); `signIns`, how many traded the
-token for the cookie. They are counted by the hour, from `since`: the start of the hour 23 hours
-before this one, or the server's start if that is later. The server's log has them too, a line
-at a time and never a flood ([Deploying](deploy.md#who-may-ask)).
+tokens (`429`), or, without a token, bearing a proxy's forwarding header (`403`); `signIns`, how
+many traded the token for the cookie. They are counted by the hour, from `since`: the start of
+the hour 23 hours before this one, or the server's start if that is later. The server's log has
+them too, a line at a time and never a flood ([Deploying](deploy.md#who-may-ask)).
 
 **`GET /healthz`** — `200 ok` while the process serves. No token needed; it says nothing else.
 

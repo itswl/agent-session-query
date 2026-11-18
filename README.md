@@ -209,8 +209,10 @@ A store somewhere else — another machine's home directory, a backup — is add
   answer, a trace — has secret-shaped strings masked (API keys, tokens, private keys: the
   shapes that announce themselves; a password in prose is not detectable, and the docs say so).
 - **Guarded when served.** No token: loopback only, with DNS-rebinding, cross-site requests and
-  anything that came through a proxy or a tunnel refused. With a token: an `Authorization`
-  header for programs, an `HttpOnly` cookie for the page, wrong guesses throttled and logged.
+  whatever a proxy or a tunnel marks with a forwarding header refused. One that adds no such
+  header cannot be told from this machine's own programs: put none in front of a server without
+  a token. With a token: an `Authorization` header for programs, an `HttpOnly` cookie for the
+  page, wrong guesses throttled and logged.
 
 ## Documentation
 

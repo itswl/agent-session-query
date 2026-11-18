@@ -56,7 +56,7 @@ to tell which turn to open without opening each.
 
 | query | finds turns where |
 |---|---|
-| `retry backoff` | both words appear, anywhere in the turn or in the session's title |
+| `retry backoff` | both words appear, anywhere in the turn — a session's first turn has its title too |
 | `"exit status 1"` | the phrase appears as written |
 | `flaky -windows` | `flaky` appears and `windows` does not |
 | `ask:deploy` | the person's ask has the word; also `reply:` `thinking:` `tool:` (a tool's input) `output:` (a tool's output) `title:` (the session's title) |
@@ -71,11 +71,11 @@ word by its stem, Porter's, as SQLite's FTS5 has it: `logs` finds `log` and `log
 (`session_query`), one with digits in it, and words in other scripts match as written. An
 excluded word is excluded in all the forms it would be found in.
 
-The session's title is in each of its turns, so a word of it finds the session's turns
-together with the others — `webhook retries` finds a turn that says retried in a session
-titled *Cap webhook retries*. It decides which turns are found, not which come first: that is
-for their own words. A title that is only how the first ask begins — what a session its CLI
-did not name is titled by — is the first turn's already, and is not held beside the others.
+The session's title is searched with its first turn, so a word of it finds the session once,
+there: `webhook retries` finds the session titled *Cap webhook retries* at its first turn,
+whatever that turn says, and its other turns where they say both words themselves. It decides
+which turns are found, not which come first: that is for their own words. A session its CLI did
+not name is titled by how its first ask begins, and `title:` finds that title too.
 
 When no turn holds every word, the answer says so, names any word no turn holds at all, and
 lists the turns that hold the most of the rest instead, closest first, each marked with the

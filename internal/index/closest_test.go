@@ -110,52 +110,11 @@ func TestHitsSayHowTheirTurnEnded(t *testing.T) {
 			t.Errorf("#1 = tools %d, failed %d, interrupted %v: one call, failed", h.Tools, h.Failed, h.Interrupted)
 		}
 	}
-	// #2, the later and shorter turn, holds flaky in the session's title alone: the turn
-	// whose own words hold it comes first
-	if names := hitNames(res); len(names) != 2 || names[0] != "aaaa1111#1" {
-		t.Errorf("flaky = %q, want the turn that says it first", names)
+	// #2 is in the session the title names, and does not say flaky: it is not found
+	if names := hitNames(res); !reflect.DeepEqual(names, []string{"aaaa1111#1"}) {
+		t.Errorf("flaky = %q, want the turn that says it", names)
 	}
 
-	// … however long that turn is, and however little the other: a word is weighed
-	// against the length of the whole turn, and the title is in every one
-	const id = "cccc3333-0000-4000-8000-000000000003"
-	at := time.Now().Add(-time.Hour).UTC()
-	row := func(s int, v map[string]any) string {
-		v["sessionId"], v["uuid"], v["timestamp"] = id, "r"+strconv.Itoa(s), at.Add(time.Duration(s)*time.Second).Format(time.RFC3339Nano)
-		raw, _ := json.Marshal(v)
-		return string(raw) + "\n"
-	}
-	say := func(s int, role string, content any) string {
-		return row(s, map[string]any{"type": role, "cwd": "/work/gamma", "message": map[string]any{"role": role, "content": content, "id": "m" + strconv.Itoa(s)}})
-	}
-	long := strings.Repeat("a line of a long build log with nothing in it\n", 300) + "then the key was rotated\n"
-	text := `{"type":"ai-title","aiTitle":"Rotate the signing key"}` + "\n" +
-		say(1, "user", "do the thing") +
-		say(2, "assistant", []map[string]any{{"type": "tool_use", "id": "t1", "name": "Bash", "input": map[string]any{"command": "make all"}}}) +
-		say(3, "user", []map[string]any{{"type": "tool_result", "tool_use_id": "t1", "content": long}}) +
-		say(4, "assistant", []map[string]any{{"type": "text", "text": "Done."}}) +
-		say(5, "user", "thanks") +
-		say(6, "assistant", []map[string]any{{"type": "text", "text": "You are welcome."}})
-	h := fixture.Write(t)
-	path := filepath.Join(h.Dir, "-work-gamma", id+".jsonl")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	b, err := app.Open(h.Config(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer b.Close()
-	if _, err := b.Sync(context.Background(), index.SyncOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	res, _ = b.Index.Search(context.Background(), index.ParseQuery("rotate signing"), filter(b), index.SearchOptions{})
-	if names := hitNames(res); len(names) != 2 || names[0] != "cccc3333#1" {
-		t.Errorf("rotate signing = %q, want the long turn whose output says it first", names)
-	}
 	// A match in the session's title says so, and a match in another form says which
 	res, _ = a.Index.Search(context.Background(), index.ParseQuery("title:flaky"), filter(a), index.SearchOptions{})
 	if len(res.Hits) == 0 || len(res.Hits[0].Matches) == 0 || res.Hits[0].Matches[0].Kind != index.KindTitle || res.Hits[0].Matches[0].Snippet != "Fix flaky test" {
@@ -247,7 +206,8 @@ func TestWordsAreMadeAnewFromTheIndex(t *testing.T) {
 	for query, want := range map[string]int{
 		"older":           0, // what the older table held is gone
 		"rotating":        1,
-		"title:flaky":     2,
+		"title:flaky":     1, // with the first turn
+		"title:deploy":    1, // … and one taken from how the first ask begins
 		"ECONNREFUSED":    1,
 		"output:finished": 1, // the end of a long output, which the turn keeps only a preview of
 		"数据库":             1,
@@ -309,3 +269,110 @@ func TestWordsAreMadeAnewFromTheIndex(t *testing.T) {
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// turnSaid is a turn of a session a test writes: what was asked, what a Bash call printed
+// (no call when empty), and what the agent replied.
+type turnSaid struct{ ask, output, reply string }
+
+// writeSession adds a Claude Code session to a history, in /work/gamma, an hour old: named
+// title by its CLI when that is set, and a turn for each of turns.
+func writeSession(t *testing.T, h fixture.History, id, title string, turns []turnSaid) {
+	t.Helper()
+	at := time.Now().Add(-time.Hour).UTC()
+	var b strings.Builder
+	line := func(v map[string]any) {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Write(raw)
+		b.WriteByte('\n')
+	}
+	if title != "" {
+		line(map[string]any{"type": "ai-title", "aiTitle": title})
+	}
+	n := 0
+	say := func(role string, content any) {
+		n++
+		line(map[string]any{"type": role, "cwd": "/work/gamma", "sessionId": id, "uuid": "r" + strconv.Itoa(n),
+			"timestamp": at.Add(time.Duration(n) * time.Second).Format(time.RFC3339Nano),
+			"message":   map[string]any{"role": role, "content": content, "id": "m" + strconv.Itoa(n)}})
+	}
+	for i, turn := range turns {
+		say("user", turn.ask)
+		if turn.output != "" {
+			call := "t" + strconv.Itoa(i)
+			say("assistant", []map[string]any{{"type": "tool_use", "id": call, "name": "Bash", "input": map[string]any{"command": "make all"}}})
+			say("user", []map[string]any{{"type": "tool_result", "tool_use_id": call, "content": turn.output}})
+		}
+		say("assistant", []map[string]any{{"type": "text", "text": turn.reply}})
+	}
+	path := filepath.Join(h.Dir, "-work-gamma", id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// openSynced opens the program over a history and brings its index up to date.
+func openSynced(t *testing.T, h fixture.History) *app.App {
+	t.Helper()
+	a, err := app.Open(h.Config(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Close() })
+	if _, err := a.Sync(t.Context(), index.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func TestATitleFindsItsSessionOnce(t *testing.T) {
+	h := fixture.Write(t)
+	const id = "dddd4444-0000-4000-8000-000000000004"
+	var turns []turnSaid
+	for i := 1; i <= 12; i++ {
+		turn := turnSaid{ask: "go on with step " + strconv.Itoa(i), reply: "Step " + strconv.Itoa(i) + " is done."}
+		if i == 4 || i == 8 {
+			turn.reply = "Postgres took step " + strconv.Itoa(i) + "."
+		}
+		turns = append(turns, turn)
+	}
+	writeSession(t, h, id, "Migrate the billing database to Postgres 17", turns)
+	a := openSynced(t, h)
+	ctx := context.Background()
+
+	// The two turns that say it, and the first, which holds the title: the session is
+	// found by its title once, and not in each of its turns
+	res, err := a.Index.Search(ctx, index.ParseQuery("postgres"), filter(a), index.SearchOptions{PerSession: -1})
+	names := hitNames(res)
+	if err != nil || res.Total != 3 || res.Sessions != 1 || len(names) != 3 || !sameSet(names[:2], []string{"dddd4444#4", "dddd4444#8"}) || names[2] != "dddd4444#1" {
+		t.Errorf("postgres = %q, total %d, %v: want #4 and #8, then #1 for the title", names, res.Total, err)
+	} else if m := res.Hits[2].Matches; len(m) != 1 || m[0].Kind != index.KindTitle {
+		t.Errorf("#1 is found by the title, and says so: %+v", m)
+	}
+	// A word of the title goes with the first turn's words, not another's
+	res, _ = a.Index.Search(ctx, index.ParseQuery("billing step"), filter(a), index.SearchOptions{PerSession: -1})
+	if names := hitNames(res); !reflect.DeepEqual(names, []string{"dddd4444#1"}) || res.Total != 1 {
+		t.Errorf("billing step = %q, total %d", names, res.Total)
+	}
+
+	// Find in the session lists the turns whose own words hold it, as the page asks
+	s, err := a.Index.Resolve(ctx, id, a.Stores())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := filter(a)
+	f.SID = s.SID()
+	res, err = a.Index.Search(ctx, index.ParseQuery("postgres"), f, index.SearchOptions{PerSession: -1, Limit: 100})
+	if names := hitNames(res); err != nil || res.Total != 2 || !sameSet(names, []string{"dddd4444#4", "dddd4444#8"}) {
+		t.Errorf("postgres in the session = %q, total %d, %v", names, res.Total, err)
+	}
+	res, _ = a.Index.Search(ctx, index.ParseQuery("billing step"), f, index.SearchOptions{PerSession: -1, Limit: 100})
+	if res.Partial == nil || !reflect.DeepEqual(res.Missing, []string{"billing"}) {
+		t.Errorf("billing step in the session = %q, partial %+v, missing %q: no turn says billing", hitNames(res), res.Partial, res.Missing)
+	}
+}

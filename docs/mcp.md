@@ -88,9 +88,9 @@ output worth seeing whole.
 
 `search` is written for an agent's way of asking — in its own words, which are seldom the
 history's: a word finds its other forms (*retries* finds *retried*), a session's title is
-searched with its turns, and a query no turn matches whole is answered with the turns that come
-closest, each saying which words it lacks, rather than with nothing. Each hit ends its first line
-with how the turn ended — `✓`, `✗2 failed, 1 passed later`, `⚠ interrupted` — and shows the
+searched with its first turn, and a query no turn matches whole is answered with the turns that
+come closest, each saying which words it lacks, rather than with nothing. Each hit ends its first
+line with how the turn ended — `✓`, `✗2 failed, 1 passed later`, `⚠ interrupted` — and shows the
 turn's answer, so that which turn to `read` can be decided without reading each.
 
 ```

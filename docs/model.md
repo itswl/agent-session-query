@@ -165,8 +165,8 @@ and the next command rebuilds it from the stores.
   sits beside it, read only when asked for.
 - **Search is over turns.** One full-text row per turn, in five columns — ask, reply, thinking,
   tool input, tool output — weighted in that spirit: a match in what was asked outranks one in a
-  build log; and a sixth, the session's title, which lets a turn be found and weighs nothing in
-  the ranking. Ranking is BM25 with a lift for recency. Each column keeps its words as written,
+  build log; and a sixth, the session's title, held with its first turn, which lets the session
+  be found and weighs nothing in the ranking. Ranking is BM25 with a lift for recency. Each column keeps its words as written,
   for phrases and prefixes, and beside them the Porter stems of the English words among them, so
   that a word finds its other forms. Scripts written without spaces (Han, kana, Hangul, Thai,
   Lao, Khmer, Myanmar) are indexed a character at a time, so a query matches as a substring. A

@@ -87,10 +87,8 @@ type Partial struct {
 
 // The weight of a match by where it was found: a word in what the person asked says
 // more about a turn than the same word somewhere in a log. The session's title weighs
-// nothing: it lets a session's turns be found by it, and which of them come first is for
-// their own words to say. Every turn holds the title, and the ranking counts a word
-// against the length of the whole turn, so a turn of a few lines would otherwise rank,
-// on the title alone, above the long one that did the work the title names.
+// nothing: it lets the session be found, at its first turn, and where that turn comes is
+// for its own words to say.
 const bm25Weights = `8.0, 4.0, 1.0, 2.0, 1.0, 0.0`
 
 // halfLife is how long it takes a turn's age to halve the lift recency gives it. Two
@@ -101,8 +99,9 @@ const halfLife = 45 * 24 * time.Hour
 // Search finds the turns that hold a query's words, among the sessions a filter selects.
 //
 // The unit is the turn, not the session and not the line: the words of a query may be
-// spread over what was asked, what was run and what came back — and the title of the
-// session it is in — and it is the exchange they add up to that someone is looking for.
+// spread over what was asked, what was run and what came back, and it is the exchange they
+// add up to that someone is looking for. The session's title is searched with its first
+// ask (see titleTurn), except in a search of one session alone (see inTurns).
 //
 // When no turn holds every word, the answer is the turns that hold the most of them,
 // marked as such (see closest): a search worded a little differently from the history
@@ -119,7 +118,7 @@ func (ix *Index) Search(ctx context.Context, q Query, f Filter, o SearchOptions)
 	if o.PerSession == 0 {
 		o.PerSession = 3
 	}
-	total, sessions, cands, err := ix.candidates(ctx, match, f, o)
+	total, sessions, cands, err := ix.candidates(ctx, inTurns(match, f), f, o)
 	if err != nil {
 		return res, err
 	}
@@ -127,8 +126,21 @@ func (ix *Index) Search(ctx context.Context, q Query, f Filter, o SearchOptions)
 		return ix.closest(ctx, q, f, o)
 	}
 	res.Total, res.Sessions = total, sessions
-	res.Hits = ix.hits(ctx, cands, q, o, nil)
+	res.Hits = ix.hits(ctx, cands, q, o, nil, f.SID == 0)
 	return res, nil
+}
+
+// turnColumns are the columns of the words table that hold a turn's own words.
+const turnColumns = "{ask reply thinking tool output}"
+
+// inTurns confines an expression to the turns' own words in a search of one session alone
+// (Filter.SID), which is how the page's Find in a session asks: the title is the same for
+// every turn of it, and would list the first, which holds it, for a word no turn says.
+func inTurns(expr string, f Filter) string {
+	if f.SID == 0 || expr == "" {
+		return expr
+	}
+	return turnColumns + ": (" + expr + ")"
 }
 
 // cand is a turn a search found, before it is a hit.
@@ -193,12 +205,12 @@ JOIN sessions s ON s.sid = t.sid WHERE words MATCH ? AND ` + where
 
 // hits makes the page asked for of ranked candidates: each session's surplus set aside,
 // and each turn read for what it was asked, how it ended and where the words are. lacks,
-// for a partial match, is what each turn lacks, by its rowid in the words table.
-func (ix *Index) hits(ctx context.Context, cands []cand, q Query, o SearchOptions, lacks map[int64][]string) []Hit {
+// for a partial match, is what each turn lacks, by its rowid in the words table. titled
+// says the words were looked for in the session's title too, in the turn that holds it.
+func (ix *Index) hits(ctx context.Context, cands []cand, q Query, o SearchOptions, lacks map[int64][]string, titled bool) []Hit {
 	out := []Hit{}
 	perSession := map[int64]int{}
 	sessions := map[int64]Session{}
-	titles := map[int64]string{} // each session's title, as far as the words table holds it
 	needles := q.needles()
 	skipped := 0
 	for _, c := range cands {
@@ -220,13 +232,16 @@ func (ix *Index) hits(ctx context.Context, cands []cand, q Query, o SearchOption
 				continue
 			}
 			sessions[c.sid] = s
-			titles[c.sid] = ownTitle(s.Title, firstAsk(ctx, ix.ro, c.sid))
 		}
 		turns, err := ix.Turns(ctx, &s, TurnRange{First: c.idx, Last: c.idx})
 		if err != nil || len(turns) == 0 {
 			continue
 		}
 		t := &turns[0]
+		title := ""
+		if titled && c.idx == titleTurn {
+			title = s.Title
+		}
 		lacking := lacks[turnRowID(c.sid, c.idx)]
 		// A word the turn lacks is not looked for: text that holds it only inside another
 		// word — queue in enqueue — would say it was found
@@ -243,7 +258,7 @@ func (ix *Index) hits(ctx context.Context, cands []cand, q Query, o SearchOption
 			Session: s, Turn: c.idx, Ref: s.Ref + "#" + itoa(c.idx), At: fromMs(c.at),
 			Ask: t.Ask, Answer: t.Answer, Tools: t.Tools, Failed: t.Failures, Interrupted: t.Interrupted,
 			Lacks:   lacking,
-			Matches: ix.matches(ctx, &s, titles[c.sid], t, q, held), Score: c.score,
+			Matches: ix.matches(ctx, &s, title, t, q, held), Score: c.score,
 		})
 	}
 	return out
@@ -266,7 +281,7 @@ func (ix *Index) closest(ctx context.Context, q Query, f Filter, o SearchOptions
 	var words []Term
 	var not []string
 	for _, t := range q.Terms {
-		switch e := t.expr(); {
+		switch e := inTurns(t.expr(), f); {
 		case e == "":
 		case t.Not:
 			not = append(not, e)
@@ -275,13 +290,15 @@ func (ix *Index) closest(ctx context.Context, q Query, f Filter, o SearchOptions
 		}
 	}
 	var present []Term
+	var exprs []string // the present words' expressions
 	for _, t := range words {
-		ok, err := ix.holds(ctx, t.expr(), f)
+		e := inTurns(t.expr(), f)
+		ok, err := ix.holds(ctx, e, f)
 		if err != nil {
 			return res, err
 		}
 		if ok {
-			present = append(present, t)
+			present, exprs = append(present, t), append(exprs, e)
 		} else {
 			res.Missing = append(res.Missing, t.String())
 		}
@@ -290,14 +307,14 @@ func (ix *Index) closest(ctx context.Context, q Query, f Filter, o SearchOptions
 		return res, nil
 	}
 	for k := min(len(present), len(words)-1); k >= 1; k-- {
-		total, sessions, cands, err := ix.candidates(ctx, excluding(atLeast(present, k), not), f, o)
+		total, sessions, cands, err := ix.candidates(ctx, excluding(atLeast(exprs, k), not), f, o)
 		if err != nil {
 			return res, err
 		}
 		if total == 0 {
 			continue
 		}
-		held, err := ix.held(ctx, present, cands)
+		held, err := ix.held(ctx, exprs, cands)
 		if err != nil {
 			return res, err
 		}
@@ -325,23 +342,19 @@ func (ix *Index) closest(ctx context.Context, q Query, f Filter, o SearchOptions
 		}
 		res.Total, res.Sessions = total, sessions
 		res.Partial = &Partial{Words: len(words), Held: count(cands[0])}
-		res.Hits = ix.hits(ctx, cands, q, o, lacks)
+		res.Hits = ix.hits(ctx, cands, q, o, lacks, f.SID == 0)
 		return res, nil
 	}
 	return res, nil
 }
 
-// atLeast is an expression for the turns that hold at least k of the terms: any k of
-// them together. Where there are more than maxChoices ways to choose, it is any one.
-func atLeast(terms []Term, k int) string {
-	exprs := make([]string, len(terms))
-	for i, t := range terms {
-		exprs[i] = t.expr()
-	}
+// atLeast is an expression for the turns that hold at least k of the terms' expressions:
+// any k of them together. Where there are more than maxChoices ways to choose, it is any one.
+func atLeast(exprs []string, k int) string {
 	switch {
-	case k >= len(terms):
+	case k >= len(exprs):
 		return strings.Join(exprs, " AND ")
-	case k <= 1 || choices(len(terms), k) > maxChoices:
+	case k <= 1 || choices(len(exprs), k) > maxChoices:
 		return strings.Join(exprs, " OR ")
 	}
 	var groups []string
@@ -356,7 +369,7 @@ func atLeast(terms []Term, k int) string {
 			groups = append(groups, "("+strings.Join(parts, " AND ")+")")
 			return
 		}
-		for i := from; i <= len(terms)-(k-at); i++ {
+		for i := from; i <= len(exprs)-(k-at); i++ {
 			pick[at] = i
 			choose(i+1, at+1)
 		}
@@ -383,18 +396,19 @@ JOIN sessions s ON s.sid = t.sid WHERE words MATCH ? AND `+where+` LIMIT 1)`, ap
 	return n > 0, err
 }
 
-// held says which of the terms each candidate holds, by its rowid in the words table.
-func (ix *Index) held(ctx context.Context, terms []Term, cands []cand) (map[int64][]bool, error) {
+// held says which of the terms' expressions each candidate matches, by its rowid in the
+// words table.
+func (ix *Index) held(ctx context.Context, exprs []string, cands []cand) (map[int64][]bool, error) {
 	out := make(map[int64][]bool, len(cands))
 	ids := make([]any, 0, len(cands)+1)
 	ids = append(ids, "")
 	for _, c := range cands {
 		id := turnRowID(c.sid, c.idx)
-		out[id] = make([]bool, len(terms))
+		out[id] = make([]bool, len(exprs))
 		ids = append(ids, id)
 	}
-	for i, t := range terms {
-		ids[0] = t.expr()
+	for i, e := range exprs {
+		ids[0] = e
 		rows, err := ix.ro.QueryContext(ctx, `SELECT rowid FROM words WHERE words MATCH ? AND rowid IN (`+placeholders(len(ids)-1)+`)`, ids...)
 		if err != nil {
 			return nil, err
@@ -424,8 +438,8 @@ const snippetRadius = 90
 const maxMatches = 3
 
 // matches finds where in a turn the query's words are: first in what was asked and
-// said, then in what was run, then in what came back — and in the session's title, when
-// it has one of its own (see ownTitle), for a word the turn does not hold itself.
+// said, then in what was run, then in what came back — and in the session's title, given
+// for the turn that holds it (see titleTurn), for a word the turn does not hold itself.
 func (ix *Index) matches(ctx context.Context, s *Session, title string, t *model.Turn, q Query, needles []needle) []Match {
 	type field struct {
 		kind   model.Kind

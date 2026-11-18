@@ -60,7 +60,7 @@ var tools = []tool{
 	{
 		name:  "search",
 		title: "Search the history",
-		about: "Full-text search over every turn of every session: what was asked, what the agent replied and thought, the tools it called and what they printed, and the title of the session the turn is in. " +
+		about: "Full-text search over every turn of every session: what was asked, what the agent replied and thought, the tools it called and what they printed, and the session's title, searched with its first turn. " +
 			"Returns the matching turns, best first, each with its ref (store/id#turn), how the turn ended (✓ no call failed; ✗N failed, and how many of those the same command passed later; ⚠ interrupted), the lines the words were found in, and the turn's final answer. " +
 			"When no turn holds every word, it says which words no turn holds at all and returns the turns that hold the most of them, marked as partial matches, each with the words it lacks. " +
 			"Use it for \"how did I solve this before\", \"where did that error come up\", \"which session touched X\". " +

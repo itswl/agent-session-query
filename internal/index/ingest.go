@@ -68,7 +68,6 @@ type turnRow struct {
 	files                      []model.File
 	failed                     []failureRow
 	words                      [5]string // ask, reply, thinking, tool, output
-	ask                        string    // as the head keeps it
 }
 
 type bodyRow struct {
@@ -254,7 +253,6 @@ func (ix *Index) turnRow(rd *reading, t *model.Turn) turnRow {
 	row.head = string(headJSON)
 	row.hash = h.Sum(nil)
 
-	row.ask = head.Ask
 	if t.Index > 0 {
 		rd.lastAsk = head.Ask
 	}
@@ -311,38 +309,18 @@ func turnWords(items []model.Item) [5]string {
 	return out
 }
 
-// titleWords is a session's title as the words table holds it, beside every turn's words:
-// none when the title is only how its first ask begins (see ownTitle).
-func titleWords(title, firstAsk string) string {
-	return withStems(segment(ownTitle(title, firstAsk)))
+// titleWords is a session's title as the words table holds it, in the row of the turn that
+// holds it (see titleTurn).
+func titleWords(title string) string {
+	return withStems(segment(title))
 }
 
-// ownTitle is a session's title when it is one of its own: "" when it is only how the
-// first ask begins, which is what a session its CLI did not name is titled by. The first
-// turn holds those words already, and held beside every turn they would have each match
-// what the session was first asked.
-func ownTitle(title, firstAsk string) string {
-	t := strings.Join(strings.Fields(strings.TrimSuffix(title, "…")), " ")
-	if t == "" || strings.HasPrefix(strings.Join(strings.Fields(firstAsk), " "), t) {
-		return ""
-	}
-	return title
-}
-
-// firstAsk is what a session was first asked, as its first turn's head keeps it.
-func firstAsk(ctx context.Context, q interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, sid int64) string {
-	var head string
-	if q.QueryRowContext(ctx, `SELECT head FROM turns WHERE sid = ? AND idx > 0 ORDER BY idx LIMIT 1`, sid).Scan(&head) != nil {
-		return ""
-	}
-	var t struct {
-		Ask string `json:"ask"`
-	}
-	json.Unmarshal([]byte(head), &t)
-	return t.Ask
-}
+// titleTurn is the turn whose row in the words table holds its session's title: the first
+// ask, as turns are numbered. A word of the title finds the session once, there, and not
+// in each of its turns — which would have every turn match, be counted and be listed by
+// Find for a word only the title says. It is held whether the session's CLI named it or it
+// is titled by how its first ask begins: title: finds it either way.
+const titleTurn = 1
 
 // addWords appends text for the words table, keeping the head and the tail of anything
 // longer than limit.
@@ -506,26 +484,18 @@ RETURNING sid`,
 		}
 
 		// The turns whose words are to be written again though their rows are not: those
-		// another asq wrote, and every one of the session when its title changed — which
-		// the upsert above has just named, if it did (see wordsStale)
+		// another asq wrote, and the one that holds the title when it changed — which the
+		// upsert above has just named, if it did (see wordsStale)
 		stale, err := staleTurns(ctx, tx, sid)
 		if err != nil {
 			return err
 		}
-		var title *string // the title's words, worked out once if any turn needs them
 		words := func(t *turnRow, again bool) error {
-			if title == nil {
-				first := ""
-				for i := range rd.turns {
-					if rd.turns[i].idx > 0 {
-						first = rd.turns[i].ask
-						break
-					}
-				}
-				w := titleWords(s.Title, first)
-				title = &w
+			title := ""
+			if t.idx == titleTurn {
+				title = titleWords(s.Title)
 			}
-			return putWords(ctx, tx, sid, t, *title, again)
+			return putWords(ctx, tx, sid, t, title, again)
 		}
 
 		for i := range rd.turns {
@@ -584,9 +554,9 @@ func staleTurns(ctx context.Context, tx *sql.Tx, sid int64) (map[int]bool, error
 	return out, rows.Err()
 }
 
-// putWords writes a turn's row of the words table, with its session's title: a turn with
-// no words of its own has none, and is not found by its title alone. again says the turn
-// may have a row already, which goes.
+// putWords writes a turn's row of the words table, with its session's title when it is
+// the turn that holds it (see titleTurn): a turn with no words of its own has none, and is
+// not found by the title alone. again says the turn may have a row already, which goes.
 func putWords(ctx context.Context, tx *sql.Tx, sid int64, t *turnRow, title string, again bool) error {
 	id := turnRowID(sid, t.idx)
 	if again {

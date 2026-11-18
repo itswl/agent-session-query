@@ -228,35 +228,36 @@ func TestSearch(t *testing.T) {
 	f := filter(a)
 	f.Agents = true
 	for query, want := range map[string]string{
-		"ECONNREFUSED":            "aaaa1111#1",      // a tool's output
-		"econnref":                "aaaa1111#1",      // a prefix, any case
-		"数据库":                     "aaaa1111#2",      // CJK, with no spaces to split on
-		"加索引":                     "aaaa1111#2",      // … and from the middle of a run
-		`"map order"`:             "aaaa1111#1",      // a phrase
-		`"order map"`:             "",                // … is in order
-		"ask:flaky":               "aaaa1111#1",      // only where the person said it
-		"reply:flaky":             "",                //
-		"output:finished":         "bbbb2222#1",      // the end of a long output is searchable whole
-		"tool:schema":             "aaaa1111#2",      // a tool's input
-		"ask:flaky -ECONNREFUSED": "",                // a word that must not be there
-		"rotat":                   "bbbb2222#1",      //
-		"missing indexes":         "aaaa1111#2 x1#1", // the call, and the subagent it started
-		"nothinglikethis":         "",
+		"ECONNREFUSED":        "aaaa1111#1",      // a tool's output
+		"econnref":            "aaaa1111#1",      // a prefix, any case
+		"数据库":                 "aaaa1111#2",      // CJK, with no spaces to split on
+		"加索引":                 "aaaa1111#2",      // … and from the middle of a run
+		`"map order"`:         "aaaa1111#1",      // a phrase
+		`"order map"`:         "",                // … is in order
+		"ask:flaky":           "aaaa1111#1",      // only where the person said it
+		"reply:flaky":         "",                //
+		"output:finished":     "bbbb2222#1",      // the end of a long output is searchable whole
+		"tool:schema":         "aaaa1111#2",      // a tool's input
+		"flaky -ECONNREFUSED": "",                // a word that must not be there
+		"rotat":               "bbbb2222#1",      //
+		"missing indexes":     "aaaa1111#2 x1#1", // the call, and the subagent it started
+		"nothinglikethis":     "",
 
 		// Another form of an English word: "Rotated", "fixed by sorting the keys"
 		"rotating":      "bbbb2222#1",
 		"sorted keys":   "aaaa1111#1",
 		`"sorted keys"`: "", // a quoted phrase is as written
 		"reply:sorts":   "aaaa1111#1",
-		"output:sorts":  "", // … and in the part asked for
-		"-sorting fix":  "aaaa1111#2",
+		"output:sorts":  "",           // … and in the part asked for
+		"-sorting fix":  "",           // the one turn that says fix says sorting
 		"索引 orders":     "aaaa1111#2", // Chinese beside English, in a turn's reply
 		"ask:索引 order":  "aaaa1111#2", // … the English word in another form, in another part
 
-		// The session's title — "Fix flaky test" — is in every one of its turns
-		"title:flaky":         "aaaa1111#1 aaaa1111#2",
-		"flaky -ECONNREFUSED": "aaaa1111#2", // the title says flaky, and this turn has no ECONNREFUSED
-		"flaky 数据库":           "aaaa1111#2",
+		// The session's title — "Fix flaky test" — is held with its first turn alone, and
+		// so is one taken from how the first ask begins: beta's, "rotate the deploy key"
+		"title:flaky":  "aaaa1111#1",
+		"title:deploy": "bbbb2222#1",
+		"title:数据库":    "",
 	} {
 		res, err := a.Index.Search(ctx, index.ParseQuery(query), f, index.SearchOptions{})
 		if err != nil {

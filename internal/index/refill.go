@@ -82,7 +82,6 @@ func (ix *Index) refillSession(ctx context.Context, tx *sql.Tx, sid int64) (int,
 	if err != nil {
 		return 0, err
 	}
-	tw := titleWords(title, firstAsk(ctx, tx, sid))
 	type stale struct {
 		idx  int
 		body []byte // nil: the turn is gone
@@ -119,6 +118,10 @@ WHERE w.sid = ? AND w.idx > ? ORDER BY w.idx LIMIT ?`, sid, after, refillBatch)
 				if items, err := ix.wholeItems(ctx, tx, sid, s.idx, s.body); err == nil {
 					row.words = turnWords(items)
 				}
+			}
+			tw := ""
+			if s.idx == titleTurn {
+				tw = titleWords(title)
 			}
 			if err := putWords(ctx, tx, sid, &row, tw, true); err != nil {
 				return 0, err

@@ -50,10 +50,11 @@ var Spec = sources.Spec{
 	ResumeHere: true,
 	Reads:      2,
 	Store:      "~/.claude/projects/<project>/<session>.jsonl",
-	// Claude Code sweeps every project after a session starts, and keeps the sessions begun
-	// in Claude Desktop or Cowork at any age: "Cleaned up automatically" in
-	// code.claude.com/docs/en/claude-directory
-	Retention: "Claude Code deletes the transcripts of sessions not used for 30 days (cleanupPeriodDays in ~/.claude/settings.json)",
+	// Claude Code sweeps every project after a session starts; from v2.1.248 it keeps the
+	// sessions started or last continued in Claude Desktop or Cowork, unless
+	// desktopSessionCleanupPeriodDays or a managed cleanupPeriodDays limits them: "Cleaned
+	// up automatically" in code.claude.com/docs/en/claude-directory
+	Retention: "Claude Code deletes the transcripts of sessions not used for 30 days by default (cleanupPeriodDays in its settings.json, under ~/.claude or CLAUDE_CONFIG_DIR)",
 }
 
 // Source is a Claude Code projects directory.

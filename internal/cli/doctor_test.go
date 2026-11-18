@@ -105,18 +105,25 @@ func TestDoctorSaysHowFarBackAStoreGoes(t *testing.T) {
 	for _, tc := range []struct {
 		about     string
 		store     shelf
+		name      string // the store's; "" for the CLI's own, "mycli"
 		retention string // the CLI's, as its Spec has it
 		oldest    string // the day doctor gives the oldest transcript; "" for none
 		said      bool   // whether doctor says what the CLI deletes
 	}{
-		{"a CLI that deletes its old sessions", shelf{talk: three, at: at, every: day}, retention, "2026-10-17", true},
-		{"a CLI that keeps them", shelf{talk: three, at: at, every: day}, "", "2026-10-17", false},
-		{"an empty store", shelf{at: at}, retention, "", false},
+		{"a CLI that deletes its old sessions", shelf{talk: three, at: at, every: day}, "", retention, "2026-10-17", true},
+		{"a CLI that keeps them", shelf{talk: three, at: at, every: day}, "", "", "2026-10-17", false},
+		{"an empty store", shelf{at: at}, "", retention, "", false},
 		// a database row with no time in it is listed at 1970, which is no session's day
-		{"a store that cannot tell when", shelf{talk: three, at: time.UnixMilli(0)}, retention, "", true},
+		{"a store that cannot tell when", shelf{talk: three, at: time.UnixMilli(0)}, "", retention, "", true},
+		// a copy, or another machine's: this CLI does not sweep it, and its settings are not here
+		{"a labelled store", shelf{talk: three, at: at, every: day}, "mycli@backup", retention, "2026-10-17", false},
 	} {
 		tc.store.read = new(int)
-		stores := []index.Store{{Name: "mycli", Spec: sources.Spec{Name: "mycli", Retention: tc.retention}, Source: tc.store}}
+		name := tc.name
+		if name == "" {
+			name = "mycli"
+		}
+		stores := []index.Store{{Name: name, Spec: sources.Spec{Name: "mycli", Retention: tc.retention}, Source: tc.store}}
 
 		var out bytes.Buffer
 		if err := doctor(context.Background(), stores, false, render.Style{}, &out); err != nil {

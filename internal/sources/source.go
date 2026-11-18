@@ -82,8 +82,10 @@ type Spec struct {
 	// Store is the layout in one line, for the documentation the program prints.
 	Store string
 	// Retention is what the CLI deletes of its own history without being asked, in one
-	// clause: what it deletes, after how long by default, and the setting and the file
-	// that change it. Empty when the CLI keeps every session until someone deletes it.
+	// clause: what it deletes, after how long — saying "by default", as a setting changes
+	// it — and the setting and the file that change it. Empty when the CLI keeps every
+	// session until someone deletes it. Said only of the CLI's own store, not of a labelled
+	// one: that is a copy, or another machine's, which this CLI does not sweep.
 	// A session the CLI deletes is gone from its store, and the next sync takes it out of
 	// the index too, so this is how far back the CLI's history in asq goes. Doctor prints
 	// it followed by ", and they leave asq too": it names what is deleted in the plural.

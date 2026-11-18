@@ -777,7 +777,9 @@ func doctor(ctx context.Context, stores []index.Store, asJSON bool, st render.St
 		if ck.Found {
 			lk, err := deepRead(ctx, store)
 			ck.Sessions, ck.Oldest, ck.Newest, ck.Turns, ck.Items, ck.Unread, ck.Archived = lk.sessions, lk.oldest, lk.newest, lk.turns, lk.items, lk.unread, lk.archived
-			if ck.Sessions > 0 {
+			// Only of the CLI's own store: a labelled one is a copy or another machine's,
+			// which the CLI here does not sweep, and whose settings are not this one's
+			if ck.Sessions > 0 && store.Name == store.Spec.Name {
 				ck.Retention = store.Spec.Retention
 			}
 			if err != nil {

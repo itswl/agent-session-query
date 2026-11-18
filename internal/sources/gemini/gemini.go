@@ -60,7 +60,7 @@ var Spec = sources.Spec{
 	// Gemini CLI sweeps the chats of the project it starts in, by the time each was last
 	// updated (packages/cli/src/utils/sessionCleanup.ts): a project it is not started in
 	// again keeps its old sessions
-	Retention: "Gemini CLI deletes a project's sessions not used for 30 days when it next starts in that project (general.sessionRetention in ~/.gemini/settings.json)",
+	Retention: "Gemini CLI deletes a project's sessions not used for 30 days by default, when it next starts in that project (general.sessionRetention in ~/.gemini/settings.json)",
 }
 
 // Source is a Gemini CLI tmp directory.

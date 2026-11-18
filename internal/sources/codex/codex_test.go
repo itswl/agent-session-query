@@ -1,12 +1,15 @@
 package codex
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
@@ -720,5 +723,196 @@ func TestACommandStillRunningHasNoStatus(t *testing.T) {
 	list = `[{"type":"input_text","text":"Chunk ID: d5\nWall time: 1.0 seconds\nProcess exited with code 0\nOriginal token count: 3\nOutput:\nok\n"}]`
 	if _, o := output(json.RawMessage(list), func(string) {}); o.Status != model.StatusOK {
 		t.Errorf("ended, as a list: %+v", o)
+	}
+}
+
+// The tools the API runs, and what it does, inside a response, as codex-rs writes them
+// (protocol/src/models.rs): a tool search Codex runs answers after the response, one the
+// API runs is part of it; an image generation and a compaction of the context are items of
+// the response with no output row. None is passed over, and none splits its response.
+func TestWhatTheAPIDoesInsideAResponse(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "2026", "11", "10", "rollout-2026-11-10T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl"),
+		`{"timestamp":"2026-11-10T10:00:00Z","type":"session_meta","payload":{"id":"0199a213-81c0-7800-8aa1-bbab2a035a53","cwd":"/p","cli_version":"0.170.0"}}`,
+		`{"timestamp":"2026-11-10T10:00:01Z","type":"turn_context","payload":{"turn_id":"t1","model":"gpt-6.1","cwd":"/p"}}`,
+		`{"timestamp":"2026-11-10T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"put the launch on my calendar, and draw a poster for it"}]}}`,
+		// Codex runs the search: the call closes the response, the output answers after it
+		`{"timestamp":"2026-11-10T10:00:03Z","type":"response_item","payload":{"type":"tool_search_call","call_id":"search-1","status":"completed","execution":"client","arguments":{"query":"calendar create","limit":2}}}`,
+		`{"timestamp":"2026-11-10T10:00:03Z","type":"token_usage_record","payload":{"response_id":"resp_1","turn_id":"t1","usage":{"input_tokens":900,"cached_input_tokens":0,"output_tokens":20}}}`,
+		`{"timestamp":"2026-11-10T10:00:04Z","type":"response_item","payload":{"type":"tool_search_output","call_id":"search-1","status":"completed","execution":"client","tools":[`+
+			`{"type":"function","name":"calendar_lookup","description":"Find a free slot.","defer_loading":true,"parameters":{"type":"object","properties":{}}},`+
+			`{"type":"namespace","name":"mcp__codex_apps","description":"Tools in the mcp__codex_apps namespace.","tools":[{"type":"function","name":"calendar_create_event","description":"Create a calendar event.","strict":false,"defer_loading":true,"parameters":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}}]}]}}`,
+		// The API runs the search: call and output are items of the one response, and so
+		// are the image it drew, one it could not, and the compaction it made
+		`{"timestamp":"2026-11-10T10:00:06Z","type":"response_item","payload":{"type":"tool_search_call","call_id":null,"status":"completed","execution":"server","arguments":{"paths":["crm"]}}}`,
+		`{"timestamp":"2026-11-10T10:00:06Z","type":"response_item","payload":{"type":"tool_search_output","call_id":null,"status":"completed","execution":"server","tools":[]}}`,
+		`{"timestamp":"2026-11-10T10:00:07Z","type":"response_item","payload":{"type":"function_call","name":"calendar_create_event","namespace":"mcp__codex_apps","arguments":"{\"title\":\"Launch\"}","call_id":"call_cal"}}`,
+		`{"timestamp":"2026-11-10T10:00:09Z","type":"response_item","payload":{"type":"image_generation_call","id":"ig_1","status":"completed","revised_prompt":"A poster for a product launch, bold type","result":"iVBORw0KGgo="}}`,
+		`{"timestamp":"2026-11-10T10:00:10Z","type":"response_item","payload":{"type":"image_generation_call","id":"ig_2","status":"failed","result":""}}`,
+		`{"timestamp":"2026-11-10T10:00:10Z","type":"response_item","payload":{"type":"context_compaction","encrypted_content":"gAAAAB"}}`,
+		`{"timestamp":"2026-11-10T10:00:10Z","type":"token_usage_record","payload":{"response_id":"resp_2","turn_id":"t1","usage":{"input_tokens":1200,"cached_input_tokens":800,"output_tokens":60}}}`,
+		`{"timestamp":"2026-11-10T10:00:11Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_cal","output":"Created: Launch"}}`,
+		`{"timestamp":"2026-11-10T10:00:12Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"It is on your calendar, with a poster."}]}}`,
+		`{"timestamp":"2026-11-10T10:00:12Z","type":"token_usage_record","payload":{"response_id":"resp_3","turn_id":"t1","usage":{"input_tokens":1300,"cached_input_tokens":1200,"output_tokens":12}}}`,
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	turn := s.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt tool tool tool tool tool event reply" {
+		t.Errorf("items = %s", got)
+	}
+	if s.Stats.Calls != 3 || len(turn.Calls) != 3 || turn.Calls[1].ID != "resp_2" {
+		t.Fatalf("calls = %+v: three responses, each one call", turn.Calls)
+	}
+	tools := sourcetest.Tools(turn)
+	client, server, image, failed := tools[0], tools[1], tools[3], tools[4]
+	if client.Name != "tool_search" || client.Kind != model.ToolSearch || client.Status != model.StatusOK ||
+		client.Output != "calendar_lookup\nmcp__codex_apps.calendar_create_event" || !strings.Contains(string(client.Input), "calendar create") {
+		t.Errorf("the search Codex ran = %+v", client)
+	}
+	if server.Name != "tool_search" || !server.Done || server.Status != model.StatusOK || server.Output != "" || turn.Items[2].Call != 2 {
+		t.Errorf("the search the API ran = %+v, in call %d", server, turn.Items[2].Call)
+	}
+	if tools[2].Name != "mcp__codex_apps.calendar_create_event" || tools[2].Output != "Created: Launch" {
+		t.Errorf("the tool the search loaded = %+v", tools[2])
+	}
+	if image.Name != "image_generation" || !image.Done || image.Status != model.StatusOK || image.Output != "" ||
+		!strings.Contains(string(image.Input), "A poster for a product launch") {
+		t.Errorf("image = %+v: the prompt is its input, and the image is not text", image)
+	}
+	if failed.Status != model.StatusError || turn.Failures != 1 {
+		t.Errorf("an image the API could not make = %+v, failures %d", failed, turn.Failures)
+	}
+	if ev := turn.Items[6]; ev.Event != model.EventCompaction {
+		t.Errorf("the compaction = %+v", ev)
+	}
+	if want := (model.Usage{Input: 1400, Output: 92, CacheRead: 2000}); s.Stats.Usage != want {
+		t.Errorf("usage = %+v, want %+v", s.Stats.Usage, want)
+	}
+}
+
+// A rollback takes the thread's last turns out of what the model is given; the turns after
+// it go on from before them. What was rolled back was still said, run and paid for, and is
+// read: the rollback is an event where it happened.
+func TestARollback(t *testing.T) {
+	root := t.TempDir()
+	turn := func(id, ask, answer string, minute, in int) []any {
+		ts := fmt.Sprintf("2026-11-11T10:%02d:00Z", minute)
+		return []any{
+			`{"timestamp":"` + ts + `","type":"turn_context","payload":{"turn_id":"` + id + `","model":"gpt-6.1","cwd":"/p"}}`,
+			`{"timestamp":"` + ts + `","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"` + ask + `"}]}}`,
+			`{"timestamp":"` + ts + `","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"` + answer + `"}]}}`,
+			`{"timestamp":"` + ts + `","type":"token_usage_record","payload":{"response_id":"resp_` + id + `","usage":{"input_tokens":` + strconv.Itoa(in) + `,"output_tokens":1}}}`,
+		}
+	}
+	lines := []any{`{"timestamp":"2026-11-11T10:00:00Z","type":"session_meta","payload":{"id":"codex-rollback","cwd":"/p"}}`}
+	lines = append(lines, turn("t1", "name the service", "Call it relay.", 1, 10)...)
+	lines = append(lines, turn("t2", "make it shorter", "Call it rl.", 2, 20)...)
+	lines = append(lines, turn("t3", "and a logo", "A paper plane.", 3, 40)...)
+	lines = append(lines, `{"timestamp":"2026-11-11T10:04:00Z","type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":2}}`)
+	lines = append(lines, turn("t4", "make it longer", "Call it relay-service.", 5, 80)...)
+	lines = append(lines, `{"timestamp":"2026-11-11T10:06:00Z","type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}`)
+	sourcetest.Write(t, filepath.Join(root, "2026", "11", "11", "rollout-2026-11-11T10-00-00-rollback.jsonl"), lines...)
+
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	if s.Stats.Turns != 4 || s.Stats.Usage.Input != 150 {
+		t.Fatalf("%d turns, input %d: every turn is read and counted", s.Stats.Turns, s.Stats.Usage.Input)
+	}
+	three, four := s.Turn(t, 3), s.Turn(t, 4)
+	if got := sourcetest.Kinds(three); got != "prompt reply event" {
+		t.Errorf("turn 3 = %s: the rollback comes after the last turn it took back", got)
+	}
+	if ev := three.Items[2]; ev.Event != "rollback" || ev.Text != "Rolled back the last 2 turns: the turns after this go on from before them" {
+		t.Errorf("rollback = %+v", ev)
+	}
+	// The person took the thread back a minute after the answer: the turn ended with it
+	if !three.EndedAt.Equal(time.Date(2026, 11, 11, 10, 3, 0, 0, time.UTC)) || !three.LastAt.Equal(time.Date(2026, 11, 11, 10, 4, 0, 0, time.UTC)) {
+		t.Errorf("turn 3 ended %v, last %v", three.EndedAt, three.LastAt)
+	}
+	if ev := four.Items[len(four.Items)-1]; ev.Event != "rollback" || ev.Text != "Rolled back the last turn: the turns after this go on from before it" {
+		t.Errorf("rollback of one = %+v", ev)
+	}
+	if three.Interrupted || four.Interrupted || four.Answer != "Call it relay-service." {
+		t.Errorf("a turn rolled back was not stopped: %+v / %+v", three, four)
+	}
+}
+
+// A thread's name is kept in session_index.jsonl beside the sessions directory, not in its
+// rollout: the newest line for a thread is its name, a blank one clears it, and a renamed
+// thread's stamp moves so that it is read again.
+func TestThreadNames(t *testing.T) {
+	home := t.TempDir()
+	sessions := filepath.Join(home, "sessions")
+	const named, cleared, plain = "0199a213-81c0-7800-8aa1-bbab2a035a53", "0199a213-81c0-7800-8aa1-bbab2a035a54", "0199a213-81c0-7800-8aa1-bbab2a035a55"
+	day := filepath.Join(sessions, "2026", "11", "12")
+	rollout := func(dir, id, ask string) {
+		sourcetest.Write(t, filepath.Join(dir, "rollout-2026-11-12T10-00-00-"+id+".jsonl"),
+			`{"timestamp":"2026-11-12T10:00:00Z","type":"session_meta","payload":{"id":"`+id+`","cwd":"/p"}}`,
+			`{"timestamp":"2026-11-12T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"`+ask+`"}]}}`)
+	}
+	rollout(day, named, "fix the flaky test")
+	rollout(day, cleared, "bump the version")
+	rollout(filepath.Join(home, "archived_sessions"), plain, "write the changelog")
+	// A later rollout of the named thread, which Codex names <thread>_<rollout>
+	sourcetest.Write(t, filepath.Join(day, "rollout-2026-11-12T11-00-00-"+named+"_0199a213-81c0-7800-8aa1-bbab2a035a99.jsonl"),
+		`{"timestamp":"2026-11-12T11:00:00Z","type":"session_meta","payload":{"id":"`+named+`-later","cwd":"/p"}}`)
+	index := filepath.Join(home, "session_index.jsonl")
+	sourcetest.Write(t, index,
+		`{"id":"`+named+`","thread_name":"Flaky test","updated_at":"2026-11-12T10:05:00Z"}`,
+		`{"id":"`+cleared+`","thread_name":"Version bump","updated_at":"2026-11-12T10:06:00Z"}`,
+		`{"id":"`+plain+`","thread_name":"  Changelog  ","updated_at":"2026-11-12T10:07:00Z"}`,
+		`{"id":"`+named+`","thread_name":"Flaky TestOrder","updated_at":"2026-11-12T10:08:00Z"}`,
+		`{"id":"`+cleared+`","thread_name":"","updated_at":"2026-11-12T10:09:00Z"}`,
+		// lines Codex cannot parse either, and passes over for the one before
+		`{"id":"`+plain+`","thread_name":null,"updated_at":"2026-11-12T10:10:00Z"}`,
+		`{"id":"`+named+`","thread_name":"half a li`,
+	)
+	src := Spec.Open(sessions)
+	all := sourcetest.All(t, src)
+	sourcetest.NothingUnread(t, all...)
+	for id, want := range map[string]string{named: "Flaky TestOrder", named + "-later": "Flaky TestOrder", cleared: "bump the version", plain: "Changelog"} {
+		if got := sourcetest.ByID(t, all, id).Session.Title; got != want {
+			t.Errorf("%s: title %q, want %q", id, got, want)
+		}
+	}
+
+	stamps := func() map[string]string {
+		refs, err := src.Scan(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, ref := range refs {
+			out[filepath.Base(ref.Key)] = ref.Stamp
+		}
+		return out
+	}
+	before := stamps()
+	f, err := os.OpenFile(index, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("\n" + `{"id":"` + named + `","thread_name":"Flaky TestOrder, fixed","updated_at":"2026-11-12T12:00:00Z"}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after := stamps()
+	if len(after) != 4 {
+		t.Fatalf("rollouts = %v", after)
+	}
+	for file, stamp := range after {
+		if moved := stamp != before[file]; moved != strings.Contains(file, named) {
+			t.Errorf("%s: stamp moved %v: only the renamed thread's rollouts are read again", file, moved)
+		}
+	}
+	if got := sourcetest.ByID(t, sourcetest.All(t, src), named).Session.Title; got != "Flaky TestOrder, fixed" {
+		t.Errorf("renamed: %q", got)
+	}
+	// A store not named sessions has no CODEX_HOME around it to hold names
+	if names := (&Source{root: home}).threadNames(); names != nil {
+		t.Errorf("names = %v", names)
 	}
 }

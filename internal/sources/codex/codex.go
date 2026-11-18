@@ -2,6 +2,7 @@
 //
 //	<root>/<year>/<month>/<day>/rollout-<time>-<id>.jsonl[.zst]   a session ("rollout")
 //	<root>/../archived_sessions/…                                 the ones Codex put away
+//	<root>/../session_index.jsonl                                 the names threads were given
 //
 // A rollout is one JSON object per line, each {timestamp, type, payload}, and the
 // conversation is spread over several row types:
@@ -13,11 +14,15 @@
 //	response_item/function_call             a tool call: name, arguments (a JSON string)
 //	response_item/custom_tool_call          the freeform tools: exec, apply_patch
 //	response_item/local_shell_call          the older shell
+//	response_item/tool_search_call          a search for tools to load, and its _output
 //	response_item/web_search_call           a search, which has no output row
+//	response_item/image_generation_call     an image made, which has none either
 //	response_item/*_call_output             a result, by call_id
 //	response_item/agent_message             one agent of a team speaking to another
+//	response_item/context_compaction        a compaction the API made inside a response
 //	token_usage_record                      what the model response just written cost
 //	event_msg/turn_aborted, compacted       what happened between the words
+//	event_msg/thread_rolled_back            turns taken back out of the thread
 package codex
 
 import (
@@ -25,6 +30,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -33,6 +39,7 @@ import (
 
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/sources"
+	"github.com/itswl/agent-session-query/internal/sources/jsonmap"
 	"github.com/itswl/agent-session-query/internal/sources/kit"
 	"github.com/itswl/agent-session-query/internal/transcript"
 )
@@ -51,7 +58,7 @@ var Spec = sources.Spec{
 	Open:    func(location string) sources.Source { return &Source{root: location} },
 	Movable: true,
 	Resume:  "codex resume",
-	Reads:   1,
+	Reads:   2,
 	Store:   "~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl",
 }
 
@@ -64,11 +71,19 @@ type Source struct {
 	// per version of the parent's file.
 	mu    sync.Mutex
 	turns map[string]turnIDs
+	// The names threads were given, read once per version of session_index.jsonl
+	names threadNames
 }
 
 type turnIDs struct {
 	stamp string
 	ids   map[string]bool
+}
+
+type threadNames struct {
+	read  bool
+	stamp string
+	byID  map[string]string
 }
 
 func (s *Source) Location() string { return s.root }
@@ -123,12 +138,71 @@ func stem(path string) string {
 	return strings.TrimSuffix(strings.TrimSuffix(filepath.Base(path), ".zst"), ".jsonl")
 }
 
-// Scan lists every rollout.
+// threadOf is the id of the thread a rollout is named for: rollout-<time>-<thread>.jsonl,
+// and rollout-<time>-<thread>_<rollout>.jsonl for a later rollout of the same thread
+// (codex-rs rollout/src/rollout_file_name.rs). "" for a name of another shape.
+func threadOf(path string) string {
+	rest, ok := strings.CutPrefix(stem(path), "rollout-")
+	if !ok || len(rest) < 21 || rest[19] != '-' {
+		return ""
+	}
+	id, _, _ := strings.Cut(rest[20:], "_")
+	return id
+}
+
+// threadNames is the name of each thread that has one, by thread id. Codex appends a
+// line to $CODEX_HOME/session_index.jsonl whenever a thread is named (/rename, or a
+// client's thread/name/set) and never writes the name into the rollout. The newest line
+// for a thread is its name, and a blank one — the name cleared — leaves it unnamed, as
+// Codex reads it for a thread (codex-rs rollout/src/session_index.rs, find_thread_name_by_id).
+// The file is read once per version of it.
+func (s *Source) threadNames() map[string]string {
+	if filepath.Base(s.root) != "sessions" {
+		return nil // the index is beside the default sessions directory, in CODEX_HOME
+	}
+	path := filepath.Join(filepath.Dir(s.root), "session_index.jsonl")
+	stamp, _ := kit.Stamp(path)
+	s.mu.Lock()
+	if s.names.read && s.names.stamp == stamp {
+		names := s.names.byID
+		s.mu.Unlock()
+		return names
+	}
+	s.mu.Unlock()
+
+	names := map[string]string{}
+	err := kit.Lines(path, func(line []byte) bool {
+		var entry struct {
+			ID   string  `json:"id"`
+			Name *string `json:"thread_name"`
+		}
+		// A line Codex cannot parse either — a name that is not a string, the end of a
+		// line still being written — it passes over for the one before
+		if json.Unmarshal(line, &entry) == nil && entry.ID != "" && entry.Name != nil {
+			names[entry.ID] = strings.TrimSpace(*entry.Name)
+		}
+		return true
+	})
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return names // read again next time
+	}
+	s.mu.Lock()
+	s.names = threadNames{read: true, stamp: stamp, byID: names}
+	s.mu.Unlock()
+	return names
+}
+
+// Scan lists every rollout. A thread's name is in session_index.jsonl and not in its
+// rollout, so it is part of the stamp: a thread renamed is read again.
 func (s *Source) Scan(ctx context.Context) ([]sources.Ref, error) {
 	files, unread := s.files()
+	names := s.threadNames()
 	refs := make([]sources.Ref, 0, len(files))
 	for _, path := range files {
 		stamp, mod := kit.Stamp(path)
+		if name := names[threadOf(path)]; name != "" {
+			stamp += "|" + jsonmap.StampOf(name)
+		}
 		refs = append(refs, sources.Ref{Key: path, Stamp: stamp, ModTime: mod})
 	}
 	return refs, unread
@@ -173,6 +247,9 @@ type row struct {
 		Status    string          `json:"status"`
 		Author    string          `json:"author"`
 		Recipient string          `json:"recipient"`
+		Execution string          `json:"execution"`
+		Tools     json.RawMessage `json:"tools"`
+		Revised   string          `json:"revised_prompt"`
 
 		// token_usage_record, event_msg
 		ResponseID string          `json:"response_id"`
@@ -180,6 +257,7 @@ type row struct {
 		Info       json.RawMessage `json:"info"`
 		Reason     string          `json:"reason"`
 		Message    json.RawMessage `json:"message"`
+		NumTurns   json.Number     `json:"num_turns"`
 	} `json:"payload"`
 }
 
@@ -429,6 +507,19 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				reason := kit.First(p.Reason, "interrupted")
 				w.Add(transcript.Message{Role: transcript.System, At: at, Inherited: inherited,
 					Blocks: []transcript.Block{transcript.EventOf(model.EventInterrupted, "Turn aborted: "+reason)}})
+			case "thread_rolled_back":
+				// The thread was taken back: its last num_turns user turns were dropped from
+				// what the model is given, and the turns after this go on from before them
+				// (codex-rs app-server-protocol thread_history.rs, handle_thread_rollback).
+				// The rows of the turns taken back stay in the rollout and are read: they
+				// were said and done, their tools ran and their tokens were spent. The
+				// person takes the thread back between turns, so the last turn's work had
+				// ended before it
+				flush(nil)
+				rollback := transcript.EventOf(eventRollback, rolledBack(p.NumTurns))
+				rollback.After = true
+				w.Add(transcript.Message{Role: transcript.System, At: at, Inherited: inherited,
+					Blocks: []transcript.Block{rollback}})
 			case "token_count":
 				// The counters Codex writes after a response: what that response cost
 				// (last_token_usage) and the running total (total_token_usage). A rollout
@@ -555,6 +646,36 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				outcome.Status = model.StatusOK
 			}
 			assistant(transcript.CallOf("", "web_search", p.Action), transcript.ResultOf("", "web_search", "", outcome))
+		case "tool_search_call":
+			// A search among the tools the model is not given until it asks for them —
+			// arguments {query, limit} — run by Codex ("client") or by the API ("server")
+			names[callID] = toolSearch
+			assistant(transcript.CallOf(callID, toolSearch, arguments(p.Arguments)))
+		case "tool_search_output":
+			// What the search found: the tools it loaded. A search Codex ran answers after the
+			// response that asked for it, as any output does; one the API ran is part of that
+			// response, as its call is. A search that failed is written as one that found
+			// nothing (codex-rs core/src/tools/parallel.rs, failure_response), so the two
+			// cannot be told apart
+			result := transcript.ResultOf(p.CallID, toolSearch, toolsFound(p.Tools), itemOutcome(p.Status))
+			if p.Execution == "server" {
+				assistant(result)
+			} else {
+				flush(nil)
+				w.Add(transcript.Message{ID: p.ID, Role: transcript.ToolRole, At: at, Inherited: inherited,
+					Blocks: []transcript.Block{result}})
+			}
+		case "image_generation_call":
+			// An image the API's image tool made inside the response: like a web search, the
+			// call is the whole record and carries its own result. The image (result, in
+			// base64) is not text a reader is shown; what was asked for is the prompt as the
+			// API revised it
+			var input any
+			if p.Revised != "" {
+				input = map[string]any{"revised_prompt": p.Revised}
+			}
+			assistant(transcript.CallOf(callID, imageGeneration, input),
+				transcript.ResultOf(callID, imageGeneration, "", itemOutcome(p.Status)))
 		case "function_call_output", "custom_tool_call_output":
 			flush(nil)
 			text, outcome := output(p.Output, w.Unread)
@@ -572,6 +693,12 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		case "compaction":
 			// What a compaction on the server left, encrypted: the compacted row is what
 			// says it happened
+		case "context_compaction":
+			// A compaction the API made of the context as an item of a response, encrypted.
+			// Nothing else says it happened: a compaction Codex runs itself writes a compacted
+			// row, with its item inside the replacement history, which is not read
+			// (codex-rs core/src/session/mod.rs, replace_compacted_history)
+			assistant(transcript.EventOf(model.EventCompaction, "Context compacted"))
 		default:
 			if p.Type != "" {
 				w.Unread("item:" + p.Type)
@@ -589,6 +716,9 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 
 	w.S.ID = sessionIDOf(ownID, sessionID, salvaged, hasMeta, forkedOf != "" || parentID != "", stem(path))
 	w.S.Model = turnModel
+	// The name the thread was given, by the thread the file is named for: the key Scan
+	// stamps it under. A thread with none is titled by its first ask
+	w.S.Title = s.threadNames()[threadOf(path)]
 	// A subagent's rollout says so itself, and names the thread that spawned it. A fork
 	// or a resumed session a person carries on is no one's subagent: it stays a session
 	// of its own, its copied turns marked as its parent's.
@@ -602,6 +732,78 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		}
 	}
 	return nil
+}
+
+// The names the adapter gives what Codex records without one: the tools the API runs
+// inside a response, as Codex names them (codex-rs core/src/tools/router.rs, tool_search),
+// and the event a rollback is.
+const (
+	toolSearch      = "tool_search"
+	imageGeneration = "image_generation"
+	eventRollback   = "rollback"
+)
+
+// rolledBack says what a rollback of n turns did. n is a count Codex writes as an
+// unsigned number; anything else is a rollback that did not say of how many turns.
+func rolledBack(n json.Number) string {
+	const after = ": the turns after this go on from before "
+	switch count, err := strconv.ParseUint(n.String(), 10, 32); {
+	case err != nil:
+		return "Rolled back the last turns" + after + "them"
+	case count == 0:
+		return "Rolled back no turns"
+	case count == 1:
+		return "Rolled back the last turn" + after + "it"
+	default:
+		return "Rolled back the last " + strconv.FormatUint(count, 10) + " turns" + after + "them"
+	}
+}
+
+// itemOutcome is how a call the API ran inside a response ended, by the status its item
+// carries (the Responses API's: in_progress, searching or generating while it runs, then
+// completed, failed or incomplete). One that did not end, or was cut off with its
+// response, has no outcome recorded.
+func itemOutcome(status string) transcript.Outcome {
+	switch status {
+	case "completed":
+		return transcript.Outcome{Status: model.StatusOK}
+	case "failed":
+		return transcript.Outcome{Status: model.StatusError}
+	}
+	return transcript.Outcome{}
+}
+
+// toolsFound is what a tool search found, one tool a line: a function by its name, and
+// a namespace's tools by the name a call gives them, namespace.name — the way a
+// function_call is named here. The list holds the tools' whole definitions, of which the
+// names are what a reader needs to know what was loaded.
+func toolsFound(raw json.RawMessage) string {
+	var specs []struct {
+		Name  string `json:"name"`
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if json.Unmarshal(raw, &specs) != nil {
+		return ""
+	}
+	var names []string
+	for _, spec := range specs {
+		if len(spec.Tools) == 0 {
+			if spec.Name != "" {
+				names = append(names, spec.Name)
+			}
+			continue
+		}
+		for _, tool := range spec.Tools {
+			name := tool.Name
+			if spec.Name != "" {
+				name = spec.Name + "." + name
+			}
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, "\n")
 }
 
 // undecodable is the kind, for Writer.Unread, of a line that is JSON but will not decode

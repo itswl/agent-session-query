@@ -74,6 +74,9 @@ type Block struct {
 	// Stops, on an event, says the turn ended there before the agent was done: an error
 	// that cut the work off. The turn is marked interrupted, as one the person stopped is.
 	Stops bool
+	// After, on an event the CLI wrote of its own, says it came once the turn's work was
+	// done — something the person did between turns — and does not move the turn's end.
+	After bool
 }
 
 // Outcome is what a CLI recorded about how a tool call ended. Zero values mean "not

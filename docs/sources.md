@@ -86,7 +86,14 @@ snapshots Codex writes instead: one model call per snapshot, by what that reques
 snapshot written twice is one call; one that only repeats the total after a compaction is none;
 and the compaction's own request, which no snapshot includes, is the one thing this path cannot
 see. A forked thread's copied turns are inherited. A thread that is a subagent hangs beneath
-its parent.
+its parent. A thread's title is the name it was given (`/rename`), which Codex keeps in
+`session_index.jsonl` beside `sessions`; a thread with none is titled by its first ask. A tool
+search is a call to `tool_search`, its result the tools it loaded; an image the API generated is
+a call to `image_generation`, its prompt the input; a compaction the API made inside a response
+is a compaction event. A rollback (`thread_rolled_back`) took the thread's last turns out of what
+the model is given, and the turns after it go on from before them: it is a `rollback` event at the
+end of the last turn it took back, and the turns it took back are read and counted, since they
+ran and were paid for.
 
 **OpenCode** — one SQLite database, both the 1.x and 2.x schemas. A tool part that finished with
 a non-zero exit is a failure whatever its status says. Reasoning is reported beside the output

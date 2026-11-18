@@ -250,6 +250,22 @@ func TestAnEventThatStopsTheTurn(t *testing.T) {
 	}
 }
 
+// An event that came once the work was done — the person taking the thread back an hour
+// later — is the turn's last row, not the end of its work.
+func TestAnEventAfterTheWork(t *testing.T) {
+	after := EventOf("rollback", "Rolled back the last turn")
+	after.After = true
+	got := collect(t,
+		user(0, "name it"),
+		Message{Role: Assistant, At: at(2), Blocks: []Block{TextOf("relay")}},
+		Message{Role: System, At: at(3600), Blocks: []Block{after}},
+	)
+	turn := got.Turns[0]
+	if !turn.EndedAt.Equal(at(2)) || !turn.LastAt.Equal(at(3600)) || turn.Items[2].Event != "rollback" || turn.Interrupted {
+		t.Errorf("ended %v, last %v, items %+v", turn.EndedAt, turn.LastAt, turn.Items)
+	}
+}
+
 func TestQueuedPromptOpensNoTurn(t *testing.T) {
 	got := collect(t,
 		user(0, "first"),

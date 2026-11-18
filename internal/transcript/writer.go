@@ -279,7 +279,7 @@ func (w *Writer) addOther(m Message) {
 			work = true
 			w.settle(cur, m, b)
 		case EventBlock:
-			work = true
+			work = work || !b.After
 			w.pushEvent(cur, m, b)
 		}
 	}

@@ -313,7 +313,7 @@ func TestToolKind(t *testing.T) {
 		"Bash": model.ToolExec, "NotebookEdit": model.ToolWrite, "apply_patch": model.ToolWrite,
 		"Read": model.ToolRead, "Grep": model.ToolSearch, "WebFetch": model.ToolNet, "Agent": model.ToolAgent,
 		"publish": model.ToolOther, "runbook": model.ToolOther, "mcp__x__list_things": model.ToolSearch,
-		"local_shell": model.ToolExec, "TodoWrite": model.ToolWrite,
+		"local_shell": model.ToolExec, "TodoWrite": model.ToolWrite, "powershell": model.ToolExec, "read_powershell": model.ToolExec,
 	} {
 		if got := ToolKind(name); got != want {
 			t.Errorf("ToolKind(%q) = %q, want %q", name, got, want)

@@ -27,7 +27,7 @@ func ToolKind(name string) string {
 var kindOrder = []string{model.ToolExec, model.ToolWrite, model.ToolRead, model.ToolSearch, model.ToolNet, model.ToolAgent}
 
 var kindWords = map[string]map[string]bool{
-	model.ToolExec:   setOf("bash", "sh", "zsh", "shell", "terminal", "exec", "run", "cmd", "command", "process", "container", "docker"),
+	model.ToolExec:   setOf("bash", "sh", "zsh", "shell", "powershell", "pwsh", "terminal", "exec", "run", "cmd", "command", "process", "container", "docker"),
 	model.ToolWrite:  setOf("write", "edit", "patch", "replace", "create", "delete", "remove", "move", "rename", "apply", "save", "notebook"),
 	model.ToolRead:   setOf("read", "view", "cat", "open", "show"),
 	model.ToolSearch: setOf("grep", "glob", "search", "find", "list", "scan", "ls"),

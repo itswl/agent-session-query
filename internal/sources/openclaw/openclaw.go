@@ -61,8 +61,9 @@ var Spec = sources.Spec{
 	// session on disk. A command that works for the newest handful and fails for the
 	// rest is worse than none.
 	Resume: "",
-	Reads:  2,
-	Store:  "~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite",
+	// 3: a tool whose name ends in agents — OpenClaw's own subagents — is the agents' work
+	Reads: 3,
+	Store: "~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite",
 }
 
 // Source is one OpenClaw state directory.

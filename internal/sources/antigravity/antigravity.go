@@ -53,8 +53,9 @@ var Spec = sources.Spec{
 	Open:    func(location string) sources.Source { return open(location) },
 	Movable: true,
 	Resume:  "agy --conversation",
-	Reads:   2,
-	Store:   "~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl (agy; the IDE's is antigravity/brain)",
+	// 3: a tool whose name ends in an agent — a browser_subagent — is the agents' work
+	Reads: 3,
+	Store: "~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl (agy; the IDE's is antigravity/brain)",
 }
 
 // Source is a gemini directory's two brains.

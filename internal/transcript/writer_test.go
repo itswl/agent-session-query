@@ -343,6 +343,8 @@ func TestToolKind(t *testing.T) {
 		"write_agent": model.ToolAgent, "read_agent": model.ToolAgent, "list_agents": model.ToolAgent,
 		"collaboration.list_agents": model.ToolAgent, "ListAgents": model.ToolAgent, "browser_agent": model.ToolAgent,
 		"spawn_agent": model.ToolAgent, "list_subagents": model.ToolAgent,
+		// OpenClaw's subagents tool, and a browser run by a subagent
+		"subagents": model.ToolAgent, "browser_subagent": model.ToolAgent,
 		// a name that only begins with one is not, and TaskCreate's task is a to-do
 		"TaskCreate": model.ToolWrite, "agent_write_file": model.ToolWrite,
 	} {

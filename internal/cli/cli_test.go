@@ -147,7 +147,7 @@ func TestWhatGoesWrong(t *testing.T) {
 		want string
 	}{
 		{[]string{"show", "zzzz"}, 1, "asq ls prints refs"},
-		{[]string{"show"}, 2, "which session?"},
+		{[]string{"show", "aaaa1111", "bbbb2222"}, 2, "which session?"},
 		{[]string{"show", "aaaa1111#9"}, 1, "no such turn (it has 2)"},
 		{[]string{"show", "aaaa1111", "--seq", "99"}, 1, "no step 99"},
 		{[]string{"show", "aaaa1111", "--turns", "seven"}, 2, "turns: want"},
@@ -216,6 +216,117 @@ func TestServeNamesTheProxyHeaderAsItWasGiven(t *testing.T) {
 		if code != 2 || !strings.Contains(errs, "asq serve: "+tc.want) {
 			t.Errorf("ASQ_PROXY_HEADER=%q asq serve %s: exit %d, stderr %q; want exit 2 saying %q", tc.env, strings.Join(tc.args, " "), code, errs, tc.want)
 		}
+	}
+}
+
+// "." on the command line is the directory asq runs in. --project . keeps the sessions
+// that ran in it or below it, by the path the shell gives it or the one its symbolic
+// links lead to, as a CLI may record either; show and brief with no ref take the newest
+// of them, and say which. Where there is nothing, the directory looked in is said.
+func TestHereIsTheCurrentDirectory(t *testing.T) {
+	setup(t)
+	root := t.TempDir()
+	real, err := filepath.EvalSymlinks(root) // what a CLI that asks the system records
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{"proj/web", "proj-old", "empty"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := filepath.Join(t.TempDir(), "claude")
+	now := time.Now().UTC().Truncate(time.Second)
+	session := func(id, dir, ask string, ago time.Duration) {
+		ts := now.Add(-ago).Format(time.RFC3339)
+		cwd := filepath.Join(real, filepath.FromSlash(dir))
+		path := filepath.Join(store, "-"+strings.ReplaceAll(dir, "/", "-"), id+".jsonl")
+		sourcetest.Write(t, path,
+			map[string]any{"type": "user", "uuid": id + "-u", "timestamp": ts, "sessionId": id, "cwd": cwd, "message": map[string]any{"role": "user", "content": ask}},
+			map[string]any{"type": "assistant", "uuid": id + "-a", "timestamp": ts, "sessionId": id,
+				"message": map[string]any{"id": "msg-" + id, "role": "assistant", "model": "claude-opus-5", "content": []any{map[string]any{"type": "text", "text": "done: " + ask}}}})
+		if err := os.Chtimes(path, now.Add(-ago), now.Add(-ago)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const (
+		top   = "cccc0001-0000-4000-8000-000000000001"
+		web   = "cccc0002-0000-4000-8000-000000000002"
+		older = "cccc0003-0000-4000-8000-000000000003"
+	)
+	session(top, "proj", "plan the release", 3*time.Hour)
+	session(web, "proj/web", "fix the web build", 2*time.Hour)
+	session(older, "proj-old", "the old one, written last", time.Hour)
+	h, indexPath := fixture.History{Dir: store}, filepath.Join(t.TempDir(), "index.db")
+	in := func(dir string) {
+		t.Helper()
+		t.Chdir(filepath.Join(root, filepath.FromSlash(dir)))
+	}
+
+	in("proj")
+	for _, tc := range []struct {
+		args       []string
+		want, not  []string
+		says, from string
+	}{
+		{args: []string{"ls", "--project", "."}, want: []string{"plan the release", "fix the web build"}, not: []string{"written last"}},
+		{args: []string{"ls", "--project", "./web"}, want: []string{"fix the web build"}, not: []string{"plan the release"}},
+		{args: []string{"ls", "--project", ".."}, want: []string{"plan the release", "fix the web build", "written last"}},
+		{args: []string{"projects", "--project", "."}, want: []string{filepath.Join(real, "proj", "web") + "\n", filepath.Join(real, "proj") + "\n"}, not: []string{"proj-old"}},
+		{args: []string{"show"}, want: []string{"fix the web build"}, not: []string{"plan the release"}, says: "claude/" + web + ", the newest session in ", from: "proj"},
+		{args: []string{"brief"}, want: []string{"# Session brief", "fix the web build"}, says: "claude/" + web + ", the newest session in ", from: "proj"},
+		{args: []string{"show", "--json"}, want: []string{`"id": "` + web + `"`}, says: "the newest session in ", from: "proj"},
+	} {
+		out, errs, code := asq(t, h, indexPath, tc.args...)
+		if code != 0 {
+			t.Errorf("asq %s: exit %d: %s", strings.Join(tc.args, " "), code, errs)
+			continue
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(out, want) {
+				t.Errorf("asq %s: no %q in:\n%s", strings.Join(tc.args, " "), want, out)
+			}
+		}
+		for _, not := range tc.not {
+			if strings.Contains(out, not) {
+				t.Errorf("asq %s: %q is not there or below it:\n%s", strings.Join(tc.args, " "), not, out)
+			}
+		}
+		if tc.says != "" && !strings.Contains(errs, tc.says+filepath.Join(root, tc.from)) {
+			t.Errorf("asq %s: stderr %q does not say %q", strings.Join(tc.args, " "), errs, tc.says+filepath.Join(root, tc.from))
+		}
+	}
+
+	// A link to the directory is the directory, whichever path the CLI recorded
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(filepath.Join(root, "proj"), link); err != nil {
+		t.Logf("no symbolic link here (%v): the rest is not tried", err)
+	} else {
+		t.Chdir(link)
+		out, errs, code := asq(t, h, indexPath, "ls", "--project", ".")
+		if code != 0 || !strings.Contains(out, "plan the release") || !strings.Contains(out, "fix the web build") {
+			t.Errorf("through a link to the directory: exit %d, %s%s", code, out, errs)
+		}
+	}
+
+	in("empty")
+	out, errs, code := asq(t, h, indexPath, "ls", "--project", ".")
+	if code != 0 || !strings.Contains(out, "No sessions.") || !strings.Contains(errs, "looked in "+filepath.Join(root, "empty")+" and the directories below it") {
+		t.Errorf("ls --project . where nothing ran: exit %d, stdout %q, stderr %q", code, out, errs)
+	}
+	out, errs, code = asq(t, h, indexPath, "failures", "--project", ".")
+	if code != 0 || !strings.Contains(errs, "looked in "+filepath.Join(root, "empty")) {
+		t.Errorf("failures --project . where nothing ran: exit %d, stdout %q, stderr %q", code, out, errs)
+	}
+	for _, args := range [][]string{{"show"}, {"show", "-f"}, {"brief"}} {
+		out, errs, code := asq(t, h, indexPath, args...)
+		if code != 1 || out != "" || !strings.Contains(errs, "no session ran in "+filepath.Join(root, "empty")+" or below it") {
+			t.Errorf("asq %s where nothing ran: exit %d, stdout %q, stderr %q", strings.Join(args, " "), code, out, errs)
+		}
+	}
+	// A part of a path is still a part of a path
+	if out, errs, code := asq(t, h, indexPath, "ls", "--project", "proj"); code != 0 || !strings.Contains(out, "written last") || errs != "" {
+		t.Errorf("ls --project proj: exit %d, %s%s", code, out, errs)
 	}
 }
 

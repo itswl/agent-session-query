@@ -28,12 +28,19 @@ Taken by `ls`, `search`, `pack`, `usage`, `failures`, `digest`, `files`, `projec
 | | |
 |---|---|
 | `--source claude` | one CLI's sessions, or one labeled store (`claude@box2`) |
-| `--project api` | sessions whose working directory contains this |
+| `--project api` | sessions whose working directory contains this. `.`, `..` or a path that begins with one (`./web`) is that directory instead: the sessions that ran in it or below it |
 | `--branch main` | sessions that opened on a branch containing this |
 | `--since 7d` · `--until 2026-09-01` | a span back from now — `90m`, `12h`, `7d`, `2w` — or a date, or a date and time; `all` for no bound |
 | `--archived` | include sessions their CLI has archived |
 | `--agents` | include subagents' transcripts as sessions of their own |
 | `--limit N` / `-n N` · `--offset N` | paging |
+
+`asq ls --project .` is the sessions of the directory you are in. The directory is resolved to
+an absolute path where `asq` runs, and a session is in it whether its CLI recorded the path the
+shell gives or the one its symbolic links lead to (`/tmp/x` and `/private/tmp/x` on a Mac);
+`/work/api` holds `/work/api/web` and not `/work/api-old`. Paths are compared without regard
+to case. An empty answer says on stderr which directory was looked in, since `.` is wherever
+the command happened to run.
 
 ## Finding
 
@@ -87,6 +94,11 @@ takes it — a new turn's opening line when one starts, and a tool call a second
 result it was waiting for arrives — until interrupted. It is `tail -f` for an agent that is
 working somewhere you are not looking.
 
+**With no ref**, `asq show`, `asq show -f` and `asq brief` take the newest session that ran in
+the current directory or below it, as `--project .` finds them — in a repository, the one the
+agent working there is writing, or last wrote. Which one they took is said on stderr, beside
+the answer; where no session ran, they fail and say which directory they looked in.
+
 **`asq export <ref> --format md|json|jsonl|html`** — the whole session, to stdout. Markdown and
 HTML are documents; JSON is the record; JSONL is one tagged object per line (`session`, `turn`,
 `item`), so a `jq` query is a filter rather than a parse. The HTML page stands alone: no
@@ -108,6 +120,7 @@ deterministic, instant, and unable to invent.
 - `--turn N` briefs another turn.
 - `--since 2h` briefs everything after a moment, opening with what the stretch adds up to — the
   brief for handing the same session over a second time.
+- With no ref it briefs the newest session here, [as `show` takes it](#reading).
 
 **`asq pack`** — several sessions as one document, oldest first: for each, what was asked and
 what it concluded. `--project` and `--since` choose them; `--turns` spells out every turn. A

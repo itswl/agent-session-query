@@ -50,7 +50,9 @@ const usage = `asq — the session history of every agent CLI on this machine, a
   asq index                    where the index is and what is in it (rebuild, rm)
 
 A <ref> is what ls and search print — claude/3f2a9c1e — or just the start of a session's
-id. Every command takes --json. 'asq <command> -h' lists a command's flags.
+id. Without one, show and brief take the newest session in this directory or below it;
+--project . keeps the sessions there. Every command takes --json. 'asq <command> -h'
+lists a command's flags.
 `
 
 // usageText is the usage, its first line naming the version this binary is.
@@ -228,6 +230,7 @@ func cmdList(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return err
 	}
+	defer c.lookedIn(io.err, len(list) == 0)
 	if c.json {
 		return printJSON(io.out, map[string]any{"sessions": app.Listed(list), "total": total})
 	}
@@ -264,6 +267,7 @@ func cmdSearch(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return err
 	}
+	defer c.lookedIn(io.err, len(res.Hits) == 0)
 	if c.json {
 		return printJSON(io.out, app.ListedHits(res))
 	}
@@ -280,6 +284,33 @@ func resolve(ctx context.Context, a *app.App, ref string) (index.Session, int, e
 	return s, turn, err
 }
 
+// sessionOf finds the session a command that reads one was given: the one its ref names,
+// or with none, the newest whose working directory is the current one or below it — the
+// one an agent at work here is writing, or last wrote. That one is named on stderr, so
+// that what is printed is not taken for another session's.
+func sessionOf(ctx context.Context, a *app.App, args []string, io *streams) (index.Session, int, error) {
+	if len(args) > 0 {
+		return resolve(ctx, a, args[0])
+	}
+	dir, names, err := here(".")
+	if err != nil {
+		return index.Session{}, 0, err
+	}
+	f, err := a.Filter(app.Query{Dirs: names})
+	if err != nil {
+		return index.Session{}, 0, err
+	}
+	list, _, err := a.Index.Sessions(ctx, f, index.Page{Limit: 1})
+	if err != nil {
+		return index.Session{}, 0, err
+	}
+	if len(list) == 0 {
+		return index.Session{}, 0, fmt.Errorf("no session ran in %s or below it: name one (asq ls prints refs)", dir)
+	}
+	fmt.Fprintf(io.err, "asq: %s, the newest session in %s\n", list[0].Ref, dir)
+	return resolve(ctx, a, list[0].Ref)
+}
+
 func cmdShow(ctx context.Context, args []string, io *streams) error {
 	c := newCommand("show", io.err)
 	full := c.fs.Bool("full", false, "every output and all reasoning whole")
@@ -291,7 +322,7 @@ func cmdShow(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return err
 	}
-	if len(rest) != 1 {
+	if len(rest) > 1 {
 		return usagef("which session?  asq show <ref>   (asq ls prints refs)")
 	}
 	if *follow {
@@ -307,7 +338,7 @@ func cmdShow(ctx context.Context, args []string, io *streams) error {
 		return err
 	}
 	defer a.Close()
-	s, turn, err := resolve(ctx, a, rest[0])
+	s, turn, err := sessionOf(ctx, a, rest, io)
 	if err != nil {
 		return err
 	}
@@ -443,7 +474,7 @@ func cmdBrief(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return err
 	}
-	if len(rest) != 1 {
+	if len(rest) > 1 {
 		return usagef("which session?  asq brief <ref>")
 	}
 	a, err := open(ctx, c, io)
@@ -451,7 +482,7 @@ func cmdBrief(ctx context.Context, args []string, io *streams) error {
 		return err
 	}
 	defer a.Close()
-	s, named, err := resolve(ctx, a, rest[0])
+	s, named, err := sessionOf(ctx, a, rest, io)
 	if err != nil {
 		return err
 	}
@@ -488,6 +519,7 @@ func cmdPack(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return err
 	}
+	defer c.lookedIn(io.err, n == 0)
 	if c.json {
 		return printJSON(io.out, map[string]any{"pack": text, "sessions": n})
 	}
@@ -558,6 +590,7 @@ func cmdUsage(ctx context.Context, args []string, io *streams) error {
 		if err != nil {
 			return err
 		}
+		defer c.lookedIn(io.err, len(rows) == 0)
 		if c.json {
 			return printJSON(io.out, map[string]any{"by": *by, "rows": rows, "total": total})
 		}
@@ -568,6 +601,7 @@ func cmdUsage(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return err
 	}
+	defer c.lookedIn(io.err, rep.Total.Calls == 0)
 	if c.json {
 		return printJSON(io.out, rep)
 	}
@@ -598,6 +632,7 @@ func cmdFailures(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return err
 	}
+	defer c.lookedIn(io.err, rep.Total == 0)
 	if c.json {
 		return printJSON(io.out, rep)
 	}
@@ -627,6 +662,7 @@ func cmdDigest(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return err
 	}
+	defer c.lookedIn(io.err, len(rep.Projects) == 0)
 	if c.json {
 		return printJSON(io.out, rep)
 	}
@@ -661,6 +697,7 @@ func cmdFiles(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return err
 	}
+	defer c.lookedIn(io.err, len(list) == 0)
 	if c.json {
 		return printJSON(io.out, map[string]any{"files": list, "total": total})
 	}
@@ -686,6 +723,7 @@ func cmdProjects(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return err
 	}
+	defer c.lookedIn(io.err, len(list) == 0)
 	if c.limit > 0 && len(list) > c.limit {
 		list = list[:c.limit]
 	}

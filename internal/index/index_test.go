@@ -81,6 +81,35 @@ func TestSessionsListAndFilter(t *testing.T) {
 	}
 }
 
+// A directory keeps the sessions that ran in it or below it, and not those in a directory
+// whose name merely begins the same, as a part of a path would.
+func TestADirectoryKeepsWhatRanInItAndBelowIt(t *testing.T) {
+	a, _ := fixture.Open(t)
+	both := fixture.Alpha + " " + fixture.Beta
+	for _, tc := range []struct {
+		dirs []string
+		want string
+	}{
+		{[]string{"/work/alpha"}, fixture.Alpha},
+		{[]string{"/work"}, both},
+		{[]string{"/"}, both},
+		{[]string{"/work/alp"}, ""},
+		{[]string{"/work/alpha/db"}, ""},
+		{[]string{"/Work/Alpha/"}, fixture.Alpha}, // a Mac's disk does not tell the two apart
+		{[]string{"/private/work/beta", "/work/beta"}, fixture.Beta},
+	} {
+		f := filter(a)
+		f.Dirs = tc.dirs
+		got, _, err := a.Index.Sessions(context.Background(), f, index.Page{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if refs(got) != tc.want {
+			t.Errorf("in %q: got %q, want %q", tc.dirs, refs(got), tc.want)
+		}
+	}
+}
+
 func TestResolve(t *testing.T) {
 	a, _ := fixture.Open(t)
 	ctx := context.Background()

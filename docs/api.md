@@ -27,7 +27,7 @@ signing in and the MCP endpoint. The page is a client of this API and uses nothi
 | parameter | |
 |---|---|
 | `text` | title, id or directory contains this |
-| `source`, `project`, `branch` | as on the command line |
+| `source`, `project`, `branch` | as on the command line, except that `project` is always a part of the directory: `.` here would be the server's directory, not the caller's |
 | `since`, `until` | by when the session was last written |
 | `archived=1`, `agents=1` | include archived sessions; include subagents' transcripts |
 | `limit` (50, at most 500), `offset` | paging |

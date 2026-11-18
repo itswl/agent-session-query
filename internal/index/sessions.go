@@ -61,11 +61,15 @@ type Filter struct {
 	// Source keeps one store, or — given a CLI's name — every store of that CLI.
 	Source  string
 	Project string // part of the working directory
-	Branch  string // part of the branch the session opened on
-	Text    string // part of the title, the id, the directory or the path
-	SID     int64  // one session alone, by its row in this index (Session.SID)
-	Since   time.Time
-	Until   time.Time
+	// Dirs keeps the sessions whose working directory is one of these or below one of
+	// them: one directory by every path that names it, as a CLI may have recorded it
+	// with its symbolic links resolved or as they were.
+	Dirs   []string
+	Branch string // part of the branch the session opened on
+	Text   string // part of the title, the id, the directory or the path
+	SID    int64  // one session alone, by its row in this index (Session.SID)
+	Since  time.Time
+	Until  time.Time
 	// Archived includes the sessions their CLI has put away; Agents the subagents'
 	// transcripts, which otherwise stay beneath the session they ran in.
 	Archived bool
@@ -106,6 +110,19 @@ func (f Filter) where() (string, []any) {
 		conds = append(conds, "instr(lower(s.cwd), lower(?)) > 0")
 		args = append(args, f.Project)
 	}
+	if len(f.Dirs) > 0 {
+		// The directory itself, or one whose path begins with it and a separator: /work/api
+		// holds /work/api/web and not /work/api-old. Without regard to case, as Project is:
+		// a Mac's disk does not tell /Work from /work, and a shell keeps the current
+		// directory in the case it was typed in.
+		var either []string
+		for _, dir := range f.Dirs {
+			same, under := dirTerms(dir)
+			either = append(either, "lower(s.cwd) = lower(?)", "instr(lower(s.cwd), lower(?)) = 1")
+			args = append(args, same, under)
+		}
+		conds = append(conds, "("+strings.Join(either, " OR ")+")")
+	}
 	if f.Branch != "" {
 		conds = append(conds, "instr(lower(s.branch), lower(?)) > 0")
 		args = append(args, f.Branch)
@@ -136,6 +153,21 @@ func (f Filter) where() (string, []any) {
 		conds = append(conds, "s.items > 0")
 	}
 	return strings.Join(conds, " AND "), args
+}
+
+// dirTerms is a directory as the two things a working directory is compared with: the
+// directory's own path, and how the paths below it begin — the path and a separator of
+// the kind it is written with.
+func dirTerms(dir string) (same, under string) {
+	same = strings.TrimRight(dir, `/\`)
+	if same == "" || strings.HasSuffix(same, ":") { // a root, / or C:\, which every path below it begins with
+		return dir, dir
+	}
+	sep := "/"
+	if strings.Contains(same, `\`) && !strings.Contains(same, "/") {
+		sep = `\`
+	}
+	return same, same + sep
 }
 
 const sessionColumns = `s.sid, s.source, s.agent, s.id, s.path, s.title, s.cwd, s.branch, s.model, s.version, s.platform,

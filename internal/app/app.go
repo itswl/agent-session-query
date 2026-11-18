@@ -231,8 +231,11 @@ func (a *App) Watch(ctx context.Context, interval time.Duration) {
 
 // Query is a selection of sessions as a person or an agent states it.
 type Query struct {
-	Source   string
-	Project  string
+	Source  string
+	Project string
+	// Dirs is one directory by the paths that name it, for the sessions in it or below
+	// it (see index.Filter)
+	Dirs     []string
 	Branch   string
 	Text     string
 	Since    string // 7d, 12h, 2026-09-01, an RFC 3339 time
@@ -243,7 +246,7 @@ type Query struct {
 
 // Filter turns a query into the index's filter, confined to this process's stores.
 func (a *App) Filter(q Query) (index.Filter, error) {
-	f := index.Filter{Stores: a.Stores(), Source: q.Source, Project: q.Project, Branch: q.Branch,
+	f := index.Filter{Stores: a.Stores(), Source: q.Source, Project: q.Project, Dirs: q.Dirs, Branch: q.Branch,
 		Text: q.Text, Archived: q.Archived, Agents: q.Agents}
 	if q.Source != "" {
 		if err := a.checkSource(q.Source); err != nil {

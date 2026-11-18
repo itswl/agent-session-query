@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/itswl/agent-session-query/internal/app"
@@ -32,6 +33,8 @@ type command struct {
 	q      app.Query
 	limit  int
 	offset int
+	// here is the directory a --project of "." or "../api" was taken to be, absolute
+	here string
 }
 
 type multi []string
@@ -55,7 +58,7 @@ func newCommand(name string, stderr io.Writer) *command {
 // selection adds the flags that pick sessions.
 func (c *command) selection(defaultLimit int) *command {
 	c.fs.StringVar(&c.q.Source, "source", "", "one store, or one CLI's stores: "+strings.Join(catalog.Names(), ", "))
-	c.fs.StringVar(&c.q.Project, "project", "", "sessions whose working directory contains this")
+	c.fs.StringVar(&c.q.Project, "project", "", "sessions whose working directory contains this; ., .. or ./web: in that directory or below it")
 	c.fs.StringVar(&c.q.Branch, "branch", "", "sessions that opened on a branch containing this")
 	c.fs.StringVar(&c.q.Since, "since", "", "after this: 7d, 12h, 2026-09-01")
 	c.fs.StringVar(&c.q.Until, "until", "", "before this")
@@ -86,7 +89,52 @@ func (c *command) parse(args []string) ([]string, error) {
 		rest = append(rest, args[0])
 		args = args[1:]
 	}
+	// A project written as a path from the current directory is that directory, and
+	// not a part of a path to look for: "." is in every path
+	if relative(c.q.Project) {
+		dir, names, err := here(c.q.Project)
+		if err != nil {
+			return nil, fmt.Errorf("--project %s: %w", c.q.Project, err)
+		}
+		c.here, c.q.Project, c.q.Dirs = dir, "", names
+	}
 	return rest, nil
+}
+
+// relative reports whether a --project names a directory from the current one — ".",
+// "..", "./web", "../api" — rather than a part of a path.
+func relative(project string) bool {
+	if project == "." || project == ".." {
+		return true
+	}
+	for _, start := range []string{"./", "../", "." + string(filepath.Separator), ".." + string(filepath.Separator)} {
+		if strings.HasPrefix(project, start) {
+			return true
+		}
+	}
+	return false
+}
+
+// here is a directory named from the current one, absolute, and the paths that name it:
+// that one, as the shell names it, and the same with its symbolic links resolved when
+// that is another — a CLI may have recorded either as a session's working directory.
+func here(name string) (dir string, names []string, err error) {
+	if dir, err = filepath.Abs(name); err != nil {
+		return "", nil, err
+	}
+	names = []string{dir}
+	if real, err := filepath.EvalSymlinks(dir); err == nil && real != dir {
+		names = append(names, real)
+	}
+	return dir, names, nil
+}
+
+// lookedIn says, beside an answer that is empty, which directory a --project of "." was
+// taken to be: it is resolved where asq runs, which is not always where the reader thinks.
+func (c *command) lookedIn(stderr io.Writer, empty bool) {
+	if empty && c.here != "" {
+		fmt.Fprintf(stderr, "asq: looked in %s and the directories below it\n", c.here)
+	}
 }
 
 // usage lists a command's flags the way they are typed: two dashes, the value it takes,

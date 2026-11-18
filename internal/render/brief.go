@@ -223,11 +223,12 @@ type detail struct {
 	lines       int  // lines of a failed call's output quoted
 	ask, answer int  // characters of a turn's ask and of its answer quoted
 	sum         bool // a stretch opens with what it adds up to
+	state       bool // it ends with where the session stood at its end
 }
 
 var (
-	full  = detail{turns: briefMaxTurns, first: 5, last: 15, files: briefMaxFiles, lines: briefOutputLines, ask: 300, answer: 500, sum: true}
-	least = detail{turns: 1, first: 2, last: 6, files: 6, lines: 1, ask: 300, answer: 500, sum: true}
+	full  = detail{turns: briefMaxTurns, first: 5, last: 15, files: briefMaxFiles, lines: briefOutputLines, ask: 300, answer: 500, sum: true, state: true}
+	least = detail{turns: 1, first: 2, last: 6, files: 6, lines: 1, ask: 300, answer: 500, sum: true, state: true}
 	// Past least, a brief says less, a part at a time, to fit a budget: less of the ask and
 	// the answer of the turn it spells out — the answer is where things stand at the end,
 	// below — then nothing of the list of turns, of that turn, and of what the stretch adds
@@ -237,6 +238,14 @@ var (
 		func(d *detail) { d.first, d.last = 0, 0 },
 		func(d *detail) { d.turns = 0 },
 		func(d *detail) { d.sum = false },
+	}
+	// A brief of one turn is of that turn: past least it says less of it and leaves out
+	// the list of turns, then where the session stood at its end — which the turn's own
+	// end says, when it is the latest — and never the turn itself.
+	bareTurn = []func(*detail){
+		func(d *detail) { d.ask, d.answer = 150, 150 },
+		func(d *detail) { d.first, d.last = 0, 0 },
+		func(d *detail) { d.state = false },
 	}
 )
 
@@ -275,7 +284,11 @@ func Brief(s *index.Session, turns []model.Turn, o BriefOptions) (string, error)
 		l := least
 		l.turns = d.turns
 		text = p.write(o, l)
-		for _, less := range bare {
+		steps := bare
+		if p.stretch == "" {
+			steps = bareTurn
+		}
+		for _, less := range steps {
 			if len(text) <= o.MaxChars {
 				break
 			}
@@ -446,15 +459,19 @@ func (p *BriefPlan) write(o BriefOptions, d detail) string {
 		fmt.Fprintf(&b, "- Ended: %s\n", ended)
 	}
 
-	b.WriteString("\n## State at the end\n\n")
-	state := "(nothing concluded — the agent said nothing in this session)"
-	for i := len(real) - 1; i >= 0; i-- {
-		if real[i].Answer != "" {
-			state = txt.Cap(real[i].Answer, 400)
-			break
+	if d.state {
+		b.WriteString("\n## State at the end\n\n")
+		state := "(nothing concluded — the agent said nothing in this session)"
+		for i := len(real) - 1; i >= 0; i-- {
+			if real[i].Answer != "" {
+				state = txt.Cap(real[i].Answer, 400)
+				break
+			}
 		}
+		b.WriteString(state + "\n")
+	} else {
+		b.WriteString("\n- … where the session stood at its end is left out, to keep to the budget\n")
 	}
-	b.WriteString(state + "\n")
 	if len(p.Detailed) > 0 {
 		n := p.Detailed[len(p.Detailed)-1]
 		fmt.Fprintf(&b, "\nDig deeper: `asq show %s#%d` reads a turn step by step (MCP: read with ref=\"%s#%d\"); `asq brief %s --since <when>` covers everything after a moment, `--since all` the whole session.\n",

@@ -389,6 +389,10 @@ func TestBriefKeepsToItsBudget(t *testing.T) {
 		{BriefOptions{MaxChars: 1500}, []string{"## Turn 40\n"}, []string{"## Turns\n"}},
 		{BriefOptions{All: true, MaxChars: len(floor)}, nil, []string{"## Turns\n", "## The whole session", "## Turn 40"}},
 		{BriefOptions{All: true, MaxChars: 1}, nil, []string{"## Turns\n", "## The whole session", "## Turn 40"}},
+		// A brief of one turn is of that turn, the latest or an earlier one: held to little,
+		// it keeps the turn and leaves out where the session stood, saying so
+		{BriefOptions{MaxChars: 1}, []string{"## Turn 40\n", "- … where the session stood at its end is left out"}, []string{"## Turns\n", "## State at the end"}},
+		{BriefOptions{Turn: 3, MaxChars: 1}, []string{"## Turn 3\n", "- … where the session stood at its end is left out"}, []string{"## Turns\n", "## State at the end", "answer 40"}},
 	} {
 		text, err := Brief(s, turns, tc.o)
 		if err != nil {
@@ -397,7 +401,7 @@ func TestBriefKeepsToItsBudget(t *testing.T) {
 		if tc.o.MaxChars >= len(floor) && len(text) > tc.o.MaxChars {
 			t.Errorf("held to %d, a brief is %d:\n%s", tc.o.MaxChars, len(text), text)
 		}
-		if !strings.Contains(text, state) || !strings.HasSuffix(text, "`--since all` the whole session.\n") {
+		if tc.o.All && !strings.Contains(text, state) || !strings.HasSuffix(text, "`--since all` the whole session.\n") {
 			t.Errorf("held to %d, a brief does not end with where things stand:\n%s", tc.o.MaxChars, text)
 		}
 		for _, want := range tc.want {

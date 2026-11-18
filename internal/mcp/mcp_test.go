@@ -355,6 +355,25 @@ func TestThisIsTheSessionAsking(t *testing.T) {
 			}
 		}
 	}
+	// The line that says which session was taken is spent from the budget once: an answer
+	// that fits the budget with it is not cut
+	for _, tc := range []struct {
+		id   string
+		args map[string]any
+	}{
+		{fixture.Alpha, map[string]any{"ref": "this"}},
+		{fixture.Alpha, map[string]any{"ref": "this", "turns": "all"}},
+		{fixture.Beta, map[string]any{"ref": "this", "seq": 1}},
+	} {
+		s.Caller = &Caller{Session: tc.id, name: "claude-code"}
+		tc.args["max_chars"] = 400000
+		whole, _ := call(t, s, "read", tc.args)
+		tc.args["max_chars"] = len(whole)
+		if text, _ := call(t, s, "read", tc.args); text != whole || len(whole) < 500 {
+			t.Errorf("read %v, held to the %d characters it takes, is cut:\n%s", tc.args, len(whole), text[max(0, len(text)-300):])
+		}
+	}
+
 	s.Caller = &Caller{Dirs: []string{"/nowhere"}}
 	if text, isErr := call(t, s, "brief", map[string]any{"ref": "this"}); !isErr || !strings.Contains(text, "no such session: none has run in /nowhere") {
 		t.Errorf("no session where the agent works: %v %q", isErr, text)

@@ -486,8 +486,10 @@ func runRead(ctx context.Context, s *Server, a *args) (string, error) {
 	var b bytes.Buffer
 	if said != "" {
 		b.WriteString(said + "\n\n")
-		a.budget = max(a.budget-len(said), 500)
 	}
+	// What is left of the budget once the line that says which session this is has been
+	// spent: the answer is cut at the budget, that line and all
+	room := max(a.budget-b.Len(), 1)
 
 	if a.has("seq") {
 		seq := a.num("seq", -1)
@@ -504,7 +506,7 @@ func runRead(ctx context.Context, s *Server, a *args) (string, error) {
 		return "", err
 	}
 	if !some {
-		text, err := outline(ctx, s, &sess, a.budget, st)
+		text, err := outline(ctx, s, &sess, room, st)
 		return b.String() + text, err
 	}
 	r.Full = a.flag("full")
@@ -517,7 +519,7 @@ func runRead(ctx context.Context, s *Server, a *args) (string, error) {
 	}
 	// The budget is spent turn by turn, so what is left out is whole turns that can be
 	// asked for by number, not the tail of one
-	left := a.budget
+	left := room
 	for i := range turns {
 		if i > 0 {
 			if left <= 0 {

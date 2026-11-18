@@ -52,6 +52,13 @@ let locked = false;
 let seenHealth = null;
 let typing = 0;
 const dismissed = new Set(JSON.parse(sessionStorage.getItem('asq-dismissed') || '[]'));
+// A dismissed notice is kept for the tab's life as a hash of what it said, not the words: a
+// store's error names paths, and nothing of what the server says is kept in the browser
+const hashed = (s) => {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return (h >>> 0).toString(36);
+};
 
 boot();
 
@@ -240,14 +247,14 @@ function renderVersion(v) {
 }
 
 function renderWarnings() {
-  const key = (w) => w.source + '\n' + w.error;
+  const key = (w) => hashed(w.source + '\n' + w.error);
   const now = seenHealth?.version;
-  const updated = loadedVersion && now && now !== loadedVersion && !dismissed.has('version ' + now) &&
+  const updated = loadedVersion && now && now !== loadedVersion && !dismissed.has(hashed('version ' + now)) &&
     h('div', { class: 'notice warn', role: 'status' }, icon('alert'),
       h('p', null, `asq is now ${now}; this page was loaded from ${loadedVersion}. Reload to use the new one.`),
       h('button', { type: 'button', class: 'btn', onclick: () => location.reload() }, 'Reload'),
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Dismiss the notice about the update', onclick() {
-        dismissed.add('version ' + now);
+        dismissed.add(hashed('version ' + now));
         sessionStorage.setItem('asq-dismissed', JSON.stringify([...dismissed]));
         renderWarnings();
       } }, icon('x')));

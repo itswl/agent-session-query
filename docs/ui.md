@@ -185,8 +185,9 @@ server says now: what was kept below it may no longer match — the last 24 hour
 or be gone. A search comes back whole on Back too, but is asked for afresh any other
 way, since what it found is ranked rather than dated and cannot be brought up to date row by row.
 Pointing at a view's link asks for it before the click lands. Nothing of this outlives the page,
-and all of it is dropped when the sign-in is lost. What the browser keeps longer is the theme and,
-for the marks of what changed since you last looked, times: no answer, no text, no id.
+and all of it is dropped when the sign-in is lost. What the browser keeps longer is the theme;
+for the marks of what changed since you last looked, times; and for the tab's life, which notices
+were dismissed in it, as a hash of what they said: no answer, no text, no id.
 
 **The status says one of three things**: *up to date*; *reading 412 of 1,276…* while the index
 catches up — a first read, or many transcripts after a while away; *reconnecting…* if the

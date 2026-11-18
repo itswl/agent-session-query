@@ -111,6 +111,16 @@ opens with a line in brackets that says which session it took, and why:
   unless another agent works in the same directory. With the variable set, only Claude Code's
   sessions are looked at.
 
+Claude Code also sets `CLAUDE_CODE_SESSION_ID` in every command its Bash tool runs, and whatever
+those start inherits it: Codex or Gemini CLI run from Claude Code's shell hands it on to the
+`asq mcp` it starts, where it names the Claude Code session, not the agent's own. So the two
+variables are taken only from a client that says it is Claude Code when it opens the conversation
+(`clientInfo.name` `claude-code` in `initialize`, as Claude Code's MCP client names itself). Any
+other client's `this` is the session most recently written to in the directory the server was
+started in, from any agent's history, and the line in brackets says the variable was set and not
+taken. An agent that is not Claude Code, and shares its directory with another, names its session
+by its ref.
+
 Over HTTP nothing says which session is asking: a server reached at `/mcp` answers `this` with an
 error saying so, and the tool's description says it too. Name the session by its ref there.
 

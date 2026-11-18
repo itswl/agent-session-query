@@ -311,28 +311,47 @@ func TestThisIsTheSessionAsking(t *testing.T) {
 	s := server(t)
 	alpha, beta := "claude/"+fixture.Alpha, "claude/"+fixture.Beta
 	for _, tc := range []struct {
+		client string // as the client names itself when it opens the conversation
 		caller *Caller
 		tool   string
 		args   map[string]any
 		want   []string
 	}{
-		{&Caller{Session: fixture.Alpha, Dirs: []string{"/work/beta"}}, "brief", map[string]any{"ref": "this"},
+		{"claude-code", &Caller{Session: fixture.Alpha, Dirs: []string{"/work/beta"}}, "brief", map[string]any{"ref": "this"},
 			[]string{`[ref "this" is ` + alpha + `: the session Claude Code named when it started this server (CLAUDE_CODE_SESSION_ID).]` + "\n\n# Session brief: Fix flaky test"}},
-		{&Caller{Session: fixture.Alpha}, "read", map[string]any{"ref": "this#1"}, []string{`[ref "this" is ` + alpha, "go test ./...", "The test depended on map order"}},
-		{&Caller{Session: "cccc3333-0000-4000-8000-000000000003", Dirs: []string{"/work/beta"}}, "brief", map[string]any{"ref": "This", "since": "all"},
+		{"claude-code", &Caller{Session: fixture.Alpha}, "read", map[string]any{"ref": "this#1"}, []string{`[ref "this" is ` + alpha, "go test ./...", "The test depended on map order"}},
+		{"claude-code", &Caller{Session: "cccc3333-0000-4000-8000-000000000003", Dirs: []string{"/work/beta"}}, "brief", map[string]any{"ref": "This", "since": "all"},
 			[]string{`[ref "this" is ` + beta + `: the Claude Code session most recently written to in /work/beta. The session CLAUDE_CODE_SESSION_ID names, cccc3333-0000-4000-8000-000000000003, is not in the index: Claude Code started with --continue`, "## The whole session", "rotate the deploy key"}},
-		{&Caller{Dirs: []string{"/nowhere", "/work/alpha"}}, "read", map[string]any{"ref": "this"},
+		{"claude-code", &Caller{Project: "/work/beta", Dirs: []string{"/nowhere"}}, "read", map[string]any{"ref": "this"},
+			[]string{`[ref "this" is ` + beta + `: the session most recently written to in /work/beta. The client did not name the session asking`}},
+		{"", &Caller{Dirs: []string{"/nowhere", "/work/alpha"}}, "read", map[string]any{"ref": "this"},
 			[]string{`[ref "this" is ` + alpha + `: the session most recently written to in /work/alpha. The client did not name the session asking`, "#2", "现在给数据库加索引"}},
+		// Claude Code's Bash tool hands its session's id to every command it runs, and an
+		// agent CLI run there hands it on to the servers it starts: there it names the
+		// Claude Code session, not the agent's own — and so does its project directory
+		{"gemini-cli-mcp-client", &Caller{Session: fixture.Alpha, Project: "/work/alpha", Dirs: []string{"/work/beta"}}, "brief", map[string]any{"ref": "this"},
+			[]string{`[ref "this" is ` + beta + `: the session most recently written to in /work/beta. The client is "gemini-cli-mcp-client", not Claude Code, so the CLAUDE_CODE_SESSION_ID this server was started with is not taken for its own: every program started from Claude Code's shell inherits that variable`, "rotate the deploy key"}},
+		{"", &Caller{Session: fixture.Alpha, Dirs: []string{"/work/beta"}}, "read", map[string]any{"ref": "this"},
+			[]string{`[ref "this" is ` + beta + `: the session most recently written to in /work/beta. The client did not say it is Claude Code, so the CLAUDE_CODE_SESSION_ID`}},
 	} {
 		s.Caller = tc.caller
+		// The client says what it is when it opens the conversation, as Claude Code does
+		hello := map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}}
+		if tc.client != "" {
+			hello["clientInfo"] = map[string]any{"name": tc.client, "version": "1.0.0"}
+		}
+		params, _ := json.Marshal(hello)
+		if _, rpcErr := s.dispatch(t.Context(), "initialize", params); rpcErr != nil {
+			t.Fatal(rpcErr)
+		}
 		text, isErr := call(t, s, tc.tool, tc.args)
 		if isErr {
-			t.Errorf("%+v %s %v: %s", tc.caller, tc.tool, tc.args, text)
+			t.Errorf("%s %s %v %s %v: %s", tc.client, tc.caller.Session, tc.caller.Dirs, tc.tool, tc.args, text)
 			continue
 		}
 		for _, want := range tc.want {
 			if !strings.Contains(text, want) {
-				t.Errorf("%+v %s %v: no %q in\n%s", tc.caller, tc.tool, tc.args, want, text)
+				t.Errorf("%s %s %v %s %v: no %q in\n%s", tc.client, tc.caller.Session, tc.caller.Dirs, tc.tool, tc.args, want, text)
 			}
 		}
 	}

@@ -69,7 +69,8 @@ type Server struct {
 	// Log receives what goes wrong; never stdout.
 	Log io.Writer
 	// Caller is what a server started on stdio knows of the agent that started it (see
-	// Stdio); nil over HTTP.
+	// Stdio), and what the client said of itself when it opened the conversation; nil over
+	// HTTP.
 	Caller *Caller
 }
 
@@ -293,8 +294,15 @@ func (s *Server) dispatch(ctx context.Context, method string, params json.RawMes
 	case "initialize":
 		var p struct {
 			ProtocolVersion string `json:"protocolVersion"`
+			ClientInfo      struct {
+				Name string `json:"name"`
+			} `json:"clientInfo"`
 		}
 		_ = json.Unmarshal(params, &p)
+		if s.Caller != nil {
+			// Which client this is decides whether what its environment says is its own
+			s.Caller.introduce(p.ClientInfo.Name)
+		}
 		return map[string]any{
 			"protocolVersion": negotiate(p.ProtocolVersion),
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},

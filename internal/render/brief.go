@@ -52,7 +52,8 @@ type BriefOptions struct {
 	// stands now (index.FileTouch.Now, Waiting).
 	Files []index.FileTouch
 	// MaxChars, above zero, holds the brief to about that many characters: it spells out
-	// fewer turns, then says less of each, until it fits.
+	// fewer turns, then says less of each, then leaves out a part at a time, until it fits
+	// or where things stand at the end is all that is left.
 	MaxChars int
 }
 
@@ -216,15 +217,27 @@ func changedOf(t *model.Turn) []string {
 
 // detail is how much a brief says. It says less, a step at a time, to fit a budget.
 type detail struct {
-	turns       int // turns spelled out, the latest kept
-	first, last int // of a long session's list of turns, how many of the first and the latest it shows
-	files       int // files one list names
-	lines       int // lines of a failed call's output quoted
+	turns       int  // turns spelled out, the latest kept
+	first, last int  // of a long session's list of turns, how many of the first and the latest it shows: none, no list
+	files       int  // files one list names
+	lines       int  // lines of a failed call's output quoted
+	ask, answer int  // characters of a turn's ask and of its answer quoted
+	sum         bool // a stretch opens with what it adds up to
 }
 
 var (
-	full  = detail{turns: briefMaxTurns, first: 5, last: 15, files: briefMaxFiles, lines: briefOutputLines}
-	least = detail{turns: 1, first: 2, last: 6, files: 6, lines: 1}
+	full  = detail{turns: briefMaxTurns, first: 5, last: 15, files: briefMaxFiles, lines: briefOutputLines, ask: 300, answer: 500, sum: true}
+	least = detail{turns: 1, first: 2, last: 6, files: 6, lines: 1, ask: 300, answer: 500, sum: true}
+	// Past least, a brief says less, a part at a time, to fit a budget: less of the ask and
+	// the answer of the turn it spells out — the answer is where things stand at the end,
+	// below — then nothing of the list of turns, of that turn, and of what the stretch adds
+	// up to. Where things stand at the end, and how to dig deeper, are what it keeps.
+	bare = []func(*detail){
+		func(d *detail) { d.ask, d.answer = 150, 150 },
+		func(d *detail) { d.first, d.last = 0, 0 },
+		func(d *detail) { d.turns = 0 },
+		func(d *detail) { d.sum = false },
+	}
 )
 
 // listed is which turns the list of turns shows: all of them, or of a long session the
@@ -262,6 +275,13 @@ func Brief(s *index.Session, turns []model.Turn, o BriefOptions) (string, error)
 		l := least
 		l.turns = d.turns
 		text = p.write(o, l)
+		for _, less := range bare {
+			if len(text) <= o.MaxChars {
+				break
+			}
+			less(&l)
+			text = p.write(o, l)
+		}
 	}
 	return text, nil
 }
@@ -338,7 +358,7 @@ func (p *BriefPlan) write(o BriefOptions, d detail) string {
 
 	// A stretch opens with what it adds up to: the receiver reads that first and the
 	// turns for the detail
-	if p.stretch != "" {
+	if p.stretch != "" && d.sum {
 		var sum model.Turn
 		for _, i := range p.Covered {
 			t := p.byIndex[i]
@@ -377,6 +397,8 @@ func (p *BriefPlan) write(o BriefOptions, d detail) string {
 		// or a whole session, would otherwise be the session again
 		switch {
 		case len(detailed) == len(p.Covered):
+		case len(detailed) == 0:
+			b.WriteString("- … no turn is detailed below, to keep to the budget\n")
 		case len(detailed) == 1:
 			b.WriteString("- … only the latest turn is detailed below\n")
 		default:
@@ -391,7 +413,7 @@ func (p *BriefPlan) write(o BriefOptions, d detail) string {
 			head += " — interrupted"
 		}
 		b.WriteString(head + "\n\n")
-		fmt.Fprintf(&b, "- Asked: %s\n", txt.Cap(t.Ask, 300))
+		fmt.Fprintf(&b, "- Asked: %s\n", txt.Cap(t.Ask, d.ask))
 		if changed := changedOf(t); len(changed) > 0 {
 			changedHead(&b, changed)
 			for _, path := range changed[:min(len(changed), d.files)] {
@@ -419,7 +441,7 @@ func (p *BriefPlan) write(o BriefOptions, d detail) string {
 		}
 		ended := "(no reply — the turn was interrupted or is still running)"
 		if t.Answer != "" {
-			ended = txt.Cap(t.Answer, 500)
+			ended = txt.Cap(t.Answer, d.answer)
 		}
 		fmt.Fprintf(&b, "- Ended: %s\n", ended)
 	}
@@ -433,8 +455,8 @@ func (p *BriefPlan) write(o BriefOptions, d detail) string {
 		}
 	}
 	b.WriteString(state + "\n")
-	if len(detailed) > 0 {
-		n := detailed[len(detailed)-1]
+	if len(p.Detailed) > 0 {
+		n := p.Detailed[len(p.Detailed)-1]
 		fmt.Fprintf(&b, "\nDig deeper: `asq show %s#%d` reads a turn step by step (MCP: read with ref=\"%s#%d\"); `asq brief %s --since <when>` covers everything after a moment, `--since all` the whole session.\n",
 			s.Ref, n, s.Ref, n, s.Ref)
 	}

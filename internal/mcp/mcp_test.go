@@ -291,10 +291,19 @@ func TestAnswersKeepToTheirBudget(t *testing.T) {
 	}
 	// A brief is written to its budget rather than cut to it: where things stand at the end
 	// is the last thing it says, and the first a cut would lose
-	text, isErr = call(t, s, "brief", map[string]any{"ref": "aaaa1111", "since": "all", "max_chars": 1500})
-	if isErr || len(text) > 1500 || !strings.Contains(text, "## State at the end") || strings.Contains(text, "[Cut here") {
-		t.Errorf("a brief held to 1500 characters is %d:\n%s", len(text), text)
+	for _, n := range []int{1500, 1000} {
+		text, isErr = call(t, s, "brief", map[string]any{"ref": "aaaa1111", "since": "all", "max_chars": n})
+		if isErr || len(text) > n || !strings.Contains(text, "## State at the end") || !strings.Contains(text, "Dig deeper") || strings.Contains(text, "[Cut here") {
+			t.Errorf("a brief held to %d characters is %d:\n%s", n, len(text), text)
+		}
 	}
+	// and the line that says which session "this" is comes out of the same budget
+	s.Caller = &Caller{Session: fixture.Alpha, name: "claude-code"}
+	text, isErr = call(t, s, "brief", map[string]any{"ref": "this", "since": "all", "max_chars": 1200})
+	if isErr || len(text) > 1200 || !strings.HasPrefix(text, `[ref "this" is`) || !strings.Contains(text, "## State at the end") || strings.Contains(text, "[Cut here") {
+		t.Errorf("a brief of this held to 1200 characters is %d:\n%s", len(text), text)
+	}
+	s.Caller = nil
 
 	// Uncut, the whole output is there
 	whole, _ := call(t, s, "read", map[string]any{"ref": "bbbb2222", "seq": 1, "max_chars": 400000})

@@ -582,11 +582,10 @@ func runBrief(ctx context.Context, s *Server, a *args) (string, error) {
 		return "", err
 	}
 	// Written to fit: cut at the budget, a brief would lose where things stand at the end
-	opts.MaxChars = a.budget
 	if said != "" {
 		said += "\n\n"
-		opts.MaxChars -= len(said)
 	}
+	opts.MaxChars = max(a.budget-len(said), 1)
 	text, err := s.App.Brief(ctx, &sess, opts)
 	return said + text, err
 }

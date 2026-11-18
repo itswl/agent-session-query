@@ -139,8 +139,10 @@ line boundary, and says so with what to do about it — ask for fewer turns, a s
 narrower query, or raise the budget. `read` spends its budget turn by turn, so what is left out
 is whole turns that can be asked for by number, and a long outline keeps its *latest* turns,
 where the work stands. `brief` is written to its budget rather than cut to it: it spells out
-fewer of its latest turns, then says less of each, so that where things stood at the end is
-still its last section.
+fewer of its latest turns, then says less of each, then leaves out its list of turns, the turn it
+spells out and what the stretch adds up to, so that where things stood at the end is still its
+last section. Only a budget smaller than the brief's head and that section together — under
+about a thousand characters — cuts it.
 
 **Masked.** Whatever is handed to a model leaves the machine with it, so secret-shaped strings
 are replaced with `[redacted]` in every answer (see [what is cleaned](model.md#what-is-cleaned-and-what-is-not)).

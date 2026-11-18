@@ -370,6 +370,47 @@ func TestBriefKeepsToItsBudget(t *testing.T) {
 			}
 		}
 	}
+
+	// Below what it takes at the least detail, it says less of the turn's ask and answer,
+	// then leaves out the list of turns, the turn it spells out and what the stretch adds
+	// up to, a part at a time: where things stand at the end is what it keeps
+	least, _ := Brief(s, turns, BriefOptions{All: true, MaxChars: len(whole) / 4})
+	floor, _ := Brief(s, turns, BriefOptions{All: true, MaxChars: 1})
+	if !strings.Contains(least, "## Turns\n") || !strings.Contains(least, "## Turn 40\n") || len(floor) >= len(least) {
+		t.Fatalf("the least detail is not what was meant (%d, %d):\n%s", len(least), len(floor), least)
+	}
+	state := "\n## State at the end\n\nanswer 40: the words"
+	for _, tc := range []struct {
+		o         BriefOptions
+		want, not []string
+	}{
+		{BriefOptions{All: true, MaxChars: len(least) - 1}, []string{"## Turns\n", "## The whole session", "## Turn 40\n"}, nil},
+		{BriefOptions{All: true, MaxChars: 1500}, []string{"## The whole session", "- … no turn is detailed below, to keep to the budget\n"}, []string{"## Turns\n", "## Turn 40"}},
+		{BriefOptions{MaxChars: 1500}, []string{"## Turn 40\n"}, []string{"## Turns\n"}},
+		{BriefOptions{All: true, MaxChars: len(floor)}, nil, []string{"## Turns\n", "## The whole session", "## Turn 40"}},
+		{BriefOptions{All: true, MaxChars: 1}, nil, []string{"## Turns\n", "## The whole session", "## Turn 40"}},
+	} {
+		text, err := Brief(s, turns, tc.o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.o.MaxChars >= len(floor) && len(text) > tc.o.MaxChars {
+			t.Errorf("held to %d, a brief is %d:\n%s", tc.o.MaxChars, len(text), text)
+		}
+		if !strings.Contains(text, state) || !strings.HasSuffix(text, "`--since all` the whole session.\n") {
+			t.Errorf("held to %d, a brief does not end with where things stand:\n%s", tc.o.MaxChars, text)
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(text, want) {
+				t.Errorf("held to %d: no %q in\n%s", tc.o.MaxChars, want, text)
+			}
+		}
+		for _, not := range tc.not {
+			if strings.Contains(text, not) {
+				t.Errorf("held to %d: %q in\n%s", tc.o.MaxChars, not, text)
+			}
+		}
+	}
 }
 
 // A usage report is tokens: what went in, what came out, how much of that was reasoning,

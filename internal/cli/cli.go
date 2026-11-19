@@ -54,6 +54,7 @@ const usage = `asq — the session history of every agent CLI on this machine, a
   asq otel                     export sessions as OpenTelemetry traces
   asq doctor                   check every store, the index, and the server running here
   asq index                    where the index is and what is in it (rebuild, rm)
+  asq uninstall                take asq off: the index and the state removed, the rest said as commands
 
 A <ref> is what ls and search print — claude/3f2a9c1e — or just the start of a session's
 id. Without one, show and brief take the newest session in this directory or below it;
@@ -137,7 +138,7 @@ func init() {
 		"show": cmdShow, "brief": cmdBrief, "pack": cmdPack, "export": cmdExport,
 		"usage": cmdUsage, "failures": cmdFailures, "digest": cmdDigest, "files": cmdFiles, "why": cmdWhy, "projects": cmdProjects,
 		"resume": cmdResume, "keep": cmdKeep, "serve": cmdServe, "ping": cmdPing, "mcp": cmdMCP, "skill": cmdSkill, "otel": cmdOTel, "doctor": cmdDoctor, "index": cmdIndex,
-		"service": cmdService,
+		"service": cmdService, "uninstall": cmdUninstall,
 	}
 }
 

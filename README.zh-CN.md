@@ -140,8 +140,12 @@ Windows 上正在运行的 `asq.exe` 无法被替换：先 `schtasks /end /tn as
 
 ## 卸载
 
-asq 写下的任何东西都不是你的历史（让 `asq keep` 存下的副本除外）——各 CLI 的存储归它们自己，asq 从不改动。要删的只有
-这些，顺序随意（macOS 与 Linux）：
+`asq uninstall` 删掉 asq 写下的东西——索引，以及状态：登录签名密钥、已发给 collector
+的清单——其余的以命令的形式给出，由你自己运行：这个二进制所在的位置（目录不可写时带
+`sudo`），以及让 `asq serve` 常驻的服务（按它的服务文件指认了什么来找到）。asq 写下的任何东西
+都不是你的历史（让 `asq keep` 存下的副本除外）——各 CLI 的存储归它们自己，asq 从不改动。
+
+手动删（macOS 与 Linux，顺序随意）：
 
 ```sh
 rm ~/.local/bin/asq                          # 装到了 /usr/local/bin 的话：sudo rm /usr/local/bin/asq
@@ -196,6 +200,7 @@ rm -f "$(brew --prefix)/var/log/asq.log"     # Homebrew 的服务
 | `asq skill` | 告诉 agent 什么时候、怎样使用 asq 的 skill，存到它的 CLI 读取 skill 的地方 |
 | `asq otel` | 把会话导出为 OpenTelemetry trace |
 | `asq doctor` · `asq index` | 检查各存储、索引和本机运行的 server · 查看、重建或删除索引 |
+| `asq uninstall` | 把 asq 从机器上拿掉：删索引和状态，其余以命令给出 |
 
 **ref** 就是 `ls` 和 `search` 打印的东西：`claude/3f2a9c1e`，或者只写会话 id 的开头，像引用一个 commit
 那样。`#4` 指第 4 轮。所有命令都支持 `--json`；`show`、`search`、`brief` 和 `pack` 支持

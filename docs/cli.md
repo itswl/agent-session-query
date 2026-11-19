@@ -418,6 +418,14 @@ words differently writes them again from what the index holds, at the first sync
 no transcript; until it is done a search finds what has been written so far. One that judges
 differently whether a failed command passed later judges every failure again the same way.
 
+**`asq uninstall`** — takes asq off the machine. The index and the state are removed — an
+`ASQ_INDEX` or `ASQ_STATE` followed where it points — and what the command will not do
+itself is said as commands: removing the binary it is, `sudo` when its directory is not
+this account's to write, and taking down a service that keeps `asq serve` running, found
+by what its plist, its unit or its task names. A state dir that is a home — an `ASQ_STATE`
+pointed too wide — is refused, not removed. The CLIs' stores are never touched. `--json`
+answers `removed` and `run`.
+
 ## Environment
 
 | | |

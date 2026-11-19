@@ -127,7 +127,8 @@ func TestUninstallJSON(t *testing.T) {
 // A state dir that is a home — an ASQ_STATE pointed too wide — is refused, not removed.
 func TestUninstallRefusesAHomeForState(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	t.Setenv("HOME", home)          // what UserHomeDir reads on unix…
+	t.Setenv("USERPROFILE", home)   // …and on Windows
 	t.Setenv("ASQ_STATE", home)
 	var out, errs bytes.Buffer
 	if code := Run([]string{"uninstall"}, strings.NewReader(""), &out, &errs); code != 0 {

@@ -103,8 +103,13 @@ asq ls         # the first run indexes your history: about ten seconds per gigab
 
 ## Uninstall
 
-None of what asq wrote is your history — the stores belong to the CLIs and are never
-touched. What there is to remove, in any order, on macOS and Linux:
+`asq uninstall` removes what asq wrote — the index, and the state: the sign-in key, what a
+collector was sent — and says the rest as commands to run: the binary where this one is
+(`sudo`, when its directory needs it), and a service that kept `asq serve` running, found
+by what its file names. None of it is your history — the stores belong to the CLIs and are
+never touched.
+
+By hand, in any order, on macOS and Linux:
 
 ```sh
 rm ~/.local/bin/asq                          # sudo rm /usr/local/bin/asq, if that is where it went
@@ -141,6 +146,7 @@ a container is `docker rm` and its `/data` volume.
 | `asq mcp` | an MCP server on stdio, for agents to ask their own history |
 | `asq otel` | export sessions as OpenTelemetry traces |
 | `asq doctor` · `asq index` | check the stores · inspect, rebuild or remove the index |
+| `asq uninstall` | take asq off the machine: the index and the state removed, the rest said as commands |
 
 A **ref** is what `ls` and `search` print: `claude/3f2a9c1e`, or just the start of a session's
 id, the way a commit is named. `#4` names a turn. Every command takes `--json`.

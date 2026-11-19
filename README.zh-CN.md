@@ -96,8 +96,12 @@ asq ls         # 第一次运行会建索引：每 GB 历史大约十秒
 
 ## 卸载
 
-asq 写下的任何东西都不是你的历史——各 CLI 的存储归它们自己，asq 从不改动。要删的只有
-这些，顺序随意（macOS 与 Linux）：
+`asq uninstall` 删掉 asq 写下的东西——索引，以及状态：登录签名密钥、已发给 collector
+的清单——其余的以命令的形式给出，由你自己运行：这个二进制所在的位置（目录不可写时带
+`sudo`），以及让 `asq serve` 常驻的服务（按它的服务文件指认了什么来找到）。这些都不是
+你的历史——各 CLI 的存储归它们自己，asq 从不改动。
+
+手动删（macOS 与 Linux，顺序随意）：
 
 ```sh
 rm ~/.local/bin/asq                          # 装到了 /usr/local/bin 的话：sudo rm /usr/local/bin/asq
@@ -132,6 +136,7 @@ systemd 或计划任务——再删二进制；容器则是 `docker rm` 加它�
 | `asq mcp` | stdio 上的 MCP server，让 agent 查询自己的历史 |
 | `asq otel` | 把会话导出为 OpenTelemetry trace |
 | `asq doctor` · `asq index` | 检查各存储 · 查看、重建或删除索引 |
+| `asq uninstall` | 把 asq 从机器上拿掉：删索引和状态，其余以命令给出 |
 
 **ref** 就是 `ls` 和 `search` 打印的东西：`claude/3f2a9c1e`，或者只写会话 id 的开头，像引用一个 commit
 那样。`#4` 指第 4 轮。所有命令都支持 `--json`。

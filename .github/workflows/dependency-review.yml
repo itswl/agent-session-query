@@ -1,0 +1,18 @@
+name: dependency review
+
+# Every pull request gets a diff of what its dependency changes pull in —
+# known vulnerabilities, licence changes, packages GitHub has flagged.
+# Free on public repos; it reads the dependency graph the PR already carries.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/dependency-review-action@v4

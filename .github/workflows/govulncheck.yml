@@ -1,0 +1,23 @@
+name: govulncheck
+
+# Weekly pass over the Go module against the official vulnerability database;
+# a finding fails the run, and the failure mails you.
+on:
+  schedule:
+    - cron: "53 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: "$(go env GOPATH)/bin/govulncheck ./..."

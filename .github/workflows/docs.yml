@@ -1,0 +1,48 @@
+name: docs
+
+# The READMEs and docs/ pages as a small static site on Pages. Pages keep
+# their repo-relative paths, so screenshots and cross-page links work
+# unchanged; the build is scripts/build_docs.py, the same one used to
+# preview locally.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "README.md"
+      - "README.zh-CN.md"
+      - "docs/**"
+      - "scripts/build_docs.py"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 -m pip install --quiet markdown
+      - run: python3 scripts/build_docs.py --out _site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

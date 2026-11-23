@@ -594,8 +594,8 @@ func claudeIndex(t *testing.T, content []byte) (*Index, string, []Store) {
 	return openTemp(t), path, []Store{{Name: "claude", Spec: claude.Spec, Source: claude.Spec.Open(root)}}
 }
 
-// heldOf is everything the index holds of its sessions, as rowsOf, with the session's row
-// and the words of its title.
+// heldOf is everything the index holds of its sessions, as rowsOf, with the session's row,
+// the words of its title, and its failures with where each command passed later.
 func heldOf(t *testing.T, ix *Index) string {
 	t.Helper()
 	var b strings.Builder
@@ -617,7 +617,7 @@ func heldOf(t *testing.T, ix *Index) string {
 	}
 	for _, q := range []string{
 		`SELECT idx || ' ' || path || ' ' || changed FROM files ORDER BY idx, path`,
-		`SELECT idx || ' ' || seq || ' ' || tool || ' ' || command FROM failures ORDER BY seq`,
+		`SELECT idx || ' ' || seq || ' ' || tool || ' ' || command || ' ' || command_key || ' ' || later_idx || ' ' || later_seq || ' ' || judged FROM failures ORDER BY seq`,
 	} {
 		rows, err := ix.rw.Query(q)
 		if err != nil {

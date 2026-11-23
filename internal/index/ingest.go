@@ -856,6 +856,13 @@ RETURNING sid`,
 		if err := judged(ctx, tx, sid, rd); err != nil {
 			return err
 		}
+		// Those of the turns before a mark the read was taken up at are not in the reading:
+		// they are judged from what the index holds, now that it holds the turns after them
+		if rd.from > 0 {
+			if _, err := ix.judgeSession(ctx, tx, sid); err != nil {
+				return err
+			}
+		}
 		// Every turn the session has now holds the words this asq writes — which, in a newer
 		// asq's table, that asq is still to write its own way
 		if ahead {

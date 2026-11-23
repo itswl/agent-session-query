@@ -322,9 +322,36 @@ func removeAll(goos string, paths ...string) string {
 func removeItem(paths ...string) string {
 	quoted := make([]string, len(paths))
 	for i, p := range paths {
-		quoted[i] = app.ShellArg(p)
+		quoted[i] = psArg(p)
 	}
 	return "Remove-Item -Recurse -Force -LiteralPath " + strings.Join(quoted, ",")
+}
+
+// psArg is a word as PowerShell reads it, which runs every command said for Windows: as it
+// is when it holds nothing PowerShell reads otherwise, or else in single quotes, which
+// expand nothing. In double quotes, as cmd.exe has a path quoted (app.ShellArg), a $name
+// in it is read as a variable and a ` as an escape, and the path names another folder. A
+// quote in it is doubled; PowerShell takes the typographic ones for quotes too.
+func psArg(s string) string {
+	safe := s != ""
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(`-_./\:`, r)) {
+			safe = false
+		}
+	}
+	if safe {
+		return s
+	}
+	var b strings.Builder
+	b.WriteByte('\'')
+	for _, r := range s {
+		if strings.ContainsRune("'\u2018\u2019\u201a\u201b", r) {
+			b.WriteRune(r)
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('\'')
+	return b.String()
 }
 
 // tooWide says whether a state directory is not asq's to remove: the root an empty name
@@ -539,8 +566,11 @@ func asqCommand(goos, self string) string {
 			}
 		}
 	}
-	cmd := app.ShellArg(self)
-	if goos == "windows" && strings.HasPrefix(cmd, `"`) {
+	if goos != "windows" {
+		return app.ShellArg(self)
+	}
+	cmd := psArg(self)
+	if strings.HasPrefix(cmd, "'") {
 		cmd = "& " + cmd // PowerShell runs a quoted path given its call operator
 	}
 	return cmd

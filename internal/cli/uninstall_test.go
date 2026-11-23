@@ -254,7 +254,7 @@ func keptHere(t *testing.T, home, folder string) []string {
 
 func removeCommand(folder string) string {
 	if runtime.GOOS == "windows" {
-		return "Remove-Item -Recurse -Force -LiteralPath " + app.ShellArg(folder)
+		return "Remove-Item -Recurse -Force -LiteralPath " + psArg(folder)
 	}
 	return "rm -rf " + app.ShellArg(folder)
 }
@@ -662,11 +662,34 @@ func TestUninstallLeavesTheBinaryToItsPackageManager(t *testing.T) {
 
 	check("windows", scoop, "scoop uninstall asq")
 	check("windows", current, "scoop uninstall asq")
-	check("windows", installed, "Remove-Item -Recurse -Force -LiteralPath "+app.ShellArg(filepath.Dir(installed)))
-	check("windows", built, "Remove-Item -Recurse -Force -LiteralPath "+app.ShellArg(built))
-	check("windows", beside, "Remove-Item -Recurse -Force -LiteralPath "+app.ShellArg(beside))
+	check("windows", installed, "Remove-Item -Recurse -Force -LiteralPath "+psArg(filepath.Dir(installed)))
+	check("windows", built, "Remove-Item -Recurse -Force -LiteralPath "+psArg(built))
+	check("windows", beside, "Remove-Item -Recurse -Force -LiteralPath "+psArg(beside))
 	check("linux", plain, "rm "+app.ShellArg(plain))
 	// Each package manager where it runs: a folder laid out as the other's is a folder
 	check("linux", scoop, "rm "+app.ShellArg(scoop))
-	check("windows", brewed, "Remove-Item -Recurse -Force -LiteralPath "+app.ShellArg(brewed))
+	check("windows", brewed, "Remove-Item -Recurse -Force -LiteralPath "+psArg(brewed))
+}
+
+// What is said for Windows is run by PowerShell, which expands $ and ` in double quotes: a
+// path that holds anything but a plain name's characters is said in single quotes, which
+// expand nothing, a quote in it doubled; and run, when it is asq, by the call operator.
+func TestUninstallSaysWindowsPathsAsPowerShellReadsThem(t *testing.T) {
+	for in, want := range map[string]string{
+		`C:\Users\me\AppData\Local\Programs\asq\asq.exe`: `C:\Users\me\AppData\Local\Programs\asq\asq.exe`,
+		`C:\Users\Jo Ann\AppData\Roaming\asq\kept`:       `'C:\Users\Jo Ann\AppData\Roaming\asq\kept'`,
+		`D:\$work\asq copies`:                            `'D:\$work\asq copies'`,
+		`D:\it's ` + "`" + `n here`:                      `'D:\it''s ` + "`" + `n here'`,
+		"D:\\\u2019quoted\u2019":                         "'D:\\\u2019\u2019quoted\u2019\u2019'",
+	} {
+		if got := psArg(in); got != want {
+			t.Errorf("psArg(%s) = %s, want %s", in, got, want)
+		}
+	}
+	if got, want := removeItem(`D:\a$b`, `D:\c`), `Remove-Item -Recurse -Force -LiteralPath 'D:\a$b',D:\c`; got != want {
+		t.Errorf("removeItem = %s, want %s", got, want)
+	}
+	if got, want := asqCommand("windows", `C:\Program Files\asq\asq.exe`), `& 'C:\Program Files\asq\asq.exe'`; got != want {
+		t.Errorf("asqCommand = %s, want %s", got, want)
+	}
 }

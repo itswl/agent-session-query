@@ -314,6 +314,31 @@ func (ix *Index) Sessions(ctx context.Context, f Filter, p Page) ([]Session, int
 	return out, total, rows.Err()
 }
 
+// Cwds lists the working directories the sessions of these stores ran in, each once.
+func (ix *Index) Cwds(ctx context.Context, stores []string) ([]string, error) {
+	if len(stores) == 0 {
+		return nil, nil
+	}
+	args := make([]any, len(stores))
+	for i, name := range stores {
+		args[i] = name
+	}
+	rows, err := ix.ro.QueryContext(ctx, `SELECT DISTINCT cwd FROM sessions WHERE cwd != '' AND copy_of = 0 AND source IN (`+placeholders(len(stores))+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var cwd string
+		if err := rows.Scan(&cwd); err != nil {
+			return nil, err
+		}
+		out = append(out, cwd)
+	}
+	return out, rows.Err()
+}
+
 // Children lists the subagent transcripts directly beneath a session or an agent, in
 // the order they started.
 func (ix *Index) Children(ctx context.Context, s *Session) ([]Session, error) {

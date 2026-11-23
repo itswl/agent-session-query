@@ -388,6 +388,24 @@ func TestHereIsTheCurrentDirectory(t *testing.T) {
 		if code != 0 || !strings.Contains(out, "plan the release") || !strings.Contains(out, "fix the web build") {
 			t.Errorf("through a link to the directory: exit %d, %s%s", code, out, errs)
 		}
+
+		// And the other way round: a CLI that recorded the path through the link, asked
+		// from the directory the link leads to, named with its links resolved — as it is
+		// to a process with no PWD, or after cd -P — which says nothing of the link
+		const linked = "cccc0004-0000-4000-8000-000000000004"
+		ts := now.Format(time.RFC3339)
+		sourcetest.Write(t, filepath.Join(store, "-link", linked+".jsonl"),
+			map[string]any{"type": "user", "uuid": "l-u", "timestamp": ts, "sessionId": linked, "cwd": filepath.Join(link, "web"), "message": map[string]any{"role": "user", "content": "recorded through the link"}},
+			map[string]any{"type": "assistant", "uuid": "l-a", "timestamp": ts, "sessionId": linked,
+				"message": map[string]any{"id": "msg-l", "role": "assistant", "model": "claude-opus-5", "content": []any{map[string]any{"type": "text", "text": "done"}}}})
+		t.Chdir(filepath.Join(real, "proj"))
+		t.Setenv("PWD", "")
+		for _, args := range [][]string{{"ls", "--project", "."}, {"ls", "--project", "./web"}, {"show"}} {
+			out, errs, code := asq(t, h, indexPath, args...)
+			if code != 0 || !strings.Contains(out, "recorded through the link") {
+				t.Errorf("asq %s from where the link leads: exit %d, %s%s", strings.Join(args, " "), code, out, errs)
+			}
+		}
 	}
 
 	in("empty")

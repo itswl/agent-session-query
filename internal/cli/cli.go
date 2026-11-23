@@ -177,6 +177,14 @@ func open(ctx context.Context, c *command, io *streams) (*app.App, error) {
 			// Said with every answer: without it "no sessions" reads the same whether
 			// there are none or the store could not be read
 			warn(ctx, a, io)
+			// A --project of "." by every path a CLI may have recorded it as, which only
+			// the index can say of the links that lead to it
+			if len(c.q.Dirs) > 0 {
+				if c.q.Dirs, err = a.Paths(ctx, c.q.Dirs, true); err != nil {
+					a.Close()
+					return nil, err
+				}
+			}
 			return a, nil
 		case <-tick.C:
 			st := a.Index.State()
@@ -316,6 +324,9 @@ func sessionOf(ctx context.Context, a *app.App, args []string, io *streams) (ind
 	}
 	dir, names, err := here(".")
 	if err != nil {
+		return index.Session{}, 0, err
+	}
+	if names, err = a.Paths(ctx, names, true); err != nil {
 		return index.Session{}, 0, err
 	}
 	f, err := a.Filter(app.Query{Dirs: names})

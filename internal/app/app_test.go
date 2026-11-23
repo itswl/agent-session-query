@@ -2,9 +2,11 @@ package app_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -310,6 +312,57 @@ func TestHandoff(t *testing.T) {
 	}
 	if _, err := app.Handoff(2, 0, "all"); err == nil {
 		t.Error("turn 2 and since all are taken together")
+	}
+}
+
+// A directory is found by every path a CLI may have recorded it as — through a link to
+// it too, when it is given with its links resolved, as a process with no PWD has it.
+func TestPathsThroughALink(t *testing.T) {
+	root := t.TempDir()
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(real, "proj", "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(filepath.Join(real, "proj"), link); err != nil {
+		t.Skipf("no symbolic link here: %v", err)
+	}
+	store := filepath.Join(t.TempDir(), "claude")
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for id, cwd := range map[string]string{"eeee5555-0000-4000-8000-000000000005": link, "ffff6666-0000-4000-8000-000000000006": filepath.Join(link, "web")} {
+		row := func(v map[string]any) string { b, _ := json.Marshal(v); return string(b) + "\n" }
+		text := row(map[string]any{"type": "user", "uuid": id + "-u", "timestamp": now, "sessionId": id, "cwd": cwd, "message": map[string]any{"role": "user", "content": "through the link"}}) +
+			row(map[string]any{"type": "assistant", "uuid": id + "-a", "timestamp": now, "sessionId": id, "message": map[string]any{"id": "m-" + id, "role": "assistant", "model": "claude-opus-5", "content": []any{map[string]any{"type": "text", "text": "done"}}}})
+		path := filepath.Join(store, "-link-"+id[:4], id+".jsonl")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, err := app.Open(fixture.History{Dir: store}.Config(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	ctx := t.Context()
+	if _, err := a.Sync(ctx, index.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(real, "proj")
+	paths, err := a.Paths(ctx, []string{dir}, false)
+	if err != nil || !slices.Contains(paths, dir) || !slices.Contains(paths, link) || slices.Contains(paths, filepath.Join(link, "web")) {
+		t.Errorf("the directory = %q, %v; want it and the link to it, and not below it", paths, err)
+	}
+	if paths, err = a.Paths(ctx, []string{dir}, true); err != nil || !slices.Contains(paths, filepath.Join(link, "web")) {
+		t.Errorf("the directory and below = %q, %v", paths, err)
+	}
+	if self, err := a.Self(ctx, "", "", []string{dir}); err != nil || self.ID != "eeee5555-0000-4000-8000-000000000005" {
+		t.Errorf("the session in the directory, recorded through the link = %+v, %v", self.Ref, err)
 	}
 }
 

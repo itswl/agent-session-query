@@ -88,22 +88,20 @@ func (a *App) Self(ctx context.Context, source, id string, dirs []string) (Self,
 			return Self{}, err
 		}
 	}
-	// Each directory by every path that may name it as a CLI recorded it: as it was given,
-	// cleaned — which on Windows also writes each / as \ — and with its links resolved, as
-	// /tmp is /private/tmp on a Mac. The answer names them as they were given.
-	var where, named []string
+	// Each directory by every path that may name it as a CLI recorded it (see Paths). The
+	// answer names them as they were given.
+	var named []string
 	for _, d := range dirs {
-		if d == "" {
-			continue
-		}
-		named = appendNew(named, d)
-		where = appendNew(where, d, filepath.Clean(d))
-		if real, err := filepath.EvalSymlinks(d); err == nil {
-			where = appendNew(where, real)
+		if d != "" {
+			named = appendNew(named, d)
 		}
 	}
-	if len(where) == 0 {
+	if len(named) == 0 {
 		return Self{}, fmt.Errorf("%w: no directory to look in", index.ErrNotFound)
+	}
+	where, err := a.Paths(ctx, named, false)
+	if err != nil {
+		return Self{}, err
 	}
 	list, _, err := a.Index.Sessions(ctx, index.Filter{Stores: stores, In: where}, index.Page{Limit: 1})
 	if err != nil {
@@ -113,6 +111,60 @@ func (a *App) Self(ctx context.Context, source, id string, dirs []string) (Self,
 		return Self{}, fmt.Errorf("%w: none has run in %s", index.ErrNotFound, strings.Join(named, " or "))
 	}
 	return Self{Session: Listed(list)[0]}, nil
+}
+
+// Paths is a directory by every path a CLI may have recorded as a session's working
+// directory: each of dirs as it was given, cleaned — which on Windows also writes each /
+// as \ — and with its links resolved, as /tmp is /private/tmp on a Mac; and every working
+// directory this machine's sessions ran in whose links lead to the same place, or with
+// below to a place beneath it. That last is the only way to the path a CLI recorded
+// through a link when the directory was given with its links resolved — by a process
+// with no PWD, or after cd -P: nothing in /private/tmp/x says that /tmp/x leads there.
+// Directories are compared without regard to case, as the index's filters compare them.
+func (a *App) Paths(ctx context.Context, dirs []string, below bool) ([]string, error) {
+	var out, reals []string
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		out = appendNew(out, d, filepath.Clean(d))
+		real, err := filepath.EvalSymlinks(d)
+		if err != nil {
+			continue // not on this machine: nothing recorded here leads to it
+		}
+		out = appendNew(out, real)
+		reals = appendNew(reals, strings.ToLower(real))
+	}
+	if len(reals) == 0 {
+		return out, nil
+	}
+	var stores []string
+	for _, name := range a.Stores() {
+		if !strings.Contains(name, "@") { // a labelled store's paths are another machine's
+			stores = append(stores, name)
+		}
+	}
+	cwds, err := a.Index.Cwds(ctx, stores)
+	if err != nil {
+		return nil, err
+	}
+	for _, cwd := range cwds {
+		if slices.Contains(out, cwd) || ctx.Err() != nil {
+			continue
+		}
+		real, err := filepath.EvalSymlinks(cwd)
+		if err != nil {
+			continue
+		}
+		real = strings.ToLower(real)
+		for _, r := range reals {
+			if real == r || below && strings.HasPrefix(real, strings.TrimRight(r, `/\`)+string(filepath.Separator)) {
+				out = append(out, cwd)
+				break
+			}
+		}
+	}
+	return out, ctx.Err()
 }
 
 // appendNew appends to list each of paths it does not hold yet.

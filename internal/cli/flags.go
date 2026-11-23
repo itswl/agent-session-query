@@ -118,6 +118,8 @@ func relative(project string) bool {
 // here is a directory named from the current one, absolute, and the paths that name it:
 // that one, as the shell names it, and the same with its symbolic links resolved when
 // that is another — a CLI may have recorded either as a session's working directory.
+// The paths a CLI recorded through a link to it are found once the index is open
+// (app.Paths): given the directory with its links resolved, nothing says which lead there.
 func here(name string) (dir string, names []string, err error) {
 	if dir, err = filepath.Abs(name); err != nil {
 		return "", nil, err

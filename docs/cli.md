@@ -40,8 +40,9 @@ is yesterday there, midnight to midnight.
 
 `asq ls --project .` is the sessions of the directory you are in. The directory is resolved to
 an absolute path where `asq` runs, and a session is in it whether its CLI recorded the path the
-shell gives or the one its symbolic links lead to (`/tmp/x` and `/private/tmp/x` on a Mac);
-`/work/api` holds `/work/api/web` and not `/work/api-old`. Paths are compared without regard
+shell gives or the one its symbolic links lead to (`/tmp/x` and `/private/tmp/x` on a Mac) —
+whichever of the two `asq` is given, as a process with no `PWD`, or after `cd -P`, is given the
+second; `/work/api` holds `/work/api/web` and not `/work/api-old`. Paths are compared without regard
 to case. An empty answer says on stderr which directory was looked in, since `.` is wherever
 the command happened to run.
 

@@ -477,6 +477,14 @@ func TestUninstallTakesTheServicesDownFirst(t *testing.T) {
 			mine := put(t, filepath.Join(dir, "mine.service"), "[Service]\nExecStart="+self+"\n")
 			return []string{"ours", "brew services stop asq", "systemctl --user disable --now mine.service", "rm " + app.ShellArg(mine), "systemctl --user daemon-reload"}
 		}, notSaid: []string{"disable --now asq.service", "homebrew.asq.service"}},
+		{os: "linux", place: func(t *testing.T, home string) []string {
+			// Two units by hand: daemon-reload once, after both are removed
+			dir := filepath.Join(home, "config", "systemd", "user")
+			unit := put(t, filepath.Join(dir, "asq.service"), "[Service]\nExecStart=/x/asq serve\n")
+			mine := put(t, filepath.Join(dir, "mine.service"), "[Service]\nExecStart="+self+"\n")
+			return []string{"systemctl --user disable --now asq.service", "rm " + app.ShellArg(unit),
+				"systemctl --user disable --now mine.service", "rm " + app.ShellArg(mine), "systemctl --user daemon-reload"}
+		}},
 		{os: "windows", ours: true, place: func(*testing.T, string) []string { return []string{"ours"} }, notSaid: []string{"schtasks"}},
 		{os: "windows", place: func(*testing.T, string) []string {
 			return []string{"schtasks /end /tn asq", "schtasks /delete /tn asq /f"}
@@ -574,4 +582,7 @@ func TestUninstallLeavesTheBinaryToItsPackageManager(t *testing.T) {
 	check("windows", built, "Remove-Item -Recurse -Force -LiteralPath "+app.ShellArg(built))
 	check("windows", beside, "Remove-Item -Recurse -Force -LiteralPath "+app.ShellArg(beside))
 	check("linux", plain, "rm "+app.ShellArg(plain))
+	// Each package manager where it runs: a folder laid out as the other's is a folder
+	check("linux", scoop, "rm "+app.ShellArg(scoop))
+	check("windows", brewed, "Remove-Item -Recurse -Force -LiteralPath "+app.ShellArg(brewed))
 }

@@ -154,7 +154,7 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 			fmt.Fprintln(io.out, "  "+cmd)
 		}
 	}
-	if manager, _ := service.Package(self); manager == "" {
+	if manager, _ := packageOf(m.OS, self); manager == "" {
 		fmt.Fprintln(io.out, "\na line that put asq on the PATH, added when installing, can go too")
 	}
 	return nil
@@ -415,12 +415,12 @@ func thisFile() string {
 // of the machine than a directory of asq's, and removing the binary is this command's own
 // process: both are said, for a person to run.
 func finishCommands(m *service.Machine, self string) []string {
-	var cmds []string
+	cmds := []string{}
 	add := func(lines ...string) {
 		for _, line := range lines {
-			if !slices.Contains(cmds, line) {
-				cmds = append(cmds, line)
-			}
+			// A line two services need is said once, where the last needs it: systemctl
+			// daemon-reload after every unit it is to forget is removed
+			cmds = append(slices.DeleteFunc(cmds, func(c string) bool { return c == line }), line)
 		}
 	}
 	asq := asqCommand(m.OS, self)
@@ -468,7 +468,7 @@ func binaryCommands(goos, self string) []string {
 	if self == "" {
 		return nil
 	}
-	switch manager, dir := service.Package(self); manager {
+	switch manager, dir := packageOf(goos, self); manager {
 	case service.Homebrew:
 		cmds := []string{"brew uninstall asq"}
 		if tap := brewTap(dir); tap != "" {
@@ -490,6 +490,16 @@ func binaryCommands(goos, self string) []string {
 		rm = "sudo " + rm
 	}
 	return []string{rm}
+}
+
+// packageOf is the package manager that installed this binary, of those goos has: Homebrew
+// on macOS and Linux, Scoop on Windows. A folder of one's own may be laid out as the other's.
+func packageOf(goos, self string) (manager, dir string) {
+	switch manager, dir = service.Package(self); {
+	case manager == service.Homebrew && goos != "windows", manager == service.Scoop && goos == "windows":
+		return manager, dir
+	}
+	return "", ""
 }
 
 // holdsOnly says whether a directory holds the file name and nothing else.

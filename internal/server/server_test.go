@@ -583,6 +583,14 @@ func TestCORSForListedOrigins(t *testing.T) {
 	if pre.Code != http.StatusNoContent || !strings.Contains(pre.Header().Get("Access-Control-Allow-Headers"), "Authorization") {
 		t.Errorf("preflight = %d %v", pre.Code, pre.Header())
 	}
+	// An MCP client on that page sends the headers the 2026-07-28 revision asks of it
+	pre = call{method: http.MethodOptions, path: "/mcp", header: map[string]string{"Origin": "https://dash.example", "Access-Control-Request-Method": "POST",
+		"Access-Control-Request-Headers": "authorization,content-type,mcp-method,mcp-name,mcp-protocol-version"}}.do(s)
+	for _, name := range []string{"Mcp-Protocol-Version", "Mcp-Method", "Mcp-Name"} {
+		if !strings.Contains(pre.Header().Get("Access-Control-Allow-Headers"), name) {
+			t.Errorf("an MCP preflight does not allow %s: %d %v", name, pre.Code, pre.Header())
+		}
+	}
 	if rec := (call{path: "/api/sessions", header: map[string]string{"Origin": "https://other.example"}}).do(s); rec.Code != http.StatusForbidden {
 		t.Errorf("an unlisted origin = %d", rec.Code)
 	}

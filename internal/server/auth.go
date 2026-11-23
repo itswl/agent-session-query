@@ -749,7 +749,9 @@ func (s *Server) cors(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Add("Vary", "Origin")
 	h.Set("Access-Control-Allow-Origin", origin)
-	h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Protocol-Version, Last-Event-ID")
+	// An MCP request of the 2026-07-28 revision says its method and tool in headers too, and
+	// is turned down without them
+	h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Protocol-Version, Mcp-Method, Mcp-Name, Last-Event-ID")
 	h.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	h.Set("Access-Control-Max-Age", "600")
 }

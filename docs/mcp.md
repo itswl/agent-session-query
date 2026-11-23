@@ -307,7 +307,7 @@ transports:
 - Over HTTP such a request carries its revision, method and tool or prompt name in headers
   too (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`), and one whose headers are missing or
   say other than its body is answered `400`, as is a revision not spoken; a method the server
-  does not have is `404`. A request of an earlier revision is answered as before.
+  does not have is `404`. A request of an earlier revision needs none of these headers.
 
 On stdio each request runs on its own, so a slow search does not hold up a ping, and
 `notifications/cancelled` stops the request it names. stdout carries the protocol and nothing

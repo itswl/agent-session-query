@@ -240,7 +240,7 @@ type turnBody struct {
 // A session the index holds may also have a mark (see transcript.Mark): where its latest
 // turn began, for a CLI that only adds to the end of its files. Offered it, the adapter
 // takes the read up there, and only the turns from the mark on are read; one that finds
-// no turn beginning there has the transcript read whole after all.
+// no turn beginning there, or fails, has the transcript read whole after all.
 func (ix *Index) read(ctx context.Context, st Store, ref sources.Ref, sid int64) *reading {
 	start := time.Now()
 	held := ix.heldSession(ctx, st, ref, sid)
@@ -254,7 +254,9 @@ func (ix *Index) read(ctx context.Context, st Store, ref sources.Ref, sid int64)
 }
 
 // readFrom is read, offered held's mark. It is nil when the adapter took the read up at
-// the mark and found no turn beginning there.
+// the mark and found no turn beginning there, or failed: what such a read leaves is the
+// Writer as it was at the mark, and what of the turns after it was read before it failed,
+// which is no session the index should hold.
 func (ix *Index) readFrom(ctx context.Context, st Store, ref sources.Ref, sid int64, held heldSession) *reading {
 	rd := &reading{source: st.Name, agent: st.Spec.Name, reads: st.Spec.Reads, ref: ref}
 	var w *transcript.Writer
@@ -284,7 +286,7 @@ func (ix *Index) readFrom(ctx context.Context, st Store, ref sources.Ref, sid in
 	w.From = held.mark
 	err := st.Source.Read(ctx, ref, w)
 	stats, werr := w.Finish()
-	if errors.Is(werr, transcript.ErrNotTakenUp) && err == nil && ctx.Err() == nil {
+	if w.Resumed() && (err != nil || errors.Is(werr, transcript.ErrNotTakenUp)) && ctx.Err() == nil {
 		return nil
 	}
 	if last != nil && ctx.Err() == nil {

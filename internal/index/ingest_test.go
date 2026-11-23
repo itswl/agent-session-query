@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +27,8 @@ type growing struct {
 	turns    int
 	recorded int64
 	marked   bool // it marks each turn, and takes a read up at the mark it is offered
+	// breaks makes a read taken up at a mark fail: "at once", or "after" its turns are read
+	breaks string
 }
 
 func (growing) Location() string { return "test" }
@@ -39,6 +42,9 @@ func (g growing) Read(_ context.Context, _ sources.Ref, w *transcript.Writer) er
 	if m := w.From; m != nil && g.marked {
 		if json.Unmarshal(m.Source, &start) == nil && start <= g.turns {
 			w.Resume(m)
+			if g.breaks == "at once" {
+				return errors.New("the transcript went away")
+			}
 		}
 	}
 	for i := start; i <= g.turns; i++ {
@@ -59,6 +65,9 @@ func (g growing) Read(_ context.Context, _ sources.Ref, w *transcript.Writer) er
 	}
 	if g.recorded > 0 {
 		w.S.Recorded = &model.Recorded{Usage: &model.Usage{Input: g.recorded, Output: 10 * int64(g.turns)}}
+	}
+	if w.Resumed() && g.breaks == "after" {
+		return errors.New("a line too long")
 	}
 	return nil
 }
@@ -213,6 +222,21 @@ func TestRecordedTotalsWithAReadTakenUp(t *testing.T) {
 	syncOf(t, fresh, g)
 	if got, want := rowsOf(t, ix), rowsOf(t, fresh); got != want {
 		t.Errorf("after the totals moved:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A read taken up at a mark that fails leaves the Writer as it was at the mark and some of
+// the turns after it, which is no session to keep: the transcript is read whole instead.
+func TestAReadTakenUpThatFailsIsReadWhole(t *testing.T) {
+	for _, breaks := range []string{"at once", "after"} {
+		ix := openTemp(t)
+		syncOf(t, ix, growing{turns: 4, marked: true})
+		g := growing{turns: 6, marked: true, breaks: breaks}
+		refs, _ := g.Scan(context.Background())
+		rd := ix.read(context.Background(), growingStore(g)[0], refs[0], sidOf(t, ix))
+		if rd.err != "" || rd.from != 0 || len(rd.turns) != 6 {
+			t.Errorf("failing %s: error %q, taken up at %d, %d turns; want a whole read of 6", breaks, rd.err, rd.from, len(rd.turns))
+		}
 	}
 }
 

@@ -243,9 +243,10 @@ directory beneath its figures; a subagent's calls are counted in the session it 
 Every breakdown but by model — a turn may call on several models — ends with `agent time`:
 how long agents worked on the turns asked in that group, from each ask to the last thing the
 agent did, summed. Two agents at work at once count twice, as two people would; a subagent's
-time is inside the turn that started it, and is not counted again. A dash is a group whose
-turns recorded no end. Token counts are in [one shape](model.md#usage-one-shape) across CLIs. A
-dash under `reasoning` means the provider did not say, which is not the same as none.
+time is inside the turn that started it, and is not counted again. A dash is a group with no
+turn asked in it — a day whose calls were all of a turn asked the day before — or none whose end
+was recorded. Token counts are in [one shape](model.md#usage-one-shape) across CLIs. A dash under
+`reasoning` means the provider did not say, which is not the same as none.
 
 The report is in tokens, not money. `asq` holds no price list, and the costs some CLIs work out
 for themselves do not add up to one: summed over sessions most of which recorded none, the

@@ -214,6 +214,12 @@ func TestInstallStatusUninstall(t *testing.T) {
 					t.Errorf("%s was not made: %v", dir, err)
 				}
 			}
+			// launchd makes no directory for a log, and starts no job whose log it cannot open
+			if logFile := mg.log(); filepath.IsAbs(logFile) {
+				if _, err := os.Stat(filepath.Dir(logFile)); err != nil {
+					t.Errorf("the log's directory was not made: %v", err)
+				}
+			}
 
 			st, err = f.m.Status(s.Binary)
 			if err != nil {

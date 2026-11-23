@@ -8,8 +8,10 @@ import * as f from '../format.js';
 import { WINDOWS, windowOf, label, span } from '../windows.js';
 import * as projects from '../projects.js';
 
-// Stacked bottom to top in this order; the colours are the chart palette's first four
-const PARTS = [['cacheRead', 'Cache read'], ['cacheWrite', 'Cache write'], ['input', 'Input'], ['output', 'Output']];
+// Stacked bottom to top in this order; the colours are the chart palette's first four. The
+// record's input is the part of the prompt neither read from cache nor written to it — new
+// input: "in", on the command line and a session's page, is the whole prompt
+const PARTS = [['cacheRead', 'Cache read'], ['cacheWrite', 'Cache write'], ['input', 'New input'], ['output', 'Output']];
 // The window the breakdowns cover: all of it unless one is chosen
 const windowIn = (query) => windowOf(query, 'all');
 
@@ -128,6 +130,11 @@ function niceMax(v) {
 
 const section = (title, when, content) => h('section', null, h('header', { class: 'section-head' }, h('h2', null, title), h('span', { class: 'dim' }, when)), content);
 
+const HEAD_TITLES = {
+  'New input': 'The prompt, less what was read from cache or written to it. With those two, it is the prompt: what the command line calls in',
+  Reasoning: 'The part of the output that was reasoning',
+};
+
 function table(rows, total, keyLabel, keyCell) {
   const n = (v) => h('td', { class: 'n', title: f.num(v) }, f.tokens(v));
   // Reasoning is the part of the output that was thinking, where the provider said so:
@@ -138,9 +145,8 @@ function table(rows, total, keyLabel, keyCell) {
     n(r.usage?.input), n(r.usage?.output), reasoning(r.usage?.reasoning), n(r.usage?.cacheRead), n(r.usage?.cacheWrite), n(r.total),
     h('td', { class: 'n' }, f.pct(r.cacheHit)));
   return h('div', { class: 'table-wrap' }, h('table', null,
-    h('thead', null, h('tr', null, [keyLabel, 'Sessions', 'Calls', 'Input', 'Output', 'Reasoning', 'Cache read', 'Cache write', 'Total', 'Cache hit']
-      .map((c, i) => h('th', { scope: 'col', class: i ? 'n' : null,
-        title: c === 'Reasoning' ? 'The part of the output that was reasoning' : null }, c)))),
+    h('thead', null, h('tr', null, [keyLabel, 'Sessions', 'Calls', 'New input', 'Output', 'Reasoning', 'Cache read', 'Cache write', 'Total', 'Cache hit']
+      .map((c, i) => h('th', { scope: 'col', class: i ? 'n' : null, title: HEAD_TITLES[c] }, c)))),
     h('tbody', null, rows.map((r) => row(r, h('th', { scope: 'row' }, keyCell(r.key))))),
     h('tfoot', null, row(total, h('th', { scope: 'row' }, 'Total', rows.length >= 12 && h('span', { class: 'dim' }, ' · with those not listed'))))));
 }

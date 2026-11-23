@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -133,6 +134,20 @@ func TestFormat(t *testing.T) {
 	for i, tc := range cases {
 		if got[i] != tc.want {
 			t.Errorf("%s: %s(%q) = %#v, want %#v", tc.name, tc.call[0], tc.call[1:], got[i], tc.want)
+		}
+	}
+}
+
+// The record's input is the part of the prompt neither read from cache nor written to it;
+// "in", on the command line and a session's page, is the whole prompt. A view of tokens that
+// labels the record's figure Input says 619 where the command line says 6.0M. (A tool call's
+// Input, in a turn's steps, is what the tool was given.)
+func TestInputIsNotThePrompt(t *testing.T) {
+	label := regexp.MustCompile(`['"]Input['"]`)
+	all := files(t)
+	for _, name := range []string{"js/views/usage.js", "js/views/session.js", "js/views/digest.js"} {
+		if label.MatchString(all[name]) {
+			t.Errorf("%s labels a figure of tokens Input: the record's input is new input, the prompt is in", name)
 		}
 	}
 }

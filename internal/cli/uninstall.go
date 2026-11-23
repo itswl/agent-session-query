@@ -123,11 +123,11 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 			// would without them, even when asq keep --dir named the state itself
 			var spares []string
 			for i, folder := range folders {
-				copies, held := keptCopies(ctx, cfg.Stores, folder)
+				copies, dirs := keptCopies(ctx, cfg.Stores, folder)
 				if copies == nil || i > 0 && inside(copies.Path, folders[0]) && inside(folders[0], copies.Path) {
 					continue
 				}
-				spares = append(spares, held...)
+				spares = append(spares, dirs...)
 				done.Left = append(done.Left, *copies)
 			}
 			// A folder a person named may hold more than asq's, and so may one a link at the

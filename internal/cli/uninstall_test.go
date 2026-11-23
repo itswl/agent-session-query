@@ -361,25 +361,36 @@ func TestUninstallTakesOnlyAsqsFilesFromAFolderASQ_STATENames(t *testing.T) {
 	}
 }
 
-// Copies in a folder asq keep --dir named outside the state are left too, and named.
+// Copies in a folder asq keep --dir named outside the state are left too, and named. The
+// command that would remove them takes the folder when they are all it holds, and else the
+// folders asq keep wrote in it alone: it may be a home, or a synced folder of more.
 func TestUninstallNamesAKeptFolderElsewhere(t *testing.T) {
-	home, state := uninstallHome(t, runtime.GOOS, nil)
-	folder := filepath.Join(home, "backup", "asq copies")
-	if err := keep.Save(state, keep.Settings{Dir: folder}); err != nil {
-		t.Fatal(err)
-	}
-	copies := keptHere(t, home, folder)
+	for _, more := range []bool{false, true} {
+		t.Run(map[bool]string{false: "alone", true: "with more"}[more], func(t *testing.T) {
+			home, state := uninstallHome(t, runtime.GOOS, nil)
+			folder := filepath.Join(home, "backup", "asq copies")
+			if err := keep.Save(state, keep.Settings{Dir: folder}); err != nil {
+				t.Fatal(err)
+			}
+			copies := keptHere(t, home, folder)
+			remove := removeCommand(folder)
+			if more {
+				copies = append(copies, put(t, filepath.Join(folder, "notes.txt"), "mine"))
+				remove = removeCommand(filepath.Join(folder, "claude"))
+			}
 
-	got := uninstallJSON(t)
-	gone(t, state)
-	for _, p := range copies {
-		there(t, p)
-	}
-	if len(got.Removed) != 2 || got.Removed[1] != state {
-		t.Errorf("removed %q, want the index and %s", got.Removed, state)
-	}
-	if len(got.Left) != 1 || got.Left[0].Path != folder || got.Left[0].Transcripts != 2 || got.Left[0].Gone != 1 || got.Left[0].Remove != removeCommand(folder) {
-		t.Errorf("left %+v, want %s and its two transcripts", got.Left, folder)
+			got := uninstallJSON(t)
+			gone(t, state)
+			for _, p := range copies {
+				there(t, p)
+			}
+			if len(got.Removed) != 2 || got.Removed[1] != state {
+				t.Errorf("removed %q, want the index and %s", got.Removed, state)
+			}
+			if len(got.Left) != 1 || got.Left[0].Path != folder || got.Left[0].Transcripts != 2 || got.Left[0].Gone != 1 || got.Left[0].Remove != remove {
+				t.Errorf("left %+v, want %s and its two transcripts, removed by %s", got.Left, folder, remove)
+			}
+		})
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/itswl/agent-session-query/internal/index"
 	"github.com/itswl/agent-session-query/internal/keep"
 	"github.com/itswl/agent-session-query/internal/service"
+	"github.com/itswl/agent-session-query/internal/sources"
 )
 
 // cmdUninstall takes asq off the machine: what it wrote and only what it wrote — the index,
@@ -222,8 +223,8 @@ const sqliteHeader = "SQLite format 3\x00"
 
 // keptCopies is the folder of the copies asq keep made, said as what is left: where it is,
 // what it holds — counted as asq keep counts it, by each CLI's adapter on its folder of
-// copies, beside the CLI's own store — and the command that would remove it. Nil when the
-// folder holds no file.
+// copies, beside the CLI's own store — and the command that would remove the copies. Nil
+// when it holds none.
 func keptCopies(ctx context.Context, stores catalog.Config, folder, goos string) *leftBehind {
 	// A folder that is a link holds what it leads to: that is where the copies are, and what
 	// stays when the link goes with the state
@@ -232,7 +233,12 @@ func keptCopies(ctx context.Context, stores catalog.Config, folder, goos string)
 			folder = real
 		}
 	}
-	if files, _ := keep.Size(folder); files == 0 {
+	dirs, files := keptIn(folder), 0
+	for _, dir := range dirs {
+		n, _ := keep.Size(dir)
+		files += n
+	}
+	if files == 0 {
 		return nil
 	}
 	l := &leftBehind{Path: folder, What: "copies", Why: "the copies asq keep made"}
@@ -253,17 +259,61 @@ func keptCopies(ctx context.Context, stores catalog.Config, folder, goos string)
 	case l.Transcripts > 0:
 		l.Why += ": " + plural(l.Transcripts, "transcript")
 	}
-	l.Remove = "rm -rf " + app.ShellArg(folder)
-	if goos == "windows" {
-		l.Remove = removeItem(folder)
+	// The folder goes when the copies are all it holds. One asq keep --dir named may be a
+	// folder a person keeps more in — their home, a synced folder —: then the CLIs' folders
+	// in it go, which hold the copies alone
+	names := make([]string, len(dirs))
+	for i, dir := range dirs {
+		names[i] = filepath.Base(dir)
 	}
+	if holdsOnly(folder, names...) {
+		dirs = []string{folder}
+	}
+	l.Remove = removeAll(goos, dirs...)
 	return l
 }
 
-// removeItem is PowerShell's command that removes a file or a folder: by its name as it is,
-// which -Path would read as a pattern — a [ in it matching another folder's name.
-func removeItem(path string) string {
-	return "Remove-Item -Recurse -Force -LiteralPath " + app.ShellArg(path)
+// keptIn is the folders in folder that asq keep writes copies in: one for each CLI whose
+// sessions it copies, named after the CLI, as the store of its copies is (catalog.Set.Keep).
+func keptIn(folder string) []string {
+	var dirs []string
+	for _, spec := range catalog.All {
+		if _, ok := spec.Open("").(sources.Keeper); !ok {
+			continue
+		}
+		if dir := filepath.Join(folder, spec.Name); exists(dir) {
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
+}
+
+func exists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
+// removeAll is the command that removes files and folders whole: rm -rf, or on Windows
+// PowerShell's Remove-Item.
+func removeAll(goos string, paths ...string) string {
+	if goos == "windows" {
+		return removeItem(paths...)
+	}
+	words := []string{"rm -rf"}
+	for _, p := range paths {
+		words = append(words, app.ShellArg(p))
+	}
+	return strings.Join(words, " ")
+}
+
+// removeItem is PowerShell's command that removes files or folders: by their names as they
+// are, which -Path would read as patterns — a [ in one matching another folder's name.
+func removeItem(paths ...string) string {
+	quoted := make([]string, len(paths))
+	for i, p := range paths {
+		quoted[i] = app.ShellArg(p)
+	}
+	return "Remove-Item -Recurse -Force -LiteralPath " + strings.Join(quoted, ",")
 }
 
 // tooWide says whether a state directory is not asq's to remove: the root an empty name
@@ -517,10 +567,18 @@ func packageOf(goos, self string) (manager, dir string) {
 	return "", ""
 }
 
-// holdsOnly says whether a directory holds the file name and nothing else.
-func holdsOnly(dir, name string) bool {
+// holdsOnly says whether a directory holds something, and nothing but what is named so.
+func holdsOnly(dir string, names ...string) bool {
 	entries, err := os.ReadDir(dir)
-	return err == nil && len(entries) == 1 && strings.EqualFold(entries[0].Name(), name)
+	if err != nil || len(entries) == 0 {
+		return false
+	}
+	for _, e := range entries {
+		if !slices.ContainsFunc(names, func(name string) bool { return strings.EqualFold(e.Name(), name) }) {
+			return false
+		}
+	}
+	return true
 }
 
 // module is this repository's Go module, which a clone of it names in its go.mod.

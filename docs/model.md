@@ -37,7 +37,7 @@ output, a compaction summary) is not an ask and opens nothing.
 | field | |
 |---|---|
 | `index` | 1 for the first ask. `0` is not an exchange: it holds whatever precedes the first ask |
-| `ask` | the person's words, without what a harness wrapped around them |
+| `ask` | the person's words, without what a harness wrapped around them, then the mark of each file they sent with them |
 | `answer` | the last thing the agent said |
 | `startedAt`, `endedAt` | the ask, and the last thing the agent *did* — a notification dropped in hours later does not stretch the turn |
 | `interrupted` | it stopped before the agent was done: the person stopped it, or, in a Gemini CLI session, an error cut it off — an `error` event in the turn says which. Another CLI's error is an `error` event that marks nothing |

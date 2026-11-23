@@ -908,9 +908,18 @@ func cmdResume(ctx context.Context, args []string, io *streams) error {
 
 func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 	c := newCommand("doctor", io.err)
-	port := c.fs.Int("port", envInt("ASQ_PORT", DefaultPort), "the port a server on this machine listens on, to ask which asq it runs (ASQ_PORT; 0 asks none)")
+	port := c.fs.Int("port", DefaultPort, "the port a server on this machine listens on, to ask which asq it runs (ASQ_PORT; 0 asks none)")
 	if _, err := c.parse(args); err != nil {
 		return err
+	}
+	// The port named, by the flag or ASQ_PORT, where a 0 asks no server: serve takes a 0
+	// in ASQ_PORT for none set, and listens on its own
+	named := false
+	c.fs.Visit(func(f *flag.Flag) { named = named || f.Name == "port" })
+	if !named {
+		if n, err := strconv.Atoi(os.Getenv("ASQ_PORT")); err == nil && n >= 0 {
+			*port, named = n, true
+		}
 	}
 	cfg, err := c.config()
 	if err != nil {
@@ -929,7 +938,10 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 		path = index.DefaultPath()
 	}
 	server := ""
-	if *port > 0 {
+	switch {
+	case !named:
+		server = net.JoinHostPort("127.0.0.1", strconv.Itoa(DefaultPort))
+	case *port > 0:
 		server = net.JoinHostPort("127.0.0.1", strconv.Itoa(*port))
 	}
 	return checkUp(ctx, checkup{stores: set.All(), keptAll: kept.All, index: path, server: server, token: os.Getenv("ASQ_TOKEN")}, c.json, c.style(io.out), io.out)

@@ -260,12 +260,17 @@ type StoreStatus struct {
 
 // Health is where the program stands.
 type Health struct {
-	Version  string          `json:"version"`
-	Index    string          `json:"index"`
-	Totals   index.Totals    `json:"totals"`
-	Sync     index.SyncState `json:"sync"`
-	Stores   []StoreStatus   `json:"stores"`
-	Warnings []index.Warning `json:"warnings"`
+	Version string `json:"version"`
+	// Executable is the file this process was started from, and Replaced says that an
+	// upgrade has been installed over it since: the process goes on with the old one until
+	// it is restarted (see Program)
+	Executable string          `json:"executable"`
+	Replaced   bool            `json:"replaced"`
+	Index      string          `json:"index"`
+	Totals     index.Totals    `json:"totals"`
+	Sync       index.SyncState `json:"sync"`
+	Stores     []StoreStatus   `json:"stores"`
+	Warnings   []index.Warning `json:"warnings"`
 }
 
 // NothingFound is every store this process reads, found or not, when the index holds no
@@ -287,6 +292,7 @@ func (a *App) NothingFound(ctx context.Context) ([]StoreStatus, error) {
 // Health reports the stores, what the index holds, and which stores could not be read.
 func (a *App) Health(ctx context.Context) (Health, error) {
 	h := Health{Version: Version, Index: a.Index.Path(), Sync: a.Index.State()}
+	h.Executable, h.Replaced = Program()
 	var err error
 	if h.Totals, err = a.Index.Totals(ctx, a.Stores()); err != nil {
 		return h, err

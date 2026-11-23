@@ -89,6 +89,8 @@ type Server struct {
 	keepFailed time.Time // when keeping the callers known last failed; under keepMu
 	door       door      // what the guards did, written down and counted
 
+	program func() (string, bool) // the file it was started from, and whether it was replaced since (app.Program)
+
 	mux     *http.ServeMux
 	assets  map[string]asset
 	pageTag string // names this set of the page's files (see versioned)
@@ -143,7 +145,7 @@ func New(a *app.App, opts Options) (*Server, error) {
 	if opts.Token == "" && opts.ProxyHeader != "" {
 		return nil, fmt.Errorf("%s is for a server behind a proxy, and a server without a token is not to be put behind one: set a token (--token, or ASQ_TOKEN), or remove %s", setting, setting)
 	}
-	s := &Server{app: a, opts: opts, mcp: mcp.New(a, opts.Log), assets: map[string]asset{}}
+	s := &Server{app: a, opts: opts, mcp: mcp.New(a, opts.Log), assets: map[string]asset{}, program: app.Program}
 	s.door.out, s.door.began = opts.Log, time.Now()
 	// The MCP endpoint answers as the rest of the API does: from the index the watcher
 	// keeps, without waiting for a read that is only following the stores
@@ -498,12 +500,19 @@ func (s *Server) Run(ctx context.Context, ready func(addr string)) error {
 // stores are followed from then on, and not from half a minute later.
 func (s *Server) watch(ctx context.Context) {
 	var looked time.Time
+	said := false // that the program file was replaced
 	for {
 		if s.due(looked) {
 			if _, err := s.app.Sync(ctx, index.SyncOptions{}); err != nil && ctx.Err() == nil {
 				s.logf("keeping the index in step: %v", err)
 			}
 			looked = time.Now()
+		}
+		if !said {
+			if path, replaced := s.program(); replaced {
+				s.logf("asq: %s was replaced since this server started, by an upgrade: it goes on as %s until it is restarted", path, app.Version)
+				said = true
+			}
 		}
 		// A minute of the guards' lines that is over is summed up now, and not only when
 		// the next caller comes along

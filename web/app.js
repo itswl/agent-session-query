@@ -274,7 +274,16 @@ function renderWarnings() {
         sessionStorage.setItem('asq-dismissed', JSON.stringify([...dismissed]));
         renderWarnings();
       } }, icon('x')));
-  notices.replaceChildren(...[updated].filter(Boolean), ...(seenHealth?.warnings || []).filter((w) => !dismissed.has(key(w))).map((w) =>
+  // The server's program file was upgraded under it: it goes on as it is until restarted
+  const replaced = seenHealth?.replaced && !dismissed.has(hashed('replaced ' + now)) &&
+    h('div', { class: 'notice warn', role: 'status' }, icon('alert'),
+      h('p', null, `asq was upgraded on the machine this server runs on, and the server still runs ${now}: restart it to run the new one.`),
+      h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Dismiss the notice about the upgrade', onclick() {
+        dismissed.add(hashed('replaced ' + now));
+        sessionStorage.setItem('asq-dismissed', JSON.stringify([...dismissed]));
+        renderWarnings();
+      } }, icon('x')));
+  notices.replaceChildren(...[updated, replaced].filter(Boolean), ...(seenHealth?.warnings || []).filter((w) => !dismissed.has(key(w))).map((w) =>
     h('div', { class: 'notice warn', role: 'alert' }, icon('alert'),
       h('p', null, h('strong', null, w.source), ' could not be read: ', w.error, w.location && h('span', { class: 'dim' }, ` (${w.location})`)),
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Dismiss the notice about ${w.source}`, onclick() {

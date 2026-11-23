@@ -102,6 +102,25 @@ asq doctor     # which stores were found, and whether each reads
 asq ls         # the first run indexes your history: about a minute per gigabyte
 ```
 
+## Upgrading
+
+Run the installer again. It puts the new release where the `asq` on your PATH already is, over
+it — with sudo, if that directory takes it: what runs is then the new one, and macOS keeps what
+it allowed the old. With Go it is the
+same `go install …@latest`; a container is pulled and started again ([Deploying](docs/deploy.md#upgrading)).
+
+An `asq serve` kept running goes on with the old one until it is restarted. The page says so,
+and so does `asq doctor`, which asks a server on this machine which `asq` it runs:
+
+```sh
+launchctl kickstart -k "gui/$(id -u)/io.github.itswl.asq"     # macOS, the LaunchAgent
+systemctl --user restart asq                                    # Linux, the systemd unit
+```
+
+On Windows a running `asq.exe` cannot be replaced: `schtasks /end /tn asq`, then the installer,
+then `schtasks /run /tn asq`. The index needs nothing: a release that reads a CLI's files
+differently reads them again by itself, at its first look at the stores.
+
 ## Uninstall
 
 None of what asq wrote is your history, but for the copies `asq keep` makes when asked — the
@@ -147,7 +166,7 @@ a container is `docker rm` and its `/data` volume.
 | `asq serve` | the web page and the HTTP API |
 | `asq mcp` | an MCP server on stdio, for agents to ask their own history |
 | `asq otel` | export sessions as OpenTelemetry traces |
-| `asq doctor` · `asq index` | check the stores · inspect, rebuild or remove the index |
+| `asq doctor` · `asq index` | check the stores, the index and the server running here · inspect, rebuild or remove the index |
 
 A **ref** is what `ls` and `search` print: `claude/3f2a9c1e`, or just the start of a session's
 id, the way a commit is named. `#4` names a turn. Every command takes `--json`.

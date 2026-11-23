@@ -225,7 +225,8 @@ doctor` on that machine says more.
 
 Which `asq` is running is at the foot of the help (`?`), with a link to what that release
 changed, and on the name in the bar. A page left open while the server was upgraded still runs
-the page it was loaded with; it says so, and offers to reload.
+the page it was loaded with; it says so, and offers to reload. A server whose binary an upgrade
+replaced goes on with the old one until it is restarted; the page says that too.
 
 ## Quick, and quiet
 

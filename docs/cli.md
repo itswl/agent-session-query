@@ -317,8 +317,10 @@ held that the adapter did not understand: records a CLI has started to write sin
 was written. Those are a warning (see [Sources](sources.md#what-each-adapter-reads)). Sessions
 whose CLI moved them, whole or in part, where `asq` does not read them (OpenClaw's cold storage)
 are counted, and are not taken for a format that drifted. Then it reads the whole index file
-and says whether it holds together, and how much of it is free. Exits 1 if a store that is there
-cannot be read, if the index is damaged, or if doctor was stopped before it looked at every
+and says whether it holds together, and how much of it is free; and it asks the server on this
+machine (`127.0.0.1`, `--port` or `ASQ_PORT`, with `ASQ_TOKEN` if it takes one) which `asq` it
+runs — one started before an upgrade, or from another install, is a warning that says so
+([Upgrading](deploy.md#upgrading)). Exits 1 if a store that is there cannot be read, if the index is damaged, or if doctor was stopped before it looked at every
 store. Its first line is the version of `asq` that read them, which is what a report of a store
 that will not read needs first.
 

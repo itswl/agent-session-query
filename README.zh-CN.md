@@ -94,6 +94,24 @@ asq doctor     # 找到了哪些存储，各自是否能读
 asq ls         # 第一次运行会建索引：每 GB 历史大约一分钟
 ```
 
+## 升级
+
+再运行一次安装脚本即可。它会把新版本装到 PATH 上现有 `asq` 所在的位置、直接覆盖（那个目录需要
+sudo 的话就用 sudo）：之后运行的就是新版本，macOS 对旧版本授予的权限也会保留。用 Go 装的，还是同一条 `go install …@latest`；
+容器则重新拉取镜像再启动（见[部署](docs/deploy.md#upgrading)）。
+
+常驻运行的 `asq serve` 在重启之前，跑的仍是旧版本。页面上会提示，`asq doctor` 也会说——它会
+问本机上的 server 跑的是哪个 `asq`：
+
+```sh
+launchctl kickstart -k "gui/$(id -u)/io.github.itswl.asq"     # macOS，LaunchAgent
+systemctl --user restart asq                                    # Linux，systemd 单元
+```
+
+Windows 上正在运行的 `asq.exe` 无法被替换：先 `schtasks /end /tn asq`，再运行安装脚本，然后
+`schtasks /run /tn asq`。索引不需要任何处理：读取某个 CLI 文件的方式有变化的版本，会在第一次
+查看存储时自己重新读一遍。
+
 ## 卸载
 
 asq 写下的任何东西都不是你的历史（让 `asq keep` 存下的副本除外）——各 CLI 的存储归它们自己，asq 从不改动。要删的只有
@@ -135,7 +153,7 @@ systemd 或计划任务——再删二进制；容器则是 `docker rm` 加它�
 | `asq serve` | 网页与 HTTP API |
 | `asq mcp` | stdio 上的 MCP server，让 agent 查询自己的历史 |
 | `asq otel` | 把会话导出为 OpenTelemetry trace |
-| `asq doctor` · `asq index` | 检查各存储 · 查看、重建或删除索引 |
+| `asq doctor` · `asq index` | 检查各存储、索引和本机运行的 server · 查看、重建或删除索引 |
 
 **ref** 就是 `ls` 和 `search` 打印的东西：`claude/3f2a9c1e`，或者只写会话 id 的开头，像引用一个 commit
 那样。`#4` 指第 4 轮。所有命令都支持 `--json`。

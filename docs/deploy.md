@@ -293,6 +293,38 @@ and named with `ASQ_PATH` ([how to copy another machine's](sources.md#another-ma
       - /srv/box2/.claude/projects:/mnt/box2:ro
 ```
 
+## Upgrading
+
+A server goes on with the binary it was started from until it is restarted, whatever was
+installed since. Replace the binary where it is — the installers do, run again, which is also
+what keeps the answer macOS gave about a guarded folder — and restart the service:
+
+```sh
+systemctl --user restart asq                                    # Linux
+launchctl kickstart -k "gui/$(id -u)/io.github.itswl.asq"     # macOS
+```
+
+On Windows a running `asq.exe` cannot be replaced: `schtasks /end /tn asq`, the installer, then
+`schtasks /run /tn asq`. A container built from this checkout is `git pull` and
+`docker compose up -d --build`; one from the published image is `docker pull` of it, then
+`docker rm -f asq` and the same `docker run` as before. The volume at `/data` keeps the index
+and the sign-ins either way.
+
+Until it is restarted, a server whose binary was replaced says so: once in its log, on the
+page, and in `/api/health` (`replaced`, beside the `executable` it was started from).
+
+```
+asq: /home/you/.local/bin/asq was replaced since this server started, by an upgrade: it goes on as v1.4.0 until it is restarted
+```
+
+`asq doctor` asks the server on `127.0.0.1:7717` (`--port`, or `ASQ_PORT`) which `asq` it runs,
+and compares it with itself: one started before an upgrade, or from another install than the
+one doctor is, is a warning that says which and what to do. A server with a token tells it only
+with the token in `ASQ_TOKEN`. Nothing is asked of anywhere but this machine.
+
+The index needs nothing: a release that reads a CLI's files differently reads them again by
+itself, at its first look at the stores, and goes on answering meanwhile.
+
 ## Exporting continuously
 
 `asq otel --every 10m` is a process of its own; it shares the index with a running server, and

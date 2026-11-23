@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"sort"
@@ -48,7 +49,7 @@ const usage = `asq — the session history of every agent CLI on this machine, a
   asq serve                    the web page and the HTTP API    (--port, --token)
   asq mcp                      an MCP server on stdio, for agents to ask their own history
   asq otel                     export sessions as OpenTelemetry traces
-  asq doctor                   check every store: found, readable, and what it holds
+  asq doctor                   check every store, the index, and the server running here
   asq index                    where the index is and what is in it (rebuild, rm)
 
 A <ref> is what ls and search print — claude/3f2a9c1e — or just the start of a session's
@@ -824,6 +825,7 @@ func cmdResume(ctx context.Context, args []string, io *streams) error {
 
 func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 	c := newCommand("doctor", io.err)
+	port := c.fs.Int("port", envInt("ASQ_PORT", DefaultPort), "the port a server on this machine listens on, to ask which asq it runs (ASQ_PORT)")
 	if _, err := c.parse(args); err != nil {
 		return err
 	}
@@ -843,7 +845,8 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 	if path == "" {
 		path = index.DefaultPath()
 	}
-	return checkUp(ctx, checkup{stores: set.All(), keptAll: kept.All, index: path}, c.json, c.style(io.out), io.out)
+	server := net.JoinHostPort("127.0.0.1", strconv.Itoa(*port))
+	return checkUp(ctx, checkup{stores: set.All(), keptAll: kept.All, index: path, server: server, token: os.Getenv("ASQ_TOKEN")}, c.json, c.style(io.out), io.out)
 }
 
 // checkup is what doctor looks at.
@@ -851,6 +854,8 @@ type checkup struct {
 	stores  []index.Store
 	keptAll bool   // asq keeps a copy of every session of the CLIs that delete theirs
 	index   string // the index file; "" for none
+	server  string // where a server on this machine would answer; "" for none
+	token   string // what to ask it with, if it takes a token
 }
 
 // doctor looks at each store and says what it found, in words or as JSON. It fails when a
@@ -940,6 +945,13 @@ func checkUp(ctx context.Context, up checkup, asJSON bool, st render.Style, out 
 			failed = true
 		}
 	}
+	// A server started before an upgrade runs the asq it was started from: a warning, as it
+	// answers all the same
+	var srv *serverCheck
+	if up.server != "" && ctx.Err() == nil {
+		ck := askServer(ctx, up.server, up.token)
+		srv = &ck
+	}
 	// A look that was stopped is not a pass, whatever it got through, and says so
 	stopped := ctx.Err() != nil
 	if stopped {
@@ -949,6 +961,9 @@ func checkUp(ctx context.Context, up checkup, asJSON bool, st render.Style, out 
 		report := map[string]any{"version": app.Version, "stores": checks, "ok": !failed}
 		if ix != nil {
 			report["index"] = ix
+		}
+		if srv != nil {
+			report["server"] = srv
 		}
 		if stopped {
 			report["stopped"] = true
@@ -1005,6 +1020,9 @@ func checkUp(ctx context.Context, up checkup, asJSON bool, st render.Style, out 
 					fmt.Fprintf(out, "  · this file keeps the space it frees: asq index rebuild makes one that gives it back\n")
 				}
 			}
+		}
+		if srv != nil {
+			sayServer(out, *srv, up.token, st)
 		}
 		if stopped {
 			fmt.Fprintln(out, "✗ stopped before every store was looked at whole")

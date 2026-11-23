@@ -240,3 +240,83 @@ func Unreadable(t testing.TB, dir string) (restore func()) {
 	}
 	return restore
 }
+
+// readFrom reads one session as Read does, offering the adapter the mark from (see
+// transcript.Mark), and gives what was read and the mark this read left.
+func readFrom(t testing.TB, src sources.Source, path string, from *transcript.Mark) (Session, bool, *transcript.Mark) {
+	t.Helper()
+	refs, err := src.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	for _, ref := range refs {
+		if ref.Key != path {
+			continue
+		}
+		c := &transcript.Collector{}
+		w := transcript.New(c)
+		w.From = from
+		if err := src.Read(context.Background(), ref, w); err != nil {
+			t.Fatalf("read %s: %v", ref.Key, err)
+		}
+		stats, err := w.Finish()
+		if err != nil {
+			t.Fatalf("read %s from %+v: %v", ref.Key, from, err)
+		}
+		return Session{Ref: ref, Collected: transcript.Collected{Session: w.S, Stats: stats, Turns: c.Turns}}, w.Resumed(), w.Marked()
+	}
+	t.Fatalf("the source does not list %s", path)
+	return Session{}, false, nil
+}
+
+// TakesUp checks that a read taken up at a mark goes on as a whole read does. For each
+// line of content, the file at path is written up to it and read whole, then written
+// whole and read again, offered the mark the first read left: the turns from the mark on,
+// the session and what it adds up to must be what a whole read of it gives. It reports how
+// many of those reads the adapter took up at their mark.
+func TakesUp(t testing.TB, src sources.Source, path string, content []byte) int {
+	t.Helper()
+	write := func(b []byte) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(content)
+	whole, _, _ := readFrom(t, src, path, nil)
+	want := func(from int) string {
+		var turns []model.Turn
+		for _, turn := range whole.Turns {
+			if turn.Index >= from {
+				turns = append(turns, turn)
+			}
+		}
+		b, _ := json.Marshal(transcript.Collected{Session: whole.Session, Stats: whole.Stats, Turns: turns})
+		return string(b)
+	}
+	took := 0
+	for end := 0; end < len(content); end++ {
+		if end > 0 && content[end-1] != '\n' {
+			continue
+		}
+		write(content[:end])
+		_, _, mark := readFrom(t, src, path, nil)
+		if mark == nil {
+			continue
+		}
+		write(content)
+		got, resumed, _ := readFrom(t, src, path, mark)
+		from := 0
+		if resumed {
+			took++
+			from = mark.Turn
+		}
+		b, _ := json.Marshal(got.Collected)
+		if string(b) != want(from) {
+			t.Errorf("read from the mark the first %d bytes left (turn %d, taken up %v):\n%s\nwant:\n%s", end, mark.Turn, resumed, b, want(from))
+		}
+	}
+	return took
+}

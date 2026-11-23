@@ -104,6 +104,17 @@ One package and one line.
    Leave it unset for a CLI whose rows do not show it: a state that is wrong is worse than
    none.
 
+   For a CLI that only ever adds to the end of its files, a read can be taken up where the
+   latest turn began instead of read whole each time the file grows. Read with
+   `kit.LinesFrom`, which tells each line its place (offset, and the CRC-32C of the bytes
+   before it); after the `w.Add` that begins a turn, call `w.MarkTurn` with that place and
+   whatever the adapter carries from row to row. When the index offers the mark back in
+   `w.From`, check `kit.Before(path, place)`, call `w.Resume(w.From)`, and read on from the
+   place with what it carried; a file that changed before the place is read whole. The
+   index keeps the latest mark with the session and offers it only to the same reading
+   (`Reads`); a change to what a mark holds raises `markVersion` in
+   `internal/index/ingest.go`. Claude Code's adapter does this.
+
    Read leniently — a transcript is being written while you read it, so its last line may be
    half there, and CLIs change formats without notice. `kit` has what that takes: `kit.Lines`
    (any line length, zstd, a truncated tail), `kit.Str` / `kit.Num` / `kit.Time` (a value of the

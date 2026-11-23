@@ -218,3 +218,58 @@ func TestIntAndCount(t *testing.T) {
 		}
 	}
 }
+
+// Each line is told where it begins and the sum of what came before it; a read from one
+// of those places goes on as the whole read did from there, and Before tells a file that
+// grew at its end from one that changed before the place.
+func TestLinesFromAPlace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "t.jsonl")
+	huge := strings.Repeat("y", 3<<20)
+	content := "one\n\ntwo\r\n" + huge + "\nfour\n"
+	os.WriteFile(path, []byte(content), 0o644)
+	type seen struct {
+		line string
+		at   Place
+	}
+	var whole []seen
+	if err := LinesFrom(path, Place{}, func(line []byte, at Place) bool {
+		whole = append(whole, seen{string(line), at})
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(whole) != 4 {
+		t.Fatalf("lines = %d", len(whole))
+	}
+	for _, s := range whole {
+		if !strings.HasPrefix(content[s.at.At:], s.line) {
+			t.Errorf("%.10q is said to begin at %d, where %.10q does", s.line, s.at.At, content[s.at.At:])
+		}
+		if !Before(path, s.at) {
+			t.Errorf("the bytes before %.10q are not the ones it was found after", s.line)
+		}
+	}
+	// From the third line on, as the whole read had it
+	var rest []seen
+	LinesFrom(path, whole[2].at, func(line []byte, at Place) bool {
+		rest = append(rest, seen{string(line), at})
+		return true
+	})
+	if len(rest) != 2 || rest[0] != whole[2] || rest[1] != whole[3] {
+		t.Errorf("from %+v: %d lines, first at %+v", whole[2].at, len(rest), rest[0].at)
+	}
+
+	at := whole[3].at
+	os.WriteFile(path, []byte(content+"five\n"), 0o644)
+	if !Before(path, at) {
+		t.Error("a file that grew at its end is not taken for the same before the place")
+	}
+	os.WriteFile(path, []byte("ONE"+content[3:]), 0o644)
+	if Before(path, at) {
+		t.Error("a file changed before the place is taken for the same")
+	}
+	os.WriteFile(path, []byte(content[:at.At-1]), 0o644)
+	if Before(path, at) {
+		t.Error("a file cut short of the place is taken for the same")
+	}
+}

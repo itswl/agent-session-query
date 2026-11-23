@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"hash"
 	"slices"
 	"sort"
@@ -57,6 +58,13 @@ type reading struct {
 
 	firstID, lastID string
 	lastAsk, answer string
+
+	// A read taken up at the mark the session's row held (see transcript.Mark): from is
+	// the turn it began at, and prior what the turns before it add up to. mark is the
+	// mark this read leaves, as the row keeps it; empty for none.
+	from  int
+	prior model.Usage
+	mark  string
 }
 
 type turnRow struct {
@@ -94,15 +102,16 @@ type heldTurn struct {
 // which of them it need not make again.
 type heldTurns map[int]heldTurn
 
-// heldTurns is what the index holds of a session's turns. Nil for a session the index does
-// not hold, and when it cannot be had: every turn is then made whole.
-func (ix *Index) heldTurns(ctx context.Context, sid int64) heldTurns {
+// heldTurns is what the index holds of a session's turns from the turn from on. Nil for a
+// session the index does not hold, and when it cannot be had: every turn is then made
+// whole.
+func (ix *Index) heldTurns(ctx context.Context, sid int64, from int) heldTurns {
 	if sid == 0 {
 		return nil
 	}
 	rows, err := ix.ro.QueryContext(ctx, `
 SELECT t.idx, t.src, t.hash, EXISTS (SELECT 1 FROM words_stale w WHERE w.sid = t.sid AND w.idx = t.idx)
-FROM turns t WHERE t.sid = ?`, sid)
+FROM turns t WHERE t.sid = ? AND t.idx >= ?`, sid, from)
 	if err != nil {
 		return nil
 	}
@@ -132,6 +141,56 @@ func (held heldTurns) of(idx int) *heldTurn {
 		return nil
 	}
 	return &h
+}
+
+// markVersion numbers what a session's mark holds (see storedMark): a change to it, or to
+// what the Writer or an adapter keeps in one, raises it, and a mark an asq of another
+// number left is not taken up.
+const markVersion = 1
+
+// storedMark is a session's mark as its row keeps it: where a read of its transcript can be
+// taken up again, and what it was made with. It is taken up only by a read that would make
+// what the read that left it made — the same adapter's reading, the same rows — and only
+// while the row is as that read wrote it: another asq that wrote the session since, older
+// or newer, wrote its stamp, and not the mark.
+type storedMark struct {
+	Version int              `json:"v"`
+	Rows    int              `json:"rows"`  // rowsVersion
+	Reads   int              `json:"reads"` // the adapter's reading
+	Stamp   string           `json:"stamp"` // the transcript's fingerprint, as it was read
+	Mark    *transcript.Mark `json:"mark"`
+}
+
+// heldSession is what the index holds of a session's row that a read of it may go on from:
+// the mark to take it up at, and what the row says of the session as a whole that the
+// turns before the mark gave it.
+type heldSession struct {
+	mark                             *transcript.Mark
+	firstID, lastID, lastAsk, answer string
+}
+
+// heldSession is what the index holds of the session sid for a read of ref with the
+// store's adapter: no mark when there is none to take up.
+func (ix *Index) heldSession(ctx context.Context, st Store, ref sources.Ref, sid int64) heldSession {
+	var h heldSession
+	if sid == 0 {
+		return h
+	}
+	var stamp, mark string
+	var reads int
+	if ix.ro.QueryRowContext(ctx, `SELECT stamp, reads, mark, first_id, last_id, last_ask, answer FROM sessions WHERE sid = ?`, sid).
+		Scan(&stamp, &reads, &mark, &h.firstID, &h.lastID, &h.lastAsk, &h.answer) != nil || mark == "" {
+		return h
+	}
+	var m storedMark
+	if json.Unmarshal([]byte(mark), &m) != nil || m.Mark == nil {
+		return h
+	}
+	if m.Version == markVersion && m.Rows == rowsVersion && m.Reads == st.Spec.Reads && reads == st.Spec.Reads &&
+		m.Stamp == stamp && m.Stamp != ref.Stamp {
+		h.mark = m.Mark
+	}
+	return h
 }
 
 type bodyRow struct {
@@ -177,23 +236,57 @@ type turnBody struct {
 // what the index's were made from is left as the index holds it. The last turn is always
 // made whole: it is the one being written, and the one what the CLI recorded for the
 // session as a whole is entered against.
+//
+// A session the index holds may also have a mark (see transcript.Mark): where its latest
+// turn began, for a CLI that only adds to the end of its files. Offered it, the adapter
+// takes the read up there, and only the turns from the mark on are read; one that finds
+// no turn beginning there has the transcript read whole after all.
 func (ix *Index) read(ctx context.Context, st Store, ref sources.Ref, sid int64) *reading {
 	start := time.Now()
+	held := ix.heldSession(ctx, st, ref, sid)
+	rd := ix.readFrom(ctx, st, ref, sid, held)
+	if rd == nil {
+		held.mark = nil
+		rd = ix.readFrom(ctx, st, ref, sid, held)
+	}
+	rd.readMs = time.Since(start).Milliseconds()
+	return rd
+}
+
+// readFrom is read, offered held's mark. It is nil when the adapter took the read up at
+// the mark and found no turn beginning there.
+func (ix *Index) readFrom(ctx context.Context, st Store, ref sources.Ref, sid int64, held heldSession) *reading {
 	rd := &reading{source: st.Name, agent: st.Spec.Name, reads: st.Spec.Reads, ref: ref}
-	held := ix.heldTurns(ctx, sid)
+	var w *transcript.Writer
+	var turns heldTurns
+	looked := false
 	var last *model.Turn // held back until the next turn says it is not the last
-	w := transcript.New(transcript.SinkFunc(func(t *model.Turn) error {
+	w = transcript.New(transcript.SinkFunc(func(t *model.Turn) error {
 		if t.Index > maxTurnIndex {
 			return nil
 		}
+		if !looked {
+			// By the first turn the adapter has taken the read up at the mark, or not. Taken
+			// up, the turns before it gave the session what its row says they did
+			looked = true
+			if w.Resumed() {
+				rd.from, rd.prior = held.mark.Turn, held.mark.Before().Usage
+				rd.firstID, rd.lastID, rd.lastAsk, rd.answer = held.firstID, held.lastID, held.lastAsk, held.answer
+			}
+			turns = ix.heldTurns(ctx, sid, rd.from)
+		}
 		if last != nil {
-			rd.turns = append(rd.turns, ix.turnRow(rd, last, held.of(last.Index)))
+			rd.turns = append(rd.turns, ix.turnRow(rd, last, turns.of(last.Index)))
 		}
 		last = t
 		return ctx.Err()
 	}))
+	w.From = held.mark
 	err := st.Source.Read(ctx, ref, w)
 	stats, werr := w.Finish()
+	if errors.Is(werr, transcript.ErrNotTakenUp) && err == nil && ctx.Err() == nil {
+		return nil
+	}
 	if last != nil && ctx.Err() == nil {
 		rd.turns = append(rd.turns, ix.turnRow(rd, last, nil))
 	}
@@ -202,6 +295,12 @@ func (ix *Index) read(ctx context.Context, st Store, ref sources.Ref, sid int64)
 	}
 	if err != nil {
 		rd.err = err.Error()
+	}
+	if m := w.Marked(); m != nil && err == nil {
+		b, err := json.Marshal(storedMark{Version: markVersion, Rows: rowsVersion, Reads: st.Spec.Reads, Stamp: ref.Stamp, Mark: m})
+		if err == nil {
+			rd.mark = string(b)
+		}
 	}
 	rd.sess, rd.stats = w.S, stats
 	rd.sess.Source, rd.sess.Agent = st.Name, st.Spec.Name
@@ -219,7 +318,9 @@ func (ix *Index) read(ctx context.Context, st Store, ref sources.Ref, sid int64)
 	// is entered against the session's last turn, under the session's model, so every
 	// figure summed from the usage table includes it.
 	if r := rd.sess.Recorded; r != nil && r.Usage != nil {
-		if rest := r.Usage.Minus(sumUsage(rd.turns)); r.Usage.Covers(sumUsage(rd.turns)) && !rest.IsZero() {
+		all := rd.prior // the turns before a mark the read was taken up at
+		all.Add(sumUsage(rd.turns))
+		if rest := r.Usage.Minus(all); r.Usage.Covers(all) && !rest.IsZero() {
 			if len(rd.turns) == 0 {
 				rd.turns = append(rd.turns, ix.turnRow(rd, &model.Turn{Index: 0}, nil))
 			}
@@ -253,7 +354,6 @@ func (ix *Index) read(ctx context.Context, st Store, ref sources.Ref, sid int64)
 			rd.size += len(w)
 		}
 	}
-	rd.readMs = time.Since(start).Milliseconds()
 	return rd
 }
 
@@ -619,8 +719,8 @@ INSERT INTO sessions (source, agent, key, stamp, reads, id, path, title, cwd, br
   started_at, updated_at, archived, running, live_state, live,
   parent_session, parent_agent, parent_call, parent_run, agent_type, fork,
   turns, items, tools, failures, calls, tok_in, tok_out, tok_cr, tok_cw, tok_think, cost,
-  last_ask, answer, first_id, last_id, error, read_ms, read_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?)
+  last_ask, answer, first_id, last_id, error, read_ms, read_at, mark)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?)
 ON CONFLICT (source, key) DO UPDATE SET
   agent=excluded.agent, stamp=excluded.stamp, reads=excluded.reads, reads_seq=sessions.reads_seq+1, id=excluded.id, path=excluded.path, title=excluded.title,
   cwd=excluded.cwd, branch=excluded.branch, model=excluded.model, version=excluded.version,
@@ -633,21 +733,23 @@ ON CONFLICT (source, key) DO UPDATE SET
   calls=excluded.calls, tok_in=excluded.tok_in, tok_out=excluded.tok_out, tok_cr=excluded.tok_cr,
   tok_cw=excluded.tok_cw, tok_think=excluded.tok_think, cost=excluded.cost,
   last_ask=excluded.last_ask, answer=excluded.answer, first_id=excluded.first_id,
-  last_id=excluded.last_id, error=excluded.error, read_ms=excluded.read_ms, read_at=excluded.read_at
+  last_id=excluded.last_id, error=excluded.error, read_ms=excluded.read_ms, read_at=excluded.read_at,
+  mark=excluded.mark
 RETURNING sid`,
 			rd.source, rd.agent, rd.ref.Key, rd.ref.Stamp, rd.reads, s.ID, s.Path, s.Title, s.Cwd, s.Branch, s.Model, s.Version, s.Platform,
 			ms(s.StartedAt), ms(s.UpdatedAt), b2i(s.Archived), b2i(s.Running), liveState, liveJSON,
 			p.Session, p.Agent, p.Call, p.Run, p.Type, b2i(p.Fork),
 			st.Turns, st.Items, st.Tools, st.Failures, st.Calls,
 			st.Usage.Input, st.Usage.Output, st.Usage.CacheRead, st.Usage.CacheWrite, st.Usage.Reasoning, st.CostUSD,
-			rd.lastAsk, rd.answer, rd.firstID, rd.lastID, rd.err, rd.readMs, time.Now().UnixMilli(),
+			rd.lastAsk, rd.answer, rd.firstID, rd.lastID, rd.err, rd.readMs, time.Now().UnixMilli(), rd.mark,
 		).Scan(&sid)
 		if err != nil {
 			return err
 		}
 
+		// The turns before a mark the read was taken up at are as the index holds them
 		have := map[int]heldTurn{}
-		rows, err := tx.QueryContext(ctx, `SELECT idx, hash, src FROM turns WHERE sid = ?`, sid)
+		rows, err := tx.QueryContext(ctx, `SELECT idx, hash, src FROM turns WHERE sid = ? AND idx >= ?`, sid, rd.from)
 		if err != nil {
 			return err
 		}
@@ -746,11 +848,19 @@ RETURNING sid`,
 		if ahead {
 			return nil
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM words_stale WHERE sid = ?`, sid); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM words_stale WHERE sid = ? AND idx >= ?`, sid, rd.from); err != nil {
 			return err
 		}
 		for _, idx := range unwritten {
 			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO words_stale (sid, idx) VALUES (?, ?)`, sid, idx); err != nil {
+				return err
+			}
+		}
+		// A turn before the mark whose words are to be written again — the one that holds
+		// the title, when the title changed — is written from what the index holds
+		for idx := range stale {
+			if idx < rd.from {
+				_, err := ix.refillSession(ctx, tx, sid)
 				return err
 			}
 		}

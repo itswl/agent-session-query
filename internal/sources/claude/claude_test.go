@@ -1,17 +1,20 @@
 package claude
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
+	"github.com/itswl/agent-session-query/internal/transcript"
 )
 
 type M = map[string]any
@@ -667,4 +670,87 @@ func TestWhereTheLatestTurnStands(t *testing.T) {
 func on(clock string) time.Time {
 	t, _ := time.Parse(time.RFC3339, "2026-10-01T"+clock+"Z")
 	return t
+}
+
+// A read taken up where an earlier one marked a turn's first row goes on as a whole read
+// does, wherever the earlier read stopped: across slash commands that are plumbing and
+// ones that set a skill off, a prompt queued mid-turn, titles set and set again, a stop, a
+// compaction and the session's closing cost. A file changed before the mark is read whole.
+func TestAReadTakenUpGoesOnAsAWholeRead(t *testing.T) {
+	ts := func(clock string) string { return "2026-10-01T" + clock + "Z" }
+	usage := M{"input_tokens": 10, "output_tokens": 3, "cache_read_input_tokens": 500}
+	call := func(uuid, clock, response, id, command string) M {
+		row := assistantRow(uuid, ts(clock), response, usage, M{"type": "tool_use", "id": id, "name": "Bash", "input": M{"command": command}})
+		row["message"].(M)["stop_reason"] = "tool_use"
+		return row
+	}
+	result := func(uuid, clock, id, out string, failed bool) M {
+		return userRow(uuid, ts(clock), []M{{"type": "tool_result", "tool_use_id": id, "content": out, "is_error": failed}})
+	}
+	lasted := func(uuid, clock string) M {
+		return M{"type": "system", "subtype": "turn_duration", "uuid": uuid, "timestamp": ts(clock), "durationMs": 1000}
+	}
+	rows := []any{
+		M{"type": "file-history-snapshot", "messageId": "x"},
+		userRow("u1", ts("10:00:00"), "fix the flaky test"),
+		call("a1", "10:00:05", "msg_1", "t1", "go test ./..."),
+		result("u2", "10:00:09", "t1", "--- FAIL: TestOrder", true),
+		assistantRow("a2", ts("10:00:20"), "msg_2", usage, M{"type": "text", "text": "Fixed: the test depended on map order."}),
+		lasted("d1", "10:00:21"),
+		M{"type": "ai-title", "aiTitle": "Fix flaky test"},
+		userRow("u3", ts("10:01:00"), "now run the linter"),
+		call("a3", "10:01:02", "msg_3", "t2", "golangci-lint run"),
+		M{"type": "attachment", "uuid": "q1", "timestamp": ts("10:01:03"),
+			"attachment": M{"type": "queued_command", "commandMode": "prompt", "prompt": "and gofmt too"}},
+		result("u4", "10:01:09", "t2", "0 issues.", false),
+		assistantRow("a4", ts("10:01:12"), "msg_4", usage, M{"type": "text", "text": "Lint is clean, and gofmt changed nothing."}),
+		lasted("d2", "10:01:13"),
+		userRow("u5", ts("10:02:00"), "<command-name>/model</command-name>"),
+		userRow("u6", ts("10:02:01"), "<local-command-stdout>Set model</local-command-stdout>"),
+		userRow("u7", ts("10:03:00"), "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>the diff</command-args>"),
+		userRow("u8", ts("10:03:01"), "You are reviewing a diff. Follow these steps…", M{"isMeta": true}),
+		assistantRow("a5", ts("10:03:05"), "msg_5", usage, M{"type": "text", "text": "Looks good."}),
+		M{"type": "custom-title", "customTitle": "Lint and review"},
+		userRow("u9", ts("10:04:00"), "<command-name>/clear</command-name>"),
+		userRow("u10", ts("10:04:05"), "deploy it", M{"version": "2.1.301"}),
+		call("a6", "10:04:07", "msg_6", "t3", "make deploy"),
+		result("u11", "10:04:30", "t3", "[Request interrupted by user for tool use]", true),
+		userRow("u12", ts("10:04:31"), []M{{"type": "text", "text": "[Request interrupted by user]"}}),
+		M{"type": "system", "subtype": "compact_boundary", "uuid": "c1", "timestamp": ts("10:05:00"), "content": "Conversation compacted"},
+		userRow("u13", ts("10:05:01"), "This session is being continued from a previous conversation…", M{"isCompactSummary": true}),
+		userRow("u14", ts("10:06:00"), "try again"),
+		call("a7", "10:06:02", "msg_7", "t4", "make deploy"),
+		M{"type": "cost-state", "totalCostUSD": 0.42},
+	}
+	root := t.TempDir()
+	path := filepath.Join(root, "-work-proj", "sess-1.jsonl")
+	content := jsonl(t, rows...)
+	if took := sourcetest.TakesUp(t, Spec.Open(root), path, content); took < 10 {
+		t.Errorf("%d reads were taken up at their mark", took)
+	}
+
+	// A file whose rows before the mark changed is not taken up there
+	src := Spec.Open(root)
+	sourcetest.Write(t, path, rows[:15]...)
+	w := transcript.New(nil)
+	refs, _ := src.Scan(context.Background())
+	if err := src.Read(context.Background(), refs[0], w); err != nil {
+		t.Fatal(err)
+	}
+	mark := w.Marked()
+	if mark == nil || mark.Turn != 2 {
+		t.Fatalf("the mark = %+v, want one at turn 2: the third begins with a command held", mark)
+	}
+	changed := slices.Clone(rows)
+	changed[1] = userRow("u1", ts("10:00:00"), "fix the flaky tests")
+	sourcetest.Write(t, path, changed...)
+	refs, _ = src.Scan(context.Background())
+	w = transcript.New(nil)
+	w.From = mark
+	if err := src.Read(context.Background(), refs[0], w); err != nil {
+		t.Fatal(err)
+	}
+	if w.Resumed() {
+		t.Error("a read was taken up after rows before its mark changed")
+	}
 }

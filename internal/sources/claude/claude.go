@@ -299,8 +299,32 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		}
 	}
 
-	var sessionID, agentID, aiTitle, customTitle string
+	// A session's own transcript is only ever added to at its end, and a read is taken up
+	// where an earlier one marked a turn's first row, when the bytes before it are the
+	// ones it was found after. A subagent's is read whole: its meta file, written after it
+	// began, can change how its first rows are read
+	var c carried
+	from := kit.Place{}
+	if m := w.From; m != nil && !sub {
+		var p place
+		if json.Unmarshal(m.Source, &p) == nil && p.At > 0 && kit.Before(path, p.Place) {
+			w.Resume(m)
+			from, c = p.Place, p.carried
+		}
+	}
+	// add adds a message from the row at origin, and marks the turn it begins, if it does,
+	// as a place a later read can take the transcript up again. A command held before
+	// that row is let go before anything of the row is added, into the turn before
+	add := func(m transcript.Message, origin place) {
+		began := w.Turns()
+		w.Add(m)
+		if w.Turns() != began && origin.At > 0 && !sub {
+			w.MarkTurn(origin)
+		}
+	}
+
 	var held *transcript.Message // a slash command waiting to learn what it set off
+	var heldAt place             // the row it is from
 	release := func(asAsk bool) {
 		if held == nil {
 			return
@@ -312,14 +336,15 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				m.Blocks = []transcript.Block{transcript.TextOf(text)}
 			}
 		}
-		w.Add(m)
+		add(m, heldAt)
 	}
 
 	n := 0
-	err := kit.Lines(path, func(line []byte) bool {
+	err := kit.LinesFrom(path, from, func(line []byte, here kit.Place) bool {
 		if n++; n&1023 == 0 && ctx.Err() != nil {
 			return false
 		}
+		origin := place{here, c}
 		var r row
 		if json.Unmarshal(line, &r) != nil {
 			if kind := undecodable(line); kind != "" {
@@ -327,11 +352,11 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			}
 			return true
 		}
-		if sessionID == "" {
-			sessionID = r.SessionID
+		if c.SessionID == "" {
+			c.SessionID = r.SessionID
 		}
-		if agentID == "" {
-			agentID = r.AgentID
+		if c.AgentID == "" {
+			c.AgentID = r.AgentID
 		}
 		if w.S.Cwd == "" {
 			w.S.Cwd = r.Cwd
@@ -350,10 +375,10 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 
 		switch r.Type {
 		case "ai-title":
-			aiTitle = r.AITitle
+			c.AITitle = r.AITitle
 			return true
 		case "custom-title":
-			customTitle = r.CustomTitle
+			c.CustomTitle = r.CustomTitle
 			return true
 		case "cost-state":
 			// The closing row carries the session's own cost total, which no assistant row
@@ -407,12 +432,12 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			if r.Subtype == "turn_duration" {
 				// How long a turn took, written as it ends: the mark that it is over. The
 				// turn's own rows say when it ran
-				w.Add(transcript.Message{ID: r.UUID, Role: transcript.System, At: at, Inherited: inherited, Ends: true})
+				add(transcript.Message{ID: r.UUID, Role: transcript.System, At: at, Inherited: inherited, Ends: true}, origin)
 				return true
 			}
 			if event, ok := systemEvent(&r, w.Unread); ok {
 				release(false)
-				w.Add(transcript.Message{ID: r.UUID, Role: transcript.System, At: at, Inherited: inherited, Blocks: []transcript.Block{event}})
+				add(transcript.Message{ID: r.UUID, Role: transcript.System, At: at, Inherited: inherited, Blocks: []transcript.Block{event}}, origin)
 			}
 		case "attachment":
 			// What the person typed while the agent was working reaches the model as an
@@ -440,8 +465,8 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			}
 			if text := strings.TrimSpace(contentText(a.Prompt)); text != "" {
 				release(false)
-				w.Add(transcript.Message{ID: r.UUID, Role: transcript.User, At: at, Queued: true, Inherited: inherited,
-					Blocks: []transcript.Block{transcript.TextOf(text)}})
+				add(transcript.Message{ID: r.UUID, Role: transcript.User, At: at, Queued: true, Inherited: inherited,
+					Blocks: []transcript.Block{transcript.TextOf(text)}}, origin)
 			}
 		case "user":
 			m := transcript.Message{ID: r.UUID, Role: transcript.User, At: at, Inherited: inherited,
@@ -463,10 +488,10 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				release(r.IsMeta && !strings.HasPrefix(text, "<local-command-"))
 			}
 			if !m.Injected && !inherited && strings.HasPrefix(text, "<command-") && len(m.Blocks) == 1 {
-				held = &m
+				held, heldAt = &m, origin
 				return true
 			}
-			w.Add(m)
+			add(m, origin)
 		case "assistant":
 			release(false)
 			// A row can say anything of its cost and its counts: each is read by the rule
@@ -478,7 +503,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			if u := r.Message.Usage; u != nil && !inherited {
 				m.Usage = &model.Usage{Input: kit.Count(u.Input), Output: kit.Count(u.Output), CacheRead: kit.Count(u.CacheRead), CacheWrite: kit.Count(u.CacheWrite)}
 			}
-			w.Add(m)
+			add(m, origin)
 		case "":
 			// A line that does not say what it is: no row this CLI writes
 		default:
@@ -494,22 +519,22 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		return err
 	}
 
-	w.S.Title = kit.First(customTitle, aiTitle)
+	w.S.Title = kit.First(c.CustomTitle, c.AITitle)
 	// Claude Code writes a turn's rows as it goes, the model's a content block at a time,
 	// each with why the response stopped once it has; and turn_duration as many turns end
 	w.Tells = transcript.TellsByRows
 	if !sub {
-		w.S.ID = kit.First(sessionID, stem)
+		w.S.ID = kit.First(c.SessionID, stem)
 		return nil
 	}
 	// A subagent's rows carry the parent's sessionId; its own id is the agent id, which is
 	// also how the parent's records name it. The meta file says what kind of agent it was,
 	// what it was asked to do (the title — the prompt itself is often pages long), which
 	// agent spawned it, and the call that did.
-	w.S.ID = kit.First(agentID, strings.TrimPrefix(stem, "agent-"))
+	w.S.ID = kit.First(c.AgentID, strings.TrimPrefix(stem, "agent-"))
 	parent, run := parentOf(path)
 	w.S.Parent = &model.Parent{
-		Session: kit.First(sessionID, parent),
+		Session: kit.First(c.SessionID, parent),
 		Agent:   kit.Str(meta["parentAgentId"]),
 		Call:    kit.Str(meta["toolUseId"]),
 		Run:     run,
@@ -518,6 +543,23 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	}
 	w.S.Title = kit.First(kit.Str(meta["description"]), kit.Str(meta["name"]), w.S.Title)
 	return nil
+}
+
+// carried is what a read of a transcript takes from row to row beyond what it sets on the
+// Writer: the session's and agent's ids, as the first rows that carry them give them, and
+// its titles, as the last rows that set them do.
+type carried struct {
+	SessionID   string `json:"sessionId,omitempty"`
+	AgentID     string `json:"agentId,omitempty"`
+	AITitle     string `json:"aiTitle,omitempty"`
+	CustomTitle string `json:"customTitle,omitempty"`
+}
+
+// place is where a later read can take a transcript up again (see transcript.Mark): the
+// row a turn begins at, and what the read carried to it.
+type place struct {
+	kit.Place
+	carried
 }
 
 // parentOf reads a subagent's place off its path: the session directory above

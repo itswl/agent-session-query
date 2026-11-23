@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   running    INTEGER NOT NULL DEFAULT 0,
   live_state TEXT NOT NULL DEFAULT '',     -- where its latest turn stands (model.Live) …
   live       TEXT NOT NULL DEFAULT '',     --   and the rest of it, as JSON
+  mark       TEXT NOT NULL DEFAULT '',     -- where a read can take its transcript up (storedMark)
 
   -- what a subagent's transcript says about where it came from …
   parent_session TEXT NOT NULL DEFAULT '',

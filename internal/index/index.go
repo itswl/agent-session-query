@@ -242,6 +242,7 @@ func Open(path string) (*Index, error) {
 		{"turns", "src", "BLOB NOT NULL DEFAULT x''"},
 		{"sessions", "live_state", "TEXT NOT NULL DEFAULT ''"},
 		{"sessions", "live", "TEXT NOT NULL DEFAULT ''"},
+		{"sessions", "mark", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := addColumn(rw, col[0], col[1], col[2]); err != nil {
 			rw.Close()

@@ -175,9 +175,18 @@ and the next command rebuilds it from the stores.
   grew by one turn writes one turn. Nor are the others made again: their words and their
   compressed text, most of what reading a turn costs, are kept as the index holds them, so
   reading a long session again costs about what parsing its file does.
+- **A Claude Code session is taken up where its latest turn began.** Claude Code only adds to
+  the end of a session's file. A read of one marks where its latest turn's first row is, and
+  the next read starts there when the bytes before it are the ones it was found after (their
+  CRC-32C says so): only that turn and what follows are read, and the turns before stay as
+  the index holds them. A file changed before that place is read whole. With a turn added to a
+  session of 6,500 turns and 89 MB, `asq ls` takes 20 ms and 18 MB of memory; reading the
+  session whole again would take 0.6 s and 170 MB. A subagent's transcript, and every other
+  CLI's, is read whole again.
 - **A transcript being written is not chased.** One that keeps changing is read again no sooner
   than eight times what its last read cost (at most 45 seconds apart): a small session is
-  followed as it is written, a hundred-megabyte one is not re-read on every append.
+  followed as it is written, a hundred-megabyte one is not re-read on every append — unless
+  it is taken up where its latest turn began, which costs what that turn does.
 - **A report reads its window.** What a digest adds up over the turns of a week — tool calls,
   failures, when — is in an index of its own, because a turn's row holds its text: a month of
   turns read for four numbers each would be most of the file. So are which turn each hit of a

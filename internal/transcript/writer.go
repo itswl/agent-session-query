@@ -35,6 +35,11 @@ type Writer struct {
 	// Tells is how far the CLI records where a turn stands. An adapter whose CLI records
 	// it says so, and Finish then sets S.Live for the latest turn.
 	Tells Tells
+	// From is where an earlier read marked the transcript's latest turn (see Mark), set
+	// by the caller before the adapter reads. An adapter that can take the read up there
+	// calls Resume and adds the messages from that turn on; one that cannot, or finds the
+	// file is not what the mark was made of, reads it whole.
+	From *Mark
 
 	sink  Sink
 	stats model.Stats
@@ -53,6 +58,15 @@ type Writer struct {
 	kinds  map[string]string // a kind as the adapter named it → as it is counted
 
 	live liveTail // where the latest turn stands, by what has been added
+
+	// Taking a read up at a mark (see Mark): the Writer as the latest turn began, and
+	// whether that turn's first message settled nothing of the turn before; the latest
+	// turn the adapter marked; a read taken up at a mark, and whether its first turn has
+	// begun
+	began            begun
+	clean            bool
+	mark             *Mark
+	resumed, takenUp bool
 }
 
 // unreadKinds bounds how many different kinds of unread record a transcript is told
@@ -123,6 +137,11 @@ func (w *Writer) Add(m Message) {
 		}
 		return
 	}
+	if w.resumed && w.cur == nil && !begins(&m) {
+		// Taken up at a mark, the first message is the first of the turn marked
+		w.err = ErrNotTakenUp
+		return
+	}
 	if !m.At.IsZero() {
 		if w.firstAt.IsZero() {
 			w.firstAt = m.At
@@ -158,8 +177,8 @@ func (w *Writer) addUser(m Message) {
 		// Results that precede the ask in its own row answer calls of the turn that is
 		// ending — a fork's first row carries the result of the call that started it —
 		// and are settled there before the new turn begins
+		lead := 0
 		if w.cur != nil {
-			lead := 0
 			for lead < len(m.Blocks) && m.Blocks[lead].Type == Result {
 				w.settle(w.cur, m, m.Blocks[lead])
 				lead++
@@ -167,6 +186,10 @@ func (w *Writer) addUser(m Message) {
 			m.Blocks = m.Blocks[lead:]
 		}
 		w.flush()
+		w.began = begun{Seq: w.seq, Turns: w.turns, FirstAt: w.firstAt, LastAt: w.lastAt, LastModel: w.lastModel,
+			FirstAsk: w.firstAsk, AnyPrompt: w.anyPrompt, Stats: w.stats, Session: w.S}
+		w.clean = lead == 0
+		w.takenUp = true
 		w.turns++
 		w.cur = newTurn(w.turns)
 		w.cur.t.StartedAt = m.At
@@ -618,6 +641,9 @@ func (w *Writer) flush() {
 // it where the adapter said nothing: when it started and was last written, the model that
 // answered last, and — for the CLIs that give a session no title — the first thing asked.
 func (w *Writer) Finish() (model.Stats, error) {
+	if w.resumed && !w.takenUp && w.err == nil {
+		w.err = ErrNotTakenUp // nothing was read from the mark on
+	}
 	if w.Tells != TellsNothing && w.S.Live == nil && w.cur != nil && w.cur.t.Index > 0 {
 		w.S.Live = w.live.state(&w.cur.t, w.Tells)
 	}

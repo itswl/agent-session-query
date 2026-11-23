@@ -231,7 +231,8 @@ is being read again. A server nobody has asked for a while checks every thirty s
 first request then has the stores read at once and waits for that, four seconds at most. While
 a first read of a large history is still running, answers come from what has been read so far
 and `sync` says how far that is. A transcript that is being written is itself
-[not chased](model.md#the-index): a very large one may be most of a minute behind.
+[not chased](model.md#the-index): a very large one, of a CLI whose files are read whole again,
+may be most of a minute behind.
 
 ## Status
 

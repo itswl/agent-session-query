@@ -226,8 +226,9 @@ A store somewhere else — another machine's home directory, a backup — is add
 
 - **An index, not a scan.** The first run reads every transcript into one SQLite file in your
   cache directory (full-text indexed, compressed, a fraction of the transcripts' size).
-  After that a command checks which transcripts changed — a `stat` each — and reads only those,
-  and only their turns that changed. A search over gigabytes of history answers in
+  After that a command checks which transcripts changed — a `stat` each — and reads only those:
+  a Claude Code session from where its latest turn began, any other whole, making only the
+  turns that changed. A search over gigabytes of history answers in
   milliseconds. The index is a cache: `asq index rm` and it is rebuilt. It holds what the
   stores hold, so a session a CLI deletes leaves it too — and Claude Code and Gemini CLI
   delete the sessions not used for 30 days, unless a setting of theirs says otherwise.

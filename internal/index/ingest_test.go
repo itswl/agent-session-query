@@ -1,9 +1,12 @@
 package index
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -12,6 +15,7 @@ import (
 
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/sources"
+	"github.com/itswl/agent-session-query/internal/sources/claude"
 	"github.com/itswl/agent-session-query/internal/transcript"
 )
 
@@ -21,6 +25,7 @@ import (
 type growing struct {
 	turns    int
 	recorded int64
+	marked   bool // it marks each turn, and takes a read up at the mark it is offered
 }
 
 func (growing) Location() string { return "test" }
@@ -30,11 +35,19 @@ func (g growing) Scan(context.Context) ([]sources.Ref, error) {
 }
 func (g growing) Read(_ context.Context, _ sources.Ref, w *transcript.Writer) error {
 	w.S.ID, w.S.Title = "grown", "A session that grows"
-	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
-	for i := 1; i <= g.turns; i++ {
-		at = at.Add(time.Minute)
+	start := 1
+	if m := w.From; m != nil && g.marked {
+		if json.Unmarshal(m.Source, &start) == nil && start <= g.turns {
+			w.Resume(m)
+		}
+	}
+	for i := start; i <= g.turns; i++ {
+		at := time.Date(2026, 11, 1, 9, i, 0, 0, time.UTC)
 		id := fmt.Sprint(i)
 		w.Add(transcript.Message{Role: transcript.User, At: at, Blocks: []transcript.Block{transcript.TextOf("step " + id + " of the migration")}})
+		if g.marked {
+			w.MarkTurn(i)
+		}
 		w.Add(transcript.Message{Role: transcript.Assistant, At: at.Add(time.Second), Response: "r" + id + "a", Model: "m",
 			Usage:  &model.Usage{Input: 10, Output: 5},
 			Blocks: []transcript.Block{transcript.CallOf("c"+id, "Bash", map[string]any{"command": "make step" + id})}})
@@ -180,6 +193,24 @@ func TestRecordedTotalsMoveToTheNewLastTurn(t *testing.T) {
 	}
 	fresh := openTemp(t)
 	syncOf(t, fresh, growing{turns: 5, recorded: 2000})
+	if got, want := rowsOf(t, ix), rowsOf(t, fresh); got != want {
+		t.Errorf("after the totals moved:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A read taken up at a mark enters what the CLI recorded beyond its responses against the
+// new last turn as a whole read does: what the turns before the mark spent is counted in.
+func TestRecordedTotalsWithAReadTakenUp(t *testing.T) {
+	ix := openTemp(t)
+	syncOf(t, ix, growing{turns: 4, recorded: 1000, marked: true})
+	g := growing{turns: 5, recorded: 2000, marked: true}
+	refs, _ := g.Scan(context.Background())
+	if rd := ix.read(context.Background(), growingStore(g)[0], refs[0], sidOf(t, ix)); rd.from != 4 {
+		t.Fatalf("the read was taken up at turn %d, want 4", rd.from)
+	}
+	syncOf(t, ix, g)
+	fresh := openTemp(t)
+	syncOf(t, fresh, g)
 	if got, want := rowsOf(t, ix), rowsOf(t, fresh); got != want {
 		t.Errorf("after the totals moved:\n%s\nwant:\n%s", got, want)
 	}
@@ -371,6 +402,203 @@ func TestWhereALatestTurnStandsIsKeptAndBelieved(t *testing.T) {
 		slices.Sort(ids)
 		if fmt.Sprint(ids) != c.want || total != len(ids) {
 			t.Errorf("state %v = %v (%d), want %s", c.states, ids, total, c.want)
+		}
+	}
+}
+
+// claudeRows is a Claude Code transcript of a few turns, as the CLI writes it: long
+// outputs, a failure, an edit, a prompt queued mid-turn, a skill set off by a slash
+// command, the title given and given again, and the cost the session closes with.
+func claudeRows() []any {
+	type M = map[string]any
+	ts := func(sec int) string { return time.Date(2026, 11, 1, 9, 0, sec, 0, time.UTC).Format(time.RFC3339Nano) }
+	row := func(kind, uuid string, sec int, extra M) M {
+		r := M{"type": kind, "uuid": uuid, "timestamp": ts(sec), "sessionId": "c1aa0000-0000-4000-8000-000000000001",
+			"cwd": "/work/grown", "gitBranch": "main", "version": "2.1.300"}
+		for k, v := range extra {
+			r[k] = v
+		}
+		return r
+	}
+	ask := func(uuid string, sec int, text string, extra ...M) M {
+		r := row("user", uuid, sec, M{"message": M{"role": "user", "content": text}})
+		for _, e := range extra {
+			for k, v := range e {
+				r[k] = v
+			}
+		}
+		return r
+	}
+	answer := func(uuid string, sec int, response, stop string, content ...M) M {
+		return row("assistant", uuid, sec, M{"message": M{"id": response, "role": "assistant", "model": "claude-opus-5-5", "stop_reason": stop,
+			"content": content, "usage": M{"input_tokens": 4, "output_tokens": 30, "cache_read_input_tokens": 900}}})
+	}
+	bash := func(id, command string) M {
+		return M{"type": "tool_use", "id": id, "name": "Bash", "input": M{"command": command}}
+	}
+	result := func(uuid string, sec int, id, out string, failed bool) M {
+		return row("user", uuid, sec, M{"message": M{"role": "user", "content": []M{{"type": "tool_result", "tool_use_id": id, "content": out, "is_error": failed}}}})
+	}
+	lasted := func(uuid string, sec int) M {
+		return row("system", uuid, sec, M{"subtype": "turn_duration", "durationMs": 9000})
+	}
+	long := strings.Repeat("compiling package migration\n", 200)
+	return []any{
+		M{"type": "file-history-snapshot", "messageId": "x"},
+		ask("u1", 0, "run the migration"),
+		answer("a1", 2, "msg_1", "tool_use", M{"type": "thinking", "thinking": "the schema first"}, bash("t1", "make migrate")),
+		result("u2", 5, "t1", long+"Exit code 2", true),
+		answer("a2", 7, "msg_2", "end_turn", M{"type": "text", "text": "The migration failed on the schema."}),
+		lasted("d1", 8),
+		M{"type": "ai-title", "aiTitle": "Run the migration", "sessionId": "c1aa0000-0000-4000-8000-000000000001"},
+		ask("u3", 20, "fix the schema and run it again"),
+		answer("a3", 22, "msg_3", "tool_use", M{"type": "tool_use", "id": "t2", "name": "Edit",
+			"input": M{"file_path": "/work/grown/db/schema.sql", "old_string": "INT", "new_string": "BIGINT"}}),
+		result("u4", 23, "t2", "The file has been updated.", false),
+		row("attachment", "q1", 24, M{"attachment": M{"type": "queued_command", "commandMode": "prompt", "prompt": "and keep a backup"}}),
+		answer("a4", 25, "msg_4", "tool_use", bash("t3", "make migrate")),
+		result("u5", 31, "t3", long+"done", false),
+		answer("a5", 33, "msg_5", "end_turn", M{"type": "text", "text": "The migration is done, with a backup kept."}),
+		lasted("d2", 34),
+		ask("u6", 40, "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>the migration</command-args>"),
+		ask("u7", 41, "You are reviewing a change. Follow these steps…", M{"isMeta": true}),
+		answer("a6", 45, "msg_6", "end_turn", M{"type": "text", "text": "The migration looks right."}),
+		M{"type": "custom-title", "customTitle": "Schema migration and review", "sessionId": "c1aa0000-0000-4000-8000-000000000001"},
+		ask("u8", 60, "deploy it"),
+		answer("a7", 62, "msg_7", "tool_use", bash("t4", "make deploy")),
+		M{"type": "cost-state", "totalCostUSD": 0.37},
+	}
+}
+
+// claudeIndex is a Claude Code store of one transcript, and an index of it.
+func claudeIndex(t *testing.T, content []byte) (*Index, string, []Store) {
+	t.Helper()
+	root := t.TempDir()
+	path := filepath.Join(root, "-work-grown", "c1aa0000-0000-4000-8000-000000000001.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return openTemp(t), path, []Store{{Name: "claude", Spec: claude.Spec, Source: claude.Spec.Open(root)}}
+}
+
+// heldOf is everything the index holds of its sessions, as rowsOf, with the session's row
+// and the words of its title.
+func heldOf(t *testing.T, ix *Index) string {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString(rowsOf(t, ix))
+	var title, live, firstID, lastID string
+	var turns, failures int
+	var cost float64
+	if err := ix.rw.QueryRow(`SELECT title, live, first_id, last_id, turns, failures, cost FROM sessions`).
+		Scan(&title, &live, &firstID, &lastID, &turns, &failures, &cost); err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintln(&b, title, live, firstID, lastID, turns, failures, cost)
+	for _, q := range []string{"title:schema", "title:migration", "title:review", "backup", "BIGINT", "deploy"} {
+		res, err := ix.Search(context.Background(), ParseQuery(q), Filter{}, SearchOptions{Limit: 100, PerSession: -1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintln(&b, q, res.Total)
+	}
+	for _, q := range []string{
+		`SELECT idx || ' ' || path || ' ' || changed FROM files ORDER BY idx, path`,
+		`SELECT idx || ' ' || seq || ' ' || tool || ' ' || command FROM failures ORDER BY seq`,
+	} {
+		rows, err := ix.rw.Query(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				t.Fatal(err)
+			}
+			fmt.Fprintln(&b, line)
+		}
+		rows.Close()
+	}
+	return b.String()
+}
+
+// A Claude Code transcript read again as it grows is taken up where its latest turn
+// began, wherever the read before stopped: the index then holds what one made from the
+// transcript as it is holds, the title's words included, and the read made only the turns
+// from the mark on.
+func TestAGrowingTranscriptIsTakenUpAtItsLatestTurn(t *testing.T) {
+	var whole bytes.Buffer
+	enc := json.NewEncoder(&whole)
+	enc.SetEscapeHTML(false)
+	for _, r := range claudeRows() {
+		enc.Encode(r)
+	}
+	content := whole.Bytes()
+	freshOf := func(content []byte) string {
+		fresh, _, stores := claudeIndex(t, content)
+		if _, err := fresh.Sync(context.Background(), stores, SyncOptions{Force: true}); err != nil {
+			t.Fatal(err)
+		}
+		return heldOf(t, fresh)
+	}
+
+	ix, path, stores := claudeIndex(t, nil)
+	taken := 0
+	for end := 1; end <= len(content); end++ {
+		if content[end-1] != '\n' {
+			continue
+		}
+		if err := os.WriteFile(path, content[:end], 0o644); err != nil {
+			t.Fatal(err)
+		}
+		refs, _ := stores[0].Source.Scan(context.Background())
+		var sid int64
+		if ix.rw.QueryRow(`SELECT sid FROM sessions`).Scan(&sid) == nil {
+			if rd := ix.read(context.Background(), stores[0], refs[0], sid); rd.from > 0 {
+				taken++
+				for _, row := range rd.turns {
+					if row.idx < rd.from {
+						t.Errorf("a read taken up at turn %d made turn %d", rd.from, row.idx)
+					}
+				}
+			}
+		}
+		if _, err := ix.Sync(context.Background(), stores, SyncOptions{Force: true}); err != nil {
+			t.Fatal(err)
+		}
+		// The title's words, when a row changed the title, are written with it, not later
+		var stale int
+		if err := ix.rw.QueryRow(`SELECT count(*) FROM words_stale`).Scan(&stale); err != nil || stale != 0 {
+			t.Errorf("after the first %d bytes, %d turns' words are left to write (%v)", end, stale, err)
+		}
+		if got, want := heldOf(t, ix), freshOf(content[:end]); got != want {
+			t.Fatalf("after the first %d bytes, the index of a transcript read as it grew:\n%s\nwant:\n%s", end, got, want)
+		}
+	}
+	if taken < 10 {
+		t.Errorf("%d reads were taken up at a mark", taken)
+	}
+
+	// Grown by many rows at once, from wherever the read before stopped
+	want := freshOf(content)
+	for end := 1; end < len(content); end++ {
+		if content[end-1] != '\n' {
+			continue
+		}
+		ix, path, stores := claudeIndex(t, content[:end])
+		for _, b := range [][]byte{content[:end], content} {
+			if err := os.WriteFile(path, b, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ix.Sync(context.Background(), stores, SyncOptions{Force: true}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := heldOf(t, ix); got != want {
+			t.Fatalf("grown from the first %d bytes to the whole:\n%s\nwant:\n%s", end, got, want)
 		}
 	}
 }

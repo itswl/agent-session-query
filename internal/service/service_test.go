@@ -643,7 +643,11 @@ func TestAddress(t *testing.T) {
 }
 
 func TestStable(t *testing.T) {
-	root := t.TempDir()
+	// The temporary directory may itself be reached through a link, as /var is on macOS
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	mk := func(parts ...string) string {
 		p := filepath.Join(append([]string{root}, parts...)...)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -660,7 +664,17 @@ func TestStable(t *testing.T) {
 	current := mk("scoop", "apps", "asq", "current", "asq.exe")
 	plain := mk(".local", "bin", "asq")
 	lonely := mk("other", "Cellar", "asq", "1.6.0", "bin", "asq") // no opt beside it
-	for in, want := range map[string]string{cellar: opt, version: current, current: current, plain: plain, lonely: lonely} {
+	cases := map[string]string{cellar: opt, version: current, current: current, plain: plain, lonely: lonely}
+	// Homebrew's bin/asq is a link into the version's directory; a link of one's own is kept
+	brewBin, own := filepath.Join(root, "bin", "asq"), filepath.Join(root, "own", "asq")
+	os.MkdirAll(filepath.Dir(brewBin), 0o755)
+	os.MkdirAll(filepath.Dir(own), 0o755)
+	if os.Symlink(cellar, brewBin) == nil && os.Symlink(plain, own) == nil {
+		cases[brewBin], cases[own] = opt, own
+	} else {
+		t.Log("no symbolic links here: links not tried")
+	}
+	for in, want := range cases {
 		if got := Stable(in); got != want {
 			t.Errorf("Stable(%s) = %s, want %s", in, got, want)
 		}

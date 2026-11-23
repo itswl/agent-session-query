@@ -453,8 +453,24 @@ func Address(s Setup, defaultPort int) string {
 // Stable is the path a service should run asq by: one that names the same program after
 // an upgrade. A package manager that keeps each version in a directory of its own has a
 // path that does not move — Homebrew's opt, Scoop's current — and the version's own path
-// is gone after the next upgrade and cleanup.
+// is gone after the next upgrade and cleanup. A link into such a directory — Homebrew's
+// bin/asq — is taken to the same path; any other path, a link of the user's own included,
+// is kept as it is.
 func Stable(path string) string {
+	if stable := unversioned(path); stable != path {
+		return stable
+	}
+	if real, err := filepath.EvalSymlinks(path); err == nil && real != path {
+		if stable := unversioned(real); stable != real {
+			return stable
+		}
+	}
+	return path
+}
+
+// unversioned is a path in a version's own directory as the one its package manager keeps
+// from version to version, when there is one.
+func unversioned(path string) string {
 	sep := string(filepath.Separator)
 	parts := strings.Split(path, sep)
 	join := func(pieces ...[]string) string {

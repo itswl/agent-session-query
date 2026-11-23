@@ -252,9 +252,8 @@ func printStatus(out goio.Writer, st *service.Status) {
 }
 
 // thisBinary is this asq by the path a service should run it by: the path it was started
-// by — a link a package manager keeps pointing at the latest version is as good as the
-// file — or, where that is a version's own directory, the one the package manager keeps
-// from version to version.
+// by, or — where that is, or leads to, a version's own directory — the one its package
+// manager keeps from version to version.
 func thisBinary() string {
 	self, err := os.Executable()
 	if err != nil {

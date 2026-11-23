@@ -53,9 +53,11 @@ type Source interface {
 // a folder of its own and read there with the same adapter (see internal/keep). It is for
 // the CLIs that delete their own sessions (Spec.Retention).
 type Keeper interface {
-	// Files lists the files a session is made of — its transcript and what is read beside
-	// it — each beneath Location. A file that is not there is passed over.
-	Files(ref Ref) []string
+	// Files lists the files a session is made of, each beneath Location: own, its
+	// transcript and what is read beside it for it alone; shared, what is read for other
+	// sessions too (Gemini CLI's .project_root), which they go on needing when this one's
+	// copy is deleted. A file that is not there is passed over.
+	Files(ref Ref) (own, shared []string)
 }
 
 // Env is where an adapter looks for its CLI's store: the home directory and the

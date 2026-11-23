@@ -11,9 +11,10 @@ import (
 	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
 )
 
-// A conversation's files are every file it is written in and the .project_root of its
-// project, which says the directory it ran in; a subagent's, its file and the same. Copied
-// by those to another folder, a conversation reads there as it did (see internal/keep).
+// A conversation's files are every file it is written in, its own, and the .project_root
+// of its project, which says the directory it ran in and is every conversation's of the
+// project; a subagent's, its file and the same. Copied by those to another folder, a
+// conversation reads there as it did (see internal/keep).
 func TestFilesAreWhatAConversationReadsFrom(t *testing.T) {
 	root := t.TempDir()
 	chats := filepath.Join(root, "app", "chats")
@@ -34,9 +35,14 @@ func TestFilesAreWhatAConversationReadsFrom(t *testing.T) {
 	src := Spec.Open(root)
 	keeper := src.(sources.Keeper)
 	copyRoot := t.TempDir()
-	var all []string
+	var all, shared []string
 	for _, ref := range scan(t, src) {
-		for _, f := range keeper.Files(ref) {
+		own, others := keeper.Files(ref)
+		for _, f := range others {
+			rel, _ := filepath.Rel(root, f)
+			shared = append(shared, filepath.ToSlash(rel))
+		}
+		for _, f := range append(own, others...) {
 			rel, _ := filepath.Rel(root, f)
 			all = append(all, filepath.ToSlash(rel))
 			if b, err := os.ReadFile(f); err == nil {
@@ -53,6 +59,9 @@ func TestFilesAreWhatAConversationReadsFrom(t *testing.T) {
 	want := "app/.project_root app/.project_root app/chats/g-1/agent-1.jsonl app/chats/session-2026-09-13T12-50-41-aaaa.jsonl app/chats/session-2026-09-13T12-51-41-bbbb.jsonl"
 	if strings.Join(all, " ") != want {
 		t.Errorf("files = %s\nwant    %s", strings.Join(all, " "), want)
+	}
+	if got := strings.Join(shared, " "); got != "app/.project_root app/.project_root" {
+		t.Errorf("shared with other conversations = %s, want the project's .project_root alone", got)
 	}
 	for _, s := range sourcetest.All(t, Spec.Open(copyRoot)) {
 		if s.Session.Cwd != "/work/app" {

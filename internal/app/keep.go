@@ -90,7 +90,8 @@ func (a *App) copyKept(ctx context.Context, st keep.Settings, only *index.Sessio
 			if ctx.Err() != nil {
 				return done, errors.Join(errs, ctx.Err())
 			}
-			whole, n, err := keep.Copy(keeper.Files(sources.Ref{Key: row.Key, Stamp: row.Stamp}), store.Source.Location(), to, now, force)
+			own, shared := keeper.Files(sources.Ref{Key: row.Key, Stamp: row.Stamp})
+			whole, n, err := keep.Copy(append(own, shared...), store.Source.Location(), to, now, force)
 			done.Bytes += n
 			if n > 0 {
 				done.Transcripts++
@@ -215,7 +216,9 @@ func (a *App) dropCopy(ctx context.Context, st keep.Settings, s *index.Session) 
 		to := filepath.Join(st.Folder(a.state), store.Spec.Name)
 		var errs error
 		for _, row := range rows {
-			for _, path := range keeper.Files(sources.Ref{Key: row.Key, Stamp: row.Stamp}) {
+			// Its own files: what other sessions read with it stays for them
+			own, _ := keeper.Files(sources.Ref{Key: row.Key, Stamp: row.Stamp})
+			for _, path := range own {
 				rel, err := filepath.Rel(store.Source.Location(), path)
 				if err != nil || !filepath.IsLocal(rel) {
 					continue

@@ -172,7 +172,9 @@ One package and one line.
    under the store. A CLI that keeps its sessions leaves it empty. The adapter of a CLI that
    deletes them also says which files a session is made of — `Files`, of `sources.Keeper` —
    so that `asq keep` can copy them into a folder of its own, laid out as in the store, and read
-   them there with the same adapter.
+   them there with the same adapter. It gives a session's own files apart from those other
+   sessions read too, such as Gemini CLI's `.project_root`: a copy no longer kept takes its own
+   with it and leaves the others.
 
 3. **Add it to `catalog.All`.** The list, search, briefs, usage, failures, traces, the page and
    the MCP tools now cover it.

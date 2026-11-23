@@ -100,20 +100,20 @@ func metaPath(path string) string { return strings.TrimSuffix(path, ".jsonl") + 
 
 // Files is what a transcript is made of (sources.Keeper): a subagent's, and the meta file
 // beside it; a session's, and the outputs saved beside it, which its subagents' rows name
-// too.
-func (s *Source) Files(ref sources.Ref) []string {
+// too. No other session reads any of them.
+func (s *Source) Files(ref sources.Ref) (own, shared []string) {
 	if isSubagent(ref.Key) {
-		return []string{ref.Key, metaPath(ref.Key)}
+		return []string{ref.Key, metaPath(ref.Key)}, nil
 	}
-	files := []string{ref.Key}
+	own = []string{ref.Key}
 	saved := filepath.Join(strings.TrimSuffix(ref.Key, ".jsonl"), "tool-results")
 	entries, _ := os.ReadDir(saved)
 	for _, e := range entries {
 		if e.Type().IsRegular() {
-			files = append(files, filepath.Join(saved, e.Name()))
+			own = append(own, filepath.Join(saved, e.Name()))
 		}
 	}
-	return files
+	return own, nil
 }
 
 // row is the part of a transcript line that decides what it is. The rest — the content —

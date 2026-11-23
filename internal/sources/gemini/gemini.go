@@ -216,11 +216,12 @@ func (s *Source) filesOf(ctx context.Context, key string) ([]string, error) {
 	return []string{key}, nil
 }
 
-// Files is what a conversation is made of (sources.Keeper): its files, and the
-// .project_root of the project they are in, which says the directory it ran in.
-func (s *Source) Files(ref sources.Ref) []string {
+// Files is what a conversation is made of (sources.Keeper): its files, its own, and the
+// .project_root of the project they are in, which says the directory it ran in and is
+// every conversation of the project's.
+func (s *Source) Files(ref sources.Ref) (own, shared []string) {
 	conv, _ := s.filesOf(context.Background(), ref.Key)
-	files := append([]string(nil), conv...)
+	own = append([]string(nil), conv...)
 	projects := map[string]bool{}
 	for _, f := range conv {
 		rel, err := filepath.Rel(s.root, f)
@@ -230,10 +231,10 @@ func (s *Source) Files(ref sources.Ref) []string {
 		project, _, _ := strings.Cut(filepath.ToSlash(rel), "/")
 		if project != "" && project != ".." && !projects[project] {
 			projects[project] = true
-			files = append(files, filepath.Join(s.root, project, ".project_root"))
+			shared = append(shared, filepath.Join(s.root, project, ".project_root"))
 		}
 	}
-	return files
+	return own, shared
 }
 
 func stemOf(path string) string {

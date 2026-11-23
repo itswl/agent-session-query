@@ -12,8 +12,8 @@ import (
 )
 
 // A session's files are its transcript and the outputs saved beside it; a subagent's, its
-// transcript and its meta file. Copied by those to another folder, the session reads there
-// as it did, a saved output and all (see internal/keep).
+// transcript and its meta file, and no other session's. Copied by those to another folder,
+// the session reads there as it did, a saved output and all (see internal/keep).
 func TestFilesAreWhatASessionReadsFrom(t *testing.T) {
 	root := t.TempDir()
 	base := filepath.Join(root, "proj")
@@ -37,7 +37,11 @@ func TestFilesAreWhatASessionReadsFrom(t *testing.T) {
 	}
 	var all []string
 	for _, ref := range refs {
-		for _, f := range keeper.Files(ref) {
+		own, shared := keeper.Files(ref)
+		if len(shared) > 0 {
+			t.Errorf("%s shares %v with other sessions", ref.Key, shared)
+		}
+		for _, f := range own {
 			rel, _ := filepath.Rel(root, f)
 			all = append(all, filepath.ToSlash(rel))
 			if b, err := os.ReadFile(f); err == nil {

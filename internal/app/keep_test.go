@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"github.com/itswl/agent-session-query/internal/app"
+	"github.com/itswl/agent-session-query/internal/catalog"
 	"github.com/itswl/agent-session-query/internal/fixture"
 	"github.com/itswl/agent-session-query/internal/index"
 	"github.com/itswl/agent-session-query/internal/keep"
+	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
 )
 
 // keeping opens the fixture with a state directory of its own, where what is kept goes.
@@ -265,5 +267,64 @@ func TestKeepInAFolderOfOnesOwn(t *testing.T) {
 	}
 	if err := a.KeepIn(""); err == nil || !strings.Contains(err.Error(), elsewhere) {
 		t.Errorf("leaving a folder that holds copies = %v; want it refused, naming the folder", err)
+	}
+}
+
+// What a session's copy shares with the copies of others — Gemini CLI's .project_root,
+// which says where every conversation of a project ran — stays when that session is no
+// longer kept: a conversation the CLI deleted still reads from it.
+func TestNoLongerKeepingASessionLeavesWhatOthersReadWithIt(t *testing.T) {
+	ctx := t.Context()
+	root, state := t.TempDir(), t.TempDir()
+	chats := filepath.Join(root, "app", "chats")
+	first := filepath.Join(chats, "session-2026-09-13T12-50-41-aaaa.jsonl")
+	sourcetest.Write(t, first,
+		`{"sessionId":"g-1","startTime":"2026-09-13T12:50:41Z"}`,
+		`{"type":"user","id":"u1","timestamp":"2026-09-13T12:50:42Z","content":[{"text":"first"}]}`)
+	sourcetest.Write(t, filepath.Join(chats, "session-2026-09-13T13-50-41-bbbb.jsonl"),
+		`{"sessionId":"g-2","startTime":"2026-09-13T13:50:41Z"}`,
+		`{"type":"user","id":"u2","timestamp":"2026-09-13T13:50:42Z","content":[{"text":"second"}]}`)
+	if err := os.WriteFile(filepath.Join(root, "app", ".project_root"), []byte("/work/app"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	open := func() *app.App {
+		cfg := app.Config{IndexPath: filepath.Join(t.TempDir(), "index.db"), State: state,
+			Stores: catalog.Config{Only: []string{"gemini"}, Paths: []catalog.Path{{Agent: "gemini", Dir: root}}, Kept: app.KeptFolder(state)}}
+		a, err := app.Open(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { a.Close() })
+		sync(t, a)
+		return a
+	}
+	a := open()
+	for _, ref := range []string{"gemini/g-1", "gemini/g-2"} {
+		s, _, err := a.Resolve(ctx, ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.KeepSession(ctx, &s, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(first); err != nil { // the CLI deletes g-1
+		t.Fatal(err)
+	}
+	sync(t, a)
+	second, _, _ := a.Resolve(ctx, "gemini/g-2")
+	if k, err := a.KeepSession(ctx, &second, false); err != nil || k.Stays != "" {
+		t.Fatalf("stop keeping g-2 = %+v, %v", k, err)
+	}
+	kept := filepath.Join(state, "kept", "gemini", "app")
+	if _, err := os.Stat(filepath.Join(kept, "chats", "session-2026-09-13T13-50-41-bbbb.jsonl")); !os.IsNotExist(err) {
+		t.Errorf("the copy of g-2 stays: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(kept, ".project_root")); err != nil {
+		t.Errorf("the project's .project_root went with g-2: %v", err)
+	}
+	// Read anew, the copy of g-1 still says where it ran
+	if s, _, err := open().Resolve(ctx, "gemini/g-1"); err != nil || s.Source != "gemini@kept" || s.Cwd != "/work/app" {
+		t.Errorf("g-1 = %s in %q, %v; want the copy, in /work/app", s.Ref, s.Cwd, err)
 	}
 }

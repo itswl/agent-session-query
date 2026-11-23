@@ -270,6 +270,10 @@ export function mount(main, route, ctx) {
     rec.answerEl = t.answer ? h('div', { class: 't-answer', hidden: rec.open }, clamp(md(t.answer), t.answer, 20)) : null;
     const kinds = Object.entries(t.toolKinds || {}).sort((a, b) => b[1] - a[1]);
     const changed = (t.files || []).filter((x) => x.changed);
+    // The files it changed are a list opened from its facts, not a title to point at, which a
+    // phone has no pointer for; each opens Files at that path, for how it stands now
+    rec.filesEl = changed.length ? h('ul', { class: 't-files', id: 'files-' + t.index, hidden: !rec.filesOpen },
+      changed.map((x) => h('li', null, h('a', { href: '/files' + qs({ path: x.path, since: 'all' }), title: x.path }, f.beneath(x.path, v.sess?.cwd))))) : null;
     const tok = f.totalTokens(t.usage);
     rec.el.className = ['turn', zero && 'zero', rec.open && 'open', v.cur >= 0 && v.recs[v.cur] === rec && 'current'].filter(Boolean).join(' ');
     rec.el.dataset.status = status;
@@ -283,9 +287,15 @@ export function mount(main, route, ctx) {
       rec.askEl,
       (kinds.length || changed.length || tok) ? h('div', { class: 't-facts dots' },
         kinds.map(([k, n]) => h('span', { title: f.plural(n, `${k} call`) }, `${k} ${n}`)),
-        changed.length > 0 && h('span', { title: changed.map((x) => x.path).join('\n') }, `${f.plural(changed.length, 'file')} changed`),
+        changed.length > 0 && h('span', null, h('button', { type: 'button', class: 'link-btn t-files-btn', 'aria-expanded': String(!!rec.filesOpen), 'aria-controls': 'files-' + t.index,
+          onclick(e) {
+            rec.filesOpen = !rec.filesOpen;
+            rec.filesEl.hidden = !rec.filesOpen;
+            e.currentTarget.setAttribute('aria-expanded', String(rec.filesOpen));
+          } }, `${f.plural(changed.length, 'file')} changed`)),
         tok > 0 && h('span', { title: `${f.num(f.promptTokens(t.usage))} in · ${f.num(t.usage?.output)} out` }, `${f.tokens(tok)} tokens`),
         t.costUsd > 0 && h('span', null, f.cost(t.costUsd))) : null,
+      rec.filesEl,
       rec.answerEl,
       rec.stepsEl);
   }

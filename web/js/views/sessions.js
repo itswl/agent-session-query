@@ -430,7 +430,10 @@ export function mount(main, route, ctx) {
 // the whole; its branch is a link of its own above that, to the list on that branch.
 function sessionRow(s, base, route) {
   const title = s.title || s.lastAsk || 'Untitled session';
-  const sub = s.title ? [s.lastAsk, s.answer] : [s.answer];
+  // A session its CLI did not name is titled by how its first ask begins: when that is its
+  // last ask too, the line beneath would say it again, and the answer, after it, would not
+  // fit on a phone
+  const sub = s.title && !f.repeats(s.title, s.lastAsk) ? [s.lastAsk, s.answer] : [s.answer];
   const st = s.stats || {};
   const onBranch = s.branch && route.query.get('branch') === s.branch;
   return h('li', { class: 'row', dataset: { key: s.ref } },

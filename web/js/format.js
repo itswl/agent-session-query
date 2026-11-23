@@ -118,6 +118,17 @@ export function cacheHit(u = {}) {
   return p ? (u.cacheRead || 0) / p : 0;
 }
 
+// repeats reports whether a title says only how a text begins, as the title of a session its
+// CLI did not name is its first ask, cut to a line.
+export function repeats(title, text) {
+  const flat = (s) => (s || '').replace(/\s+/g, ' ').trim();
+  const t = flat(title).replace(/…$/, '').trimEnd();
+  return t !== '' && flat(text).startsWith(t);
+}
+
+// beneath names a path beneath a directory from there, as the brief does; any other whole.
+export const beneath = (path, dir) => (dir && (path.startsWith(dir + '/') || path.startsWith(dir + '\\')) ? path.slice(dir.length + 1) : path);
+
 export function firstLine(text, max = 160) {
   const line = (text || '').split('\n').find((l) => l.trim()) || '';
   return line.length > max ? line.slice(0, max) + '…' : line.trim();

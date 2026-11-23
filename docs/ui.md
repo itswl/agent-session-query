@@ -15,7 +15,9 @@ uses nothing else, so anything it shows can be had from the API too.
 The list is grouped by day, newest first, fifty at a time. A row is the session's title, its last
 ask and how it was answered, and the facts worth scanning for: which CLI, how many turns and tool
 calls, how many of those failed and how many of those the same command passed later — in red
-while one has not, muted once each has — subagents, project, branch.
+while one has not, muted once each has — subagents, project, branch. A session its CLI did not
+name is titled by how its first ask begins, and while that is its last ask too, the line beneath
+the title is the answer alone, which a phone has room for.
 
 A row opens with where its agent stands, as its transcript says
 ([which CLIs say it](sources.md#where-a-turn-stands)): *working*; *waiting on Bash: npm run
@@ -87,11 +89,13 @@ transcript links to the session it ran in, and a session lists its subagents.
 ![The handoff brief](screenshots/brief.png)
 
 Below it, the turns: for each, the ask in full, a line of facts (what kinds of tool calls, files
-changed, tokens), and the answer. A turn with failed calls says how many, in red, unless the same
-command passed later for each of them — in that turn or the three after it, [as failures judges
-it](api.md#reports) — when it says so, muted: those were steps of the work, not where it stands.
-The head counts what *Passed later* beside what *Failed*. Only this outline is loaded up front — a long session is
-megabytes — and a turn's steps are fetched when it is opened.
+changed, tokens), and the answer. *3 files changed* opens the list of them, named from the
+session's directory, each a link to [Files](#reports) at that path, for how it stands now. A turn
+with failed calls says how many, in red, unless the same command passed later for each of them —
+in that turn or the three after it, [as failures judges it](api.md#reports) — when it says so,
+muted: those were steps of the work, not where it stands. The head counts what *Passed later*
+beside what *Failed*. Only this outline is loaded up front — a long session is megabytes — and a
+turn's steps are fetched when it is opened.
 
 ![A turn's steps](screenshots/session-steps.png)
 

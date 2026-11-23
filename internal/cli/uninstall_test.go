@@ -182,45 +182,105 @@ func removeCommand(folder string) string {
 	return "rm -rf " + app.ShellArg(folder)
 }
 
+// defaultState has uninstall find the state where asq keeps it when ASQ_STATE names none —
+// a folder of asq's own, under XDG_STATE_HOME —, and puts the sign-in key in it.
+func defaultState(t *testing.T, home string) string {
+	t.Helper()
+	t.Setenv("ASQ_STATE", "")
+	state := filepath.Join(home, "xdg-state", "asq")
+	put(t, filepath.Join(state, "session.key"), "k")
+	return state
+}
+
 // The copies asq keep made may be all there is of what a CLI deleted: uninstall takes the
 // rest of the state and leaves them, and says where they are, what they hold, and how to
-// remove them should that be wanted.
+// remove them should that be wanted — in the state asq keeps by default, and in a folder
+// ASQ_STATE names.
 func TestUninstallLeavesTheKeptCopies(t *testing.T) {
-	home, state := uninstallHome(t, runtime.GOOS, nil)
-	if err := keep.Save(state, keep.Settings{All: true}); err != nil {
+	for _, named := range []bool{false, true} {
+		t.Run(map[bool]string{false: "default", true: "ASQ_STATE"}[named], func(t *testing.T) {
+			home, state := uninstallHome(t, runtime.GOOS, nil)
+			if !named {
+				state = defaultState(t, home)
+			}
+			if err := keep.Save(state, keep.Settings{All: true}); err != nil {
+				t.Fatal(err)
+			}
+			kept := filepath.Join(state, "kept")
+			copies := keptHere(t, home, kept)
+			ledger := put(t, filepath.Join(state, "otel-ledger.db"), "l")
+			put(t, filepath.Join(state, "otel-ledger.db-wal"), "w")
+			put(t, filepath.Join(state, "known.json"), "{}")
+
+			out, errs, code := runAsq("uninstall")
+			if code != 0 {
+				t.Fatalf("asq uninstall: exit %d\n%s", code, errs)
+			}
+			for _, p := range []string{filepath.Join(state, "session.key"), filepath.Join(state, "keep.json"), ledger, ledger + "-wal", filepath.Join(state, "known.json")} {
+				gone(t, p)
+			}
+			for _, p := range copies {
+				there(t, p)
+			}
+			there(t, filepath.Join(home, ".claude", "projects", "p", "held.jsonl"))
+			for _, want := range []string{
+				"removed " + state + " — the state but for the copies in it: the sign-in key",
+				"left " + kept + " — the copies asq keep made: 2 transcripts, 1 of them deleted by their CLI since and kept nowhere else\n",
+				"  " + removeCommand(kept) + " removes them too",
+			} {
+				if !strings.Contains(out, want) {
+					t.Errorf("lacks %q:\n%s", want, out)
+				}
+			}
+
+			// Run again, it takes nothing more, and says the copies again
+			got := uninstallJSON(t)
+			want := []leftBehind{{Path: kept, What: "copies", Why: "the copies asq keep made: 2 transcripts, 1 of them deleted by their CLI since and kept nowhere else",
+				Transcripts: 2, Gone: 1, Remove: removeCommand(kept)}}
+			if len(got.Removed) != 0 || !reflect.DeepEqual(got.Left, want) {
+				t.Errorf("removed %q, left %+v; want nothing removed, and left %+v", got.Removed, got.Left, want)
+			}
+		})
+	}
+}
+
+// A folder ASQ_STATE names may hold more than asq's — a CLI's store, a person's files —: of
+// it uninstall takes what asq writes there and nothing else, and says the folder is left,
+// and what is in it.
+func TestUninstallTakesOnlyAsqsFilesFromAFolderASQ_STATENames(t *testing.T) {
+	home, _ := uninstallHome(t, runtime.GOOS, nil)
+	state := filepath.Join(home, ".claude")
+	t.Setenv("ASQ_STATE", state)
+	transcript := put(t, filepath.Join(state, "projects", "p", "s.jsonl"), "{}\n")
+	settings := put(t, filepath.Join(state, "settings.json"), "{}")
+	// A kept beside copies asq keep --dir sent elsewhere is not theirs: it goes only empty
+	notes := put(t, filepath.Join(state, "kept", "notes.txt"), "mine")
+	if err := keep.Save(state, keep.Settings{Dir: filepath.Join(home, "elsewhere")}); err != nil {
 		t.Fatal(err)
 	}
-	kept := filepath.Join(state, "kept")
-	copies := keptHere(t, home, kept)
-	ledger := put(t, filepath.Join(state, "otel", "ledger.db"), "l")
+	ours := []string{filepath.Join(state, "keep.json")}
+	for _, name := range []string{"session.key", "known.json", "known.json.123", "keep.json.456", "otel-ledger.db", "otel-ledger.db-shm"} {
+		ours = append(ours, put(t, filepath.Join(state, name), "x"))
+	}
 
-	out, errs, code := runAsq("uninstall")
-	if code != 0 {
-		t.Fatalf("asq uninstall: exit %d\n%s", code, errs)
-	}
-	for _, p := range []string{filepath.Join(state, "session.key"), filepath.Join(state, "keep.json"), ledger, filepath.Dir(ledger)} {
-		gone(t, p)
-	}
-	for _, p := range copies {
+	got := uninstallJSON(t)
+	for _, p := range []string{transcript, settings, notes} {
 		there(t, p)
 	}
-	there(t, filepath.Join(home, ".claude", "projects", "p", "held.jsonl"))
-	for _, want := range []string{
-		"removed " + state + " — the state but for the copies in it: the sign-in key",
-		"left " + kept + " — the copies asq keep made: 2 transcripts, 1 of them deleted by their CLI since and kept nowhere else\n",
-		"  " + removeCommand(kept) + " removes them too",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("lacks %q:\n%s", want, out)
+	for _, p := range ours {
+		gone(t, p)
+	}
+	if len(got.Removed) != 1+len(ours) || got.Removed[0] != index.DefaultPath() {
+		t.Errorf("removed %q, want the index and asq's %d files", got.Removed, len(ours))
+	}
+	for _, p := range got.Removed {
+		if p == state {
+			t.Errorf("%s was said as removed: %q", state, got.Removed)
 		}
 	}
-
-	// Run again, it takes nothing more, and says the copies again
-	got := uninstallJSON(t)
-	want := []leftBehind{{Path: kept, What: "copies", Why: "the copies asq keep made: 2 transcripts, 1 of them deleted by their CLI since and kept nowhere else",
-		Transcripts: 2, Gone: 1, Remove: removeCommand(kept)}}
-	if len(got.Removed) != 0 || !reflect.DeepEqual(got.Left, want) {
-		t.Errorf("removed %q, left %+v; want nothing removed, and left %+v", got.Removed, got.Left, want)
+	want := []leftBehind{{Path: state, What: "state", Why: "the folder ASQ_STATE names, which holds what asq did not write: kept, projects, settings.json"}}
+	if !reflect.DeepEqual(got.Left, want) {
+		t.Errorf("left %+v, want %+v", got.Left, want)
 	}
 }
 
@@ -259,9 +319,10 @@ func TestUninstallSparesTheCopiesWhateverTheyAreNamedBy(t *testing.T) {
 		t.Fatal(err)
 	}
 	home, _ := uninstallHome(t, runtime.GOOS, nil)
-	state := filepath.Join(link, "state")
-	t.Setenv("ASQ_STATE", state)
-	folder := filepath.Join(real, "state", "deep", "copies")
+	t.Setenv("ASQ_STATE", "")
+	t.Setenv("XDG_STATE_HOME", link)
+	state := filepath.Join(link, "asq")
+	folder := filepath.Join(real, "asq", "deep", "copies")
 	if err := keep.Save(state, keep.Settings{Dir: folder}); err != nil {
 		t.Fatal(err)
 	}
@@ -280,6 +341,37 @@ func TestUninstallSparesTheCopiesWhateverTheyAreNamedBy(t *testing.T) {
 	gone(t, beside)
 	gone(t, filepath.Join(state, "out"))
 	gone(t, filepath.Join(state, "keep.json"))
+	if len(got.Left) != 1 || got.Left[0].Path != folder {
+		t.Errorf("left %+v, want %s", got.Left, folder)
+	}
+}
+
+// A link in the state on the way to the copies — asq keep --dir named them through it — is
+// left as it is: what it leads to is not the state's, and nothing beside the copies there is
+// taken.
+func TestUninstallFollowsNoLinkOnTheWayToTheCopies(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symbolic links take a privilege on Windows")
+	}
+	home, _ := uninstallHome(t, runtime.GOOS, nil)
+	state := defaultState(t, home)
+	outside := t.TempDir()
+	mine := put(t, filepath.Join(outside, "mine"), "m")
+	via := filepath.Join(state, "via")
+	if err := os.Symlink(outside, via); err != nil {
+		t.Fatal(err)
+	}
+	folder := filepath.Join(via, "copies")
+	if err := keep.Save(state, keep.Settings{Dir: folder}); err != nil {
+		t.Fatal(err)
+	}
+	copies := keptHere(t, home, folder)
+
+	got := uninstallJSON(t)
+	for _, p := range append(copies, mine, via) {
+		there(t, p)
+	}
+	gone(t, filepath.Join(state, "session.key"))
 	if len(got.Left) != 1 || got.Left[0].Path != folder {
 		t.Errorf("left %+v, want %s", got.Left, folder)
 	}

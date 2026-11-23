@@ -74,7 +74,9 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 	self := thisFile()
 
 	// The state: the sign-in key, what a collector has been sent, what asq keep was asked to
-	// keep — but for the copies asq keep made, which stay where they are, in it or not.
+	// keep — but for the copies asq keep made, which stay where they are, in it or not. The
+	// folder asq keeps it in by default is asq's own and goes whole; of one ASQ_STATE names,
+	// only what asq writes in it goes.
 	state := app.StateDir()
 	const held = ": the sign-in key, what a collector was sent, what asq keep was asked to keep"
 	if _, err := os.Stat(state); err == nil {
@@ -92,6 +94,26 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 			if copies := keptCopies(ctx, cfg.Stores, st.Folder(state), m.OS); copies != nil {
 				spare = copies.Path
 				done.Left = append(done.Left, *copies)
+			}
+			if os.Getenv("ASQ_STATE") != "" {
+				// A folder a person named may hold more than asq's: only what asq writes goes
+				took, others, whole, err := removeOurs(state, spare)
+				if err != nil {
+					return err
+				}
+				switch {
+				case whole:
+					removed(state, "the state"+held)
+				case len(others) == 0 && len(took) > 0:
+					removed(state, "the state but for the copies in it"+held)
+				case len(others) > 0:
+					for _, p := range took {
+						removed(p, "asq's, in the folder ASQ_STATE names")
+					}
+					done.Left = append(done.Left, leftBehind{Path: state, What: "state",
+						Why: "the folder ASQ_STATE names, which holds what asq did not write: " + some(others)})
+				}
+				break
 			}
 			took, whole, err := removeBut(state, spare)
 			if err != nil {
@@ -210,6 +232,69 @@ func removeBut(dir, spare string) (took, whole bool, err error) {
 	}
 	took, err = removeAround(dir, spare)
 	return took, false, err
+}
+
+// asqWrites says whether asq writes a file of this name in its state directory: the key
+// sign-ins are signed with and the callers a server knows (internal/server), what asq keep
+// was asked to keep (internal/keep), the export ledger and the files SQLite keeps beside it
+// (internal/otel), each file written whole through a temporary one named after it, and
+// kept, the folder for the copies when keep.json names no other.
+func asqWrites(name string) bool {
+	switch name {
+	case "session.key", "known.json", "keep.json", "otel-ledger.db", "kept":
+		return true
+	}
+	for _, prefix := range []string{"known.json.", "keep.json.", "otel-ledger.db-"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// removeOurs removes what asq writes in a directory ASQ_STATE names, and nothing else: a
+// folder a person named may hold what is not asq's — a CLI's store, their documents — and
+// that stays. The folder of copies spare, and what holds it, stays too, and kept goes only
+// empty of files. It reports what it removed and the names of what it left that asq does
+// not write, and removes the directory itself, whole, once nothing is left in it.
+func removeOurs(dir, spare string) (took, others []string, whole bool, err error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	copies := false
+	for _, e := range entries {
+		p := filepath.Join(dir, e.Name())
+		if spare != "" && inside(spare, p) {
+			copies = true // they, or what holds them: their own line says where they are
+			continue
+		}
+		if !asqWrites(e.Name()) || e.Name() == "kept" && hasFiles(p) {
+			others = append(others, e.Name())
+			continue
+		}
+		if err := os.RemoveAll(p); err != nil {
+			return took, others, false, err
+		}
+		took = append(took, p)
+	}
+	if copies || len(others) > 0 {
+		return took, others, false, nil
+	}
+	return took, others, true, os.Remove(dir)
+}
+
+func hasFiles(dir string) bool {
+	files, _ := keep.Size(dir)
+	return files > 0
+}
+
+// some names a few of a list, and how many more there are.
+func some(names []string) string {
+	if len(names) <= 3 {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(names[:3], ", "), len(names)-3)
 }
 
 func removeAround(dir, spare string) (took bool, err error) {

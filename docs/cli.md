@@ -419,7 +419,8 @@ no transcript; until it is done a search finds what has been written so far. One
 differently whether a failed command passed later judges every failure again the same way.
 
 **`asq uninstall`** — takes asq off the machine. The index and the state are removed — an
-`ASQ_INDEX` or `ASQ_STATE` followed where it points — but for the copies `asq keep` made, which
+`ASQ_INDEX` followed where it points; of a folder `ASQ_STATE` names, the files asq writes there
+alone, and the folder once that leaves it empty — but for the copies `asq keep` made, which
 may be all there is of what a CLI deleted: their folder stays, in the state directory or where
 `asq keep --dir` put it, and is said with how many transcripts it holds, how many of those the
 CLI has deleted since, and the command that would remove it. A state dir that is a home, or

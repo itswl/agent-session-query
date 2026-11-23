@@ -17,8 +17,9 @@ One direction of dependency, top to bottom; nothing below knows what is above it
 cmd/asq                 main: hands the arguments to cli
 internal/cli            the command line: flags in, text or JSON out
 internal/server         the HTTP API, the guards and the token, the live stream; serves web/
-internal/mcp            the MCP server: stdio and HTTP, ten tools
+internal/mcp            the MCP server: stdio and HTTP, ten tools and two prompts
 internal/otel           OTLP export: what a turn becomes, the ledger of what was sent
+internal/skill          the agent-sessions skill, built in: what asq skill prints
 web/                    the page: hand-written HTML, CSS and ES modules, embedded as they are
         │
 internal/app            the program without a face: the index, the stores, the operations
@@ -36,6 +37,10 @@ internal/command        what a command line runs: its program, and whether its s
 internal/model          the record: Session, Turn, Item, Tool, Usage
 internal/txt            cleaning and cutting text
 ```
+
+The skill is in two places — `internal/skill/SKILL.md`, which the binary carries, and
+`.claude/skills/agent-sessions/SKILL.md`, which Claude Code reads in this repository — and a test
+fails when they differ: edit both.
 
 The three faces — `cli`, `server`, `mcp` — are thin on purpose. Each parses its own kind of
 request, calls the same `app` and `index` operations, and renders the answer its own way. A new

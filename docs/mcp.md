@@ -9,9 +9,15 @@ answer "how did I solve this before" from the history itself — its own, and ev
 ```sh
 claude mcp add --scope user asq -- asq mcp      # Claude Code
 codex mcp add asq -- asq mcp                    # Codex
+gemini mcp add --scope user asq asq mcp         # Gemini CLI
+opencode mcp add asq --global -- asq mcp        # OpenCode
 ```
 
-Any client that takes a command:
+Gemini CLI writes the server to `~/.gemini/settings.json` with `--scope user`, and OpenCode to
+its global configuration with `--global`; without them each writes it to the project it is run
+in. Pi has no MCP: it reads asq from the command line, as [the skill](#a-skill) tells it to.
+
+Any other client that takes a command:
 
 ```json
 {"mcpServers": {"asq": {"command": "asq", "args": ["mcp"]}}}
@@ -246,8 +252,28 @@ agents you would let read your history, and be as careful about what such an age
 
 ## A skill
 
-[`.claude/skills/agent-sessions`](../.claude/skills/agent-sessions/SKILL.md) is a Claude Code
-skill that teaches an agent when to reach for these tools and how to move through them.
+The agent-sessions skill tells an agent when to reach for asq and how to move through it — the
+tools here, or the command line where there is no server, with the same names and
+[`--max-chars`](cli.md#held-to-a-budget) for a budget. It is built into the binary: `asq skill`
+prints it. Each CLI reads skills from a directory of its own, and two cover the five:
+
+| saved as | read by |
+|---|---|
+| `~/.claude/skills/agent-sessions/SKILL.md` | Claude Code, and OpenCode |
+| `~/.agents/skills/agent-sessions/SKILL.md` | Codex, Gemini CLI, OpenCode, Pi |
+
+```sh
+mkdir -p ~/.claude/skills/agent-sessions ~/.agents/skills/agent-sessions
+asq skill > ~/.claude/skills/agent-sessions/SKILL.md
+asq skill > ~/.agents/skills/agent-sessions/SKILL.md
+```
+
+Gemini CLI also reads `~/.gemini/skills`, Pi `~/.pi/agent/skills` and OpenCode
+`~/.config/opencode/skills`; a repository's own `.claude/skills` or `.agents/skills` holds a
+skill for that repository alone. asq writes none of them itself, as it writes nothing where a CLI
+keeps its files. What it prints is the skill of the release it is: save it again after an
+upgrade. In this repository it is [`.claude/skills/agent-sessions`](../.claude/skills/agent-sessions/SKILL.md),
+for Claude Code sessions opened here.
 
 ## Protocol notes
 

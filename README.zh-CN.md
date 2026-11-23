@@ -154,6 +154,7 @@ systemd 或计划任务——再删二进制；容器则是 `docker rm` 加它�
 | `asq keep` | 为 CLI 会删除的会话留一份副本 —— `--all`，或用 `<ref>` 只留某一个会话 |
 | `asq serve` | 网页与 HTTP API |
 | `asq mcp` | stdio 上的 MCP server，让 agent 查询自己的历史 |
+| `asq skill` | 告诉 agent 什么时候、怎样使用 asq 的 skill，存到它的 CLI 读取 skill 的地方 |
 | `asq otel` | 把会话导出为 OpenTelemetry trace |
 | `asq doctor` · `asq index` | 检查各存储、索引和本机运行的 server · 查看、重建或删除索引 |
 
@@ -186,9 +187,20 @@ Codex 的那次会话。
 ```sh
 claude mcp add --scope user asq -- asq mcp      # Claude Code
 codex mcp add asq -- asq mcp                    # Codex
+gemini mcp add --scope user asq asq mcp         # Gemini CLI
+opencode mcp add asq --global -- asq mcp        # OpenCode
 ```
 
 其他客户端：命令是 `asq mcp`，走 stdio。运行中的 `asq serve` 也在 `/mcp` 上以 HTTP 提供 MCP。
+
+告诉 agent 什么时候、怎样使用 asq 的 skill（通过这些工具；没有 MCP 时通过命令行，比如 Pi）已经内置：
+`asq skill` 把它打印出来，存到各个 CLI 读取 skill 的目录即可。
+
+```sh
+mkdir -p ~/.claude/skills/agent-sessions ~/.agents/skills/agent-sessions
+asq skill > ~/.claude/skills/agent-sessions/SKILL.md    # Claude Code
+asq skill > ~/.agents/skills/agent-sessions/SKILL.md    # Codex、Gemini CLI、OpenCode、Pi
+```
 
 十个只读工具——`search`、`sessions`、`read`、`brief`、`pack`、`usage`、`failures`、`digest`、`files`、
 `projects`——返回紧凑的纯文本而不是 JSON，按预算截断（调用方可以调大），并遮掉形似密钥的字符串：模型读到的每个字都

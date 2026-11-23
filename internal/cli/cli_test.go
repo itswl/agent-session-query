@@ -19,6 +19,7 @@ import (
 	"github.com/itswl/agent-session-query/internal/index"
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/render"
+	"github.com/itswl/agent-session-query/internal/skill"
 	"github.com/itswl/agent-session-query/internal/sources"
 	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
 	"github.com/itswl/agent-session-query/internal/transcript"
@@ -474,6 +475,23 @@ func TestMaxChars(t *testing.T) {
 	// With room to spare, the answer is the answer
 	if out, _, _ := asq(t, h, index, "show", "bbbb2222#1", "--full", "--max-chars", "400000"); out != whole {
 		t.Error("a turn that fits its budget is not printed as it is without one")
+	}
+}
+
+// asq skill prints the skill built into the binary, and nothing else on stdout, so that
+// it can be saved where a CLI reads skills; it writes it nowhere itself.
+func TestSkill(t *testing.T) {
+	h, index := setup(t)
+	out, errs, code := asq(t, h, index, "skill")
+	if code != 0 || out != skill.Text || errs != "" || !strings.HasPrefix(out, "---\nname: agent-sessions\n") {
+		t.Errorf("asq skill: exit %d, stderr %q, %d characters of the skill's %d", code, errs, len(out), len(skill.Text))
+	}
+	var got struct{ Name, Skill string }
+	if out, _, code := asq(t, h, index, "skill", "--json"); code != 0 || json.Unmarshal([]byte(out), &got) != nil || got.Name != "agent-sessions" || got.Skill != skill.Text {
+		t.Errorf("asq skill --json: exit %d %q", code, out)
+	}
+	if _, errs, code := asq(t, h, index, "skill", "install"); code != 2 || !strings.Contains(errs, "takes no arguments") {
+		t.Errorf("asq skill install: exit %d %q", code, errs)
 	}
 }
 

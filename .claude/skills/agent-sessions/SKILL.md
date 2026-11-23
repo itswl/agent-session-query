@@ -2,7 +2,7 @@
 name: agent-sessions
 description: 'Query the session history of every agent CLI on this machine — Claude Code, Codex, Gemini CLI, OpenCode, Grok, Antigravity, Pi, DeepSeek Harness, Hermes, OpenClaw, GitHub Copilot CLI — through the read-only `asq` MCP server (or the `asq` command), and hand a stretch of that history to another agent. Use when the user asks what they worked on before, which session covered a topic, how something was solved previously, whether they have dealt with a problem already, what a week of work cost or added up to, or wants context carried to another agent or machine. Trigger phrases include "之前怎么解决的", "上周做了什么", "我是不是弄过这个", "把上下文给另一个 AI".'
 metadata:
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # Ask this machine's agent session history

@@ -167,6 +167,7 @@ a container is `docker rm` and its `/data` volume.
 | `asq keep` | copies of the sessions a CLI deletes — `--all`, or `<ref>` for one session |
 | `asq serve` | the web page and the HTTP API |
 | `asq mcp` | an MCP server on stdio, for agents to ask their own history |
+| `asq skill` | the skill that tells an agent when and how to use asq, to save where its CLI reads skills |
 | `asq otel` | export sessions as OpenTelemetry traces |
 | `asq doctor` · `asq index` | check the stores, the index and the server running here · inspect, rebuild or remove the index |
 
@@ -208,10 +209,22 @@ An agent that can ask its own history stops solving the same problem twice — a
 ```sh
 claude mcp add --scope user asq -- asq mcp      # Claude Code
 codex mcp add asq -- asq mcp                    # Codex
+gemini mcp add --scope user asq asq mcp         # Gemini CLI
+opencode mcp add asq --global -- asq mcp        # OpenCode
 ```
 
 Any other client: the command is `asq mcp`, on stdio. A running `asq serve` also answers MCP
 over HTTP at `/mcp`.
+
+The skill that tells an agent when to reach for asq, and how — through the tools, or the
+command line where there is no MCP, as with Pi — is built in: `asq skill` prints it, to save
+where each CLI reads skills.
+
+```sh
+mkdir -p ~/.claude/skills/agent-sessions ~/.agents/skills/agent-sessions
+asq skill > ~/.claude/skills/agent-sessions/SKILL.md    # Claude Code
+asq skill > ~/.agents/skills/agent-sessions/SKILL.md    # Codex, Gemini CLI, OpenCode, Pi
+```
 
 Ten read-only tools — `search`, `sessions`, `read`, `brief`, `pack`, `usage`, `failures`,
 `digest`, `files`, `projects` — return compact plain text rather than JSON, cut to a budget the

@@ -334,6 +334,11 @@ runs.
 
 **`asq mcp`** — an MCP server on stdio. See [MCP](mcp.md).
 
+**`asq skill`** — prints the skill that tells an agent when to reach for asq and how, built into
+the binary, to save where its CLI reads skills: `~/.claude/skills/agent-sessions/SKILL.md` for
+Claude Code, `~/.agents/skills/agent-sessions/SKILL.md` for Codex, Gemini CLI, OpenCode and Pi
+([A skill](mcp.md#a-skill)). On a terminal it says so on stderr. It writes nothing itself.
+
 **`asq otel`** — export to an OpenTelemetry collector. See [Telemetry](telemetry.md).
 
 ## Maintaining

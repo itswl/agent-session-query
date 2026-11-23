@@ -299,7 +299,8 @@ into asq's folder or the one named, never into a CLI's store. Copies are of what
 store holds; a store added by name is not copied. No longer keeping a session one by one deletes
 its copy while the CLI still holds it; a copy of one the CLI deleted is all there is of it, and
 stays until it is deleted from the folder. A folder that holds copies is not left for another until
-they are moved there. Every `asq` that shares the state directory keeps the same.
+they are moved there; one emptied, or new, is filled again, and `asq keep --all` or `asq keep <ref>`
+copies again whatever the folder lacks. Every `asq` that shares the state directory keeps the same.
 
 **`asq doctor`** — for each store: whether it was found, how many transcripts it lists and the
 day the oldest of them was last written, and whether its newest conversation reads whole. Of a

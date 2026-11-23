@@ -617,6 +617,9 @@ func binaryCommands(goos, self string) []string {
 		}
 		return cmds
 	case service.Scoop:
+		if scoopGlobal(dir) {
+			return []string{"scoop uninstall asq --global"}
+		}
 		return []string{"scoop uninstall asq"}
 	}
 	if goos == "windows" {
@@ -641,6 +644,18 @@ func packageOf(goos, self string) (manager, dir string) {
 		return manager, dir
 	}
 	return "", ""
+}
+
+// scoopGlobal says whether Scoop installed the version in dir for every user — in its
+// global folder, SCOOP_GLOBAL or %ProgramData%\scoop —, which scoop uninstall finds only
+// told so, and run as an administrator.
+func scoopGlobal(dir string) bool {
+	global := os.Getenv("SCOOP_GLOBAL")
+	if data := os.Getenv("ProgramData"); global == "" && data != "" {
+		global = filepath.Join(data, "scoop")
+	}
+	root := filepath.Dir(filepath.Dir(filepath.Dir(dir))) // <root>\apps\asq\<version>
+	return global != "" && strings.EqualFold(filepath.Clean(root), filepath.Clean(global))
 }
 
 // holdsOnly says whether a directory holds something, and nothing but what is named so.

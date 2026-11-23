@@ -692,6 +692,13 @@ func TestUninstallLeavesTheBinaryToItsPackageManager(t *testing.T) {
 
 	check("windows", scoop, "scoop uninstall asq")
 	check("windows", current, "scoop uninstall asq")
+	// Scoop's global folder, for every user: SCOOP_GLOBAL, or %ProgramData%\scoop
+	t.Setenv("SCOOP_GLOBAL", "")
+	t.Setenv("ProgramData", filepath.Join(root, "ProgramData"))
+	check("windows", put(t, filepath.Join(root, "ProgramData", "scoop", "apps", "asq", "current", "asq.exe"), ""), "scoop uninstall asq --global")
+	t.Setenv("SCOOP_GLOBAL", filepath.Join(root, "global"))
+	check("windows", put(t, filepath.Join(root, "global", "apps", "asq", "1.6.0", "asq.exe"), ""), "scoop uninstall asq --global")
+	check("windows", scoop, "scoop uninstall asq")
 	check("windows", installed, "Remove-Item -Recurse -Force -LiteralPath "+psArg(filepath.Dir(installed)))
 	check("windows", built, "Remove-Item -Recurse -Force -LiteralPath "+psArg(built))
 	check("windows", beside, "Remove-Item -Recurse -Force -LiteralPath "+psArg(beside))

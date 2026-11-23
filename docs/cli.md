@@ -84,13 +84,12 @@ Punctuation separates words, as it does in the index: `session_query`, `session-
 word by its stem, Porter's, as SQLite's FTS5 has it: `logs` finds `log` and `logging` but not
 `login`, `deploy` finds `deployment`. A quoted word or phrase, a word of several parts
 (`session_query`), one with digits in it, and words in other scripts match as written — except
-a commit's id: eight to forty hexadecimal digits, letters and digits both, also finds the same id
-cut short to as few as seven, the way `git commit` and `git log --oneline` print it, so the whole
-id GitHub shows finds the turn that made the commit. An
-excluded word is excluded as typed, by how a word begins: `-windows` leaves in a turn that says
-only `window`. What is typed after a word says that it ends there: `c++` finds the word *c* —
-the index holds no `+` — and not every word that begins with c; a `*` says the opposite, and
-`retr*` finds what `retr` does.
+a commit's id: eight to sixty-four hexadecimal digits, letters and digits both, also finds the
+same id cut short to as few as seven, the way `git commit` and `git log --oneline` print it, so
+the whole id GitHub shows finds the turn that made the commit. An excluded word is excluded as
+typed, by how a word begins: `-windows` leaves in a turn that says only `window`. What is typed
+after a word says that it ends there: `c++` finds the word *c* — the index holds no `+` — and
+not every word that begins with c; a `*` says the opposite, and `retr*` finds what `retr` does.
 
 The session's title is searched with its first turn, so a word of it finds the session once,
 there: `webhook retries` finds the session titled *Cap webhook retries* at its first turn,

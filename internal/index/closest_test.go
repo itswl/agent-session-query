@@ -506,9 +506,12 @@ func TestACommitIsFoundByAnyLengthOfItsID(t *testing.T) {
 	h := fixture.Write(t)
 	const id = "eeee5555-0000-4000-8000-000000000005"
 	const full = "3f9c2ab4e5f60718293a4b5c6d7e8f9012345678"
+	// and a repository that names its objects by SHA-256: sixty-four
+	const sha256 = "9b74c9897bac770ffc029102a200c5de2bb3d4a8b1f16b1b4d0d3c3e8a6e1f02"
 	writeSession(t, h, id, "", []turnSaid{
 		{ask: "commit the cursor fix", output: "[main 3f9c2ab] Return next_cursor as null\n 1 file changed, 2 insertions(+)", reply: "Committed."},
 		{ask: "how long did the build take", output: "built in 31415926 ns", reply: "About 31 ms."},
+		{ask: "commit in the new repository", output: "[main (root-commit) 9b74c98] First\n 1 file changed", reply: "Committed there."},
 	})
 	a := openSynced(t, h)
 	ctx := context.Background()
@@ -521,6 +524,8 @@ func TestACommitIsFoundByAnyLengthOfItsID(t *testing.T) {
 		{strings.ToUpper(full), []string{"eeee5555#1"}},
 		{full[:8], []string{"eeee5555#1"}},
 		{full[:7], []string{"eeee5555#1"}},
+		{sha256, []string{"eeee5555#3"}},
+		{sha256 + "0", nil},
 		{"3f9c2ac4e5f60718", nil},
 		{`"` + full + `"`, nil},
 		{"314159265358", nil},

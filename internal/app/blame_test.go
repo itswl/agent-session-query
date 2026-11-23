@@ -25,6 +25,11 @@ func TestMade(t *testing.T) {
 			t.Errorf("made(%q) = %v, want %v", out, got, want)
 		}
 	}
+	// A repository that names its objects by SHA-256 prints them as long as it must
+	sha256 := strings.Repeat("9b74c98f", 8)
+	if !made("[main "+sha256[:41]+"] Long enough", sha256) {
+		t.Errorf("a SHA-256 commit printed at 41 characters is not taken for made")
+	}
 }
 
 // git blame --porcelain says of one line its commit and lines about it, then the line

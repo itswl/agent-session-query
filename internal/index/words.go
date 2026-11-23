@@ -389,11 +389,12 @@ func lastRune(s string) rune {
 // --oneline print seven, or more where seven do not tell it from another.
 const shortestID = 7
 
-// commitID reports whether a word may be a commit's id: eight to forty hexadecimal digits,
-// a letter among them and a digit — a word of digits alone is a number, and one of letters
-// alone a word, far more often than an id.
+// commitID reports whether a word may be a commit's id: eight to sixty-four hexadecimal
+// digits — a whole id is forty, or sixty-four in a repository that names its objects by
+// SHA-256 — a letter among them and a digit: a word of digits alone is a number, and one of
+// letters alone a word, far more often than an id.
 func commitID(w string) bool {
-	if len(w) <= shortestID || len(w) > 40 {
+	if len(w) <= shortestID || len(w) > 64 {
 		return false
 	}
 	var digit, letter bool

@@ -72,7 +72,7 @@ All ten only read. Each takes the selection arguments that make sense for it —
 | tool | answers | key arguments |
 |---|---|---|
 | `search` | Where was this said? The turns that match, best first, each with how it ended, the lines the words were found in and its answer — or, when no turn holds every word, the closest, marked with what each lacks, and how many turns the filters given left out that match whole | `query` ([syntax](cli.md#finding)), `recent`, `per_session`, `archived` |
-| `sessions` | What was worked on? Recent sessions, one line of where and when, one of what | `text`, `archived`, `agents` |
+| `sessions` | What was worked on, and which agents wait on the person? Recent sessions, one line of where and when — and where the transcript tells, whether the agent is working, waiting on a call, or idle — one of what | `text`, `state`, `archived`, `agents` |
 | `read` | A session at the depth asked for: its outline; some turns step by step; one step whole | `ref`, `turns`, `seq`, `full` |
 | `brief` | A handoff brief of a session: asked, changed and how each file stands now, failed and whether it passed later, concluded | `ref`, `turn`, `from`, `since` (`all` for the whole session) |
 | `pack` | Several sessions as one document, oldest first | `turns` |

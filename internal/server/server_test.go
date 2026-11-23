@@ -134,6 +134,15 @@ func TestRoutes(t *testing.T) {
 	if list.Total != 1 || list.Sessions[0].ID != fixture.Beta {
 		t.Errorf("filtered = %+v", list)
 	}
+	// Alpha answered its last ask an hour ago; beta, three days ago, is past being said to
+	get(t, s, "/api/sessions?state=waiting,idle", &list)
+	if list.Total != 1 || list.Sessions[0].ID != fixture.Alpha || list.Sessions[0].Live == nil || list.Sessions[0].Live.State != "idle" {
+		t.Errorf("waiting on the person = %d, first %+v", list.Total, list.Sessions[0].Session)
+	}
+	get(t, s, "/api/sessions?state=working", &list)
+	if list.Total != 0 {
+		t.Errorf("at work = %d", list.Total)
+	}
 
 	var one struct {
 		Session index.Session    `json:"session"`
@@ -270,6 +279,7 @@ func TestRoutes(t *testing.T) {
 		"/api/sessions?limit=many":              http.StatusBadRequest,
 		"/api/sessions?since=whenever":          http.StatusBadRequest,
 		"/api/sessions?source=emacs":            http.StatusBadRequest,
+		"/api/sessions?state=asleep":            http.StatusBadRequest,
 		"/api/usage?by=colour":                  http.StatusBadRequest,
 		"/api/failures?by=tool":                 http.StatusBadRequest,
 		"/api/nothing":                          http.StatusNotFound,

@@ -210,6 +210,7 @@ func warn(ctx context.Context, a *app.App, io *streams) {
 
 func cmdList(ctx context.Context, args []string, io *streams) error {
 	c := newCommand("ls", io.err).selection(20)
+	c.fs.StringVar(&c.q.State, "state", "", "sessions whose latest turn stands so: working, waiting or idle — waiting,idle is what waits on you")
 	rest, err := c.parse(args)
 	if err != nil {
 		return err

@@ -607,6 +607,7 @@ func (ix *Index) writeAll(ctx context.Context, rds []*reading) []written {
 // since it was last read. It reports whether anything was written, and gives what is to be
 // written to the words table, which it does not touch (see wordsOp).
 func (ix *Index) write(ctx context.Context, tx *sql.Tx, rd *reading) (sid int64, changed bool, words []wordsOp, err error) {
+	liveState, liveJSON := liveRow(rd.sess.Live)
 	err = func() error {
 		s, st := &rd.sess, &rd.stats
 		p := model.Parent{}
@@ -615,16 +616,16 @@ func (ix *Index) write(ctx context.Context, tx *sql.Tx, rd *reading) (sid int64,
 		}
 		err := tx.QueryRowContext(ctx, `
 INSERT INTO sessions (source, agent, key, stamp, reads, id, path, title, cwd, branch, model, version, platform,
-  started_at, updated_at, archived, running,
+  started_at, updated_at, archived, running, live_state, live,
   parent_session, parent_agent, parent_call, parent_run, agent_type, fork,
   turns, items, tools, failures, calls, tok_in, tok_out, tok_cr, tok_cw, tok_think, cost,
   last_ask, answer, first_id, last_id, error, read_ms, read_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?)
 ON CONFLICT (source, key) DO UPDATE SET
   agent=excluded.agent, stamp=excluded.stamp, reads=excluded.reads, reads_seq=sessions.reads_seq+1, id=excluded.id, path=excluded.path, title=excluded.title,
   cwd=excluded.cwd, branch=excluded.branch, model=excluded.model, version=excluded.version,
   platform=excluded.platform, started_at=excluded.started_at, updated_at=excluded.updated_at,
-  archived=excluded.archived, running=excluded.running,
+  archived=excluded.archived, running=excluded.running, live_state=excluded.live_state, live=excluded.live,
   parent_session=excluded.parent_session, parent_agent=excluded.parent_agent,
   parent_call=excluded.parent_call, parent_run=excluded.parent_run, agent_type=excluded.agent_type,
   fork=excluded.fork,
@@ -635,7 +636,7 @@ ON CONFLICT (source, key) DO UPDATE SET
   last_id=excluded.last_id, error=excluded.error, read_ms=excluded.read_ms, read_at=excluded.read_at
 RETURNING sid`,
 			rd.source, rd.agent, rd.ref.Key, rd.ref.Stamp, rd.reads, s.ID, s.Path, s.Title, s.Cwd, s.Branch, s.Model, s.Version, s.Platform,
-			ms(s.StartedAt), ms(s.UpdatedAt), b2i(s.Archived), b2i(s.Running),
+			ms(s.StartedAt), ms(s.UpdatedAt), b2i(s.Archived), b2i(s.Running), liveState, liveJSON,
 			p.Session, p.Agent, p.Call, p.Run, p.Type, b2i(p.Fork),
 			st.Turns, st.Items, st.Tools, st.Failures, st.Calls,
 			st.Usage.Input, st.Usage.Output, st.Usage.CacheRead, st.Usage.CacheWrite, st.Usage.Reasoning, st.CostUSD,
@@ -757,6 +758,24 @@ RETURNING sid`,
 	}()
 	return sid, changed, words, err
 }
+
+// liveRow is where a session's latest turn stands as its row keeps it: the state, and the
+// rest as JSON. A command waited on is kept to a line's worth: it is shown in a list.
+func liveRow(live *model.Live) (string, string) {
+	if live == nil {
+		return "", ""
+	}
+	l := *live
+	l.Command = txt.Truncate(l.Command, liveCommand, "…")
+	data, err := json.Marshal(l)
+	if err != nil {
+		return "", ""
+	}
+	return l.State, string(data)
+}
+
+// liveCommand is how much of a command waited on a session's row keeps.
+const liveCommand = 300
 
 // staleTurns are the turns of a session words_stale names.
 func staleTurns(ctx context.Context, tx *sql.Tx, sid int64) (map[int]bool, error) {

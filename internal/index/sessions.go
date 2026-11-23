@@ -3,6 +3,7 @@ package index
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -20,8 +21,32 @@ import (
 // is not available across the CLIs — one registers only its background sessions, the
 // rest expose nothing — and one dot that means "a process is running" for one CLI and
 // "written recently" for the others is worse than an approximation that is at least
-// the same everywhere.
+// the same everywhere. Where the transcript records it, Live says more: where the latest
+// turn stands.
 const ActiveWindow = 2 * time.Minute
+
+// How long after its transcript was last written a session is still said to stand where
+// the transcript left it (model.Live). An agent at work writes as it goes: one that has
+// written nothing for WorkingFor has most likely stopped — its CLI closed, or killed, in
+// the middle of a turn — and is not said to be working. Waiting, on a call or for the
+// person, lasts: a permission prompt is answered when someone comes back to it, and an
+// answer is read when they do. WaitingFor bounds that, so that a session left so for good
+// is not said to need anyone for good.
+const (
+	WorkingFor = 10 * time.Minute
+	WaitingFor = 24 * time.Hour
+)
+
+// LiveStates are where a turn can stand, as Filter.State takes them.
+var LiveStates = []string{model.LiveWorking, model.LiveWaiting, model.LiveIdle}
+
+// liveFor is how long a session is said to stand so after it was last written.
+func liveFor(state string) time.Duration {
+	if state == model.LiveWorking {
+		return WorkingFor
+	}
+	return WaitingFor
+}
 
 // Session is a session as the index holds it: what its transcript said, what it adds
 // up to, and where it sits among the others.
@@ -79,6 +104,9 @@ type Filter struct {
 	Agents   bool
 	// Empty includes the transcripts that hold no conversation: a CLI opened and closed.
 	Empty bool
+	// State keeps the sessions whose latest turn stands so, as Session.Live says it: by
+	// what the transcript says, while it was last written recently enough to be believed.
+	State []string
 
 	// wide says the store term filters nothing — Stores names every store the index
 	// holds — and the query is one the time should drive. See Index.widen.
@@ -140,6 +168,15 @@ func (f Filter) where() (string, []any) {
 		conds = append(conds, "(instr(lower(s.title), lower(?)) > 0 OR instr(lower(s.id), lower(?)) > 0 OR instr(lower(s.cwd), lower(?)) > 0 OR instr(lower(s.path), lower(?)) > 0)")
 		args = append(args, f.Text, f.Text, f.Text, f.Text)
 	}
+	if len(f.State) > 0 {
+		now := time.Now()
+		var either []string
+		for _, state := range f.State {
+			either = append(either, "(s.live_state = ? AND s.updated_at >= ?)")
+			args = append(args, state, ms(now.Add(-liveFor(state))))
+		}
+		conds = append(conds, "("+strings.Join(either, " OR ")+")")
+	}
 	if f.SID != 0 {
 		conds = append(conds, "s.sid = ?")
 		args = append(args, f.SID)
@@ -180,7 +217,7 @@ func dirTerms(dir string) (same, under string) {
 }
 
 const sessionColumns = `s.sid, s.source, s.agent, s.id, s.path, s.title, s.cwd, s.branch, s.model, s.version, s.platform,
-  s.started_at, s.updated_at, s.archived, s.running,
+  s.started_at, s.updated_at, s.archived, s.running, s.live_state, s.live,
   s.parent_session, s.parent_agent, s.parent_call, s.parent_run, s.agent_type, s.fork,
   s.root_sid, s.depth, s.agents,
   s.turns, s.items, s.tools, s.failures, s.calls, s.tok_in, s.tok_out, s.tok_cr, s.tok_cw, s.tok_think, s.cost,
@@ -193,9 +230,10 @@ func scanSession(row scanner, now time.Time) (Session, error) {
 	var s Session
 	var started, updated int64
 	var archived, running, fork int
+	var liveState, live string
 	var p model.Parent
 	err := row.Scan(&s.sid, &s.Source, &s.Agent, &s.ID, &s.Path, &s.Title, &s.Cwd, &s.Branch, &s.Model, &s.Version, &s.Platform,
-		&started, &updated, &archived, &running,
+		&started, &updated, &archived, &running, &liveState, &live,
 		&p.Session, &p.Agent, &p.Call, &p.Run, &p.Type, &fork,
 		&s.rootSid, &s.Depth, &s.Agents,
 		&s.Stats.Turns, &s.Stats.Items, &s.Stats.Tools, &s.Stats.Failures, &s.Stats.Calls,
@@ -213,6 +251,12 @@ func scanSession(row scanner, now time.Time) (Session, error) {
 	}
 	s.Ref = s.Session.Ref()
 	s.Active = !s.UpdatedAt.IsZero() && now.Sub(s.UpdatedAt) < ActiveWindow
+	if liveState != "" && !s.UpdatedAt.IsZero() && now.Sub(s.UpdatedAt) < liveFor(liveState) {
+		var l model.Live
+		if json.Unmarshal([]byte(live), &l) == nil && l.State == liveState {
+			s.Live = &l
+		}
+	}
 	return s, nil
 }
 

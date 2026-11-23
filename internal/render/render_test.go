@@ -550,3 +550,45 @@ func TestAFailureThatPassedLaterIsNotAnOpenOne(t *testing.T) {
 		}
 	}
 }
+
+// Where a session's latest turn stands is said in its line of a list and in its outline:
+// the call it waits on by what it runs, cleaned like any other text from a transcript.
+func TestWhereALatestTurnStandsIsSaid(t *testing.T) {
+	at := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	now := at.Add(3 * time.Minute)
+	st := Style{Now: now}
+	session := func(id string, live *model.Live) index.Session {
+		return index.Session{Session: model.Session{Source: "claude", ID: id, Title: id, StartedAt: at, UpdatedAt: at, Live: live},
+			Ref: "claude/" + id}
+	}
+	list := []index.Session{
+		session("aaaa1111", &model.Live{State: model.LiveWorking, Since: at}),
+		session("bbbb2222", &model.Live{State: model.LiveWaiting, Since: at, Tool: "Bash", Command: "make \x1b[31mdeploy\x1b[0m\nstaging", Seq: 7}),
+		session("cccc3333", &model.Live{State: model.LiveWaiting, Since: at, Tool: "Edit", File: "/work/a.go", Seq: 3}),
+		session("dddd4444", &model.Live{State: model.LiveIdle, Since: at}),
+		session("eeee5555", nil),
+	}
+	var b bytes.Buffer
+	Sessions(&b, list, len(list), st)
+	out := b.String()
+	for _, want := range []string{"aaaa1111  working · ", "bbbb2222  waiting on Bash: make deploy staging · ", "cccc3333  waiting on Edit: /work/a.go · ",
+		"dddd4444  idle · ", "eeee5555  3m ago"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the list lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("an escape sequence reached the list: %q", out)
+	}
+
+	b.Reset()
+	Outline(&b, &list[1], nil, nil, st)
+	if want := "waiting on Bash: make deploy staging [7] since " + at.Local().Format("15:04") + ", 3m ago — a command still running, or a prompt asking permission to run it"; !strings.Contains(b.String(), want) {
+		t.Errorf("the outline lacks %q:\n%s", want, b.String())
+	}
+	b.Reset()
+	Outline(&b, &list[3], nil, nil, st)
+	if !strings.Contains(b.String(), "idle since "+at.Local().Format("15:04")+", 3m ago — the agent's turn is over") {
+		t.Errorf("the outline of an idle session:\n%s", b.String())
+	}
+}

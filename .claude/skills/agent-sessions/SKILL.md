@@ -44,6 +44,7 @@ Two ways to ask, the same answers either way:
 | "What did I *ask* about X?" | `search(query="ask:X")`. Also `reply:` `thinking:` `tool:` (a tool's input) `output:` (what a tool printed) `title:` (the session's title) |
 | "The exact message was …" | `search(query="\"exit status 1\"")` — quotes match a phrase as written; bare words match as prefixes and in their other forms; `-word` excludes |
 | "What was I working on?" / "…last week?" | `sessions(since="7d")`, with `project` / `source` / `branch` / `text` |
+| "Which of my agents are waiting on me?" / "Is it still running?" | `sessions(state="waiting,idle")`, or `state="working"`. A line says `working`, `waiting on <tool>: <command>` — a command still running or a permission prompt, which the record cannot tell apart — or `idle`, the agent done. Said for Claude Code, Codex, Gemini CLI and OpenCode, from what their transcripts say, not from a look at a process |
 | "What happened in that session?" | `read(ref="…")` — the outline: every turn's ask and how it ended, plus its subagents |
 | "What did it do in turn 4?" | `read(ref="…#4")` — step by step: replies, reasoning, each tool call and its outcome, numbered `[seq]` |
 | "Show me the whole output of that command" | `read(ref="…", seq=57)` — one step whole |

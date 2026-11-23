@@ -116,7 +116,7 @@ systemd 或计划任务——再删二进制；容器则是 `docker rm` 加它�
 
 | | |
 |---|---|
-| `asq ls` | 最近的会话 —— `--project`、`--since 7d`、`--source codex`、`--branch`，或标题里的一个词 |
+| `asq ls` | 最近的会话，以及每个 agent 是在干活、在等某个调用，还是已经做完 —— `--state waiting,idle`、`--project`、`--since 7d`、`--source codex`、`--branch`，或标题里的一个词 |
 | `asq search <词>` | 包含这些词的轮次：提问、回复、思考、工具输入与输出、会话标题 |
 | `asq show <ref>` | 把会话看成轮次列表；`<ref>#4` 逐步展开某一轮；`--seq 12` 完整看某一步；`-f` 实时跟随 |
 | `asq brief <ref>` | 交接简报：问了什么、改了什么、什么失败了、结论是什么，以及现在怎样了 —— `--turn N`、`--from N`、`--since 2h`、`--since all` |

@@ -45,9 +45,16 @@ the command happened to run.
 ## Finding
 
 **`asq ls [word]`** — recent sessions, newest first. A word narrows to sessions whose title, id
-or directory contains it. A session's failed calls are counted with how many of them the same
-command passed later, as `failures` [judges it](#measuring): `2 failed, 1 passed later`, in red
-while one has not, muted once each has.
+or directory contains it. A session written to in the last two minutes is marked `●`; where its
+transcript tells ([which CLIs](sources.md#where-a-turn-stands)), its line opens with where its
+latest turn stands — `working`, `waiting on Bash: go test ./...` (a command still running, or a
+prompt asking permission to run it: transcripts do not tell the two apart), or `idle`, the
+agent done and the person to answer. `--state` keeps the sessions that stand so: `--state
+waiting,idle` is what waits on you. Working is said for ten minutes after the transcript was
+last written, waiting and idle for a day ([why](api.md#sessions)).
+A session's failed calls are counted with how many of them the same command passed later, as
+`failures` [judges it](#measuring): `2 failed, 1 passed later`, in red while one has not, muted
+once each has.
 
 **`asq search <query>`** — the turns that match, best first. Each hit shows the turn's ref and
 how the turn ended — `✓`, `✗2 failed` (with how many of those calls the same command passed
@@ -137,7 +144,7 @@ between a history that still holds and one that has moved on
 
 | | |
 |---|---|
-| `asq show claude/3f2a` | the outline: every turn's ask and how it ended — `✗2` for failed calls, `✓` with `1 failed, passed later` once the same command passed later for each — and the session's subagents |
+| `asq show claude/3f2a` | the outline: where the latest turn stands, every turn's ask and how it ended — `✗2` for failed calls, `✓` with `1 failed, passed later` once the same command passed later for each — and the session's subagents |
 | `asq show claude/3f2a#4` · `--turns 3-5` · `--turns last` · `--turns all` | those turns step by step, each step numbered `[seq]` |
 | `asq show claude/3f2a --seq 12` | one step whole: a tool call's full input and output |
 

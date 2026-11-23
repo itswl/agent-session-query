@@ -126,7 +126,7 @@ a container is `docker rm` and its `/data` volume.
 
 | | |
 |---|---|
-| `asq ls` | recent sessions — `--project`, `--since 7d`, `--source codex`, `--branch`, or a word of the title |
+| `asq ls` | recent sessions, and whether each agent is working, waiting on a call or done — `--state waiting,idle`, `--project`, `--since 7d`, `--source codex`, `--branch`, or a word of the title |
 | `asq search <words>` | the turns that hold these words: asks, replies, reasoning, tool input and output, the session's title |
 | `asq show <ref>` | a session as its turns; `<ref>#4` one turn step by step; `--seq 12` one step whole; `-f` follows it live |
 | `asq brief <ref>` | a handoff brief: what was asked, changed, failed and concluded, and how it stands now — `--turn N`, `--from N`, `--since 2h`, `--since all` |

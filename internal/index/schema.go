@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   updated_at INTEGER NOT NULL DEFAULT 0,
   archived   INTEGER NOT NULL DEFAULT 0,
   running    INTEGER NOT NULL DEFAULT 0,
+  live_state TEXT NOT NULL DEFAULT '',     -- where its latest turn stands (model.Live) …
+  live       TEXT NOT NULL DEFAULT '',     --   and the rest of it, as JSON
 
   -- what a subagent's transcript says about where it came from …
   parent_session TEXT NOT NULL DEFAULT '',

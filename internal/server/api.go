@@ -166,9 +166,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	s.fresh(r)
-	f, _, err := s.selection(r, "")
+	q := queryOf(r)
+	q.State = r.URL.Query().Get("state") // the list's own: where the latest turn stands
+	f, err := s.app.Filter(q)
 	if err != nil {
-		s.fail(w, r, err)
+		s.fail(w, r, badRequest{err})
 		return
 	}
 	page, err := pageOf(r, 50)

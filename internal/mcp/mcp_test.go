@@ -186,6 +186,7 @@ func TestEveryToolAnswers(t *testing.T) {
 	}{
 		{"sessions", nil, []string{"claude/aaaa1111", "claude/bbbb2222", "Fix flaky test", "/work/alpha"}},
 		{"sessions", map[string]any{"project": "beta", "limit": "1"}, []string{"claude/bbbb2222"}},
+		{"sessions", map[string]any{"state": "waiting,idle"}, []string{"claude/aaaa1111  idle · ", "Fix flaky test"}},
 		{"search", map[string]any{"query": "数据库"}, []string{alpha + "#2", "现在给数据库加索引"}},
 		{"search", map[string]any{"query": "ECONNREFUSED", "since": "7d"}, []string{alpha + "#1", "output", "Bash", "✗1 failed", "answer The test depended on map order"}},
 		{"search", map[string]any{"query": "rotating keys"}, []string{"claude/" + fixture.Beta + "#1", "rotate the deploy key"}},
@@ -247,6 +248,7 @@ func TestWhatGoesWrongIsToldToTheModel(t *testing.T) {
 		{"sessions", map[string]any{"limit": "many"}, "limit: want a whole number"},
 		{"sessions", map[string]any{"since": "yesterdayish"}, "unreadable time"},
 		{"sessions", map[string]any{"source": "emacs"}, "unknown source"},
+		{"sessions", map[string]any{"state": "busy"}, `state: "busy" is not one of working, waiting, idle`},
 		{"search", nil, "search needs query"},
 		{"read", map[string]any{"ref": "zzzz"}, "sessions and search print the refs"},
 		{"read", map[string]any{"ref": "aaaa1111", "turns": "seven"}, "turns: want"},

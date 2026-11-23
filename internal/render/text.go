@@ -177,6 +177,9 @@ func Sessions(w io.Writer, list []index.Session, total int, st Style) {
 			state = st.dim(" archived")
 		}
 		facts := []string{txt.Ago(s.UpdatedAt, st.now()), plural(s.Stats.Turns, "turn")}
+		if live := liveFact(s.Live, st); live != "" {
+			facts = append([]string{live}, facts...)
+		}
 		if s.Stats.Failures > 0 {
 			facts = append(facts, failedNote(st, s.Stats.Failures, s.Stats.PassedLater))
 		}
@@ -369,6 +372,9 @@ func Outline(w io.Writer, s *index.Session, turns []model.Turn, children []index
 		sums = append(sums, s.StartedAt.Local().Format("2006-01-02 15:04")+" → "+s.UpdatedAt.Local().Format("01-02 15:04"))
 	}
 	fmt.Fprintln(w, st.dim(strings.Join(sums, " · ")))
+	if line := liveLine(s.Live, st); line != "" {
+		fmt.Fprintln(w, line)
+	}
 	if s.Parent != nil {
 		fmt.Fprintln(w, st.dim("subagent ("+orDash(s.Parent.Type)+") of "+s.Root))
 	}
@@ -410,6 +416,61 @@ func Outline(w io.Writer, s *index.Session, turns []model.Turn, children []index
 			fmt.Fprintf(w, "  %s  %s  %s\n", st.cyan(ref), st.dim(orDash(c.Parent.Type)), st.fit(txt.OneLine(c.Title, 0), len(ref)+20))
 		}
 	}
+}
+
+// liveFact is where a session's latest turn stands, as a fact of its line in a list:
+// "working", "waiting on Bash: go test ./...", "idle". Empty when it is not said.
+func liveFact(l *model.Live, st Style) string {
+	if l == nil {
+		return ""
+	}
+	switch l.State {
+	case model.LiveWorking:
+		return st.green("working")
+	case model.LiveWaiting:
+		return st.yellow(waitingOn(l, st, 48))
+	case model.LiveIdle:
+		return "idle"
+	}
+	return ""
+}
+
+// waitingOn names the call a session waits on: the tool, and what it runs or names.
+func waitingOn(l *model.Live, st Style, width int) string {
+	what := l.Command
+	if what == "" && l.File != "" {
+		what = st.Path(l.File)
+	}
+	on := "waiting on " + orDash(txt.OneLine(l.Tool, 60))
+	if what = txt.OneLine(what, width); what != "" {
+		on += ": " + what
+	}
+	return on
+}
+
+// liveLine says where a session's latest turn stands, and since when, as a line of its
+// outline. Empty when it is not said.
+func liveLine(l *model.Live, st Style) string {
+	if l == nil {
+		return ""
+	}
+	since := ""
+	if !l.Since.IsZero() {
+		since = " since " + l.Since.Local().Format("15:04") + ", " + txt.Ago(l.Since, st.now())
+	}
+	switch l.State {
+	case model.LiveWorking:
+		return st.green("working" + since)
+	case model.LiveWaiting:
+		step := ""
+		if l.Seq > 0 {
+			step = fmt.Sprintf(" [%d]", l.Seq)
+		}
+		return st.yellow(waitingOn(l, st, 120)+step+since) + st.dim(" — a command still running, or a prompt asking permission to run it")
+	case model.LiveIdle:
+		return "idle" + since + st.dim(" — the agent's turn is over: the next move is the person's")
+	}
+	return ""
 }
 
 func changed(files []model.File) int {

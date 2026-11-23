@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -226,6 +227,9 @@ type Query struct {
 	Until    string
 	Archived bool
 	Agents   bool
+	// State keeps the sessions whose latest turn stands so: working, waiting, idle, or
+	// several of them, comma-separated
+	State string
 }
 
 // Filter turns a query into the index's filter, confined to this process's stores.
@@ -244,7 +248,28 @@ func (a *App) Filter(q Query) (index.Filter, error) {
 	if f.Until, err = When(q.Until, time.Now()); err != nil {
 		return f, fmt.Errorf("until: %w", err)
 	}
+	if f.State, err = states(q.State); err != nil {
+		return f, fmt.Errorf("state: %w", err)
+	}
 	return f, nil
+}
+
+// states reads where turns may stand, as a person or an agent writes them: comma-separated.
+func states(s string) ([]string, error) {
+	var out []string
+	for part := range strings.SplitSeq(s, ",") {
+		part = strings.ToLower(strings.TrimSpace(part))
+		if part == "" {
+			continue
+		}
+		if !slices.Contains(index.LiveStates, part) {
+			return nil, fmt.Errorf("%q is not one of %s", part, strings.Join(index.LiveStates, ", "))
+		}
+		if !slices.Contains(out, part) {
+			out = append(out, part)
+		}
+	}
+	return out, nil
 }
 
 // Window is the time bounds of a query, for the reports that are bounded by when things

@@ -57,6 +57,8 @@ func TestCommands(t *testing.T) {
 		{[]string{"ls", "--project", "beta"}, []string{"claude/bbbb2222", "rotate the deploy key"}},
 		{[]string{"ls", "flaky"}, []string{alpha}},
 		{[]string{"ls", "--agents"}, []string{"claude/x1"}},
+		{[]string{"ls", "--state", "idle"}, []string{alpha + "  idle · "}},
+		{[]string{"show", alpha}, []string{"idle since ", "the next move is the person's"}},
 		{[]string{"search", "数据库"}, []string{"1 turn in 1 session", alpha, "#2", "现在给数据库加索引"}},
 		{[]string{"search", "--since", "7d", "ECONNREFUSED"}, []string{"output", "Bash", "ECONNREFUSED"}},
 		{[]string{"s", `"map order"`}, []string{"#1", "✗1 failed", "   ask    fix the flaky test\n   answer The test depended on map order"}},

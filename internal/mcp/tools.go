@@ -81,11 +81,13 @@ var tools = []tool{
 	{
 		name:  "sessions",
 		title: "List sessions",
-		about: "Recent sessions, newest first: one line of where and when, one of what it was about. Each starts with the session's ref. " +
-			"Use it for \"what was I working on\" and to find a session by its title, id or directory; use search to find where something was said.",
+		about: "Recent sessions, newest first: one line of where and when, one of what it was about. Each starts with the session's ref, " +
+			"and, where its transcript tells, says where its latest turn stands: working, waiting on a tool call (a command running, or a permission prompt), or idle (done, the person to answer). " +
+			"Use it for \"what was I working on\", for \"which agents are waiting on me\" (state waiting,idle), and to find a session by its title, id or directory; use search to find where something was said.",
 		props: []prop{
 			{"text", "string", "Only sessions whose title, id or directory contains this."},
 			pSource, pProject, pBranch, pSince, pUntil,
+			{"state", "string", "Only sessions whose latest turn stands so, by what their transcript says: working, waiting (on a tool call: a command running, or a permission prompt), idle (the agent is done and the person is to answer), or several, comma-separated. Said for Claude Code, Codex, Gemini CLI and OpenCode."},
 			{"archived", "boolean", "Include sessions their CLI has archived."},
 			{"agents", "boolean", "Include subagents' transcripts as sessions of their own."},
 			pLimit, pOffset, pChars,
@@ -470,7 +472,9 @@ func runSearch(ctx context.Context, s *Server, a *args) (string, error) {
 }
 
 func runSessions(ctx context.Context, s *Server, a *args) (string, error) {
-	f, err := s.App.Filter(a.query())
+	q := a.query()
+	q.State = a.str("state")
+	f, err := s.App.Filter(q)
 	if err != nil {
 		return "", err
 	}

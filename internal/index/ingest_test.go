@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -288,5 +289,88 @@ func TestAnIndexFromBeforeSrcGainsIt(t *testing.T) {
 	var named int
 	if err := ix.rw.QueryRow(`SELECT count(*) FROM turns WHERE length(src) > 0`).Scan(&named); err != nil || named != 4 {
 		t.Errorf("named turns = %d, %v", named, err)
+	}
+}
+
+// standing is a store of sessions each left in a state its transcript says, at a time
+// before now: an ask, then a call or an answer.
+type standing map[string]struct {
+	ago  time.Duration
+	last string // "ask", "call" or "answer"
+}
+
+func (standing) Location() string { return "test" }
+func (standing) Exists() bool     { return true }
+func (s standing) Scan(context.Context) ([]sources.Ref, error) {
+	var refs []sources.Ref
+	for key := range s {
+		refs = append(refs, sources.Ref{Key: key, Stamp: "1", ModTime: time.Now()})
+	}
+	return refs, nil
+}
+func (s standing) Read(_ context.Context, ref sources.Ref, w *transcript.Writer) error {
+	w.S.ID, w.Tells = ref.Key, transcript.TellsByRows
+	at := time.Now().Add(-s[ref.Key].ago)
+	w.Add(transcript.Message{Role: transcript.User, At: at, Blocks: []transcript.Block{transcript.TextOf("deploy " + ref.Key)}})
+	switch s[ref.Key].last {
+	case "call":
+		w.Add(transcript.Message{Role: transcript.Assistant, At: at, Response: "r", Blocks: []transcript.Block{transcript.CallOf("c", "Bash", map[string]any{"command": "make deploy"})}})
+	case "answer":
+		w.Add(transcript.Message{Role: transcript.Assistant, At: at, Response: "r", Blocks: []transcript.Block{transcript.TextOf("Deployed.")}})
+	}
+	return nil
+}
+
+// Where a session's latest turn stands is kept with it, and said while the transcript was
+// written recently enough to believe it: working for minutes, waiting or idle for a day.
+// The list can be narrowed to the sessions that stand so.
+func TestWhereALatestTurnStandsIsKeptAndBelieved(t *testing.T) {
+	ix := openTemp(t)
+	store := standing{
+		"working":   {time.Minute, "ask"},
+		"stopped":   {WorkingFor + time.Minute, "ask"},
+		"waiting":   {2 * time.Hour, "call"},
+		"idle":      {3 * time.Hour, "answer"},
+		"forgotten": {WaitingFor + time.Hour, "answer"},
+	}
+	if _, err := ix.Sync(context.Background(), []Store{{Name: "claude", Spec: sources.Spec{Name: "claude", Reads: 1}, Source: store}}, SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	list, _, err := ix.Sessions(context.Background(), Filter{}, Page{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	said := map[string]string{}
+	for _, s := range list {
+		if s.Live != nil {
+			said[s.ID] = s.Live.State
+			if s.Live.State == model.LiveWaiting && (s.Live.Tool != "Bash" || s.Live.Command != "make deploy" || s.Live.Seq != 1) {
+				t.Errorf("the call waited on = %+v", s.Live)
+			}
+		}
+	}
+	if want := map[string]string{"working": "working", "waiting": "waiting", "idle": "idle"}; fmt.Sprint(said) != fmt.Sprint(want) {
+		t.Errorf("said = %v, want %v: a turn silent for long is not believed", said, want)
+	}
+	for _, c := range []struct {
+		states []string
+		want   string
+	}{
+		{[]string{"working"}, "[working]"},
+		{[]string{"waiting", "idle"}, "[idle waiting]"},
+		{[]string{"idle"}, "[idle]"},
+	} {
+		list, total, err := ix.Sessions(context.Background(), Filter{State: c.states}, Page{Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, s := range list {
+			ids = append(ids, s.ID)
+		}
+		slices.Sort(ids)
+		if fmt.Sprint(ids) != c.want || total != len(ids) {
+			t.Errorf("state %v = %v (%d), want %s", c.states, ids, total, c.want)
+		}
 	}
 }

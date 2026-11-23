@@ -29,6 +29,7 @@ signing in and the MCP endpoint. The page is a client of this API and uses nothi
 | `text` | title, id or directory contains this |
 | `source`, `project`, `branch` | as on the command line, except that `project` is always a part of the directory: `.` here would be the server's directory, not the caller's |
 | `since`, `until` | by when the session was last written |
+| `state` | where its latest turn stands: `working`, `waiting`, `idle`, or several, comma-separated — `waiting,idle` is the sessions that wait on the person |
 | `archived=1`, `agents=1` | include archived sessions; include subagents' transcripts |
 | `limit` (50, at most 500), `offset` | paging |
 
@@ -36,7 +37,8 @@ signing in and the MCP endpoint. The page is a client of this API and uses nothi
 {"sessions": [{"source": "claude", "id": "3f2a…", "ref": "claude/3f2a…", "title": "…",
                "cwd": "/work/api", "branch": "main", "model": "…", "updatedAt": "…",
                "stats": {"turns": 4, "tools": 31, "failures": 2, "passedLater": 1, "calls": 40, "usage": {…}},
-               "agents": 2, "lastAsk": "…", "answer": "…", "active": true, "resume": "cd … && claude --resume …"}],
+               "agents": 2, "lastAsk": "…", "answer": "…", "active": true, "resume": "cd … && claude --resume …",
+               "live": {"state": "waiting", "since": "…", "tool": "Bash", "command": "go test ./...", "seq": 57}}],
  "total": 363, "limit": 50, "offset": 0}
 ```
 
@@ -44,7 +46,17 @@ signing in and the MCP endpoint. The page is a client of this API and uses nothi
 whole. `stats.passedLater` is how many of its failures the same command passed later, [as failures
 judge it](#reports). `active` means written within the last two minutes — recency, not a process check.
 
-**`GET /api/sessions/{source}/{id}`** — one session: `{"session", "turns", "agents", "above"}`.
+`live` is [where the latest turn stands](model.md#where-a-turn-stands), as the transcript
+says it, for the CLIs that record it ([which](sources.md#where-a-turn-stands)): `working`,
+`waiting` on a call — `tool`, `command` or `file`, and `seq` name it — or `idle`, the agent
+done and the person to answer; `since` is when it came to be so. It is said while the
+transcript was last written recently enough to believe it: ten minutes for `working`, since
+an agent at work writes as it goes and one silent that long has most likely stopped; a day
+for `waiting` and `idle`, which last until someone comes back to them. Past that it is
+absent, and `state` does not find the session.
+
+**`GET /api/sessions/{source}/{id}`** — one session: `{"session", "turns", "agents", "above"}`,
+the session with `active` and `live` as in the list.
 `turns` is the **outline** — every turn without its items, each saying how many `steps` it
 holds, and of its `failures` how many `passedLater`; an ask or an answer longer than a couple of thousand characters is cut here and whole in
 the turn itself. `agents` is the subagent sessions directly beneath it, and `above` — for a

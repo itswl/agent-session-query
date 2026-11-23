@@ -254,6 +254,13 @@ A binary built without it reports the version Go recorded of the module: the rel
 (`v1.5.1-0.20261122134833-b66c73f1d4cf`, `+dirty` with changes not committed). A build that
 recorded neither — a container built from a copy of the source, which has no `.git` — is `dev`.
 
+Before the release is created, each archive and installer, and the image, gets a build
+attestation (`actions/attest`): a statement of the workflow, the commit and the run that made
+it, signed through Sigstore with the run's own identity and kept by GitHub — the image's is
+pushed to the registry beside it. `SHA256SUMS` comes from the same release and cannot say that;
+`gh attestation verify <file> --repo itswl/agent-session-query` can. Signing for macOS, below,
+is apart from it and unchanged by it.
+
 ### Signing for macOS
 
 macOS remembers whether a program may read a folder it guards — Documents, Desktop, Downloads,

@@ -96,6 +96,16 @@ Or take an archive from the [releases](https://github.com/itswl/agent-session-qu
 (amd64 and arm64 for all three systems), or run the container image
 `ghcr.io/itswl/agent-session-query` — see [Deploying](docs/deploy.md).
 
+The checksums the installers check come from the same release as the archives: they catch a
+download gone wrong, not a release replaced. What says where a file came from is its build
+attestation — every archive, installer and image has one, signed by the release workflow, naming
+the run and the commit that built it:
+
+```sh
+gh attestation verify asq-darwin-arm64.tar.gz --repo itswl/agent-session-query
+gh attestation verify oci://ghcr.io/itswl/agent-session-query:latest --repo itswl/agent-session-query
+```
+
 Then:
 
 ```sh

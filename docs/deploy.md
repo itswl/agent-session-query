@@ -331,6 +331,9 @@ docker run -d --name asq -p 127.0.0.1:7717:7717 \
   make the `/data` volume writable by that uid.
 - The image is built from scratch: the binary, root certificates (for `asq otel` to an HTTPS
   collector), nothing else. Its health check is the binary asking itself: `asq ping`.
+- Each release's image has a build attestation, pushed beside it, which names the workflow run
+  and the commit that built it:
+  `gh attestation verify oci://ghcr.io/itswl/agent-session-query:latest --repo itswl/agent-session-query`.
 
 Stores outside the default home — another machine's, a fleet's bind mount — are mounted anywhere
 and named with `ASQ_PATH` ([how to copy another machine's](sources.md#another-machines-sessions)):

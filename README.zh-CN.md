@@ -88,6 +88,15 @@ go install github.com/itswl/agent-session-query/cmd/asq@latest
 也可以从 [releases](https://github.com/itswl/agent-session-query/releases) 直接下载压缩包（三个系统均提供
 amd64 与 arm64），或运行容器镜像 `ghcr.io/itswl/agent-session-query` —— 见 [部署](docs/deploy.md)。
 
+安装脚本核对的校验和与压缩包来自同一个 release：它能发现下载出错，发现不了整个 release 被替换。
+能说明文件来历的是构建证明（build attestation）——每个压缩包、安装脚本和镜像都有一份，由发布
+workflow 签名，写明构建它的那次运行和那个 commit：
+
+```sh
+gh attestation verify asq-darwin-arm64.tar.gz --repo itswl/agent-session-query
+gh attestation verify oci://ghcr.io/itswl/agent-session-query:latest --repo itswl/agent-session-query
+```
+
 然后：
 
 ```sh

@@ -194,6 +194,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # The image's build provenance: a token from GitHub's OIDC to sign with, and the
+      # attestations API to keep the statement in
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
 
@@ -225,6 +229,7 @@ jobs:
             type=raw,value=latest
 
       - uses: docker/build-push-action@v7
+        id: push
         env:
           # The build record is an artifact nobody reads, and one more thing the publish
           # job's download could trip over
@@ -237,6 +242,17 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      # Attested by its digest, as the archives are in publish, and the statement pushed to
+      # the registry beside the image: gh attestation verify oci://<image>:<tag> --repo …
+      - name: Attest
+        uses: actions/attest@v4
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          # A storage record is for a repository an organization owns
+          create-storage-record: false
+
   publish:
     # Waits for the image so the notes can say whether there is one, but needs only the
     # binaries: an image that failed to push must not cost the Release. Nor is anything
@@ -248,6 +264,8 @@ jobs:
     if: ${{ !cancelled() && github.event.created && needs.build.result == 'success' && (needs.verify-macos.result == 'success' || needs.verify-macos.result == 'skipped') }}
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
 
@@ -276,10 +294,12 @@ jobs:
             echo '```'
             echo
             echo "On Windows, run \`install.ps1\` from below with \`\$env:VERSION = '${GITHUB_REF_NAME}'\`. With Go: \`go install ${GITHUB_SERVER_URL#https://}/${GITHUB_REPOSITORY}/cmd/asq@${GITHUB_REF_NAME}\`."
+            echo
+            echo "Each archive and installer has a build attestation, which says the workflow run and commit that built it: \`gh attestation verify asq-linux-amd64.tar.gz --repo ${GITHUB_REPOSITORY}\`."
             # Only when the image job pushed one: the notes do not advertise what is not there
             if [ "${{ needs.image.result }}" = success ]; then
               echo
-              echo "Container image: \`ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF_NAME#v}\` (linux/amd64, linux/arm64)."
+              echo "Container image: \`ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF_NAME#v}\` (linux/amd64, linux/arm64), attested the same way: \`gh attestation verify oci://ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF_NAME#v} --repo ${GITHUB_REPOSITORY}\`."
             fi
           } >> release-notes.md
 
@@ -294,6 +314,20 @@ jobs:
       # main branch may one day expect archives this release does not have
       - name: Installers
         run: cp install.sh install.ps1 dist/
+
+      # SHA256SUMS comes from the same release as the archives: it catches a download that
+      # went wrong, not a release replaced whole. A build attestation does — a statement of
+      # the workflow, the commit and the run that made each file, signed through Sigstore
+      # with this run's identity and kept by GitHub: gh attestation verify <file> --repo ….
+      # Before the release is created, so that nothing is published without one.
+      - name: Attest
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/asq-*.tar.gz
+            dist/asq-*.zip
+            dist/install.sh
+            dist/install.ps1
 
       - name: Publish
         env:

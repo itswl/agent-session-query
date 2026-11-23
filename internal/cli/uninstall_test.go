@@ -562,6 +562,44 @@ func TestUninstallFollowsNoLinkOnTheWayToTheCopies(t *testing.T) {
 	}
 }
 
+// A state asq keeps by default that is a link leads to a folder of a person's own: of it, as
+// of one ASQ_STATE names, only what asq writes goes — with copies in it or not — and the
+// link once that leaves it empty.
+func TestUninstallTakesOnlyAsqsFilesWhereTheStatesLinkLeads(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symbolic links take a privilege on Windows")
+	}
+	for _, copies := range []bool{false, true} {
+		t.Run(map[bool]string{false: "no copies", true: "copies"}[copies], func(t *testing.T) {
+			home, _ := uninstallHome(t, runtime.GOOS, nil)
+			t.Setenv("ASQ_STATE", "")
+			real := t.TempDir()
+			state := filepath.Join(home, "xdg-state", "asq")
+			put(t, filepath.Join(real, "session.key"), "k")
+			mine := put(t, filepath.Join(real, "mine.txt"), "m")
+			if err := os.MkdirAll(filepath.Dir(state), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(real, state); err != nil {
+				t.Fatal(err)
+			}
+			var kept []string
+			if copies {
+				kept = keptHere(t, home, filepath.Join(real, "kept"))
+			}
+
+			got := uninstallJSON(t)
+			for _, p := range append(kept, mine, state) {
+				there(t, p)
+			}
+			gone(t, filepath.Join(real, "session.key"))
+			if n := len(got.Left); n == 0 || got.Left[n-1].Path != state || got.Left[n-1].What != "state" || !strings.Contains(got.Left[n-1].Why, "mine.txt") {
+				t.Errorf("left %+v, want %s left for what asq did not write", got.Left, state)
+			}
+		})
+	}
+}
+
 // A folder of copies that is itself a link holds what it leads to: those are named, by
 // where they are, and stay when the link goes with the state.
 func TestUninstallNamesTheCopiesAKeptLinkLeadsTo(t *testing.T) {

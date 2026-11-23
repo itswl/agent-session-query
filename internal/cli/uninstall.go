@@ -98,7 +98,7 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 	// The state: the sign-in key, what a collector has been sent, what asq keep was asked to
 	// keep — but for the copies asq keep made, which stay where they are, in it or not. The
 	// folder asq keeps it in by default is asq's own and goes whole; of one ASQ_STATE names,
-	// only what asq writes in it goes.
+	// or a link there leads to, only what asq writes in it goes.
 	state := app.StateDir()
 	const held = ": the sign-in key, what a collector was sent, what asq keep was asked to keep"
 	if _, err := os.Stat(state); err == nil {
@@ -130,13 +130,20 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 				spares = append(spares, held...)
 				done.Left = append(done.Left, *copies)
 			}
+			// A folder a person named may hold more than asq's, and so may one a link at the
+			// default path leads to: of those only what asq writes goes
+			whose := ""
 			if os.Getenv("ASQ_STATE") != "" {
-				// A folder a person named may hold more than asq's: only what asq writes goes
+				whose = "the folder ASQ_STATE names"
+			} else if info, err := os.Lstat(state); err == nil && info.Mode()&os.ModeSymlink != 0 {
+				whose = "the folder the state's link leads to"
+			}
+			if whose != "" {
 				took, others, whole, err := removeOurs(state, spares)
 				switch {
 				case err != nil:
 					for _, p := range took {
-						removed(p, "asq's, in the folder ASQ_STATE names")
+						removed(p, "asq's, in "+whose)
 					}
 					couldNot(state, "state", err)
 				case whole:
@@ -145,10 +152,10 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 					removed(state, "the state but for the copies in it"+held)
 				case len(others) > 0:
 					for _, p := range took {
-						removed(p, "asq's, in the folder ASQ_STATE names")
+						removed(p, "asq's, in "+whose)
 					}
 					done.Left = append(done.Left, leftBehind{Path: state, What: "state",
-						Why: "the folder ASQ_STATE names, which holds what asq did not write: " + some(others)})
+						Why: whose + ", which holds what asq did not write: " + some(others)})
 				}
 				break
 			}
@@ -438,11 +445,12 @@ func asqWrites(name string) bool {
 	return false
 }
 
-// removeOurs removes what asq writes in a directory ASQ_STATE names, and nothing else: a
-// folder a person named may hold what is not asq's — a CLI's store, their documents — and
-// that stays. The folders of copies spares, and what holds them, stay too, and kept goes only
-// empty of files. It reports what it removed and the names of what it left that asq does
-// not write, and removes the directory itself, whole, once nothing is left in it.
+// removeOurs removes what asq writes in a directory ASQ_STATE names, or a link leads to, and
+// nothing else: a folder a person named may hold what is not asq's — a CLI's store, their
+// documents — and that stays. The folders of copies spares, and what holds them, stay too,
+// and kept goes only empty of files. It reports what it removed and the names of what it
+// left that asq does not write, and removes the directory itself — the link, when it is
+// one — once nothing is left in it.
 func removeOurs(dir string, spares []string) (took, others []string, whole bool, err error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

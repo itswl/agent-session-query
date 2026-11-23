@@ -317,24 +317,29 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 			close(readings)
 		}()
 		left := fresh
+		var batch []*reading
 		for rd := range readings {
 			if ctx.Err() != nil {
 				continue // drain: the readers are stopping
 			}
-			_, changed, err := ix.write(ctx, rd)
-			if err != nil && firstErr == nil {
-				firstErr = err
-			}
-			res.Read++
-			if changed {
-				res.Changes = append(res.Changes, Change{Source: rd.source, ID: rd.sess.ID})
-			}
-			ix.setState(func(s *SyncState) { s.Done++ })
-			if !rd.again {
-				if left--; left == 0 && fresh < len(jobs) {
-					caughtUp()
+			batch = gather(ctx, append(batch[:0], rd), readings, left)
+			for i, w := range ix.writeAll(ctx, batch) {
+				rd := batch[i]
+				if w.err != nil && firstErr == nil {
+					firstErr = w.err
+				}
+				res.Read++
+				if w.changed {
+					res.Changes = append(res.Changes, Change{Source: rd.source, ID: rd.sess.ID})
+				}
+				ix.setState(func(s *SyncState) { s.Done++ })
+				if !rd.again {
+					if left--; left == 0 && fresh < len(jobs) {
+						caughtUp()
+					}
 				}
 			}
+			clear(batch) // what was read is let go of as soon as it is written
 		}
 	}
 
@@ -347,6 +352,57 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 		firstErr = ctx.Err()
 	}
 	return res, firstErr
+}
+
+// What one transaction of a sync writes, at most: this many sessions, this many bytes of
+// rows, or what has been read within this long of the first of them. A transaction for each
+// session costs more than many of them do, once a history is read whole; one for too many
+// holds every other writer back and keeps what was read in memory.
+const (
+	batchSessions = 64
+	batchBytes    = 32 << 20
+	batchWait     = 500 * time.Millisecond
+)
+
+// gather adds to batch, which holds one reading, what else is read, to write it in the same
+// transaction: until there is enough of it (see batchSessions), nothing more is to come, or
+// it has taken long enough. fresh is how many of the readings still to come, the one in
+// batch with them, are of new or changed transcripts: the batch that holds the last of them
+// is written at once, so that what is new is in the index before what is only read again
+// for a new reading (see SyncOptions.CaughtUp).
+func gather(ctx context.Context, batch []*reading, readings <-chan *reading, fresh int) []*reading {
+	size := 0
+	// took counts a reading in, and reports whether it was the last of the fresh ones
+	took := func(rd *reading) bool {
+		size += rd.size
+		if rd.again {
+			return false
+		}
+		fresh--
+		return fresh == 0
+	}
+	if took(batch[0]) {
+		return batch
+	}
+	wait := time.NewTimer(batchWait)
+	defer wait.Stop()
+	for len(batch) < batchSessions && size < batchBytes {
+		select {
+		case rd, ok := <-readings:
+			if !ok {
+				return batch
+			}
+			batch = append(batch, rd)
+			if took(rd) {
+				return batch
+			}
+		case <-wait.C:
+			return batch
+		case <-ctx.Done():
+			return batch
+		}
+	}
+	return batch
 }
 
 func (ix *Index) setState(fn func(*SyncState)) {

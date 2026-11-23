@@ -131,7 +131,7 @@ WHERE w.sid = ? AND w.idx > ? ORDER BY w.idx LIMIT ?`, sid, after, refillBatch)
 			if s.idx == titleTurn {
 				tw = titleWords(title)
 			}
-			if err := putWords(ctx, tx, sid, &row, tw, true); err != nil {
+			if err := putTurnWords(ctx, tx, turnRowID(sid, s.idx), &row, tw, true); err != nil {
 				return 0, err
 			}
 			after = s.idx

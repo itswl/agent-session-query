@@ -91,7 +91,7 @@ amd64 与 arm64），或运行容器镜像 `ghcr.io/itswl/agent-session-query` �
 
 ```sh
 asq doctor     # 找到了哪些存储，各自是否能读
-asq ls         # 第一次运行会建索引：每 GB 历史大约十秒
+asq ls         # 第一次运行会建索引：每 GB 历史大约一分钟
 ```
 
 ## 卸载

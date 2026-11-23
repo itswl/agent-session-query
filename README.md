@@ -98,7 +98,7 @@ Then:
 
 ```sh
 asq doctor     # which stores were found, and whether each reads
-asq ls         # the first run indexes your history: about ten seconds per gigabyte
+asq ls         # the first run indexes your history: about a minute per gigabyte
 ```
 
 ## Uninstall

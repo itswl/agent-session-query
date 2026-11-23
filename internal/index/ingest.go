@@ -2,10 +2,12 @@ package index
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +51,7 @@ type reading struct {
 	turns  []turnRow
 	err    string
 	readMs int64
+	size   int // bytes, about, of what is to be written
 
 	firstID, lastID string
 	lastAsk, answer string
@@ -156,6 +159,16 @@ func (ix *Index) read(ctx context.Context, st Store, ref sources.Ref) *reading {
 			// The turn's rows changed, though its content did not: the totals are part
 			// of what names it
 			last.hash = append(last.hash, []byte(strconv.FormatInt(r.Usage.Total(), 36))...)
+		}
+	}
+	for i := range rd.turns {
+		t := &rd.turns[i]
+		rd.size += len(t.head) + len(t.body)
+		for _, b := range t.bodies {
+			rd.size += len(b.data)
+		}
+		for _, w := range t.words {
+			rd.size += len(w)
 		}
 	}
 	rd.readMs = time.Since(start).Milliseconds()
@@ -423,10 +436,56 @@ func clipJSON(raw json.RawMessage, limit int) json.RawMessage {
 	return out
 }
 
-// write stores a reading: the session's row, and whichever of its turns changed since
-// it was last read. It reports whether anything was written.
-func (ix *Index) write(ctx context.Context, rd *reading) (sid int64, changed bool, err error) {
-	err = ix.tx(ctx, func(tx *sql.Tx) error {
+// written is what writing one reading came to.
+type written struct {
+	changed bool // anything was written
+	err     error
+}
+
+// writeAll stores readings in one transaction, each as write would, and the words of all
+// of them after everything else (see wordsOp). What a transaction costs is paid once for
+// them all — the words table's most, which writes what it has gathered as a segment of its
+// own at each commit, and merges the segments as they pile up. Should one of them fail,
+// each is written again in a transaction of its own, so that one that cannot be written
+// does not keep the others out.
+func (ix *Index) writeAll(ctx context.Context, rds []*reading) []written {
+	out := make([]written, len(rds))
+	all := func(tx *sql.Tx, rds []*reading, out []written) error {
+		var words []wordsOp
+		for i, rd := range rds {
+			_, changed, w, err := ix.write(ctx, tx, rd)
+			if err != nil {
+				return err
+			}
+			out[i].changed, words = changed, append(words, w...)
+		}
+		return putWords(ctx, tx, words)
+	}
+	if len(rds) > 1 {
+		err := ix.tx(ctx, func(tx *sql.Tx) error { return all(tx, rds, out) })
+		if err == nil || ctx.Err() != nil {
+			for i := range out {
+				if err != nil {
+					out[i] = written{err: err}
+				}
+			}
+			return out
+		}
+	}
+	for i := range rds {
+		out[i] = written{}
+		if err := ix.tx(ctx, func(tx *sql.Tx) error { return all(tx, rds[i:i+1], out[i:i+1]) }); err != nil {
+			out[i] = written{err: err}
+		}
+	}
+	return out
+}
+
+// write stores a reading in tx: the session's row, and whichever of its turns changed
+// since it was last read. It reports whether anything was written, and gives what is to be
+// written to the words table, which it does not touch (see wordsOp).
+func (ix *Index) write(ctx context.Context, tx *sql.Tx, rd *reading) (sid int64, changed bool, words []wordsOp, err error) {
+	err = func() error {
 		s, st := &rd.sess, &rd.stats
 		p := model.Parent{}
 		if s.Parent != nil {
@@ -497,12 +556,12 @@ RETURNING sid`,
 				return err
 			}
 		}
-		words := func(t *turnRow, again bool) error {
-			title := ""
+		put := func(t *turnRow, again bool) {
+			op := wordsOp{id: turnRowID(sid, t.idx), again: again, row: t}
 			if t.idx == titleTurn {
-				title = titleWords(s.Title)
+				op.title = titleWords(s.Title)
 			}
-			return putWords(ctx, tx, sid, t, title, again)
+			words = append(words, op)
 		}
 
 		for i := range rd.turns {
@@ -511,9 +570,7 @@ RETURNING sid`,
 			delete(have, t.idx)
 			if known && bytes.Equal(old, t.hash) {
 				if stale[t.idx] {
-					if err := words(t, true); err != nil {
-						return err
-					}
+					put(t, true)
 				}
 				continue
 			}
@@ -526,15 +583,14 @@ RETURNING sid`,
 			if err := insertTurn(ctx, tx, sid, t); err != nil {
 				return err
 			}
-			if err := words(t, false); err != nil {
-				return err
-			}
+			put(t, known)
 		}
 		for idx := range have { // turns the transcript no longer has
 			changed = true
 			if err := deleteTurn(ctx, tx, sid, idx); err != nil {
 				return err
 			}
+			words = append(words, wordsOp{id: turnRowID(sid, idx), again: true})
 		}
 		// Every turn the session has now holds the words this asq writes — which, in a newer
 		// asq's table, that asq is still to write its own way
@@ -543,8 +599,8 @@ RETURNING sid`,
 		}
 		_, err = tx.ExecContext(ctx, `DELETE FROM words_stale WHERE sid = ?`, sid)
 		return err
-	})
-	return sid, changed, err
+	}()
+	return sid, changed, words, err
 }
 
 // staleTurns are the turns of a session words_stale names.
@@ -565,11 +621,41 @@ func staleTurns(ctx context.Context, tx *sql.Tx, sid int64) (map[int]bool, error
 	return out, rows.Err()
 }
 
-// putWords writes a turn's row of the words table, with its session's title when it is
+// wordsOp is a turn's row of the words table to be written once everything else a
+// transaction writes has been. The words table keeps what is written to it in memory, and
+// writes it out as a segment of its own at the end of the transaction — and before any
+// statement that might have to be undone alone, a write that fires a trigger among them,
+// once the table is part of the transaction. Written between a session's other rows, a
+// turn's words were a segment each, which the table then spent its time merging.
+type wordsOp struct {
+	id    int64    // the turn's rowid in the words table
+	again bool     // the turn may have a row already, which goes
+	row   *turnRow // what the turn holds now; nil when it is gone
+	title string   // the session's title, for the turn that holds it (see titleTurn)
+}
+
+// putWords writes rows of the words table, by rowid: the table writes out what it has
+// gathered whenever a rowid is lower than the one before.
+func putWords(ctx context.Context, tx *sql.Tx, ops []wordsOp) error {
+	slices.SortStableFunc(ops, func(a, b wordsOp) int { return cmp.Compare(a.id, b.id) })
+	for _, op := range ops {
+		if op.row == nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM words WHERE rowid = ?`, op.id); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := putTurnWords(ctx, tx, op.id, op.row, op.title, op.again); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// putTurnWords writes a turn's row of the words table, with its session's title when it is
 // the turn that holds it (see titleTurn): a turn with no words of its own has none, and is
 // not found by the title alone. again says the turn may have a row already, which goes.
-func putWords(ctx context.Context, tx *sql.Tx, sid int64, t *turnRow, title string, again bool) error {
-	id := turnRowID(sid, t.idx)
+func putTurnWords(ctx context.Context, tx *sql.Tx, id int64, t *turnRow, title string, again bool) error {
 	if again {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM words WHERE rowid = ?`, id); err != nil {
 			return err
@@ -629,6 +715,8 @@ INSERT OR REPLACE INTO failures (sid, seq, idx, at, tool, kind, status, exit_cod
 	return nil
 }
 
+// deleteTurn removes a turn's rows, but for its words: those go after everything else a
+// transaction writes (see wordsOp).
 func deleteTurn(ctx context.Context, tx *sql.Tx, sid int64, idx int) error {
 	for _, q := range []string{
 		`DELETE FROM turns WHERE sid = ? AND idx = ?`,
@@ -642,8 +730,7 @@ func deleteTurn(ctx context.Context, tx *sql.Tx, sid int64, idx int) error {
 			return err
 		}
 	}
-	_, err := tx.ExecContext(ctx, `DELETE FROM words WHERE rowid = ?`, turnRowID(sid, idx))
-	return err
+	return nil
 }
 
 // deleteSession removes a transcript the store no longer holds.

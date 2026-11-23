@@ -386,21 +386,26 @@ func (m *Machine) Uninstall(force bool) (*Removed, error) {
 }
 
 // others are the services for asq that another tool set up: Homebrew's, from `brew
-// services start asq`. They start the same asq serve on the same port.
+// services start asq`. They start the same asq serve on the same port. Homebrew names a
+// service sh.brew.asq, and one an older Homebrew started keeps the name it had then:
+// homebrew.mxcl.asq under launchd, homebrew.asq under systemd.
 func (m *Machine) others() []string {
-	var file string
+	var files []string
 	switch m.OS {
 	case "darwin":
-		file = filepath.Join(m.Home, "Library", "LaunchAgents", "homebrew.mxcl.asq.plist")
+		dir := filepath.Join(m.Home, "Library", "LaunchAgents")
+		files = []string{filepath.Join(dir, "sh.brew.asq.plist"), filepath.Join(dir, "homebrew.mxcl.asq.plist")}
 	case "linux":
-		file = filepath.Join(m.Config, "systemd", "user", "homebrew.asq.service")
-	default:
-		return nil
+		dir := filepath.Join(m.Config, "systemd", "user")
+		files = []string{filepath.Join(dir, "sh.brew.asq.service"), filepath.Join(dir, "homebrew.asq.service")}
 	}
-	if _, err := os.Stat(file); err != nil {
-		return nil
+	var out []string
+	for _, file := range files {
+		if _, err := os.Stat(file); err == nil {
+			out = append(out, "Homebrew's service for asq is set up too ("+file+"; brew services stop asq takes it down)")
+		}
 	}
-	return []string{"Homebrew's service for asq is set up too (" + file + "; brew services stop asq takes it down)"}
+	return out
 }
 
 // Marked says whether asq service install wrote a definition.

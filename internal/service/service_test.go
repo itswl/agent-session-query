@@ -514,23 +514,27 @@ func TestInstallRefuses(t *testing.T) {
 		}
 	})
 	t.Run("beside Homebrew's", func(t *testing.T) {
-		for goos, file := range map[string][]string{
-			"darwin": {"Library", "LaunchAgents", "homebrew.mxcl.asq.plist"},
-			"linux":  {".config", "systemd", "user", "homebrew.asq.service"},
+		// The name Homebrew gives a service, and the one an older Homebrew gave it
+		for _, file := range [][]string{
+			{"darwin", "Library", "LaunchAgents", "sh.brew.asq.plist"},
+			{"darwin", "Library", "LaunchAgents", "homebrew.mxcl.asq.plist"},
+			{"linux", ".config", "systemd", "user", "sh.brew.asq.service"},
+			{"linux", ".config", "systemd", "user", "homebrew.asq.service"},
 		} {
+			goos := file[0]
 			f := newFake(t, goos)
-			brew := filepath.Join(append([]string{f.m.Home}, file...)...)
+			brew := filepath.Join(append([]string{f.m.Home}, file[1:]...)...)
 			if err := writeFile(brew, []byte("brew")); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := f.m.Install(f.setup(), false); err == nil || !strings.Contains(err.Error(), "brew services stop asq") {
-				t.Errorf("%s: %v", goos, err)
+				t.Errorf("%s: %v", brew, err)
 			}
-			if st, _ := f.m.Status(""); len(st.Others) != 1 {
-				t.Errorf("%s: status says %q", goos, st.Others)
+			if st, _ := f.m.Status(""); len(st.Others) != 1 || !strings.Contains(st.Others[0], brew) {
+				t.Errorf("%s: status says %q", brew, st.Others)
 			}
 			if _, err := f.m.Install(f.setup(), true); err != nil {
-				t.Errorf("%s: --force: %v", goos, err)
+				t.Errorf("%s: --force: %v", brew, err)
 			}
 		}
 	})

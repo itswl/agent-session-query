@@ -140,41 +140,45 @@ Windows 上正在运行的 `asq.exe` 无法被替换：先 `schtasks /end /tn as
 
 ## 卸载
 
-`asq uninstall` 删掉 asq 写下的东西——索引，以及状态：登录签名密钥、已发给 collector
-的清单——其余的以命令的形式给出，由你自己运行：这个二进制所在的位置（目录不可写时带
-`sudo`），以及让 `asq serve` 常驻的服务（按它的服务文件指认了什么来找到）。asq 写下的任何东西
-都不是你的历史（让 `asq keep` 存下的副本除外）——各 CLI 的存储归它们自己，asq 从不改动。
+`asq uninstall` 删掉 asq 写下的东西：索引，以及状态——登录签名密钥、已发给 collector 的清单、
+让 `asq keep` 存哪些会话的设置。其余的以命令的形式给出，按该运行的顺序：
 
-手动删（macOS 与 Linux，顺序随意）：
+1. 先停掉让 `asq serve` 常驻的服务：它配置的服务用 `asq service uninstall`（趁二进制还在，
+   能运行它）；Homebrew 的服务用 `brew services stop asq`；手工配置的（按它的 plist、unit 或
+   计划任务指认了什么来找到）给出它的服务管理器自己的命令；
+2. 有服务的话，再运行一次 `asq uninstall`，删掉服务停下之前又写下的索引；
+3. 最后是二进制：Homebrew 或 Scoop 装的，用 `brew uninstall asq`（tap 是本仓库的话再加
+   `brew untap`）或 `scoop uninstall asq`；否则在它所在的位置 `rm`（目录不可写时带 `sudo`），
+   Windows 上删它的目录。
+
+`asq uninstall --json` 给出同样的内容：`removed`、`left`、`run`。它留下的有：
+
+- `asq keep` 存下的副本（如果让它存过）：CLI 删掉的会话仅剩的一份。它们原样留在原处——状态目录
+  里的 `kept`，或者 `asq keep --dir` 指定的目录——卸载时会说明在哪里、有多少份 transcript、
+  其中多少已被 CLI 删掉，以及删除它们的命令。
+- 各 CLI 的存储：那是你的历史，asq 从不改动。
+- 交给过各 agent CLI 的 `asq` MCP server：在你告诉它们不用之前，它们会一直去找它——用各 CLI
+  自己的命令或在它的设置里删掉；存过 skill 的话，还有 `~/.claude/skills/agent-sessions` 和
+  `~/.agents/skills/agent-sessions` 目录。
+- 网页的离线副本：打开过网页的浏览器会留着它（几个文件），清除该站点的数据即可。
+- 服务的日志（里面记着它拒绝过的调用方），以及为 PATH 加进 shell rc 的那一行——Windows 上是
+  用户 PATH 里的 `asq` 条目。
+
+手动删也是这些，服务停掉之后顺序随意。macOS 与 Linux：
 
 ```sh
 rm ~/.local/bin/asq                          # 装到了 /usr/local/bin 的话：sudo rm /usr/local/bin/asq
 rm -rf ~/Library/Caches/asq ~/.cache/asq     # 索引，需要时会自动重建
-rm -rf "$HOME/Library/Application Support/asq" ~/.local/state/asq   # 状态：登录签名密钥、已发给 collector 的清单、asq keep 存下的副本
+rm -rf "$HOME/Library/Application Support/asq" ~/.local/state/asq   # 状态：登录签名密钥、已发给 collector 的清单、asq keep 存下的副本——想留着副本就先挪走
+rm -f ~/Library/Logs/asq.log                 # macOS 上 asq service install 或手工 launchd 配置的服务的日志
+rm -f "$(brew --prefix)/var/log/asq.log"     # Homebrew 的服务的日志
 ```
 
 用 Homebrew 或 Scoop 装的，二进制改用 `brew uninstall asq` 或 `scoop uninstall asq` 删除。
-
-Windows：删除 `%LOCALAPPDATA%\Programs\asq`、`%LocalAppData%\asq` 和 `%AppData%\asq`，并把
-用户 PATH 里的 `asq` 条目移除。若设过 `ASQ_INDEX` 或 `ASQ_STATE`，后两项在你说的地方，照那里
-删。为 PATH 加过的 shell rc 那一行也可以一并删掉。
-
-`asq keep` 存下的副本（如果让它存过）是 CLI 删掉的会话仅剩的一份。它们在状态目录里，或者在
-`asq keep --dir` 指定的目录里；`asq keep` 会说是哪个。想留着就先挪走。
-
-若 `asq serve` 是常驻运行的，先停掉服务再删二进制——`asq service uninstall` 或
-`brew services stop asq`；手工配置的 launchd、systemd 或计划任务，按[部署](docs/deploy.md)里写的
-停；容器则是 `docker rm` 加它的 `/data` 卷。服务的日志会留下来，里面记着它拒绝过的调用方：
-
-```sh
-rm -f ~/Library/Logs/asq.log                 # macOS 上 asq service install 或手工 launchd 配置的服务
-rm -f "$(brew --prefix)/var/log/asq.log"     # Homebrew 的服务
-```
-
-交给过 asq 的 agent CLI 会一直去找它，直到你告诉它们不用了：用各 CLI 自己的命令或在它的设置里删掉
-名为 `asq` 的 MCP server；存过 skill 的话，删掉 `~/.claude/skills/agent-sessions` 和
-`~/.agents/skills/agent-sessions` 目录。打开过网页的浏览器会留着它的离线页（几个文件），清除该站点
-的数据即可。
+Windows：删除 `%LOCALAPPDATA%\Programs\asq`、`%LocalAppData%\asq` 和 `%AppData%\asq`，并把用户
+PATH 里的 `asq` 条目移除。若设过 `ASQ_INDEX` 或 `ASQ_STATE`，后两项在你说的地方，照那里删。
+手工配置的服务——launchd、systemd 或计划任务——按[部署](docs/deploy.md)里写的停；容器则是
+`docker rm` 加它的 `/data` 卷。
 
 ## 命令
 
@@ -200,7 +204,7 @@ rm -f "$(brew --prefix)/var/log/asq.log"     # Homebrew 的服务
 | `asq skill` | 告诉 agent 什么时候、怎样使用 asq 的 skill，存到它的 CLI 读取 skill 的地方 |
 | `asq otel` | 把会话导出为 OpenTelemetry trace |
 | `asq doctor` · `asq index` | 检查各存储、索引和本机运行的 server · 查看、重建或删除索引 |
-| `asq uninstall` | 把 asq 从机器上拿掉：删索引和状态，其余以命令给出 |
+| `asq uninstall` | 把 asq 从机器上拿掉：删索引和状态，留下 `asq keep` 存的副本，其余以命令给出 |
 
 **ref** 就是 `ls` 和 `search` 打印的东西：`claude/3f2a9c1e`，或者只写会话 id 的开头，像引用一个 commit
 那样。`#4` 指第 4 轮。所有命令都支持 `--json`；`show`、`search`、`brief` 和 `pack` 支持

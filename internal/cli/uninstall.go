@@ -1,23 +1,30 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/itswl/agent-session-query/internal/app"
+	"github.com/itswl/agent-session-query/internal/catalog"
 	"github.com/itswl/agent-session-query/internal/index"
+	"github.com/itswl/agent-session-query/internal/keep"
+	"github.com/itswl/agent-session-query/internal/service"
 )
 
 // cmdUninstall takes asq off the machine: what it wrote and only what it wrote — the index,
-// a cache, and its state. What it should not do itself it says as commands: removing this
-// very binary, wherever it was put, and taking down a service that keeps serve running.
-// The CLIs' stores are not asq's to touch, and it never does.
+// a cache, and its state. The copies asq keep made it leaves, wherever they are: they may
+// be all there is of what a CLI deleted. What it should not do itself it says as commands:
+// taking down a service that keeps serve running, and removing this very binary — its
+// package manager's to do, when one installed it. The CLIs' stores are not asq's to touch,
+// and it never does.
 func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 	c := newCommand("uninstall", io.err)
 	rest, err := c.parse(args)
@@ -31,13 +38,17 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return usageError{err}
 	}
+	done := uninstalled{Removed: []string{}, Left: []leftBehind{}, Run: []string{}}
+	var notes []string
+	removed := func(p, note string) {
+		done.Removed, notes = append(done.Removed, p), append(notes, note)
+	}
 
 	// The index, and what an earlier asq left beside it — the same taking `asq index rm` does.
 	path := cfg.IndexPath
 	if path == "" {
 		path = index.DefaultPath()
 	}
-	var removed, notes []string
 	take := func(p, note string) error {
 		if _, err := os.Stat(p); err != nil {
 			return nil // not here: nothing to take, nothing to say
@@ -45,7 +56,7 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 		if err := index.Remove(p); err != nil {
 			return err
 		}
-		removed, notes = append(removed, p), append(notes, note)
+		removed(p, note)
 		return nil
 	}
 	if err := take(path, "the index, rebuilt from the stores on the next run"); err != nil {
@@ -59,157 +70,343 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 		}
 	}
 
-	// The state: the sign-in key, what a collector has been sent. A state dir that is a
-	// home — an ASQ_STATE gone wrong — is not ours to take.
-	if state := app.StateDir(); worthTaking(state) {
-		if _, err := os.Stat(state); err == nil {
-			if err := os.RemoveAll(state); err != nil {
+	m := newMachine(DefaultPort)
+	self := thisFile()
+
+	// The state: the sign-in key, what a collector has been sent, what asq keep was asked to
+	// keep — but for the copies asq keep made, which stay where they are, in it or not.
+	state := app.StateDir()
+	const held = ": the sign-in key, what a collector was sent, what asq keep was asked to keep"
+	if _, err := os.Stat(state); err == nil {
+		st, kerr := keep.Load(state)
+		switch {
+		case tooWide(state):
+			done.Left = append(done.Left, leftBehind{Path: state, What: "state",
+				Why: "a home, or a folder that holds one, which ASQ_STATE names: not asq's to remove"})
+		case kerr != nil:
+			// Where the copies are is what keep.json says: unread, none of it is taken
+			done.Left = append(done.Left, leftBehind{Path: state, What: "state",
+				Why: "its keep.json, which says where the copies asq keep made are, does not read: " + kerr.Error()})
+		default:
+			spare := ""
+			if copies := keptCopies(ctx, cfg.Stores, st.Folder(state), m.OS); copies != nil {
+				spare = copies.Path
+				done.Left = append(done.Left, *copies)
+			}
+			took, whole, err := removeBut(state, spare)
+			if err != nil {
 				return err
 			}
-			removed, notes = append(removed, state), append(notes, "the state: the sign-in key, what a collector was sent")
+			switch {
+			case whole:
+				removed(state, "the state"+held)
+			case took:
+				removed(state, "the state but for the copies in it"+held)
+			}
 		}
 	}
 
-	run := finishCommands()
+	done.Run = finishCommands(m, self)
 	if c.json {
-		return printJSON(io.out, uninstalled{Removed: removed, Run: run})
+		return printJSON(io.out, done)
 	}
-	for i, p := range removed {
+	for i, p := range done.Removed {
 		fmt.Fprintf(io.out, "removed %s — %s\n", p, notes[i])
 	}
-	if len(removed) == 0 {
+	if len(done.Removed) == 0 {
 		fmt.Fprintln(io.out, "nothing of asq's was here to remove")
 	}
-	fmt.Fprintln(io.out, "\nto finish, run:")
-	for _, cmd := range run {
-		fmt.Fprintln(io.out, "  "+cmd)
+	for _, l := range done.Left {
+		fmt.Fprintf(io.out, "left %s — %s\n", l.Path, l.Why)
+		if l.Remove != "" {
+			fmt.Fprintf(io.out, "  %s removes them too, if they are not wanted\n", l.Remove)
+		}
 	}
-	fmt.Fprintln(io.out, "\na line that put asq on the PATH, added when installing, can go too")
+	if len(done.Run) > 0 {
+		fmt.Fprintln(io.out, "\nto finish, run:")
+		for _, cmd := range done.Run {
+			fmt.Fprintln(io.out, "  "+cmd)
+		}
+	}
+	if manager, _ := service.Package(self); manager == "" {
+		fmt.Fprintln(io.out, "\na line that put asq on the PATH, added when installing, can go too")
+	}
 	return nil
 }
 
 type uninstalled struct {
-	Removed []string `json:"removed"`
-	Run     []string `json:"run"`
+	Removed []string     `json:"removed"`
+	Left    []leftBehind `json:"left"`
+	Run     []string     `json:"run"`
 }
 
-// worthTaking says whether a state directory is asq's to remove: not the home an
-// ASQ_STATE gone wrong pointed at, not the root an empty name stood for.
-func worthTaking(dir string) bool {
-	if dir == "" || dir == string(filepath.Separator) {
-		return false
-	}
-	if home, err := os.UserHomeDir(); err == nil && dir == home {
-		return false
-	}
-	return true
+// leftBehind is what uninstall left, and why.
+type leftBehind struct {
+	Path string `json:"path"`
+	What string `json:"what"` // "copies", what asq keep made; "state", what was not asq's to take
+	Why  string `json:"why"`
+	// Of the copies: how many transcripts, how many of those their CLI has deleted since —
+	// which are kept nowhere else —, and the command that removes them, for a person who
+	// wants that too
+	Transcripts int    `json:"transcripts,omitempty"`
+	Gone        int    `json:"gone,omitempty"`
+	Remove      string `json:"remove,omitempty"`
 }
 
-// finishCommands says what uninstall did not do itself. Removing the binary is this
-// command's own process, and taking a service down touches more of the machine than a
-// directory of asq's: both are said, with this binary's real path, for a person to run.
-func finishCommands() []string {
+// keptCopies is the folder of the copies asq keep made, said as what is left: where it is,
+// what it holds — counted as asq keep counts it, by each CLI's adapter on its folder of
+// copies, beside the CLI's own store — and the command that would remove it. Nil when the
+// folder holds no file.
+func keptCopies(ctx context.Context, stores catalog.Config, folder, goos string) *leftBehind {
+	if files, _ := keep.Size(folder); files == 0 {
+		return nil
+	}
+	l := &leftBehind{Path: folder, What: "copies", Why: "the copies asq keep made"}
+	stores.Only, stores.Kept = nil, ""
+	if set, err := catalog.New(stores, catalog.Env()); err == nil {
+		set.Keep(folder)
+		for _, st := range set.All() {
+			if keep.IsKept(st.Source) && st.Source.Exists() {
+				n, gone, _ := keep.Held(ctx, st.Source)
+				l.Transcripts += n
+				l.Gone += gone
+			}
+		}
+	}
+	switch {
+	case l.Gone > 0:
+		l.Why += fmt.Sprintf(": %s, %d of them deleted by their CLI since and kept nowhere else", plural(l.Transcripts, "transcript"), l.Gone)
+	case l.Transcripts > 0:
+		l.Why += ": " + plural(l.Transcripts, "transcript")
+	}
+	l.Remove = "rm -rf " + app.ShellArg(folder)
+	if goos == "windows" {
+		l.Remove = "Remove-Item -Recurse -Force " + app.ShellArg(folder)
+	}
+	return l
+}
+
+// tooWide says whether a state directory is not asq's to remove: the root an empty name
+// stood for, or a home — or a folder that holds one — that an ASQ_STATE gone wrong names.
+func tooWide(dir string) bool {
+	if clean := filepath.Clean(dir); dir == "" || filepath.Dir(clean) == clean {
+		return true
+	}
+	home, err := os.UserHomeDir()
+	return err == nil && home != "" && inside(home, dir)
+}
+
+// removeBut removes the directory dir and what it holds, but for the folder spare when that
+// is in it: then what is beside spare, and beside each folder on the way down to it, is
+// removed, and they stay. A link on the way to spare is left as it is, never followed into
+// what it leads to. It reports whether it removed anything, and whether it removed dir
+// whole; a dir in spare, or spare itself, it leaves.
+func removeBut(dir, spare string) (took, whole bool, err error) {
+	switch {
+	case spare == "" || !inside(spare, dir):
+		return true, true, os.RemoveAll(dir)
+	case inside(dir, spare):
+		return false, false, nil
+	}
+	took, err = removeAround(dir, spare)
+	return took, false, err
+}
+
+func removeAround(dir, spare string) (took bool, err error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range entries {
+		p := filepath.Join(dir, e.Name())
+		if inside(spare, p) {
+			if !e.IsDir() || inside(p, spare) {
+				continue // spare, or a link to it or on the way to it
+			}
+			t, err := removeAround(p, spare)
+			if took = took || t; err != nil {
+				return took, err
+			}
+			continue
+		}
+		if err := os.RemoveAll(p); err != nil {
+			return took, err
+		}
+		took = true
+	}
+	return took, nil
+}
+
+// inside reports whether path is dir or beneath it as the file system has them: by name,
+// through a link — at path or on the way to it — and in another case where the file system
+// ignores it. Each folder of path, as named and as its links lead, is compared with dir by
+// what it is (os.SameFile).
+func inside(path, dir string) bool {
+	if rel, err := filepath.Rel(dir, path); err == nil && filepath.IsLocal(rel) {
+		return true
+	}
+	at, err := os.Stat(dir)
+	if err != nil {
+		return false
+	}
+	paths := []string{filepath.Clean(path)}
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		paths = append(paths, real)
+	}
+	for _, p := range paths {
+		for {
+			if fi, err := os.Stat(p); err == nil && os.SameFile(fi, at) {
+				return true
+			}
+			up := filepath.Dir(p)
+			if up == p {
+				break
+			}
+			p = up
+		}
+	}
+	return false
+}
+
+// thisFile is this very binary, by the path of its file: a link to it followed.
+func thisFile() string {
 	self, err := os.Executable()
-	if err == nil {
-		if real, err := filepath.EvalSymlinks(self); err == nil {
-			self = real
-		}
-	} else {
-		self = ""
+	if err != nil {
+		return ""
 	}
+	if real, err := filepath.EvalSymlinks(self); err == nil {
+		return real
+	}
+	return self
+}
+
+// finishCommands says what uninstall did not do itself, in the order to run it. First the
+// services that keep asq serve running are taken down — asq service uninstall its own,
+// which needs this binary —; then uninstall again, for the index a running server writes
+// anew until it is down; then this binary is removed. Taking a service down touches more
+// of the machine than a directory of asq's, and removing the binary is this command's own
+// process: both are said, for a person to run.
+func finishCommands(m *service.Machine, self string) []string {
 	var cmds []string
-	switch runtime.GOOS {
-	case "windows":
-		if self != "" {
-			// The installer put the exe in a directory of its own; take the directory,
-			// and only the exe when it lives somewhere shared
-			target := self
-			if filepath.Base(filepath.Dir(self)) == "asq" {
-				target = filepath.Dir(self)
+	add := func(lines ...string) {
+		for _, line := range lines {
+			if !slices.Contains(cmds, line) {
+				cmds = append(cmds, line)
 			}
-			cmds = append(cmds, "Remove-Item -Recurse -Force "+app.ShellArg(target))
 		}
-		if taskExists("asq") {
-			cmds = append(cmds, "schtasks /delete /tn asq")
-		}
-	default:
-		if self != "" {
-			rm := "rm " + app.ShellArg(self)
-			if !canWrite(filepath.Dir(self)) {
-				rm = "sudo " + rm
-			}
-			cmds = append(cmds, rm)
-		}
-		cmds = append(cmds, serviceCommands(self)...)
 	}
+	asq := asqCommand(m.OS, self)
+	found := m.Find(self)
+	for _, f := range found {
+		if f.By == service.ByAsq {
+			add(asq + " service uninstall")
+		}
+		add(f.Down...)
+	}
+	if len(found) > 0 {
+		add(asq + " uninstall")
+	}
+	add(binaryCommands(m.OS, self)...)
 	return cmds
 }
 
-// serviceCommands looks for what keeps `asq serve` running — a LaunchAgent under launchd, a
-// unit under systemd — by what such a file cannot help naming: this binary's path, or the
-// words of a setup made by hand. Found, the commands that take it down are said, not run:
-// a service may have been set up to this machine's own taste, and is not asq's to stop.
-func serviceCommands(self string) []string {
-	saysAsq := func(b []byte) bool {
-		if self != "" && bytes.Contains(b, []byte(self)) {
-			return true
-		}
-		// What a plist writes with XML's escapes, and what a unit writes with systemd's
-		// %h for the home this binary is in
-		if self != "" && (bytes.Contains(b, []byte(xmlEscaped(self))) || bytes.Contains(b, []byte(systemdHome(self)))) {
-			return true
-		}
-		return bytes.Contains(b, []byte("asq")) && bytes.Contains(b, []byte("serve"))
+// asqCommand is how a shell runs this asq: by its name when the PATH finds this one so, by
+// its path otherwise.
+func asqCommand(goos, self string) string {
+	if self == "" {
+		return "asq"
 	}
-	var cmds []string
-	switch runtime.GOOS {
-	case "darwin":
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil
-		}
-		plists, _ := filepath.Glob(filepath.Join(home, "Library", "LaunchAgents", "*.plist"))
-		for _, p := range plists {
-			if b, err := os.ReadFile(p); err != nil || !saysAsq(b) {
-				continue
+	if p, err := exec.LookPath("asq"); err == nil {
+		if a, err := os.Stat(p); err == nil {
+			if b, err := os.Stat(self); err == nil && os.SameFile(a, b) {
+				return "asq"
 			}
-			cmds = append(cmds,
-				`launchctl bootout "gui/$(id -u)" `+app.ShellArg(p),
-				"rm "+app.ShellArg(p))
-		}
-	case "linux":
-		base, err := os.UserConfigDir()
-		if err != nil {
-			return nil
-		}
-		units, _ := filepath.Glob(filepath.Join(base, "systemd", "user", "*.service"))
-		for _, u := range units {
-			if b, err := os.ReadFile(u); err != nil || !saysAsq(b) {
-				continue
-			}
-			name := strings.TrimSuffix(filepath.Base(u), ".service")
-			cmds = append(cmds,
-				"systemctl --user disable --now "+app.ShellArg(name),
-				"rm "+app.ShellArg(u))
 		}
 	}
-	return cmds
+	cmd := app.ShellArg(self)
+	if goos == "windows" && strings.HasPrefix(cmd, `"`) {
+		cmd = "& " + cmd // PowerShell runs a quoted path given its call operator
+	}
+	return cmd
 }
 
-// taskExists says whether Windows' scheduler holds a task of this name.
-func taskExists(name string) bool {
-	c := exec.Command("schtasks", "/query", "/tn", name)
-	return c.Run() == nil
+// binaryCommands removes this very binary: by its package manager when one installed it —
+// Homebrew, and the tap it came from when that is this repository; Scoop —, or else the
+// file, by sudo when its directory is not this account's to write. On Windows the
+// installer puts the exe in a directory of its own, which goes with it.
+func binaryCommands(goos, self string) []string {
+	if self == "" {
+		return nil
+	}
+	switch manager, dir := service.Package(self); manager {
+	case service.Homebrew:
+		cmds := []string{"brew uninstall asq"}
+		if tap := brewTap(dir); tap != "" {
+			cmds = append(cmds, "brew untap "+app.ShellArg(tap))
+		}
+		return cmds
+	case service.Scoop:
+		return []string{"scoop uninstall asq"}
+	}
+	if goos == "windows" {
+		target := self
+		if filepath.Base(filepath.Dir(self)) == "asq" {
+			target = filepath.Dir(self)
+		}
+		return []string{"Remove-Item -Recurse -Force " + app.ShellArg(target)}
+	}
+	rm := "rm " + app.ShellArg(self)
+	if !canWrite(filepath.Dir(self)) {
+		rm = "sudo " + rm
+	}
+	return []string{rm}
 }
 
-func xmlEscaped(s string) string {
-	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&#34;", "'", "&#39;")
-	return r.Replace(s)
+// module is this repository's Go module, which a clone of it names in its go.mod.
+const module = "github.com/itswl/agent-session-query"
+
+// brewTap is the tap Homebrew installed asq from, when that tap is this repository — a
+// clone of it, which holds asq's formula alone and goes with it; "" for homebrew/core, or
+// a tap of another's, which may hold more. Homebrew writes where a formula came from in the
+// receipt it leaves in the version's directory: the tap, and the formula's file, which is
+// in the tap's clone, <repository>/Library/Taps/<user>/homebrew-<name>.
+func brewTap(keg string) string {
+	b, err := os.ReadFile(filepath.Join(keg, "INSTALL_RECEIPT.json"))
+	if err != nil {
+		return ""
+	}
+	var receipt struct {
+		Source struct {
+			Tap  string `json:"tap"`
+			Path string `json:"path"`
+		} `json:"source"`
+	}
+	if json.Unmarshal(b, &receipt) != nil || receipt.Source.Tap == "" || receipt.Source.Path == "" {
+		return ""
+	}
+	for dir := filepath.Dir(receipt.Source.Path); filepath.Dir(dir) != dir; dir = filepath.Dir(dir) {
+		if filepath.Base(filepath.Dir(filepath.Dir(dir))) != "Taps" {
+			continue
+		}
+		if goModule(filepath.Join(dir, "go.mod")) == module {
+			return receipt.Source.Tap
+		}
+		break
+	}
+	return ""
 }
 
-func systemdHome(path string) string {
-	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(path, home+"/") {
-		return "%h/" + path[len(home)+1:]
+// goModule is the module a go.mod names.
+func goModule(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := bufio.NewScanner(bytes.NewReader(b))
+	for lines.Scan() {
+		if name, ok := strings.CutPrefix(strings.TrimSpace(lines.Text()), "module "); ok {
+			return strings.Trim(strings.TrimSpace(name), `"`)
+		}
 	}
 	return ""
 }

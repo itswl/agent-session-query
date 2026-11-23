@@ -426,10 +426,23 @@ func (m *Machine) Uninstall(force bool) (*Removed, error) {
 }
 
 // others are the services for asq that another tool set up: Homebrew's, from `brew
-// services start asq`. They start the same asq serve on the same port. Homebrew names a
-// service sh.brew.asq, and one an older Homebrew started keeps the name it had then:
-// homebrew.mxcl.asq under launchd, homebrew.asq under systemd.
+// services start asq`. They start the same asq serve on the same port.
 func (m *Machine) others() []string {
+	var out []string
+	for _, file := range m.homebrew() {
+		out = append(out, "Homebrew's service for asq is set up too ("+file+"; "+BrewServicesStop+" takes it down)")
+	}
+	return out
+}
+
+// BrewServicesStop takes down the service Homebrew set up for asq, and removes its
+// definition.
+const BrewServicesStop = "brew services stop asq"
+
+// homebrew lists the definitions of Homebrew's service for asq that are there. Homebrew
+// names a service sh.brew.asq, and one an older Homebrew started keeps the name it had
+// then: homebrew.mxcl.asq under launchd, homebrew.asq under systemd.
+func (m *Machine) homebrew() []string {
 	var files []string
 	switch m.OS {
 	case "darwin":
@@ -442,10 +455,92 @@ func (m *Machine) others() []string {
 	var out []string
 	for _, file := range files {
 		if _, err := os.Stat(file); err == nil {
-			out = append(out, "Homebrew's service for asq is set up too ("+file+"; brew services stop asq takes it down)")
+			out = append(out, file)
 		}
 	}
 	return out
+}
+
+// Who set a service up.
+const (
+	ByAsq      = "asq"    // asq service install, which asq service uninstall takes down
+	ByHomebrew = Homebrew // brew services start asq
+	ByHand     = "hand"   // a person, from docs/deploy.md or to this machine's own taste
+)
+
+// Found is a service set up to keep asq serve running.
+type Found struct {
+	By         string `json:"by"`         // ByAsq, ByHomebrew or ByHand
+	Definition string `json:"definition"` // its file, or the task
+	// Down is the commands that take it down: none for one asq service install wrote,
+	// which asq service uninstall takes down.
+	Down []string `json:"down,omitempty"`
+}
+
+// Find lists what is set up to keep asq serve running on this machine: the service asq
+// service install sets up — written by it or by hand —, Homebrew's, and a LaunchAgent or a
+// user unit set up by hand under another name, known by what such a file cannot help
+// naming: the binary self, as it is or as a plist or a unit writes it, or asq and serve.
+// It reads the definitions alone, as Listens does: the manager is not asked how a service
+// runs, nor the server whether it answers.
+func (m *Machine) Find(self string) []Found {
+	mg, err := m.manager()
+	if err != nil {
+		return nil
+	}
+	var found []Found
+	seen := map[string]bool{}
+	if def, there := mg.current(); there {
+		f := Found{By: ByAsq, Definition: mg.where()}
+		if !Marked(def) {
+			f.By, f.Down = ByHand, mg.unloadSteps()
+		}
+		found = append(found, f)
+		seen[mg.where()] = true
+	}
+	for _, file := range m.homebrew() {
+		found = append(found, Found{By: ByHomebrew, Definition: file, Down: []string{BrewServicesStop}})
+		seen[file] = true
+	}
+	names := func(b []byte) bool {
+		if self != "" && (bytes.Contains(b, []byte(self)) || bytes.Contains(b, []byte(esc(self)))) {
+			return true
+		}
+		// A unit names a binary in the home as %h/…
+		if rel, err := filepath.Rel(m.Home, self); m.Home != "" && err == nil && filepath.IsLocal(rel) &&
+			bytes.Contains(b, []byte("%h/"+filepath.ToSlash(rel))) {
+			return true
+		}
+		return bytes.Contains(b, []byte("asq")) && bytes.Contains(b, []byte("serve"))
+	}
+	var files []string
+	switch m.OS {
+	case "darwin":
+		if m.Home != "" {
+			files, _ = filepath.Glob(filepath.Join(m.Home, "Library", "LaunchAgents", "*.plist"))
+		}
+	case "linux":
+		if m.Config != "" {
+			files, _ = filepath.Glob(filepath.Join(m.Config, "systemd", "user", "*.service"))
+		}
+	}
+	for _, file := range files {
+		if seen[file] {
+			continue
+		}
+		if b, err := os.ReadFile(file); err != nil || !names(b) {
+			continue
+		}
+		f := Found{By: ByHand, Definition: file}
+		if m.OS == "darwin" {
+			f.Down = []string{said("launchctl", "bootout", "gui/"+strconv.Itoa(m.UID), file), said("rm", file)}
+		} else {
+			f.Down = []string{said("systemctl", "--user", "disable", "--now", filepath.Base(file)), said("rm", file),
+				said("systemctl", "--user", "daemon-reload")}
+		}
+		found = append(found, f)
+	}
+	return found
 }
 
 // Marked says whether asq service install wrote a definition.
@@ -513,6 +608,47 @@ func Stable(path string) string {
 	return path
 }
 
+// The package managers that keep asq a version to a directory.
+const (
+	Homebrew = "Homebrew"
+	Scoop    = "Scoop"
+)
+
+// Package says which package manager installed the binary at path, if one did, and the
+// directory of the version it is: Homebrew's <prefix>/Cellar/asq/<version>, Scoop's
+// <scoop>\apps\asq\<version> or its current. A link — Homebrew's bin/asq — is followed.
+// What is the package manager's is its to remove: brew uninstall, scoop uninstall.
+func Package(path string) (manager, dir string) {
+	paths := []string{path}
+	if real, err := filepath.EvalSymlinks(path); err == nil && real != path {
+		paths = append(paths, real)
+	}
+	sep := string(filepath.Separator)
+	for _, p := range paths {
+		parts := strings.Split(p, sep)
+		for i := range parts {
+			if manager := packaged(parts, i); manager != "" {
+				return manager, strings.Join(parts[:i+3], sep)
+			}
+		}
+	}
+	return "", ""
+}
+
+// packaged says which package manager keeps a version's own directory at parts[i:], with
+// a file in it: Cellar/asq/<version> is Homebrew's, apps\asq\<version> Scoop's. It is the
+// rule install.sh and install.ps1 know an asq they leave to brew upgrade and scoop update by.
+func packaged(parts []string, i int) string {
+	switch {
+	case i+3 >= len(parts):
+	case parts[i] == "Cellar" && parts[i+1] == "asq":
+		return Homebrew
+	case strings.EqualFold(parts[i], "apps") && strings.EqualFold(parts[i+1], "asq"):
+		return Scoop
+	}
+	return ""
+}
+
 // unversioned is a path in a version's own directory as the one its package manager keeps
 // from version to version, when there is one.
 func unversioned(path string) string {
@@ -527,12 +663,15 @@ func unversioned(path string) string {
 	}
 	for i := 0; i+3 < len(parts); i++ {
 		var stable string
-		switch {
+		switch packaged(parts, i) {
 		// <prefix>/Cellar/asq/<version>/bin/asq → <prefix>/opt/asq/bin/asq
-		case parts[i] == "Cellar" && parts[i+1] == "asq":
+		case Homebrew:
 			stable = join(parts[:i], []string{"opt", "asq"}, parts[i+3:])
 		// <scoop>\apps\asq\<version>\asq.exe → <scoop>\apps\asq\current\asq.exe
-		case strings.EqualFold(parts[i], "apps") && strings.EqualFold(parts[i+1], "asq") && !strings.EqualFold(parts[i+2], "current"):
+		case Scoop:
+			if strings.EqualFold(parts[i+2], "current") {
+				continue
+			}
 			stable = join(parts[:i+2], []string{"current"}, parts[i+3:])
 		default:
 			continue

@@ -3,76 +3,116 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/index"
+	"github.com/itswl/agent-session-query/internal/keep"
+	"github.com/itswl/agent-session-query/internal/service"
 )
+
+// uninstallHome gives uninstall a machine of the test's own: a home and every directory Go
+// finds the cache, the config and the state by, on any system; an index at the default path
+// and a state in it; the CLIs' stores in it, empty; and a service manager of goos that reads
+// the definitions in it and is never run.
+func uninstallHome(t *testing.T, goos string, run func(name string, args ...string) ([]byte, error)) (home, state string) {
+	t.Helper()
+	home = t.TempDir()
+	t.Setenv("HOME", home)        // what UserHomeDir reads on unix…
+	t.Setenv("USERPROFILE", home) // …and on Windows
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "xdg-state"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
+	t.Setenv("LocalAppData", filepath.Join(home, "local"))
+	t.Setenv("AppData", filepath.Join(home, "roaming"))
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+	t.Setenv("ASQ_INDEX", "")
+	t.Setenv("ASQ_ONLY", "")
+	t.Setenv("ASQ_PATH", "")
+	state = filepath.Join(home, "state")
+	t.Setenv("ASQ_STATE", state)
+	put(t, filepath.Join(state, "session.key"), "k")
+	put(t, index.DefaultPath(), "i")
+	if run == nil {
+		run = func(string, ...string) ([]byte, error) { return nil, errors.New("no service manager here") }
+	}
+	old := newMachine
+	newMachine = func(port int) *service.Machine {
+		return &service.Machine{OS: goos, Home: home, Config: filepath.Join(home, "config"), UID: 501, User: "me", Port: port,
+			Run: run, Answers: func(string) bool { return false }, Lingers: func() bool { return true }}
+	}
+	t.Cleanup(func() { newMachine = old })
+	return home, state
+}
+
+func put(t *testing.T, path, content string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func uninstallJSON(t *testing.T) uninstalled {
+	t.Helper()
+	out, errs, code := runAsq("uninstall", "--json")
+	if code != 0 {
+		t.Fatalf("asq uninstall --json: exit %d\n%s", code, errs)
+	}
+	var got uninstalled
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	return got
+}
+
+func gone(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("%s is still there", path)
+	}
+}
+
+func there(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("%s was taken: %v", path, err)
+	}
+}
 
 // uninstall takes what asq wrote — the index, the state — and only that; the CLIs' stores it
 // never touches. The rest is said as commands: this very binary, and a service found by what
 // its file names.
 func TestUninstallTakesWhatAsqWrote(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
-	t.Setenv("LocalAppData", filepath.Join(home, "local"))
-	t.Setenv("ASQ_INDEX", "")
-	state := filepath.Join(home, "state")
-	t.Setenv("ASQ_STATE", state)
-	if err := os.MkdirAll(state, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(state, "session.key"), []byte("k"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Dir(index.DefaultPath())
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(index.DefaultPath(), []byte("i"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	home, state := uninstallHome(t, runtime.GOOS, nil)
+	store := put(t, filepath.Join(home, ".claude", "projects", "p", "s.jsonl"), "{}\n")
 
 	// A service file naming this very binary, where this machine's service manager reads it
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	self := thisFile()
 	switch runtime.GOOS {
 	case "darwin":
-		p := filepath.Join(home, "Library", "LaunchAgents", "x.plist")
-		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte("<string>"+self+"</string>"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		put(t, filepath.Join(home, "Library", "LaunchAgents", "x.plist"), "<string>"+self+"</string>")
 	case "linux":
-		u := filepath.Join(home, "config", "systemd", "user", "asq.service")
-		if err := os.MkdirAll(filepath.Dir(u), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(u, []byte("ExecStart="+self+" serve"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		put(t, filepath.Join(home, "config", "systemd", "user", "asq.service"), "ExecStart="+self+" serve")
 	}
 
-	var out, errs bytes.Buffer
-	if code := Run([]string{"uninstall"}, strings.NewReader(""), &out, &errs); code != 0 {
-		t.Fatalf("asq uninstall: exit %d\n%s", code, &errs)
+	said, errs, code := runAsq("uninstall")
+	if code != 0 {
+		t.Fatalf("asq uninstall: exit %d\n%s", code, errs)
 	}
-	if _, err := os.Stat(index.DefaultPath()); !os.IsNotExist(err) {
-		t.Error("the index is still there")
-	}
-	if _, err := os.Stat(state); !os.IsNotExist(err) {
-		t.Error("the state is still there")
-	}
-	said := out.String()
+	gone(t, index.DefaultPath())
+	gone(t, state)
+	there(t, store)
 	if !strings.Contains(said, "to finish, run:") {
 		t.Errorf("asq uninstall said:\n%s", said)
 	}
@@ -87,57 +127,284 @@ func TestUninstallTakesWhatAsqWrote(t *testing.T) {
 	}
 }
 
-// --json answers what was removed and what to run, for a script or an agent to finish.
+// --json answers what was removed, what was left and what to run, for a script or an agent
+// to finish.
 func TestUninstallJSON(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
-	t.Setenv("LocalAppData", filepath.Join(home, "local"))
-	t.Setenv("ASQ_INDEX", "")
-	state := filepath.Join(home, "state")
-	t.Setenv("ASQ_STATE", state)
-	if err := os.MkdirAll(state, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Dir(index.DefaultPath())
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(index.DefaultPath(), []byte("i"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	var out, errs bytes.Buffer
-	if code := Run([]string{"uninstall", "--json"}, strings.NewReader(""), &out, &errs); code != 0 {
-		t.Fatalf("asq uninstall --json: exit %d\n%s", code, &errs)
-	}
-	var got uninstalled
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-		t.Fatalf("not JSON: %v\n%s", err, &out)
-	}
+	_, state := uninstallHome(t, runtime.GOOS, nil)
+	got := uninstallJSON(t)
 	if len(got.Removed) != 2 || got.Removed[0] != index.DefaultPath() || got.Removed[1] != state {
 		t.Errorf("removed %v", got.Removed)
+	}
+	if got.Left == nil || len(got.Left) != 0 {
+		t.Errorf("left %#v, want []", got.Left)
 	}
 	if len(got.Run) == 0 {
 		t.Error("nothing to run was said")
 	}
 }
 
-// A state dir that is a home — an ASQ_STATE pointed too wide — is refused, not removed.
+// A state dir that is a home, or holds one — an ASQ_STATE pointed too wide — is refused, not
+// removed, and said as left.
 func TestUninstallRefusesAHomeForState(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)        // what UserHomeDir reads on unix…
-	t.Setenv("USERPROFILE", home) // …and on Windows
-	t.Setenv("ASQ_STATE", home)
-	var out, errs bytes.Buffer
-	if code := Run([]string{"uninstall"}, strings.NewReader(""), &out, &errs); code != 0 {
-		t.Fatalf("asq uninstall: exit %d\n%s", code, &errs)
+	home, _ := uninstallHome(t, runtime.GOOS, nil)
+	for _, state := range []string{home, filepath.Dir(home)} {
+		t.Setenv("ASQ_STATE", state)
+		out, errs, code := runAsq("uninstall")
+		if code != 0 {
+			t.Fatalf("asq uninstall: exit %d\n%s", code, errs)
+		}
+		there(t, home)
+		there(t, filepath.Join(home, "state", "session.key"))
+		if strings.Contains(out, "removed "+state+" ") {
+			t.Errorf("the home was said as removed:\n%s", out)
+		}
+		if !strings.Contains(out, "left "+state+" — a home, or a folder that holds one") {
+			t.Errorf("the home was not said as left:\n%s", out)
+		}
 	}
-	if _, err := os.Stat(home); err != nil {
-		t.Fatalf("the home was taken: %v", err)
+}
+
+// keptHere puts copies asq keep made into a folder: two of Claude Code's transcripts, one
+// of which Claude Code still holds and one it has deleted, which is kept nowhere else.
+func keptHere(t *testing.T, home, folder string) []string {
+	t.Helper()
+	put(t, filepath.Join(home, ".claude", "projects", "p", "held.jsonl"), "{}\n")
+	return []string{
+		put(t, filepath.Join(folder, "claude", "p", "held.jsonl"), "{}\n"),
+		put(t, filepath.Join(folder, "claude", "p", "deleted.jsonl"), "{}\n"),
 	}
-	if strings.Contains(out.String(), home+" —") {
-		t.Errorf("the home was said as removed:\n%s", &out)
+}
+
+func removeCommand(folder string) string {
+	if runtime.GOOS == "windows" {
+		return "Remove-Item -Recurse -Force " + app.ShellArg(folder)
 	}
+	return "rm -rf " + app.ShellArg(folder)
+}
+
+// The copies asq keep made may be all there is of what a CLI deleted: uninstall takes the
+// rest of the state and leaves them, and says where they are, what they hold, and how to
+// remove them should that be wanted.
+func TestUninstallLeavesTheKeptCopies(t *testing.T) {
+	home, state := uninstallHome(t, runtime.GOOS, nil)
+	if err := keep.Save(state, keep.Settings{All: true}); err != nil {
+		t.Fatal(err)
+	}
+	kept := filepath.Join(state, "kept")
+	copies := keptHere(t, home, kept)
+	ledger := put(t, filepath.Join(state, "otel", "ledger.db"), "l")
+
+	out, errs, code := runAsq("uninstall")
+	if code != 0 {
+		t.Fatalf("asq uninstall: exit %d\n%s", code, errs)
+	}
+	for _, p := range []string{filepath.Join(state, "session.key"), filepath.Join(state, "keep.json"), ledger, filepath.Dir(ledger)} {
+		gone(t, p)
+	}
+	for _, p := range copies {
+		there(t, p)
+	}
+	there(t, filepath.Join(home, ".claude", "projects", "p", "held.jsonl"))
+	for _, want := range []string{
+		"removed " + state + " — the state but for the copies in it: the sign-in key",
+		"left " + kept + " — the copies asq keep made: 2 transcripts, 1 of them deleted by their CLI since and kept nowhere else\n",
+		"  " + removeCommand(kept) + " removes them too",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("lacks %q:\n%s", want, out)
+		}
+	}
+
+	// Run again, it takes nothing more, and says the copies again
+	got := uninstallJSON(t)
+	want := []leftBehind{{Path: kept, What: "copies", Why: "the copies asq keep made: 2 transcripts, 1 of them deleted by their CLI since and kept nowhere else",
+		Transcripts: 2, Gone: 1, Remove: removeCommand(kept)}}
+	if len(got.Removed) != 0 || !reflect.DeepEqual(got.Left, want) {
+		t.Errorf("removed %q, left %+v; want nothing removed, and left %+v", got.Removed, got.Left, want)
+	}
+}
+
+// Copies in a folder asq keep --dir named outside the state are left too, and named.
+func TestUninstallNamesAKeptFolderElsewhere(t *testing.T) {
+	home, state := uninstallHome(t, runtime.GOOS, nil)
+	folder := filepath.Join(home, "backup", "asq copies")
+	if err := keep.Save(state, keep.Settings{Dir: folder}); err != nil {
+		t.Fatal(err)
+	}
+	copies := keptHere(t, home, folder)
+
+	got := uninstallJSON(t)
+	gone(t, state)
+	for _, p := range copies {
+		there(t, p)
+	}
+	if len(got.Removed) != 2 || got.Removed[1] != state {
+		t.Errorf("removed %q, want the index and %s", got.Removed, state)
+	}
+	if len(got.Left) != 1 || got.Left[0].Path != folder || got.Left[0].Transcripts != 2 || got.Left[0].Gone != 1 || got.Left[0].Remove != removeCommand(folder) {
+		t.Errorf("left %+v, want %s and its two transcripts", got.Left, folder)
+	}
+}
+
+// The copies are spared as the file system has them: a folder named by another way to it
+// than the state's — through a link — and deeper in it, is still the folder; and a link in
+// the state is removed, not followed into what it leads to.
+func TestUninstallSparesTheCopiesWhateverTheyAreNamedBy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symbolic links take a privilege on Windows")
+	}
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	home, _ := uninstallHome(t, runtime.GOOS, nil)
+	state := filepath.Join(link, "state")
+	t.Setenv("ASQ_STATE", state)
+	folder := filepath.Join(real, "state", "deep", "copies")
+	if err := keep.Save(state, keep.Settings{Dir: folder}); err != nil {
+		t.Fatal(err)
+	}
+	copies := keptHere(t, home, folder)
+	beside := put(t, filepath.Join(state, "deep", "beside"), "b")
+	elsewhere := put(t, filepath.Join(t.TempDir(), "mine"), "m")
+	if err := os.Symlink(filepath.Dir(elsewhere), filepath.Join(state, "out")); err != nil {
+		t.Fatal(err)
+	}
+
+	got := uninstallJSON(t)
+	for _, p := range copies {
+		there(t, p)
+	}
+	there(t, elsewhere)
+	gone(t, beside)
+	gone(t, filepath.Join(state, "out"))
+	gone(t, filepath.Join(state, "keep.json"))
+	if len(got.Left) != 1 || got.Left[0].Path != folder {
+		t.Errorf("left %+v, want %s", got.Left, folder)
+	}
+}
+
+// What keeps asq serve running is taken down first: asq service uninstall for the service
+// asq service install wrote — it needs the binary, which goes last —, brew services stop for
+// Homebrew's, and the manager's own commands for one set up by hand; never both for one
+// definition. Uninstall again then takes what a running server wrote meanwhile.
+func TestUninstallTakesTheServicesDownFirst(t *testing.T) {
+	self := thisFile()
+	for _, tc := range []struct {
+		os   string
+		ours bool
+		// place puts the definitions in a home, and says what is run, in order, before
+		// uninstall again and the binary; "ours" stands for asq service uninstall
+		place   func(t *testing.T, home string) []string
+		notSaid []string
+	}{
+		{os: "darwin", ours: true, place: func(t *testing.T, home string) []string {
+			dir := filepath.Join(home, "Library", "LaunchAgents")
+			put(t, filepath.Join(dir, service.Label+".plist"), "<!-- "+service.Mark+" --><string>/x/asq</string><string>serve</string>")
+			put(t, filepath.Join(dir, "sh.brew.asq.plist"), "<string>/opt/homebrew/opt/asq/bin/asq</string><string>serve</string>")
+			put(t, filepath.Join(dir, "unrelated.plist"), "<string>/usr/bin/true</string>")
+			return []string{"ours", "brew services stop asq"}
+		}, notSaid: []string{service.Label, "sh.brew.asq", "unrelated"}},
+		{os: "darwin", place: func(t *testing.T, home string) []string {
+			mine := put(t, filepath.Join(home, "Library", "LaunchAgents", "mine.plist"), "<string>"+self+"</string>")
+			return []string{"launchctl bootout gui/501 " + app.ShellArg(mine), "rm " + app.ShellArg(mine)}
+		}},
+		{os: "linux", ours: true, place: func(t *testing.T, home string) []string {
+			dir := filepath.Join(home, "config", "systemd", "user")
+			put(t, filepath.Join(dir, "asq.service"), "# "+service.Mark+"\n[Service]\nExecStart=/x/asq serve\n")
+			put(t, filepath.Join(dir, "homebrew.asq.service"), "[Service]\nExecStart=/home/linuxbrew/.linuxbrew/opt/asq/bin/asq serve\n")
+			mine := put(t, filepath.Join(dir, "mine.service"), "[Service]\nExecStart="+self+"\n")
+			return []string{"ours", "brew services stop asq", "systemctl --user disable --now mine.service", "rm " + app.ShellArg(mine), "systemctl --user daemon-reload"}
+		}, notSaid: []string{"disable --now asq.service", "homebrew.asq.service"}},
+		{os: "windows", ours: true, place: func(*testing.T, string) []string { return []string{"ours"} }, notSaid: []string{"schtasks"}},
+		{os: "windows", place: func(*testing.T, string) []string {
+			return []string{"schtasks /end /tn asq", "schtasks /delete /tn asq /f"}
+		}},
+	} {
+		t.Run(tc.os, func(t *testing.T) {
+			task := []byte(`<Task><RegistrationInfo><URI>\asq</URI></RegistrationInfo><Actions><Exec><Command>C:\x\asq.exe</Command><Arguments>serve</Arguments></Exec></Actions></Task>`)
+			if tc.ours {
+				task = bytes.Replace(task, []byte("<URI>"), []byte("<Description>"+service.Mark+"</Description><URI>"), 1)
+			}
+			run := func(name string, args ...string) ([]byte, error) {
+				if tc.os == "windows" && name == "powershell.exe" && strings.Contains(args[len(args)-1], "Export-ScheduledTask") {
+					return task, nil
+				}
+				return nil, errors.New("no service manager here")
+			}
+			home, _ := uninstallHome(t, tc.os, run)
+			asq := asqCommand(tc.os, self)
+			want := tc.place(t, home)
+			for i, w := range want {
+				if w == "ours" {
+					want[i] = asq + " service uninstall"
+				}
+			}
+			want = append(want, asq+" uninstall")
+			got := uninstallJSON(t).Run
+			binary := "rm "
+			if tc.os == "windows" {
+				binary = "Remove-Item "
+			}
+			if len(got) != len(want)+1 || !reflect.DeepEqual(got[:len(want)], want) || !strings.HasPrefix(got[len(want)], binary) {
+				t.Errorf("run\n  %s\nwant\n  %s\n  %s…", strings.Join(got, "\n  "), strings.Join(want, "\n  "), binary)
+			}
+			for _, not := range tc.notSaid {
+				if strings.Contains(strings.Join(got, "\n"), not) {
+					t.Errorf("%q is said: %q", not, got)
+				}
+			}
+		})
+	}
+}
+
+// Nothing set up, nothing is said of services, nor is uninstall said again.
+func TestUninstallSaysNoServiceWhereThereIsNone(t *testing.T) {
+	uninstallHome(t, "darwin", nil)
+	if got := uninstallJSON(t).Run; len(got) != 1 || !strings.HasPrefix(got[0], "rm ") && !strings.HasPrefix(got[0], "sudo rm ") {
+		t.Errorf("run %q, want the binary alone", got)
+	}
+}
+
+// A binary a package manager installed is its to remove: brew uninstall, and untap when the
+// tap is this repository; scoop uninstall. Any other is a file to remove.
+func TestUninstallLeavesTheBinaryToItsPackageManager(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	keg := filepath.Join(root, "Cellar", "asq", "1.6.0")
+	brewed := put(t, filepath.Join(keg, "bin", "asq"), "")
+	tap := filepath.Join(root, "Library", "Taps", "someone", "homebrew-asq")
+	receipt := func(tap, path string) {
+		b, _ := json.Marshal(map[string]any{"source": map[string]any{"tap": tap, "path": path}})
+		put(t, filepath.Join(keg, "INSTALL_RECEIPT.json"), string(b))
+	}
+	formula := put(t, filepath.Join(tap, "Formula", "asq.rb"), "class Asq < Formula\nend\n")
+	scoop := put(t, filepath.Join(root, "scoop", "apps", "asq", "1.6.0", "asq.exe"), "")
+	current := put(t, filepath.Join(root, "scoop", "apps", "asq", "current", "asq.exe"), "")
+	installed := put(t, filepath.Join(root, "Programs", "asq", "asq.exe"), "")
+	plain := put(t, filepath.Join(root, "bin", "asq"), "")
+
+	check := func(goos, self string, want ...string) {
+		t.Helper()
+		if got := binaryCommands(goos, self); !reflect.DeepEqual(got, want) {
+			t.Errorf("binaryCommands(%s, %s) = %q, want %q", goos, self, got, want)
+		}
+	}
+	put(t, filepath.Join(tap, "go.mod"), "module "+module+"\n\ngo 1.26\n")
+	receipt("someone/asq", formula)
+	check("darwin", brewed, "brew uninstall asq", "brew untap someone/asq")
+	put(t, filepath.Join(tap, "go.mod"), "module example.com/another\n")
+	check("linux", brewed, "brew uninstall asq")
+	receipt("homebrew/core", filepath.Join(root, "Caches", "api-source", "Formula", "a", "asq.rb"))
+	check("darwin", brewed, "brew uninstall asq")
+	os.Remove(filepath.Join(keg, "INSTALL_RECEIPT.json"))
+	check("darwin", brewed, "brew uninstall asq")
+
+	check("windows", scoop, "scoop uninstall asq")
+	check("windows", current, "scoop uninstall asq")
+	check("windows", installed, "Remove-Item -Recurse -Force "+app.ShellArg(filepath.Dir(installed)))
+	check("linux", plain, "rm "+app.ShellArg(plain))
 }

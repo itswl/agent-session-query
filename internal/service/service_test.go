@@ -795,3 +795,114 @@ func TestStatusNamesItsFieldsAsTheRecordDoes(t *testing.T) {
 		t.Errorf("status = %s: a field is named in snake_case", b)
 	}
 }
+
+// Find says what keeps asq serve running, and who set it up, from the definitions alone:
+// the service asq service install wrote, which asq service uninstall takes down; one made by
+// hand where install would write it, with the commands status gives for it; Homebrew's; and
+// one made by hand under another name, known by the binary it names.
+func TestFind(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		t.Run(goos, func(t *testing.T) {
+			f := newFake(t, goos)
+			mg, _ := f.m.manager()
+			s := f.setup()
+			if got := f.m.Find(s.Binary); len(got) != 0 {
+				t.Errorf("nothing is set up, and Find found %+v", got)
+			}
+			if _, err := f.m.Install(s, false); err != nil {
+				t.Fatal(err)
+			}
+			f.ran = nil
+			if got := f.m.Find(s.Binary); len(got) != 1 || got[0].By != ByAsq || got[0].Definition != mg.where() || len(got[0].Down) != 0 {
+				t.Errorf("found %+v, want asq's own at %s", got, mg.where())
+			}
+			for _, cmd := range f.ran {
+				if !strings.Contains(cmd, "Export-ScheduledTask") {
+					t.Errorf("Find asked the manager more than for the definition: %s", cmd)
+				}
+			}
+			f.place(byHand[goos])
+			if got := f.m.Find(s.Binary); len(got) != 1 || got[0].By != ByHand || got[0].Definition != mg.where() || !reflect.DeepEqual(got[0].Down, mg.unloadSteps()) {
+				t.Errorf("found %+v, want the one by hand at %s, taken down by %q", got, mg.where(), mg.unloadSteps())
+			}
+			if goos == "windows" {
+				return
+			}
+
+			put := func(path, content string) string {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			}
+			var brew, other string
+			var otherDown []string
+			if goos == "darwin" {
+				dir := filepath.Join(f.m.Home, "Library", "LaunchAgents")
+				brew = put(filepath.Join(dir, "homebrew.mxcl.asq.plist"), "<string>/opt/homebrew/opt/asq/bin/asq</string><string>serve</string>")
+				other = put(filepath.Join(dir, "me.plist"), "<string>"+esc(s.Binary)+"</string>")
+				put(filepath.Join(dir, "unrelated.plist"), "<string>/usr/bin/true</string>")
+				otherDown = []string{said("launchctl", "bootout", "gui/501", other), said("rm", other)}
+			} else {
+				dir := filepath.Join(f.m.Config, "systemd", "user")
+				brew = put(filepath.Join(dir, "homebrew.asq.service"), "[Service]\nExecStart=/home/linuxbrew/.linuxbrew/opt/asq/bin/asq serve\n")
+				rel, _ := filepath.Rel(f.m.Home, s.Binary)
+				other = put(filepath.Join(dir, "me.service"), "[Service]\nExecStart=%h/"+filepath.ToSlash(rel)+"\n")
+				put(filepath.Join(dir, "unrelated.service"), "[Service]\nExecStart=/usr/bin/true\n")
+				otherDown = []string{said("systemctl", "--user", "disable", "--now", "me.service"), said("rm", other), said("systemctl", "--user", "daemon-reload")}
+			}
+			want := []Found{
+				{By: ByHand, Definition: mg.where(), Down: mg.unloadSteps()},
+				{By: ByHomebrew, Definition: brew, Down: []string{BrewServicesStop}},
+				{By: ByHand, Definition: other, Down: otherDown},
+			}
+			if got := f.m.Find(s.Binary); !reflect.DeepEqual(got, want) {
+				t.Errorf("found\n%+v\nwant\n%+v", got, want)
+			}
+		})
+	}
+}
+
+// A binary a package manager installed is known by the directory of its version, or by
+// where a link at it leads: Homebrew's Cellar, Scoop's apps.
+func TestPackage(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := func(parts ...string) string {
+		p := filepath.Join(append([]string{root}, parts...)...)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	keg := filepath.Join(root, "Cellar", "asq", "1.6.0")
+	cellar := mk("Cellar", "asq", "1.6.0", "bin", "asq")
+	cases := []struct{ path, manager, dir string }{
+		{cellar, Homebrew, keg},
+		{mk("scoop", "apps", "asq", "1.6.0", "asq.exe"), Scoop, filepath.Join(root, "scoop", "apps", "asq", "1.6.0")},
+		{mk("scoop", "apps", "asq", "current", "asq.exe"), Scoop, filepath.Join(root, "scoop", "apps", "asq", "current")},
+		{mk(".local", "bin", "asq"), "", ""},
+		{mk("apps", "asq"), "", ""}, // no version's directory: a folder of one's own
+	}
+	link := filepath.Join(root, "bin", "asq")
+	os.MkdirAll(filepath.Dir(link), 0o755)
+	if os.Symlink(cellar, link) == nil {
+		cases = append(cases, struct{ path, manager, dir string }{link, Homebrew, keg})
+	} else {
+		t.Log("no symbolic links here: links not tried")
+	}
+	for _, tc := range cases {
+		if manager, dir := Package(tc.path); manager != tc.manager || dir != tc.dir {
+			t.Errorf("Package(%s) = %q %s, want %q %s", tc.path, manager, dir, tc.manager, tc.dir)
+		}
+	}
+}

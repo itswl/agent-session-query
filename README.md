@@ -150,48 +150,49 @@ reads a CLI's files differently reads them again by itself, at its first look at
 
 ## Uninstall
 
-`asq uninstall` removes what asq wrote — the index, and the state: the sign-in key, what a
-collector was sent — and says the rest as commands to run: the binary where this one is
-(`sudo`, when its directory needs it), and a service that kept `asq serve` running, found
-by what its file names. None of what asq wrote is your history, but for the copies
-`asq keep` makes when asked — the stores belong to the CLIs and are never touched.
+`asq uninstall` removes what asq wrote: the index, and the state — the sign-in key, what a
+collector was sent, what `asq keep` was asked to keep. The rest it says as commands, in the
+order to run them:
 
-By hand, in any order, on macOS and Linux:
+1. what keeps `asq serve` running, taken down: `asq service uninstall` for the service it set
+   up, while the binary is there to run it; `brew services stop asq` for Homebrew's; for one
+   set up by hand, found by what its plist, its unit or its task names, its manager's commands;
+2. `asq uninstall` again, when there was a service, for the index it wrote until it stopped;
+3. the binary: `brew uninstall asq`, and `brew untap` when the tap is this repository, or
+   `scoop uninstall asq`, for one they installed; otherwise `rm` where it is (`sudo`, when its
+   directory needs it), or its folder on Windows.
+
+`asq uninstall --json` answers the same: `removed`, `left`, `run`. What it leaves:
+
+- The copies `asq keep` made, if it was asked to: the only record of what a CLI has deleted
+  since. They stay where they are — `kept` in the state directory, or the folder
+  `asq keep --dir` named — and uninstall says where, how many transcripts they hold and how many
+  of those the CLI has deleted, and the command that removes them.
+- The CLIs' stores, which are your history, and are never touched.
+- The `asq` MCP server each agent CLI was given, which it goes on asking for until told
+  otherwise: remove it with the CLI's own command or from its settings; and the skill's folders,
+  `~/.claude/skills/agent-sessions` and `~/.agents/skills/agent-sessions`, where it was saved.
+- The page's offline copy, a few files that a browser which opened the page keeps until that
+  site's data is cleared there.
+- The service's log, with the callers it refused in it, and a line added to the shell's rc for
+  the PATH — on Windows, the `asq` entry in your user PATH.
+
+By hand it is the same, in any order once the service is down. On macOS and Linux:
 
 ```sh
 rm ~/.local/bin/asq                          # sudo rm /usr/local/bin/asq, if that is where it went
 rm -rf ~/Library/Caches/asq ~/.cache/asq     # the index, rebuilt when needed
-rm -rf "$HOME/Library/Application Support/asq" ~/.local/state/asq   # the state: the sign-in key, what a collector was sent, the copies asq keep made
+rm -rf "$HOME/Library/Application Support/asq" ~/.local/state/asq   # the state: the sign-in key, what a collector was sent, the copies asq keep made — move them first to keep them
+rm -f ~/Library/Logs/asq.log                 # the log of the service asq service install, or the launchd agent, set up on macOS
+rm -f "$(brew --prefix)/var/log/asq.log"     # the log of Homebrew's service
 ```
 
 Installed with Homebrew or Scoop, `brew uninstall asq` or `scoop uninstall asq` takes the
-binary instead.
-
-On Windows, delete `%LOCALAPPDATA%\Programs\asq`, `%LocalAppData%\asq` and `%AppData%\asq`,
-and remove the `asq` entry from your user PATH. `ASQ_INDEX` or `ASQ_STATE` moved the last
-two elsewhere — remove them where you put them. A line added to the shell's rc for the
-PATH can go too.
-
-The copies `asq keep` made, if it was asked to, are the only record of what a CLI has deleted
-since. They are in the state directory, or the folder `asq keep --dir` named; `asq keep` says
-which. Move them elsewhere first to keep them.
-
-If `asq serve` was kept running, take the service down before the binary —
-`asq service uninstall`, or `brew services stop asq`; one set up by hand, the launchd agent,
-the systemd unit or the scheduled task, each named in [Deploying](docs/deploy.md); a
-container is `docker rm` and its `/data` volume. Its log stays behind, with the callers it
-refused in it:
-
-```sh
-rm -f ~/Library/Logs/asq.log                 # the service asq service install, or the launchd agent, set up on macOS
-rm -f "$(brew --prefix)/var/log/asq.log"     # Homebrew's service
-```
-
-The agent CLIs given asq go on asking for it until told otherwise: remove the `asq` MCP server
-with each CLI's own command or from its settings, and the skill's folders,
-`~/.claude/skills/agent-sessions` and `~/.agents/skills/agent-sessions`, where it was saved. A
-browser that opened the page keeps its offline page, a few files, until that site's data is
-cleared there.
+binary instead. On Windows, delete `%LOCALAPPDATA%\Programs\asq`, `%LocalAppData%\asq` and
+`%AppData%\asq`, and remove the `asq` entry from your user PATH. `ASQ_INDEX` or `ASQ_STATE` moved
+the last two elsewhere — remove them where you put them. A service set up by hand — the launchd
+agent, the systemd unit or the scheduled task — is taken down as [Deploying](docs/deploy.md)
+names it; a container is `docker rm` and its `/data` volume.
 
 ## Commands
 
@@ -217,7 +218,7 @@ cleared there.
 | `asq skill` | the skill that tells an agent when and how to use asq, to save where its CLI reads skills |
 | `asq otel` | export sessions as OpenTelemetry traces |
 | `asq doctor` · `asq index` | check the stores, the index and the server running here · inspect, rebuild or remove the index |
-| `asq uninstall` | take asq off the machine: the index and the state removed, the rest said as commands |
+| `asq uninstall` | take asq off the machine: the index and the state removed but for the copies `asq keep` made, the rest said as commands |
 
 A **ref** is what `ls` and `search` print: `claude/3f2a9c1e`, or just the start of a session's
 id, the way a commit is named. `#4` names a turn. Every command takes `--json`; `show`,

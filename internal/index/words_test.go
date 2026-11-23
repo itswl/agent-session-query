@@ -78,6 +78,13 @@ func TestStemsBesideTheWords(t *testing.T) {
 		{needle{text: "retry", stem: "retri"}, "it was Retried twice", 7, 7, "Retried", "another form, as written"},
 		{needle{text: "retry", stem: "retri"}, "retriever retrieval", -1, 0, "", "words that only begin alike"},
 		{needle{text: "数据库"}, "给数据库加索引", 3, 9, "", "a CJK run, by substring"},
+		{needle{text: "retry", toks: []string{"retry"}, prefix: true}, "ẞ RETRY", 4, 5, "", "where lowering changes a character's length"},
+		// A term of several words is its words one after another, whatever is between them
+		{needle{text: "session_query", toks: []string{"session", "query"}, prefix: true}, "in Session-Query's tests", 3, 13, "", "the words, any punctuation between"},
+		{needle{text: "exit status", toks: []string{"exit", "status"}}, "exit\n  status 1", 0, 13, "", "a phrase over a line's end"},
+		{needle{text: "go test", toks: []string{"go", "test"}}, "sed -n 1,80p multipart.go", -1, 0, "", "not a word that only ends a word"},
+		{needle{text: "go test", toks: []string{"go", "test"}}, "cargo test; go: testing", -1, 0, "", "nor the words apart, or the last only begun"},
+		{needle{text: "go tes", toks: []string{"go", "tes"}, prefix: true}, "cargo test; go: testing", 12, 11, "", "… unless it is a prefix"},
 	} {
 		at, size, word := c.needle.find(c.text)
 		if at != c.at || size != c.size || word != c.word {

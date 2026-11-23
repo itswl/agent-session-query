@@ -634,14 +634,16 @@ func (ix *Index) matches(ctx context.Context, s *Session, title string, t *model
 			wanted[term.Column] = true
 		}
 	}
-	var out []Match
-	used := map[int]bool{}
+	out := []Match{}
+	// A place is shown once: a step whose call or words a match was found in is not shown
+	// again but for its output, and an output not twice
+	used, usedOutput := map[int]bool{}, map[int]bool{}
 	for _, n := range needles {
 		if len(out) >= maxMatches {
 			break
 		}
 		for _, f := range fields {
-			if used[f.seq] && f.part != "output" {
+			if f.part == "output" && usedOutput[f.seq] || f.part != "output" && used[f.seq] {
 				continue
 			}
 			if len(wanted) > 0 && !wanted[f.column] {
@@ -659,37 +661,13 @@ func (ix *Index) matches(ctx context.Context, s *Session, title string, t *model
 			}
 			out = append(out, Match{Kind: f.kind, Part: f.part, Tool: f.tool, Seq: max(f.seq, 0), Snippet: snippet(text, at, size), Word: word})
 			used[f.seq] = true
+			if f.part == "output" {
+				usedOutput[f.seq] = true
+			}
 			break
 		}
 	}
 	return out
-}
-
-// indexFold finds needle (already lowercase) in s without regard to case.
-func indexFold(s, needle string) int {
-	if needle == "" {
-		return -1
-	}
-	if i := strings.Index(s, needle); i >= 0 {
-		return i
-	}
-	// Lowering can change a string's length in bytes, so the search runs over the
-	// lowered text and the offset is mapped back by counting characters
-	lower := strings.ToLower(s)
-	i := strings.Index(lower, needle)
-	if i < 0 {
-		return -1
-	}
-	if len(lower) == len(s) {
-		return i
-	}
-	chars := utf8.RuneCountInString(lower[:i])
-	off := 0
-	for range chars {
-		_, size := utf8.DecodeRuneInString(s[off:])
-		off += size
-	}
-	return off
 }
 
 // snippet cuts the text around a match, cleaned, on one line.

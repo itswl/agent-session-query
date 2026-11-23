@@ -128,6 +128,26 @@ func TestHitsSayHowTheirTurnEnded(t *testing.T) {
 	}
 }
 
+// A hit shows a place once: a phrase, or two words, found in the same output are that
+// output's line, not one line for each. Alpha's go test printed "dial tcp: ECONNREFUSED
+// 127.0.0.1:5432" and "exit status 1".
+func TestAHitShowsAPlaceOnce(t *testing.T) {
+	a, _ := fixture.Open(t)
+	for _, query := range []string{`"exit status 1"`, `ECONNREFUSED "exit status"`, `output:econnrefused output:exit`} {
+		res, err := a.Index.Search(context.Background(), index.ParseQuery(query), filter(a), index.SearchOptions{})
+		if err != nil || len(res.Hits) != 1 {
+			t.Fatalf("%s: %+v, %v", query, res.Hits, err)
+		}
+		var places []string
+		for _, m := range res.Hits[0].Matches {
+			places = append(places, m.Part+" "+strconv.Itoa(m.Seq))
+		}
+		if len(places) != 1 || places[0] != "output 2" {
+			t.Errorf("%s: shown at %q, want the output of step 2 once", query, places)
+		}
+	}
+}
+
 func TestATitleIsFoundAsItChanges(t *testing.T) {
 	h := fixture.Write(t)
 	a, err := app.Open(h.Config(t))

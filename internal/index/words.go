@@ -332,9 +332,7 @@ func (t Term) expr() string {
 		toks[i] = strings.ReplaceAll(tok, `"`, `""`)
 	}
 	expr := `"` + strings.Join(toks, " ") + `"`
-	// The last word of a bare term matches what it begins — unless it is a single
-	// character of a spaceless script, which is already as short as a word gets
-	if last := toks[len(toks)-1]; !t.Exact && !(utf8.RuneCountInString(last) == 1 && spaced([]rune(last)[0])) {
+	if t.prefix(toks) {
 		expr += "*"
 	}
 	if w := toks[0]; !t.Exact && !t.Not && len(toks) == 1 && stemmable(w) {
@@ -351,44 +349,145 @@ func (t Term) expr() string {
 	return expr
 }
 
-// needle is a term of a query as it is looked for in a turn's text, to cut a snippet
-// around: as typed, and, for an English word alone, in any of its forms.
-type needle struct {
-	text string // lowercased
-	stem string // the word's stem; "" when the term is not a word alone
-	term string // the term it is of, as typed
+// prefix reports whether the last of a term's words, toks, matches the words it begins: in
+// a bare term it does — unless it is a single character of a spaceless script, which is
+// already as short as a word gets.
+func (t Term) prefix(toks []string) bool {
+	last := toks[len(toks)-1]
+	return !t.Exact && !(utf8.RuneCountInString(last) == 1 && spaced([]rune(last)[0]))
 }
 
-// needles are the query's positive terms as text to look for when cutting a snippet: the
-// term as typed, and its first word should the typed form not appear verbatim.
+// wordRune reports whether a rune is part of a word as the words table splits text, beside
+// others: a letter or a digit, of a script that writes spaces between words.
+func wordRune(r rune) bool {
+	return (unicode.IsLetter(r) || unicode.IsDigit(r)) && !spaced(r)
+}
+
+// lastRune is the last character of s; utf8.RuneError when there is none.
+func lastRune(s string) rune {
+	r, _ := utf8.DecodeLastRuneInString(s)
+	return r
+}
+
+// needle is a term of a query as it is looked for in a turn's text, to cut a snippet
+// around: as typed, as the words table splits it, and, for an English word alone, in any of
+// its forms.
+type needle struct {
+	text   string   // lowercased
+	toks   []string // its words, lowercased, as the words table splits them
+	prefix bool     // the last of them matches the words it begins
+	stem   string   // the word's stem; "" when the term is not a word alone
+	term   string   // the term it is of, as typed
+}
+
+// needles are the query's positive terms as text to look for when cutting a snippet.
 func (q Query) needles() []needle {
 	var out []needle
 	for _, t := range q.Terms {
 		if t.Not {
 			continue
 		}
-		n := needle{text: strings.ToLower(t.Text), term: t.String()}
-		if toks := tokens(t.Text); !t.Exact && len(toks) == 1 && stemmable(toks[0]) {
+		toks := tokens(t.Text)
+		n := needle{text: strings.ToLower(t.Text), toks: toks, prefix: t.prefix(toks), term: t.String()}
+		if !t.Exact && len(toks) == 1 && stemmable(toks[0]) {
 			n.stem = stem(toks[0])
 		}
 		out = append(out, n)
 	}
-	for _, t := range q.Terms {
-		if t.Not {
-			continue
-		}
-		if toks := tokens(t.Text); len(toks) > 1 {
-			out = append(out, needle{text: toks[0], term: t.String()})
-		}
-	}
 	return out
 }
 
-// find is where in text the needle first is: the typed form anywhere, or failing that a
-// word whose stem is the needle's. word is the form found, when it is not the typed one.
+// findWords is where in text the needle's words first come one after another, as the
+// words table splits text, and how far they reach.
+func (n needle) findWords(text string) (at, size int) {
+	k := len(n.toks)
+	if k == 0 {
+		return -1, 0
+	}
+	type span struct{ start, end int }
+	last := make([]span, 0, k) // the latest k words
+	at = -1
+	eachToken(text, func(start, end int) bool {
+		if len(last) == k {
+			last = append(last[:0], last[1:]...)
+		}
+		last = append(last, span{start, end})
+		if len(last) < k {
+			return true
+		}
+		for i, sp := range last {
+			w, want := text[sp.start:sp.end], n.toks[i]
+			if i == k-1 && n.prefix && len(w) > len(want) {
+				w = w[:len(want)]
+			}
+			if !strings.EqualFold(w, want) {
+				return true
+			}
+		}
+		at, size = last[0].start, last[k-1].end-last[0].start
+		return false
+	})
+	return at, size
+}
+
+// findTyped is where in text the needle first stands as typed, without regard to case, and
+// how far it reaches there: where the words table would find it, at the start of a word, and
+// at its end unless its last word is a prefix — go is not in multipart.go, nor a quoted
+// "exit status" in exit statuses. A needle that begins or ends with what is not part of a
+// word, or with a character of a spaceless script, stands wherever it is found.
+func (n needle) findTyped(text string) (at, size int) {
+	if n.text == "" {
+		return -1, 0
+	}
+	// Lowering a character gives one character, whose length in bytes may differ: offsets in
+	// the lowered text are mapped back by counting characters, when the lengths differ
+	lower := strings.ToLower(text)
+	first, _ := utf8.DecodeRuneInString(n.text)
+	starts, ends := wordRune(first), !n.prefix && wordRune(lastRune(n.text))
+	for off := 0; off < len(lower); {
+		i := strings.Index(lower[off:], n.text)
+		if i < 0 {
+			return -1, 0
+		}
+		i += off
+		end := i + len(n.text)
+		after, _ := utf8.DecodeRuneInString(lower[end:])
+		if !(starts && wordRune(lastRune(lower[:i]))) && !(ends && wordRune(after)) {
+			if len(lower) == len(text) {
+				return i, len(n.text)
+			}
+			at = runeOffset(text, utf8.RuneCountInString(lower[:i]))
+			return at, runeOffset(text[at:], utf8.RuneCountInString(n.text))
+		}
+		_, step := utf8.DecodeRuneInString(lower[i:])
+		off = i + step
+	}
+	return -1, 0
+}
+
+// runeOffset is where in s its nth character begins.
+func runeOffset(s string, n int) int {
+	off := 0
+	for range n {
+		if off >= len(s) {
+			break
+		}
+		_, size := utf8.DecodeRuneInString(s[off:])
+		off += size
+	}
+	return off
+}
+
+// find is where in text the needle first is: the typed form, where it stands as the words
+// table would find it, or failing that its words one after another, whatever is between
+// them — session_query is session-query — or a word whose stem is the needle's. word is the
+// form found, when it is not the typed one.
 func (n needle) find(text string) (at, size int, word string) {
-	if at := indexFold(text, n.text); at >= 0 {
-		return at, len(n.text), ""
+	if at, size := n.findTyped(text); at >= 0 {
+		return at, size, ""
+	}
+	if at, size := n.findWords(text); at >= 0 {
+		return at, size, ""
 	}
 	if n.stem == "" {
 		return -1, 0, ""

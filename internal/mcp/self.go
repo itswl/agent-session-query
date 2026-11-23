@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/index"
 )
 
@@ -68,6 +70,89 @@ func (c *Caller) client() (name string, claude bool) {
 	return c.name, c.name == claudeCode
 }
 
+// meta is what a request's _meta says of who sent it, read leniently: a value of another
+// shape is absent, and never makes the request unreadable.
+type meta struct {
+	// thread is the conversation a Codex tool call was made in: Codex sends it with each
+	// call (openai/codex#18093, _meta.threadId), and it is the id of that thread's session.
+	thread string
+	// client is the name the client gives itself in the request, as the 2026-07-28
+	// revision has every request say it (io.modelcontextprotocol/clientInfo).
+	client string
+}
+
+func (m *meta) UnmarshalJSON(raw []byte) error {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return nil
+	}
+	_ = json.Unmarshal(fields["threadId"], &m.thread)
+	var info struct {
+		Name string `json:"name"`
+	}
+	if json.Unmarshal(fields[metaClientInfo], &info) == nil {
+		m.client = info.Name
+	}
+	m.thread, m.client = strings.TrimSpace(m.thread), strings.TrimSpace(m.client)
+	return nil
+}
+
+// asker is what a request said of who sent it.
+type asker struct{ thread, client string }
+
+func (m meta) asker() asker { return asker{thread: m.thread, client: m.client} }
+
+// clientOf is the name the client gave itself — in the request, or else when it opened the
+// conversation — and whether that is Claude Code.
+func (s *Server) clientOf(who asker) (name string, claude bool) {
+	if who.client != "" {
+		return who.client, who.client == claudeCode
+	}
+	if s.Caller != nil {
+		return s.Caller.client()
+	}
+	return "", false
+}
+
+// thread is the Codex session the request names as the conversation it was made in, when
+// it names one and the index has it. why says, when it names one the index does not have,
+// that it was named.
+func (s *Server) thread(ctx context.Context, who asker) (self app.Self, found bool, why string, err error) {
+	if who.thread == "" {
+		return self, false, "", nil
+	}
+	self, err = s.App.Self(ctx, "codex", who.thread, nil)
+	switch {
+	case err == nil && self.ByID:
+		return self, true, "", nil
+	case err != nil && !errors.Is(err, index.ErrNotFound):
+		return self, false, "", err
+	}
+	return app.Self{}, false, fmt.Sprintf("The request names Codex thread %s, which is not among the sessions this server reads.", who.thread), nil
+}
+
+// workDir is the directory the agent asking works in, and how that is known: where the
+// Codex thread the request names ran, where Claude Code says its project is, or where the
+// server was started. Over HTTP, with no thread named, nothing says.
+func (s *Server) workDir(ctx context.Context, who asker) (dir, how string, err error) {
+	t, found, _, err := s.thread(ctx, who)
+	if err != nil {
+		return "", "", err
+	}
+	if found && t.Cwd != "" {
+		return t.Cwd, fmt.Sprintf("where %s, the Codex thread the request names, works", t.Ref), nil
+	}
+	if c := s.Caller; c != nil {
+		if _, claude := s.clientOf(who); claude && c.Project != "" {
+			return c.Project, "the project Claude Code names to this server (CLAUDE_PROJECT_DIR)", nil
+		}
+		if len(c.Dirs) > 0 {
+			return c.Dirs[0], "the directory this server was started in", nil
+		}
+	}
+	return "", "", errors.New(`"." is the directory you work in, and a request over HTTP does not say which that is unless it names its Codex thread: name the directory, or a part of its path — projects lists them`)
+}
+
 // thisRef reads a ref that names the session asking: "this", or "this#4" for one of its
 // turns (-1 for none).
 func thisRef(ref string) (turn int, ok bool) {
@@ -88,19 +173,30 @@ func thisRef(ref string) (turn int, ok bool) {
 // session resolves the ref a tool was given: a session as the tools print it, or "this",
 // the session asking. said, for "this", says which session it was taken to be and why:
 // the answer is about that session, and the agent must be able to see which it is.
-func (s *Server) session(ctx context.Context, ref string) (sess index.Session, turn int, said string, err error) {
+func (s *Server) session(ctx context.Context, ref string, who asker) (sess index.Session, turn int, said string, err error) {
 	turn, this := thisRef(ref)
 	if !this {
 		sess, turn, err = s.App.Resolve(ctx, ref)
 		return sess, turn, "", err
 	}
+	// The conversation the request names is the one asking: Codex names it with each call
+	t, found, unknown, err := s.thread(ctx, who)
+	if err != nil {
+		return sess, turn, "", err
+	}
+	if found {
+		return t.Session, turn, fmt.Sprintf(`[ref "this" is %s: the Codex thread the request names (_meta.threadId).]`, t.Ref), nil
+	}
 	if s.Caller == nil {
-		return sess, turn, "", errors.New(`ref "this" is the session asking, and only asq mcp started on stdio can tell which that is: Claude Code names it to the servers it starts (` + sessionVar + `), and a request over HTTP carries nothing that does. Name the session by its ref: sessions lists them, newest first, and project narrows them to a directory`)
+		if unknown != "" {
+			return sess, turn, "", fmt.Errorf(`ref "this": %s It may be on another machine than this server: name the session by its ref — sessions lists them`, unknown)
+		}
+		return sess, turn, "", errors.New(`ref "this" is the session asking, and a request over HTTP says which that is only when its client names it, as Codex does with each call (_meta.threadId); asq mcp started on stdio can tell Claude Code's too (` + sessionVar + `). Name the session by its ref: sessions lists them, newest first, and project narrows them to a directory`)
 	}
 	c := s.Caller
 	// Claude Code's variables are taken from Claude Code alone: inherited by another
 	// agent, they name the Claude Code session it was started from
-	client, claude := c.client()
+	client, claude := s.clientOf(who)
 	id, dirs, source := "", c.Dirs, ""
 	if claude {
 		id = c.Session
@@ -137,6 +233,9 @@ func (s *Server) session(ctx context.Context, ref string) (sess index.Session, t
 	default:
 		said = fmt.Sprintf(`[ref "this" is %s: the session most recently written to in %s. The client did not name the session asking (Claude Code does, in %s): if another agent works in that directory, this may be its session — name the one meant by its ref.`,
 			self.Ref, self.Cwd, sessionVar)
+	}
+	if unknown != "" {
+		said += " " + unknown
 	}
 	return self.Session, turn, said + "]", nil
 }

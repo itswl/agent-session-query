@@ -57,6 +57,9 @@ const Instructions = "The session history of every agent CLI on the machine asq 
 	"files names the turns that read or changed a file; projects, the directories sessions ran in. Narrow with project, source or since rather than raising limit.\n" +
 	"What the repository and this conversation say comes first: the history says what was done, not what is true now."
 
+// metaClientInfo is where a request of the 2026-07-28 revision says which client sent it.
+const metaClientInfo = "io.modelcontextprotocol/clientInfo"
+
 const maxMessageBytes = 4 << 20 // a message is a question's arguments, never a document
 
 // Server answers MCP requests from one open program.

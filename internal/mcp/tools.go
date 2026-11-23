@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,14 +47,14 @@ type prop struct {
 // The arguments that select sessions, shared by every tool that takes a selection.
 var (
 	pSource  = prop{"source", "string", "Only one CLI's sessions (claude, codex, gemini, opencode, grok, antigravity, pi, dsh, hermes, openclaw, copilot) or one labeled store (claude@box2)."}
-	pProject = prop{"project", "string", "Only sessions whose working directory contains this, e.g. a repository's name."}
+	pProject = prop{"project", "string", "Only sessions whose working directory contains this, e.g. a repository's name. \".\" (or ./web, ..) is the directory you work in and those below it, which asq mcp started on stdio can tell, and asq over HTTP only when the request names a Codex thread."}
 	pBranch  = prop{"branch", "string", "Only sessions that opened on a git branch containing this."}
 	pSince   = prop{"since", "string", "Only after this: a span back from now (90m, 12h, 7d, 2w), a date (2026-09-01), or today, yesterday or a weekday (monday) — the midnight that day began with on the clock of the machine asq runs on, which may not be yours."}
 	pUntil   = prop{"until", "string", "Only before this; same forms as since."}
 	pLimit   = prop{"limit", "integer", "How many to return."}
 	pOffset  = prop{"offset", "integer", "Skip this many first: the next page."}
 	pChars   = prop{"max_chars", "integer", "Cut the answer at about this many characters (default 16000)."}
-	pRef     = prop{"ref", "string", "A session as the other tools print it — claude/3f2a9c1e — or the start of its id. Append #N for a turn: claude/3f2a9c1e#4. \"this\" (or this#4) is the session you are working in, which asq mcp started on stdio can tell and asq over HTTP cannot."}
+	pRef     = prop{"ref", "string", "A session as the other tools print it — claude/3f2a9c1e — or the start of its id. Append #N for a turn: claude/3f2a9c1e#4. \"this\" (or this#4) is the session you are working in, which asq mcp started on stdio can tell, and asq over HTTP only when the request names it, as Codex does."}
 )
 
 var tools = []tool{
@@ -238,6 +239,7 @@ func (s *Server) call(ctx context.Context, params json.RawMessage) (any, *rpcErr
 	var p struct {
 		Name      string         `json:"name"`
 		Arguments map[string]any `json:"arguments"`
+		Meta      meta           `json:"_meta"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, &rpcError{Code: codeParams, Message: "unreadable params: " + err.Error()}
@@ -250,7 +252,7 @@ func (s *Server) call(ctx context.Context, params json.RawMessage) (any, *rpcErr
 		}
 		return nil, &rpcError{Code: codeParams, Message: fmt.Sprintf("unknown tool %q (there are: %s)", p.Name, strings.Join(names, ", "))}
 	}
-	text, err := s.run(ctx, t, p.Arguments)
+	text, err := s.run(ctx, t, p.Arguments, p.Meta.asker())
 	if err != nil {
 		if ctx.Err() != nil {
 			err = errors.New("cancelled")
@@ -262,8 +264,8 @@ func (s *Server) call(ctx context.Context, params json.RawMessage) (any, *rpcErr
 	return map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}}, nil
 }
 
-func (s *Server) run(ctx context.Context, t tool, given map[string]any) (string, error) {
-	a := &args{given: given}
+func (s *Server) run(ctx context.Context, t tool, given map[string]any, who asker) (string, error) {
+	a := &args{given: given, who: who}
 	if err := a.check(t); err != nil {
 		return "", err
 	}
@@ -277,6 +279,20 @@ func (s *Server) run(ctx context.Context, t tool, given map[string]any) (string,
 	// Where the index stood before the answer was read is what the answer can say of it: a
 	// sync that caught up while it was being read may not have caught up with what it read
 	st, behind := s.App.Index.State(), s.App.Behind()
+	// A project of "." is the directory the agent asking works in, not a part of a path
+	if project := a.str("project"); app.Relative(project) {
+		dir, how, err := s.workDir(ctx, who)
+		if err != nil {
+			return "", fmt.Errorf("project %q: %w", project, err)
+		}
+		if project != "." {
+			dir = filepath.Join(dir, filepath.FromSlash(project))
+		}
+		if a.dirs, err = s.App.Paths(ctx, []string{dir}, true); err != nil {
+			return "", err
+		}
+		a.here = fmt.Sprintf("project %q is %s and the directories below it: %s.", project, dir, how)
+	}
 	text, err := t.run(ctx, s, a)
 	if err != nil {
 		return "", err
@@ -289,6 +305,9 @@ func (s *Server) run(ctx context.Context, t tool, given map[string]any) (string,
 	text = cut(txt.Redact(strings.TrimRight(text, "\n")), a.budget)
 
 	var notes []string
+	if a.here != "" {
+		notes = append(notes, a.here)
+	}
 	if !fresh {
 		if behind > 0 {
 			notes = append(notes, fmt.Sprintf("The index is reading the history again for a newer reading of it (%d of %d transcripts): every session is here, but what changed in the last %s is not yet.", st.Done, st.Total, behind.Round(time.Second)))
@@ -345,6 +364,11 @@ type args struct {
 	given  map[string]any
 	budget int
 	err    error
+	who    asker // what the request said of who sent it
+	// dirs is the directory a project of "." was taken to be, by every path that names it,
+	// and here says which that was, and why
+	dirs []string
+	here string
 }
 
 func (a *args) check(t tool) error {
@@ -451,10 +475,14 @@ func (a *args) limit(def int) int {
 func (a *args) offset() int { return max(a.num("offset", 0), 0) }
 
 func (a *args) query() app.Query {
-	return app.Query{
+	q := app.Query{
 		Source: a.str("source"), Project: a.str("project"), Branch: a.str("branch"), Text: a.str("text"),
 		Since: a.str("since"), Until: a.str("until"), Archived: a.flag("archived"), Agents: a.flag("agents"),
 	}
+	if a.dirs != nil {
+		q.Project, q.Dirs = "", a.dirs
+	}
+	return q
 }
 
 func runSearch(ctx context.Context, s *Server, a *args) (string, error) {
@@ -501,7 +529,7 @@ func runSessions(ctx context.Context, s *Server, a *args) (string, error) {
 }
 
 func runRead(ctx context.Context, s *Server, a *args) (string, error) {
-	sess, named, said, err := s.session(ctx, a.str("ref"))
+	sess, named, said, err := s.session(ctx, a.str("ref"), a.who)
 	if err != nil {
 		if _, this := thisRef(a.str("ref")); errors.Is(err, index.ErrNotFound) && !this {
 			err = fmt.Errorf("%w — sessions and search print the refs there are", err)
@@ -595,7 +623,7 @@ func outline(ctx context.Context, s *Server, sess *index.Session, budget int, st
 }
 
 func runBrief(ctx context.Context, s *Server, a *args) (string, error) {
-	sess, named, said, err := s.session(ctx, a.str("ref"))
+	sess, named, said, err := s.session(ctx, a.str("ref"), a.who)
 	if err != nil {
 		return "", err
 	}

@@ -40,7 +40,7 @@ Two ways to ask, the same answers either way:
 | The user is asking | Reach for |
 |---|---|
 | "How did I solve X before?" / "Where did that error come up?" | `search(query="…")` — hits are turns, each with how it ended, the lines the words were found in, and its answer. Words match their other forms (*retries* finds *retried*) and the session's title; when no turn holds them all, the closest come back marked with the words they lack — try another word for those |
-| "…in this repo" / "…with Codex" / "…last month" | add `project="…"`, `source="codex"`, `since="30d"` — narrow rather than raise `limit`. A narrowed search that finds nothing says how many turns outside the filters match ("7 turns in 7 sessions outside them match: drop since"): that is not "never dealt with" — drop the filter it names. When none match outside either, it names the words turns outside do hold ("though some hold “retry”"): search those alone |
+| "…in this repo" / "…with Codex" / "…last month" | add `project="."` (the directory you work in) or `project="…"` (part of a path), `source="codex"`, `since="30d"` — narrow rather than raise `limit`. A narrowed search that finds nothing says how many turns outside the filters match ("7 turns in 7 sessions outside them match: drop since"): that is not "never dealt with" — drop the filter it names. When none match outside either, it names the words turns outside do hold ("though some hold “retry”"): search those alone |
 | "What did I *ask* about X?" | `search(query="ask:X")`. Also `reply:` `thinking:` `tool:` (a tool's input) `output:` (what a tool printed) `title:` (the session's title) |
 | "The exact message was …" | `search(query="\"exit status 1\"")` — quotes match a phrase as written; bare words match as prefixes and in their other forms; `-word` excludes |
 | "Which session made commit 3f9c2ab…?" | `search(query="3f9c2ab4e5f6…")` — a commit's id, as long as you have it, finds the turn whose `git commit` printed it |
@@ -52,7 +52,7 @@ Two ways to ask, the same answers either way:
 | "Show me the whole output of that command" | `read(ref="…", seq=57)` — one step whole |
 | "How did the last turn go?" | `read(ref="…", turns="last")` |
 | "Pick this up" / "Hand this to another agent" | `brief(ref="…")` — the whole session: what it added up to, then its latest turns, each with what was asked, files changed and how each stands now, what failed and whether it passed later, how it ended; and the command that resumes it |
-| "Hand *this* session over" | `brief(ref="this")` — your own session; the answer's first line says which it took. Over stdio only |
+| "Hand *this* session over" | `brief(ref="this")` — your own session; the answer's first line says which it took. Over stdio, and over HTTP from Codex |
 | "What has happened since I handed it over?" | `brief(ref="…", since="2h")`; `from=7` from a turn on, `turn=4` (or `ref="…#4"`) one turn alone |
 | "Catch me up on this project" | `pack(project="…", since="7d")` — each session's first ask, its last and its conclusion, oldest first |
 | "Who changed this file, and why?" | `files(path="auth.go", changed=true)` — then `read` the turn |

@@ -69,6 +69,13 @@ All ten only read. Each takes the selection arguments that make sense for it —
 `project`, `branch`, `since`, `until` — plus `limit` / `offset` where there is a list, and
 `max_chars`.
 
+A `project` of `.` — or `./web`, `..` — is a directory, as it is [on the command
+line](cli.md#flags-that-select-sessions): the one the agent asking works in, and those below
+it. That is where the Codex thread the request names works ([below](#this-the-agents-own-session)),
+the project Claude Code names to the server (`CLAUDE_PROJECT_DIR`), or the directory the server
+was started in, and the answer ends by saying which it took. Over HTTP with no thread named,
+nothing says, and the answer is an error saying so.
+
 | tool | answers | key arguments |
 |---|---|---|
 | `search` | Where was this said? The turns that match, best first, each with how it ended, the lines the words were found in and its answer — or, when no turn holds every word, the closest, marked with what each lacks, and how many turns the filters given left out that match whole | `query` ([syntax](cli.md#finding)), `recent`, `per_session`, `archived` |
@@ -131,6 +138,10 @@ nothing else of the server; Claude Code does so by default.
 in — to hand it to another agent, or to read back what it did before a compaction. The answer
 opens with a line in brackets that says which session it took, and why:
 
+- Codex names, in each tool call its model makes, the thread the call was made in
+  (`_meta.threadId`), and that thread is the one, when the index has it — over stdio and over
+  HTTP alike. One the index does not have is named in the line in brackets, and what follows
+  decides.
 - Claude Code sets `CLAUDE_CODE_SESSION_ID` in the stdio MCP servers it starts, and that session
   is the one, when the index has it. The variable is the id the server was started with, and it
   stays that ([Claude Code's environment variables](https://code.claude.com/docs/en/env-vars)):
@@ -146,15 +157,17 @@ opens with a line in brackets that says which session it took, and why:
 Claude Code also sets `CLAUDE_CODE_SESSION_ID` in every command its Bash tool runs, and whatever
 those start inherits it: Codex or Gemini CLI run from Claude Code's shell hands it on to the
 `asq mcp` it starts, where it names the Claude Code session, not the agent's own. So the two
-variables are taken only from a client that says it is Claude Code when it opens the conversation
-(`clientInfo.name` `claude-code` in `initialize`, as Claude Code's MCP client names itself). Any
+variables are taken only from a client that says it is Claude Code (`clientInfo.name`
+`claude-code`, as Claude Code's MCP client names itself) — when it opens the conversation, in
+`initialize`, or in the request, as the 2026-07-28 revision has every request say it. Any
 other client's `this` is the session most recently written to in the directory the server was
 started in, from any agent's history, and the line in brackets says the variable was set and not
 taken. An agent that is not Claude Code, and shares its directory with another, names its session
 by its ref.
 
-Over HTTP nothing says which session is asking: a server reached at `/mcp` answers `this` with an
-error saying so, and the tool's description says it too. Name the session by its ref there.
+Over HTTP only a thread the request names says which session is asking: without one, a server
+reached at `/mcp` answers `this` with an error saying so, and the tool's description says it
+too. Name the session by its ref there.
 
 ## How the answers are shaped
 

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -265,6 +266,20 @@ type Query struct {
 	// State keeps the sessions whose latest turn stands so: working, waiting, idle, or
 	// several of them, comma-separated
 	State string
+}
+
+// Relative reports whether a project names a directory from the one asked from — ".",
+// "..", "./web", "../api" — rather than a part of a path: "." is in every path.
+func Relative(project string) bool {
+	if project == "." || project == ".." {
+		return true
+	}
+	for _, start := range []string{"./", "../", "." + string(filepath.Separator), ".." + string(filepath.Separator)} {
+		if strings.HasPrefix(project, start) {
+			return true
+		}
+	}
+	return false
 }
 
 // Filter turns a query into the index's filter, confined to this process's stores.

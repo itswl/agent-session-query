@@ -7,13 +7,18 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/itswl/agent-session-query/internal/app"
+	"github.com/itswl/agent-session-query/internal/catalog"
 	"github.com/itswl/agent-session-query/internal/fixture"
+	"github.com/itswl/agent-session-query/internal/index"
+	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
 )
 
 func server(t *testing.T) *Server {
@@ -445,15 +450,131 @@ func TestThisIsTheSessionAsking(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brief","arguments":{"ref":"this"}}}`)))
 	var r reply
-	if json.Unmarshal(rec.Body.Bytes(), &r) != nil || !r.Result.IsError || !strings.Contains(r.Result.Content[0].Text, "a request over HTTP carries nothing that does") {
+	if json.Unmarshal(rec.Body.Bytes(), &r) != nil || !r.Result.IsError || !strings.Contains(r.Result.Content[0].Text, "a request over HTTP says which that is only when its client names it") {
 		t.Errorf("this, over HTTP = %s", rec.Body)
 	}
 	for _, tool := range describe() {
 		if tool["name"] == "brief" {
-			if about := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)["ref"].(map[string]any)["description"].(string); !strings.Contains(about, "over HTTP cannot") {
+			if about := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)["ref"].(map[string]any)["description"].(string); !strings.Contains(about, "over HTTP only when the request names it") {
 				t.Errorf("the ref's description does not say \"this\" is for stdio: %q", about)
 			}
 		}
+	}
+}
+
+// withCodex is the fixture's history and a Codex store beside it, with one thread in
+// /work/beta written to after the Claude Code session there.
+func withCodex(t *testing.T) *Server {
+	t.Helper()
+	h := fixture.Write(t)
+	root := filepath.Join(t.TempDir(), "codex")
+	at := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	sourcetest.Write(t, filepath.Join(root, "2026", "11", "20", "rollout-2026-11-20T10-00-00-"+codexThread+".jsonl"),
+		`{"timestamp":"`+at+`","type":"session_meta","payload":{"id":"`+codexThread+`","cwd":"/work/beta","cli_version":"0.162.0"}}`,
+		`{"timestamp":"`+at+`","type":"turn_context","payload":{"turn_id":"t1","model":"gpt-6.1","cwd":"/work/beta"}}`,
+		`{"timestamp":"`+at+`","type":"response_item","payload":{"type":"message","id":"msg_u","role":"user","content":[{"type":"input_text","text":"pin the provider versions"}]}}`,
+		`{"timestamp":"`+at+`","type":"response_item","payload":{"type":"message","id":"msg_a","role":"assistant","content":[{"type":"output_text","text":"Pinned."}]}}`)
+	a, err := app.Open(app.Config{IndexPath: filepath.Join(t.TempDir(), "index.db"), Stores: catalog.Config{
+		Only: []string{"claude", "codex"}, Paths: []catalog.Path{{Agent: "claude", Dir: h.Dir}, {Agent: "codex", Dir: root}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Close() })
+	if _, err := a.Sync(t.Context(), index.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	return New(a, io.Discard)
+}
+
+const codexThread = "019a7c00-0000-7000-8000-00000000c0de"
+
+// Codex names the conversation each tool call is made in (_meta.threadId): that thread is
+// "this", over stdio and over HTTP alike, and "." is the directory it works in. A thread
+// the index does not have is said to be named, and the rest goes as it would without it.
+func TestTheRequestSaysWhoIsAsking(t *testing.T) {
+	s := withCodex(t)
+	codex := "codex/" + codexThread
+	callAs := func(name string, args, meta map[string]any) (string, bool) {
+		t.Helper()
+		params, _ := json.Marshal(map[string]any{"name": name, "arguments": args, "_meta": meta})
+		result, rpcErr := s.dispatch(t.Context(), "tools/call", params)
+		if rpcErr != nil {
+			t.Fatalf("%s: protocol error %+v", name, rpcErr)
+		}
+		raw, _ := json.Marshal(map[string]any{"result": result})
+		var r reply
+		if err := json.Unmarshal(raw, &r); err != nil || len(r.Result.Content) != 1 {
+			t.Fatalf("%s: result = %s", name, raw)
+		}
+		return r.Result.Content[0].Text, r.Result.IsError
+	}
+	thread := map[string]any{"threadId": codexThread}
+	for _, tc := range []struct {
+		caller *Caller
+		tool   string
+		args   map[string]any
+		meta   map[string]any
+		want   []string
+		not    []string
+		isErr  bool
+	}{
+		// The thread is the session asking, though a Claude Code session was written to
+		// in the same directory, and the server was started where neither ran
+		{&Caller{Dirs: []string{"/nowhere"}}, "read", map[string]any{"ref": "this"}, thread,
+			[]string{`[ref "this" is ` + codex + `: the Codex thread the request names (_meta.threadId).]`, "pin the provider versions"}, nil, false},
+		{nil, "brief", map[string]any{"ref": "this"}, thread, []string{`[ref "this" is ` + codex, "# Session brief", "Pinned."}, nil, false},
+		// One the index does not have: said, and "this" is found as it is without it
+		{&Caller{Dirs: []string{"/work/alpha"}}, "read", map[string]any{"ref": "this"}, map[string]any{"threadId": "019a7c00-0000-7000-8000-00000000dead"},
+			[]string{`[ref "this" is claude/` + fixture.Alpha, "The request names Codex thread 019a7c00-0000-7000-8000-00000000dead, which is not among the sessions this server reads.]"}, nil, false},
+		{nil, "read", map[string]any{"ref": "this"}, map[string]any{"threadId": "019a7c00-0000-7000-8000-00000000dead"},
+			[]string{"The request names Codex thread 019a7c00-0000-7000-8000-00000000dead", "another machine"}, nil, true},
+		{nil, "read", map[string]any{"ref": "this"}, map[string]any{"threadId": 42}, []string{"over HTTP says which that is only when its client names it"}, nil, true},
+		// "." is where the thread works, or where the server was started
+		{nil, "sessions", map[string]any{"project": "."}, thread,
+			[]string{"codex/019a7c00 ", "claude/bbbb2222", `[project "." is /work/beta and the directories below it: where ` + codex + `, the Codex thread the request names, works.]`}, []string{"claude/aaaa1111"}, false},
+		{&Caller{Dirs: []string{"/work/alpha"}}, "sessions", map[string]any{"project": "."}, nil,
+			[]string{"claude/aaaa1111", `[project "." is /work/alpha and the directories below it: the directory this server was started in.]`}, []string{"claude/bbbb2222", "codex/"}, false},
+		{&Caller{Dirs: []string{"/work/alpha"}, Project: "/work/beta"}, "search", map[string]any{"query": "rotate", "project": "."},
+			map[string]any{metaClientInfo: map[string]any{"name": "claude-code", "version": "2.2.0"}},
+			[]string{"rotate the deploy key", `[project "." is /work/beta and the directories below it: the project Claude Code names to this server (CLAUDE_PROJECT_DIR).]`}, nil, false},
+		{&Caller{Dirs: []string{"/nowhere"}}, "projects", map[string]any{"project": "."}, nil, []string{"No sessions.", `project "." is /nowhere`}, []string{"/work/alpha"}, false},
+		{nil, "sessions", map[string]any{"project": "."}, nil, []string{`project ".": "." is the directory you work in, and a request over HTTP does not say which that is`}, nil, true},
+		// A part of a path is still a part of a path
+		{nil, "sessions", map[string]any{"project": "beta"}, nil, []string{"claude/bbbb2222", "codex/019a7c00 "}, []string{"claude/aaaa1111", `project "`}, false},
+		// The 2026-07-28 revision has every request say which client sent it, and there is
+		// no initialize to say it once: Claude Code's variables are taken from Claude Code
+		{&Caller{Session: fixture.Alpha, Dirs: []string{"/work/beta"}}, "read", map[string]any{"ref": "this"},
+			map[string]any{metaClientInfo: map[string]any{"name": "claude-code", "version": "2.2.0"}},
+			[]string{`[ref "this" is claude/` + fixture.Alpha + `: the session Claude Code named when it started this server`}, nil, false},
+		{&Caller{Session: fixture.Alpha, Dirs: []string{"/work/alpha"}}, "read", map[string]any{"ref": "this"},
+			map[string]any{metaClientInfo: map[string]any{"name": "gemini-cli-mcp-client", "version": "1"}},
+			[]string{`The client is "gemini-cli-mcp-client", not Claude Code`}, nil, false},
+	} {
+		s.Caller = tc.caller
+		text, isErr := callAs(tc.tool, tc.args, tc.meta)
+		if isErr != tc.isErr {
+			t.Errorf("%s %v %v: isError=%v\n%s", tc.tool, tc.args, tc.meta, isErr, text)
+			continue
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s %v %v: no %q in\n%s", tc.tool, tc.args, tc.meta, want, text)
+			}
+		}
+		for _, not := range tc.not {
+			if strings.Contains(text, not) {
+				t.Errorf("%s %v %v: %q in\n%s", tc.tool, tc.args, tc.meta, not, text)
+			}
+		}
+	}
+
+	// Over HTTP the thread comes with the request as it comes on stdio
+	s.Caller = nil
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","arguments":{"ref":"this#1"},"_meta":{"threadId":"`+codexThread+`"}}}`)))
+	var r reply
+	if json.Unmarshal(rec.Body.Bytes(), &r) != nil || r.Result.IsError || !strings.Contains(r.Result.Content[0].Text, "pin the provider versions") {
+		t.Errorf("this, over HTTP, in a Codex thread = %s", rec.Body)
 	}
 }
 

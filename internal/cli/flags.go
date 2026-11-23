@@ -91,7 +91,7 @@ func (c *command) parse(args []string) ([]string, error) {
 	}
 	// A project written as a path from the current directory is that directory, and
 	// not a part of a path to look for: "." is in every path
-	if relative(c.q.Project) {
+	if app.Relative(c.q.Project) {
 		dir, names, err := here(c.q.Project)
 		if err != nil {
 			return nil, fmt.Errorf("--project %s: %w", c.q.Project, err)
@@ -99,20 +99,6 @@ func (c *command) parse(args []string) ([]string, error) {
 		c.here, c.q.Project, c.q.Dirs = dir, "", names
 	}
 	return rest, nil
-}
-
-// relative reports whether a --project names a directory from the current one — ".",
-// "..", "./web", "../api" — rather than a part of a path.
-func relative(project string) bool {
-	if project == "." || project == ".." {
-		return true
-	}
-	for _, start := range []string{"./", "../", "." + string(filepath.Separator), ".." + string(filepath.Separator)} {
-		if strings.HasPrefix(project, start) {
-			return true
-		}
-	}
-	return false
 }
 
 // here is a directory named from the current one, absolute, and the paths that name it:

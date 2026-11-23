@@ -850,11 +850,12 @@ func TestFitting(t *testing.T) {
 	var whole bytes.Buffer
 	FitOutline(&whole, s, turns, nil, 0, Style{})
 	for _, tc := range []struct {
-		st         Style
-		hint, more string
+		st              Style
+		hint, more, one string
+		steps           string
 	}{
-		{Style{}, "--turns 1-", "[Turns #2–#5 left out: --turns 2-5 shows them.]"},
-		{Style{Args: true}, `read with turns="1-`, `[Turns #2–#5 left out: read them with turns="2-5".]`},
+		{Style{}, "--turns 1-", "[Turns #2–#5 left out: --turns 2-5 shows them.]", "[Turn #2 left out: --turns 2 shows it.]", "ask for fewer --turns, or one step with its --seq"},
+		{Style{Args: true}, `read with turns="1-`, `[Turns #2–#5 left out: read them with turns="2-5".]`, `[Turn #2 left out: read it with turns="2".]`, "ask for fewer turns, or one step with its seq"},
 	} {
 		var b bytes.Buffer
 		FitOutline(&b, s, turns, nil, 12000, tc.st)
@@ -866,6 +867,19 @@ func TestFitting(t *testing.T) {
 		FitTurns(&b, s, turns[:5], false, 1, tc.st)
 		if text := b.String(); !strings.Contains(text, s.Ref+"#1 ·") || strings.Contains(text, s.Ref+"#2 ·") || !strings.Contains(text, tc.more) {
 			t.Errorf("five turns held to less than one:\n%s", text)
+		}
+		// One turn left out is named as one, not as a run of one
+		b.Reset()
+		FitTurns(&b, s, turns[:2], false, 1, tc.st)
+		if text := b.String(); !strings.Contains(text, tc.one) || strings.Contains(text, "#2–#2") {
+			t.Errorf("two turns held to less than one:\n%s", text)
+		}
+		// A turn cut short says how to ask for less in the reader's own terms
+		b.Reset()
+		hs, steps := hostile()
+		FitTurns(&b, hs, steps[:1], true, 80, tc.st)
+		if text := b.String(); !strings.Contains(text, tc.steps) {
+			t.Errorf("a turn held to less than itself does not say %q:\n%s", tc.steps, text)
 		}
 		b.Reset()
 		FitTurns(&b, s, turns[:5], false, 0, tc.st)

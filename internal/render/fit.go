@@ -51,9 +51,14 @@ func FitTurns(w io.Writer, s *index.Session, turns []model.Turn, full bool, budg
 		if i > 0 {
 			if budget > 0 && left <= 0 {
 				a, z := turns[i].Index, turns[len(turns)-1].Index
-				if st.Args {
+				switch {
+				case a == z && st.Args:
+					fmt.Fprintf(&b, "\n[Turn #%d left out: read it with turns=\"%d\".]\n", a, a)
+				case a == z:
+					fmt.Fprintf(&b, "\n[Turn #%d left out: --turns %d shows it.]\n", a, a)
+				case st.Args:
 					fmt.Fprintf(&b, "\n[Turns #%d–#%d left out: read them with turns=\"%d-%d\".]\n", a, z, a, z)
-				} else {
+				default:
 					fmt.Fprintf(&b, "\n[Turns #%d–#%d left out: --turns %d-%d shows them.]\n", a, z, a, z)
 				}
 				break

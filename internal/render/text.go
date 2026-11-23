@@ -513,7 +513,7 @@ func Turn(w io.Writer, s *index.Session, t *model.Turn, o TurnOptions, st Style)
 	TurnHead(out, s, t, st)
 	for i := range t.Items {
 		if out.spent() {
-			fmt.Fprintln(w, st.dim(fmt.Sprintf("… %d more steps left out: ask for fewer turns, or one step with its seq", len(t.Items)-i)))
+			fmt.Fprintln(w, st.dim(fmt.Sprintf("… %d more steps left out: ask for fewer %s, or one step with its %s", len(t.Items)-i, st.opt("turns"), st.opt("seq"))))
 			return
 		}
 		item(out, &t.Items[i], o, st)

@@ -17,7 +17,8 @@ Two ways to ask, the same answers either way:
   `failures`, `digest`, `files`, `projects`.
 - **The command**, when the server is not configured but a shell is: `asq search …`, `asq ls`,
   `asq show <ref>`, `asq brief <ref>`, … — same names, `--flags` instead of arguments. `asq -h`
-  lists them. Add `--max-chars 16000` to `show`, `search`, `brief` and `pack`, and read text,
+  lists them. The command has no ref `this`: `asq brief` or `asq show` with no ref takes the
+  newest session in the current directory, your own, and names it on stderr. Add `--max-chars 16000` to `show`, `search`, `brief` and `pack`, and read text,
   not `--json`: the answer is then held to a budget as the tools' are, where without it a long
   session prints whole.
 
@@ -54,7 +55,7 @@ Two ways to ask, the same answers either way:
 | "Show me the whole output of that command" | `read(ref="…", seq=57)` — one step whole |
 | "How did the last turn go?" | `read(ref="…", turns="last")` |
 | "Pick this up" / "Hand this to another agent" | `brief(ref="…")` — the whole session: what it added up to, then its latest turns, each with what was asked, files changed and how each stands now, what failed and whether it passed later, how it ended; and the command that resumes it |
-| "Hand *this* session over" | `brief(ref="this")` — your own session; the answer's first line says which it took. Over stdio, and over HTTP from Codex |
+| "Hand *this* session over" | `brief(ref="this")` — your own session; the answer's first line says which it took. Over stdio, and over HTTP from Codex. From a shell, `asq brief` with no ref: the newest session in the current directory |
 | "What has happened since I handed it over?" | `brief(ref="…", since="2h")`; `from=7` from a turn on, `turn=4` (or `ref="…#4"`) one turn alone |
 | "Catch me up on this project" | `pack(project="…", since="7d")` — each session's first ask, its last and its conclusion, oldest first |
 | "Who changed this file, and why?" | `files(path="auth.go", changed=true)` — then `read` the turn |

@@ -491,8 +491,67 @@ func TestKindsPassedOverOnPurpose(t *testing.T) {
 	if got := sourcetest.Kinds(turn); got != "prompt tool reply" {
 		t.Errorf("items = %s: nothing passed over is an item", got)
 	}
-	if turn.Ask != "what is in this picture" || turn.Answer != "A cat." || sourcetest.Tools(turn)[0].Output != "loaded" {
+	if turn.Ask != "what is in this picture\n[image]" || turn.Answer != "A cat." || sourcetest.Tools(turn)[0].Output != "loaded" {
 		t.Errorf("ask %q answer %q tool %+v", turn.Ask, turn.Answer, sourcetest.Tools(turn)[0])
+	}
+}
+
+// png is a 1×1 PNG as a transcript holds it.
+const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+
+// A picture or a document leaves a mark where it came: in the ask it was pasted into, in
+// a prompt typed while the agent worked, in the result of the tool that returned it — a
+// screenshot that would otherwise read as a call that returned nothing. The item carries
+// what each file is; its bytes stay in the transcript.
+func TestPicturesAndDocumentsAreMarked(t *testing.T) {
+	root := t.TempDir()
+	image := func(media, data string) M {
+		return M{"type": "image", "source": M{"type": "base64", "media_type": media, "data": data}}
+	}
+	sourcetest.Write(t, filepath.Join(root, "proj", "sess-1.jsonl"),
+		userRow("u1", "2026-10-01T10:00:00Z", []M{image("image/png", png), {"type": "text", "text": "[Image #1] why is this button blue"}}),
+		assistantRow("a1", "2026-10-01T10:00:02Z", "m1", M{"input_tokens": 3, "output_tokens": 4},
+			M{"type": "tool_use", "id": "t1", "name": "mcp__playwright__browser_take_screenshot", "input": M{}}),
+		userRow("u2", "2026-10-01T10:00:03Z", []M{{"type": "tool_result", "tool_use_id": "t1",
+			"content": []M{{"type": "text", "text": "Took the screenshot"}, image("image/png", png)}}}),
+		M{"type": "attachment", "timestamp": "2026-10-01T10:00:04Z", "uuid": "q1", "attachment": M{"type": "queued_command", "commandMode": "prompt",
+			"prompt": []M{{"type": "text", "text": "and this one"}, {"type": "image", "source": M{"type": "url", "url": "https://example.com/shots/two.png"}}}}},
+		assistantRow("a2", "2026-10-01T10:00:05Z", "m2", M{"input_tokens": 3, "output_tokens": 4},
+			M{"type": "tool_use", "id": "t2", "name": "Read", "input": M{"file_path": "/work/proj/spec.pdf"}}),
+		userRow("u3", "2026-10-01T10:00:06Z", []M{{"type": "tool_result", "tool_use_id": "t2",
+			"content": []M{{"type": "document", "source": M{"type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQK"}}}}}),
+		assistantRow("a3", "2026-10-01T10:00:08Z", "m3", M{"input_tokens": 2, "output_tokens": 5}, M{"type": "text", "text": "Its class is primary."}),
+		userRow("u4", "2026-10-01T10:01:00Z", []M{image("", png)}),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	one := s.Turn(t, 1)
+	if one.Ask != "[Image #1] why is this button blue\n[image · png · 70 bytes]" || s.Session.Title != "[Image #1] why is this button blue" {
+		t.Errorf("ask %q, title %q", one.Ask, s.Session.Title)
+	}
+	shot := model.Attachment{Mime: "image/png", Bytes: 70, Inline: true}
+	if a := one.Items[0].Attachments; len(a) != 1 || a[0] != shot {
+		t.Errorf("the ask's item carries %+v, want %+v", a, shot)
+	}
+	tools := sourcetest.Tools(one)
+	if tools[0].Output != "Took the screenshot\n[image · png · 70 bytes]" {
+		t.Errorf("the screenshot's result = %q", tools[0].Output)
+	}
+	if tools[1].Output != "[document · pdf · 9 bytes]" {
+		t.Errorf("the PDF read = %q", tools[1].Output)
+	}
+	var queued model.Item
+	for _, it := range one.Items {
+		if it.Queued {
+			queued = it
+		}
+	}
+	if queued.Text != "and this one\n[image · two.png]" || len(queued.Attachments) != 1 || queued.Attachments[0].Inline || queued.Attachments[0].Name != "https://example.com/shots/two.png" {
+		t.Errorf("a prompt queued with a picture = %q, %+v", queued.Text, queued.Attachments)
+	}
+	// A picture sent with no words is a question all the same
+	if two := s.Turn(t, 2); two.Ask != "[image · png · 70 bytes]" {
+		t.Errorf("%d turns; a picture sent alone asks %q", s.Stats.Turns, two.Ask)
 	}
 }
 

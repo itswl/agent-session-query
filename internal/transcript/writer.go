@@ -67,6 +67,9 @@ type Writer struct {
 	clean            bool
 	mark             *Mark
 	resumed, takenUp bool
+
+	keep map[int]bool         // the items whose attachments' bytes are kept (see Keep)
+	kept map[int][]Attachment // what they carried, bytes and all
 }
 
 // unreadKinds bounds how many different kinds of unread record a transcript is told
@@ -111,6 +114,35 @@ func (w *Writer) Unread(kind string) {
 
 // Unreads is what Unread was told, by kind; nil when nothing was passed over.
 func (w *Writer) Unreads() map[string]int { return w.unread }
+
+// Keep asks the Writer to hold on to the bytes of the files the items at these positions
+// carry, which the record does not keep: a transcript is read again for them, and Kept
+// then has them. Call it before the first Add.
+func (w *Writer) Keep(seqs ...int) {
+	if w.keep == nil {
+		w.keep, w.kept = map[int]bool{}, map[int][]Attachment{}
+	}
+	for _, seq := range seqs {
+		w.keep[seq] = true
+	}
+}
+
+// Kept is what the items Keep named carried, by position, bytes and all.
+func (w *Writer) Kept() map[int][]Attachment { return w.kept }
+
+// carry gives the item at idx the files it carried — what each is, for the record — and
+// keeps their bytes where Keep asked for them.
+func (w *Writer) carry(cur *turn, idx int, atts []Attachment) {
+	it := &cur.t.Items[idx]
+	it.Attachments = recorded(atts)
+	if w.keep[it.Seq] {
+		if len(atts) > 0 {
+			w.kept[it.Seq] = atts
+		} else {
+			delete(w.kept, it.Seq)
+		}
+	}
+}
 
 // turn is a Turn while it is being built.
 type turn struct {
@@ -167,7 +199,7 @@ func (w *Writer) addUser(m Message) {
 	text := joinText(m.Blocks, Text)
 	ask, starts := "", false
 	if strings.TrimSpace(text) != "" && !m.Injected && !m.Queued && !m.Inherited {
-		ask, starts = AskOf(text)
+		ask, starts = askOf(m.Blocks)
 	}
 	if strings.TrimSpace(text) != "" && w.anyPrompt == "" && !m.Inherited {
 		w.anyPrompt = text
@@ -218,11 +250,11 @@ func (w *Writer) addUser(m Message) {
 			}
 			wroteText = true
 			item := model.Item{Kind: model.Context, At: m.At, ID: m.ID, Text: text, Inherited: m.Inherited}
-			if starts || m.Queued || (m.Inherited && !m.Injected && isAsk(text)) {
+			if starts || m.Queued || (m.Inherited && !m.Injected && isAsk(m.Blocks)) {
 				item.Kind = model.Prompt
 				item.Queued = m.Queued
 			}
-			w.push(cur, item)
+			w.carry(cur, w.push(cur, item), attachmentsOf(m.Blocks))
 		case Call:
 			work = true
 			w.pushCall(cur, m, b, 0)
@@ -239,9 +271,34 @@ func (w *Writer) addUser(m Message) {
 	}
 }
 
-func isAsk(text string) bool {
-	_, ok := AskOf(text)
+func isAsk(blocks []Block) bool {
+	_, ok := askOf(blocks)
 	return ok
+}
+
+// askOf is the ask a user message makes, if it makes one: its words as AskOf takes them,
+// then the markers of the files it carried. A message of files alone asks with them — a
+// screenshot pasted and sent is a question — and words a CLI wrote ask nothing, whatever
+// came with them.
+func askOf(blocks []Block) (string, bool) {
+	words, marks := split(blocks, Text)
+	if strings.TrimSpace(words) == "" {
+		return marks, marks != ""
+	}
+	ask, ok := AskOf(words)
+	if ok && marks != "" {
+		ask += "\n" + marks
+	}
+	return ask, ok
+}
+
+// attachmentsOf is every file a message's blocks carried, in order.
+func attachmentsOf(blocks []Block) []Attachment {
+	var out []Attachment
+	for _, b := range blocks {
+		out = append(out, b.Attachments...)
+	}
+	return out
 }
 
 // addAssistant files an assistant message's blocks under the model response it is part of.
@@ -267,7 +324,8 @@ func (w *Writer) addAssistant(m Message) {
 			if b.Text == "" {
 				continue
 			}
-			w.push(cur, model.Item{Kind: model.Reply, At: m.At, ID: m.ID, Text: b.Text, Call: call, Inherited: m.Inherited})
+			idx := w.push(cur, model.Item{Kind: model.Reply, At: m.At, ID: m.ID, Text: b.Text, Call: call, Inherited: m.Inherited})
+			w.carry(cur, idx, b.Attachments)
 			switch {
 			case !live:
 			case synthetic:
@@ -330,10 +388,11 @@ func (w *Writer) addOther(m Message) {
 			if m.Role == ToolRole {
 				// a tool row whose adapter gave it plain text: it is still a result
 				work = true
-				w.settle(cur, m, Block{Type: Result, Text: b.Text})
+				w.settle(cur, m, Block{Type: Result, Text: b.Text, Attachments: b.Attachments})
 				continue
 			}
-			w.push(cur, model.Item{Kind: model.Context, At: m.At, ID: m.ID, Text: b.Text, Inherited: m.Inherited})
+			idx := w.push(cur, model.Item{Kind: model.Context, At: m.At, ID: m.ID, Text: b.Text, Inherited: m.Inherited})
+			w.carry(cur, idx, b.Attachments)
 		case Call:
 			work = true
 			w.pushCall(cur, m, b, 0)
@@ -486,6 +545,7 @@ func (w *Writer) settle(cur *turn, m Message, b Block) {
 	}
 	tool.Done = true
 	tool.Output = b.Text
+	w.carry(cur, idx, b.Attachments)
 	tool.Status = b.Status
 	tool.Exit = b.Exit
 	tool.DurMs = b.DurMs
@@ -692,26 +752,53 @@ func (w *Writer) Finish() (model.Stats, error) {
 // Err is the first error the sink returned; once it is set, Add does nothing.
 func (w *Writer) Err() error { return w.err }
 
+// joinText is the text of a message's blocks of a kind, a block a line: its words, then
+// the markers of the files it carried. A file is part of the message rather than of its
+// sentences, wherever the CLI put it among them, and words first is what a title, a
+// list's line or a harness's closing block (StripHarness) is read from.
 func joinText(blocks []Block, kind BlockType) string {
-	n := 0
-	var only string
+	words, marks := split(blocks, kind)
+	switch {
+	case marks == "":
+		return words
+	case words == "":
+		return marks
+	}
+	return words + "\n" + marks
+}
+
+// split is the text of a message's blocks of a kind, a block a line: the words, and apart
+// from them the markers of the files it carried.
+func split(blocks []Block, kind BlockType) (words, marks string) {
+	nw, nm := 0, 0
 	for _, b := range blocks {
-		if b.Type == kind && b.Text != "" {
-			n++
-			only = b.Text
+		switch {
+		case b.Type != kind || b.Text == "":
+		case len(b.Attachments) > 0:
+			nm, marks = nm+1, b.Text
+		default:
+			nw, words = nw+1, b.Text
 		}
 	}
-	if n <= 1 {
-		return only
+	if nw > 1 {
+		words = lines(blocks, kind, false)
 	}
+	if nm > 1 {
+		marks = lines(blocks, kind, true)
+	}
+	return words, marks
+}
+
+func lines(blocks []Block, kind BlockType, marked bool) string {
 	var sb strings.Builder
 	for _, b := range blocks {
-		if b.Type == kind && b.Text != "" {
-			if sb.Len() > 0 {
-				sb.WriteByte('\n')
-			}
-			sb.WriteString(b.Text)
+		if b.Type != kind || b.Text == "" || (len(b.Attachments) > 0) != marked {
+			continue
 		}
+		if sb.Len() > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(b.Text)
 	}
 	return sb.String()
 }

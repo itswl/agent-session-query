@@ -338,19 +338,19 @@ func kitFirst(a, b string) string {
 // stays whole.
 func TestOutputHeaders(t *testing.T) {
 	none := func(kind string) { t.Errorf("unread %s", kind) }
-	body, o := output([]byte(`"Chunk ID: abc\nWall time: 2.5 seconds\nProcess exited with code 3\nOutput:\nboom\n"`), none)
+	body, o, _ := output([]byte(`"Chunk ID: abc\nWall time: 2.5 seconds\nProcess exited with code 3\nOutput:\nboom\n"`), none)
 	if body != "boom\n" || o.Exit == nil || *o.Exit != 3 || o.DurMs != 2500 || o.Status != model.StatusError {
 		t.Errorf("header parse = %q %+v", body, o)
 	}
-	body, o = output([]byte(`"Script failed\nWall time 0.2 seconds\nOutput:\n"`), none)
+	body, o, _ = output([]byte(`"Script failed\nWall time 0.2 seconds\nOutput:\n"`), none)
 	if body != "" || o.Status != model.StatusError {
 		t.Errorf("Script failed must be an error: %q %+v", body, o)
 	}
-	body, o = output([]byte(`"Exit code: 1 is what the docs say\nreal output"`), none)
+	body, o, _ = output([]byte(`"Exit code: 1 is what the docs say\nreal output"`), none)
 	if body != "Exit code: 1 is what the docs say\nreal output" || o.Exit != nil {
 		t.Errorf("a non-header must stay whole: %q %+v", body, o)
 	}
-	body, _ = output([]byte(`"{\"result\": 1}"`), none)
+	body, _, _ = output([]byte(`"{\"result\": 1}"`), none)
 	if body != `{"result": 1}` {
 		t.Errorf("non-legacy JSON must stay whole: %q", body)
 	}
@@ -721,14 +721,19 @@ func TestRowsCodexWritesAndPassesOver(t *testing.T) {
 	s := sourcetest.One(t, Spec.Open(root))
 	sourcetest.NothingUnread(t, s)
 	turn := s.Turn(t, 1)
-	if s.Stats.Turns != 1 || turn.Ask != "what is in this picture?" || turn.Answer != "A cat." {
+	// The picture and the sound are marked after the words, and the picture view_image
+	// returned after its output: neither reads as if nothing was there
+	if s.Stats.Turns != 1 || turn.Ask != "what is in this picture?\n[image · png · 3 bytes]\n[audio · wav · 3 bytes]" || turn.Answer != "A cat." {
 		t.Errorf("%d turns, ask %q answer %q", s.Stats.Turns, turn.Ask, turn.Answer)
 	}
 	if got := sourcetest.Kinds(turn); got != "prompt thinking tool context reply event" {
 		t.Errorf("items = %s", got)
 	}
-	if tool := sourcetest.Tools(turn)[0]; tool.Output != "cat.png" {
-		t.Errorf("the image beside the output's text is not text: %q", tool.Output)
+	if a := turn.Items[0].Attachments; len(a) != 2 || a[0] != (model.Attachment{Mime: "image/png", Bytes: 3, Inline: true}) || a[1].Mime != "audio/wav" {
+		t.Errorf("the ask carries %+v", a)
+	}
+	if tool := sourcetest.Tools(turn)[0]; tool.Output != "cat.png\n[image · png · 3 bytes]" {
+		t.Errorf("the image beside the output's text = %q", tool.Output)
 	}
 	if want := (model.Usage{Input: 220, Output: 13}); s.Stats.Usage != want || s.Stats.Calls != 2 {
 		t.Errorf("usage = %+v in %d calls, want %+v in 2", s.Stats.Usage, s.Stats.Calls, want)
@@ -863,7 +868,7 @@ func TestDurationsThatAreNotDurations(t *testing.T) {
 		`"Wall time: NaN seconds\nOutput:\nx"`,
 		`"Wall time: -3 seconds\nOutput:\nx"`,
 	} {
-		if body, o := output([]byte(raw), none); body != "x" || o.DurMs != 0 {
+		if body, o, _ := output([]byte(raw), none); body != "x" || o.DurMs != 0 {
 			t.Errorf("%s: %q in %d ms, want x in none", raw, body, o.DurMs)
 		}
 	}
@@ -883,11 +888,11 @@ func TestACommandStillRunningHasNoStatus(t *testing.T) {
 	}
 	// The same, as the list of items an output may also be
 	list := `[{"type":"input_text","text":"Chunk ID: d4\nWall time: 10.0 seconds\nProcess running with session ID 8\nOriginal token count: 3\nOutput:\n=== RUN TestY\n"}]`
-	if text, o := output(json.RawMessage(list), func(string) {}); text != "=== RUN TestY\n" || o.Status != "" {
+	if text, o, _ := output(json.RawMessage(list), func(string) {}); text != "=== RUN TestY\n" || o.Status != "" {
 		t.Errorf("still running, as a list: %q, %+v", text, o)
 	}
 	list = `[{"type":"input_text","text":"Chunk ID: d5\nWall time: 1.0 seconds\nProcess exited with code 0\nOriginal token count: 3\nOutput:\nok\n"}]`
-	if _, o := output(json.RawMessage(list), func(string) {}); o.Status != model.StatusOK {
+	if _, o, _ := output(json.RawMessage(list), func(string) {}); o.Status != model.StatusOK {
 		t.Errorf("ended, as a list: %+v", o)
 	}
 }
@@ -942,9 +947,9 @@ func TestWhatTheAPIDoesInsideAResponse(t *testing.T) {
 	if tools[2].Name != "mcp__codex_apps.calendar_create_event" || tools[2].Output != "Created: Launch" {
 		t.Errorf("the tool the search loaded = %+v", tools[2])
 	}
-	if image.Name != "image_generation" || !image.Done || image.Status != model.StatusOK || image.Output != "" ||
+	if image.Name != "image_generation" || !image.Done || image.Status != model.StatusOK || image.Output != "[image · png · 8 bytes]" ||
 		!strings.Contains(string(image.Input), "A poster for a product launch") {
-		t.Errorf("image = %+v: the prompt is its input, and the image is not text", image)
+		t.Errorf("image = %+v: the prompt is its input, and the image it made its result", image)
 	}
 	if failed.Status != model.StatusError || turn.Failures != 1 {
 		t.Errorf("an image the API could not make = %+v, failures %d", failed, turn.Failures)

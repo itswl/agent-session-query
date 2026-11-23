@@ -94,6 +94,12 @@ One package and one line.
    }})
    ```
 
+   A picture or a document a message carried is a block of its own,
+   `transcript.AttachmentOf(transcript.Embedded(mime, base64))` (`Referenced(mime, path)` for one
+   the transcript only names), and one a tool returned goes on its result:
+   `transcript.ResultOf(…).With(file)`. The Writer marks each in the text and keeps its bytes out
+   of the record.
+
    Convert token counts to [the one shape](model.md#usage-one-shape): input without cached
    tokens, output with reasoning. Mark what was not typed by a person (`Injected`), what a fork
    copied (`Inherited`), what was typed mid-turn (`Queued`). For a CLI whose tools take a path

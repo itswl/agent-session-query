@@ -60,6 +60,13 @@ takes.
 | `tool` | **a tool call together with its result** |
 | `event` | something between the words: `compaction`, `interrupted`, `hook_error`, `model_change`, or a CLI's own |
 
+A picture, a document or a sound an item carried — pasted into a prompt, returned by a tool —
+holds no words, and is marked in the item's text where it came: `[image · png · 48 KB]` after
+the words of a prompt or the output of a call, `[image · png · plot.png]` for one the transcript
+only names. A picture sent with no words is an ask all the same. `attachments` lists them, each
+with its `mime`, its size in `bytes`, the `name` it was given by, and `inline` when the
+transcript holds its bytes. The record keeps what each is, not its bytes.
+
 A tool call and its result are one item, paired once, when the transcript is read — by the call's
 id; failing that, to the latest call of the same tool still waiting. No reader pairs them again.
 `tool.status` is `ok`, `error` or `interrupted`; an **empty status is a result whose writer did

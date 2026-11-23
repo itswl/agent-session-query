@@ -200,6 +200,44 @@ type part struct {
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"`
 	IsError   bool            `json:"is_error"`
+	Source    *fileSource     `json:"source"` // an image's or a document's
+}
+
+// fileSource is where an image or a document block has its file: in the block, as base64
+// (or, for a document, as text), or at an address it names.
+type fileSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+	URL       string `json:"url"`
+	FileID    string `json:"file_id"`
+}
+
+// fileOf is the file an image or a document block carried, marked as what it is.
+func fileOf(kind string, src *fileSource) transcript.Attachment {
+	mime := ""
+	if kind == "image" {
+		mime = "image/*" // the bytes, if there are any, say which
+	}
+	if src == nil {
+		return transcript.Embedded(mime, "")
+	}
+	mime = kit.First(src.MediaType, mime)
+	switch src.Type {
+	case "base64":
+		return transcript.Embedded(mime, src.Data)
+	case "text":
+		// A document given as plain text: its words are the model's to read, and not the
+		// person's; it is marked, and not shown
+		a := transcript.Embedded(kit.First(src.MediaType, "text/plain"), "")
+		a.Size = len(src.Data)
+		return a
+	case "url":
+		return transcript.Referenced(mime, src.URL)
+	case "file":
+		return transcript.Referenced(mime, src.FileID)
+	}
+	return transcript.Embedded(mime, "")
 }
 
 // useResult is the row-level record of how a tool call went.
@@ -492,10 +530,10 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				w.Unread("queued_command:" + a.CommandMode)
 				return true
 			}
-			if text := strings.TrimSpace(contentText(a.Prompt)); text != "" {
+			if blocks := promptBlocks(a.Prompt); len(blocks) > 0 {
 				release(false)
 				add(transcript.Message{ID: r.UUID, Role: transcript.User, At: at, Queued: true, Inherited: inherited,
-					Blocks: []transcript.Block{transcript.TextOf(text)}}, origin)
+					Blocks: blocks}, origin)
 			}
 		case "user":
 			m := transcript.Message{ID: r.UUID, Role: transcript.User, At: at, Inherited: inherited,
@@ -799,16 +837,33 @@ func contentText(raw json.RawMessage) string {
 	return kit.ContentText(v)
 }
 
+// promptBlocks is a prompt typed while the agent worked: its words, and the files pasted
+// with it.
+func promptBlocks(raw json.RawMessage) []transcript.Block {
+	var out []transcript.Block
+	if text := strings.TrimSpace(contentText(raw)); text != "" {
+		out = append(out, transcript.TextOf(text))
+	}
+	for _, p := range parts(raw) {
+		if p.Type == "image" || p.Type == "document" {
+			out = append(out, transcript.AttachmentOf(fileOf(p.Type, p.Source)))
+		}
+	}
+	return out
+}
+
 // resultText flattens a tool result's content as contentText does, and tells unread of
-// the blocks in it that are of a kind it has never heard of.
-func resultText(raw json.RawMessage, unread func(kind string)) string {
+// the blocks in it that are of a kind it has never heard of. The files in it — a
+// screenshot, a page of a PDF: what the model saw, with no text to read — come apart.
+func resultText(raw json.RawMessage, unread func(kind string)) (string, []transcript.Attachment) {
 	if len(raw) == 0 {
-		return ""
+		return "", nil
 	}
 	var v any
 	if json.Unmarshal(raw, &v) != nil {
-		return ""
+		return "", nil
 	}
+	var files []transcript.Attachment
 	if list, ok := v.([]any); ok {
 		for _, item := range list {
 			b, ok := item.(map[string]any)
@@ -818,7 +873,10 @@ func resultText(raw json.RawMessage, unread func(kind string)) string {
 			switch kind := kit.Str(b["type"]); kind {
 			case "text":
 			case "image", "document":
-				// A screenshot, a page of a PDF: what the model saw, with no text to read
+				var p part
+				if raw, err := json.Marshal(b); err == nil && json.Unmarshal(raw, &p) == nil {
+					files = append(files, fileOf(kind, p.Source))
+				}
 			case "tool_reference":
 				// A tool a search loaded, named for the model: the call says what was sought
 			case "":
@@ -828,7 +886,7 @@ func resultText(raw json.RawMessage, unread func(kind string)) string {
 			}
 		}
 	}
-	return kit.ContentText(v)
+	return kit.ContentText(v), files
 }
 
 // parts decodes a message's content: a bare string is one text block.
@@ -904,7 +962,7 @@ func (s *Source) userBlocks(r *row, unread func(kind string)) []transcript.Block
 			}
 			out = append(out, transcript.TextOf(p.Text))
 		case "tool_result":
-			text := resultText(p.Content, unread)
+			text, files := resultText(p.Content, unread)
 			head := strings.TrimSpace(text)
 			// is_error is Claude's own verdict, and a failed command's result opens with its
 			// exit code. A call the person stopped or declined is interrupted: the row-level
@@ -930,7 +988,7 @@ func (s *Source) userBlocks(r *row, unread func(kind string)) []transcript.Block
 					text = whole
 				}
 			}
-			block := transcript.ResultOf(p.ToolUseID, "", text, outcome)
+			block := transcript.ResultOf(p.ToolUseID, "", text, outcome).With(files...)
 			// A Workflow call's result names the run it started; the run's agents are
 			// transcripts of their own, and this is the call they hang from
 			if results == 1 {
@@ -938,7 +996,9 @@ func (s *Source) userBlocks(r *row, unread func(kind string)) []transcript.Block
 			}
 			out = append(out, block)
 		case "image", "document":
-			// A picture or a document the person attached: no words of theirs to read
+			// A picture or a document the person attached: no words of theirs, and marked
+			// where it came
+			out = append(out, transcript.AttachmentOf(fileOf(p.Type, p.Source)))
 		case "":
 			// A block that names no type names no kind to count
 		default:

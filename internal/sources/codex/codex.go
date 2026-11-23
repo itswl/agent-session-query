@@ -265,6 +265,7 @@ type row struct {
 		Execution string          `json:"execution"`
 		Tools     json.RawMessage `json:"tools"`
 		Revised   string          `json:"revised_prompt"`
+		Result    json.RawMessage `json:"result"` // the image an image_generation_call made
 
 		// token_usage_record, event_msg
 		ResponseID string          `json:"response_id"`
@@ -450,7 +451,9 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	}
 	// agentMessage adds what one agent of a team said to another. Addressed to a subagent
 	// by the agent above it, it is that subagent's ask; anything else is news that arrived.
-	agentMessage := func(id, author, recipient, text string, at time.Time, inherited bool) {
+	// Only its words are read.
+	agentMessage := func(id, author, recipient string, content json.RawMessage, at time.Time, inherited bool) {
+		text, _ := messageText(content, w.Unread)
 		if text == "" {
 			return
 		}
@@ -623,7 +626,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			// Content in the item's own shape, a list of parts, is read as the item's is, and
 			// a part of a kind never heard of is counted, rather than the message lost unsaid
 			flush(nil)
-			agentMessage(p.ID, p.Author, p.Recipient, messageText(p.Content, w.Unread), at, inherited)
+			agentMessage(p.ID, p.Author, p.Recipient, p.Content, at, inherited)
 			return true
 		case "realtime_item":
 			// What a realtime conversation needs to be shown again, which the model is never
@@ -652,14 +655,14 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		case "message":
 			switch p.Role {
 			case "assistant":
-				if text := messageText(p.Content, w.Unread); text != "" {
-					assistant(transcript.TextOf(text))
+				if blocks := messageBlocks(p.Content, w.Unread); len(blocks) > 0 {
+					assistant(blocks...)
 				}
 			case "user":
 				flush(nil)
-				if text := messageText(p.Content, w.Unread); text != "" {
+				if blocks := messageBlocks(p.Content, w.Unread); len(blocks) > 0 {
 					w.Add(transcript.Message{ID: p.ID, Role: transcript.User, At: at, Inherited: inherited,
-						Blocks: []transcript.Block{transcript.TextOf(text)}})
+						Blocks: blocks})
 				}
 			case "developer":
 				// instructions the CLI assembled: not conversation
@@ -670,7 +673,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			}
 		case "agent_message":
 			flush(nil)
-			agentMessage(p.ID, p.Author, p.Recipient, messageText(p.Content, w.Unread), at, inherited)
+			agentMessage(p.ID, p.Author, p.Recipient, p.Content, at, inherited)
 		case "reasoning":
 			// The summary entries, then the content when it is not encrypted; a row with
 			// only encrypted content shows a reader nothing
@@ -722,23 +725,26 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		case "image_generation_call":
 			// An image the API's image tool made inside the response: like a web search, the
 			// call is the whole record and carries its own result. The image (result, in
-			// base64) is not text a reader is shown; what was asked for is the prompt as the
+			// base64) is what it returned, marked; what was asked for is the prompt as the
 			// API revised it
 			var input any
 			if p.Revised != "" {
 				input = map[string]any{"revised_prompt": p.Revised}
 			}
-			assistant(transcript.CallOf(callID, imageGeneration, input),
-				transcript.ResultOf(callID, imageGeneration, "", itemOutcome(p.Status)))
+			result := transcript.ResultOf(callID, imageGeneration, "", itemOutcome(p.Status))
+			if made := contentString(p.Result); made != "" {
+				result = result.With(transcript.Embedded("image/*", made))
+			}
+			assistant(transcript.CallOf(callID, imageGeneration, input), result)
 		case "function_call_output", "custom_tool_call_output":
 			flush(nil)
-			text, outcome := output(p.Output, w.Unread)
+			text, outcome, files := output(p.Output, w.Unread)
 			if names[p.CallID] == "apply_patch" && patchRejected(text) {
 				// A rejected patch has no exit code and would otherwise read as applied
 				outcome.Status = model.StatusError
 			}
 			w.Add(transcript.Message{ID: p.ID, Role: transcript.ToolRole, At: at, Inherited: inherited,
-				Blocks: []transcript.Block{transcript.ResultOf(p.CallID, names[p.CallID], text, outcome)}})
+				Blocks: []transcript.Block{transcript.ResultOf(p.CallID, names[p.CallID], text, outcome).With(files...)}})
 		case "additional_tools", "configuration_update":
 			// Tools put before the model mid-session, and its settings changed: the CLI's
 			// setup, not conversation
@@ -970,10 +976,32 @@ func (s *Source) parentTurns(id string) map[string]bool {
 	return ids
 }
 
-// part is one entry of a content list: [{type, text}].
+// part is one entry of a content list: [{type, text}], or a file — a picture, a sound —
+// by value (a data: URL) or by address.
+// The addresses are read as strings where they are strings: a field of another shape must
+// not cost the message its words.
 type part struct {
-	Type string  `json:"type"`
-	Text *string `json:"text"`
+	Type     string          `json:"type"`
+	Text     *string         `json:"text"`
+	ImageURL json.RawMessage `json:"image_url"`
+	AudioURL json.RawMessage `json:"audio_url"`
+}
+
+// file is the picture or the sound an entry holds, if it holds one.
+func (p part) file() (transcript.Attachment, bool) {
+	kind, url := "", ""
+	switch p.Type {
+	case "input_image", "image":
+		kind, url = "image/*", contentString(p.ImageURL)
+	case "input_audio":
+		kind, url = "audio/*", contentString(p.AudioURL)
+	default:
+		return transcript.Attachment{}, false
+	}
+	if url != "" && !strings.HasPrefix(url, "data:") {
+		return transcript.Referenced(kind, url), true
+	}
+	return transcript.Embedded(kind, url), true
 }
 
 // text is what an entry shows a reader. The kinds known to hold no text have a case of
@@ -982,7 +1010,7 @@ type part struct {
 func (p part) text(unread func(kind string)) string {
 	switch p.Type {
 	case "input_image", "image", "input_audio":
-		// a picture or a sound: nothing a reader of the words is shown
+		// a picture or a sound: no words, and marked where it came (see file)
 		return ""
 	case "encrypted_content":
 		// what Codex keeps encrypted, such as one agent's message to another
@@ -1000,19 +1028,37 @@ func (p part) text(unread func(kind string)) string {
 	return ""
 }
 
-// messageText joins the text entries of a message's content.
-func messageText(raw json.RawMessage, unread func(string)) string {
+// messageText joins the text entries of a message's content, and gives the files among
+// them apart.
+func messageText(raw json.RawMessage, unread func(string)) (string, []transcript.Attachment) {
 	var items []part
 	if json.Unmarshal(raw, &items) != nil {
-		return contentString(raw)
+		return contentString(raw), nil
 	}
 	var texts []string
+	var files []transcript.Attachment
 	for _, item := range items {
+		if f, ok := item.file(); ok {
+			files = append(files, f)
+		}
 		if text := item.text(unread); text != "" {
 			texts = append(texts, text)
 		}
 	}
-	return strings.Join(texts, "\n")
+	return strings.Join(texts, "\n"), files
+}
+
+// messageBlocks is a message's content as blocks: its words, then each file it carried.
+func messageBlocks(raw json.RawMessage, unread func(string)) []transcript.Block {
+	text, files := messageText(raw, unread)
+	var out []transcript.Block
+	if text != "" {
+		out = append(out, transcript.TextOf(text))
+	}
+	for _, f := range files {
+		out = append(out, transcript.AttachmentOf(f))
+	}
+	return out
 }
 
 // contentString is a JSON string's value, or "" when the value is not a string.
@@ -1087,22 +1133,27 @@ func arguments(raw json.RawMessage) any {
 // a header of known lines — "Exit code: N", "Wall time: 0.3 seconds", "Script completed",
 // "Process exited with code N" — closed by a line reading "Output:". The header is
 // information, not output, so it is read and removed.
-func output(raw json.RawMessage, unread func(string)) (string, transcript.Outcome) {
+func output(raw json.RawMessage, unread func(string)) (string, transcript.Outcome, []transcript.Attachment) {
 	ok := transcript.Outcome{Status: model.StatusOK}
 	if text := contentString(raw); text != "" || bytes.HasPrefix(bytes.TrimSpace(raw), []byte(`"`)) {
 		if body, outcome, legacy := legacyOutput(text); legacy {
-			return body, outcome
+			return body, outcome, nil
 		}
-		return stripHeader(text)
+		body, outcome := stripHeader(text)
+		return body, outcome, nil
 	}
 	var items []part
 	if json.Unmarshal(raw, &items) != nil {
-		return "", ok
+		return "", ok, nil
 	}
 	var outcome transcript.Outcome
 	var bodies []string
+	var files []transcript.Attachment
 	running := false
 	for _, item := range items {
+		if f, ok := item.file(); ok {
+			files = append(files, f) // what view_image returns: the picture it looked at
+		}
 		text := item.text(unread)
 		if text == "" {
 			continue
@@ -1127,7 +1178,7 @@ func output(raw json.RawMessage, unread func(string)) (string, transcript.Outcom
 	if outcome.Status == "" && !running {
 		outcome.Status = model.StatusOK
 	}
-	return strings.Join(bodies, ""), outcome
+	return strings.Join(bodies, ""), outcome, files
 }
 
 // legacyOutput decodes the JSON form of a shell output.

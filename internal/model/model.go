@@ -318,6 +318,20 @@ type Item struct {
 
 	Tool  *Tool  `json:"tool,omitempty"`
 	Event string `json:"event,omitempty"` // the event's kind
+
+	// Attachments are the files the item carried — a picture pasted into a prompt, a
+	// screenshot a tool returned — each marked in its text where it came.
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+// Attachment is a file an item carried rather than said. The record keeps what it is; its
+// bytes stay in the transcript, and are read from there when asked for.
+type Attachment struct {
+	Mime  string `json:"mime,omitempty"`  // image/png
+	Bytes int    `json:"bytes,omitempty"` // its size; 0 when not known
+	Name  string `json:"name,omitempty"`  // the file it named, where it named one rather than holding it
+	// Inline says the transcript holds its bytes, and not only its name
+	Inline bool `json:"inline,omitempty"`
 }
 
 // Tool outcomes. An empty Status is a result whose writer did not record how it ended,

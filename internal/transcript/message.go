@@ -91,6 +91,10 @@ type Block struct {
 	// got to — something the person did between turns, an error the work went on past or
 	// that came once it was done — and does not move the turn's end.
 	After bool
+
+	// Attachments are the files a block carried: on a text block made by AttachmentOf,
+	// the one it marks; on a result, what came back beside the output (see With).
+	Attachments []Attachment
 }
 
 // Outcome is what a CLI recorded about how a tool call ended. Zero values mean "not

@@ -649,6 +649,21 @@ func TestUninstallSaysNoServiceWhereThereIsNone(t *testing.T) {
 	}
 }
 
+// What put asq on the PATH can go too: a line in a shell's file, or on Windows the entry
+// the installer added to the user's PATH.
+func TestUninstallSaysWhatPutAsqOnThePath(t *testing.T) {
+	for goos, want := range map[string]string{
+		"darwin":  "a line that put asq on the PATH, added when installing, can go too",
+		"linux":   "a line that put asq on the PATH, added when installing, can go too",
+		"windows": "the asq entry in your user PATH, added when installing, can go too",
+	} {
+		uninstallHome(t, goos, nil)
+		if out, errs, code := runAsq("uninstall"); code != 0 || !strings.Contains(out, "\n"+want+"\n") {
+			t.Errorf("%s: exit %d, said:\n%s%s\nwant %q", goos, code, out, errs, want)
+		}
+	}
+}
+
 // A binary a package manager installed is its to remove: brew uninstall, and untap when the
 // tap is this repository; scoop uninstall. Any other is a file to remove — on Windows with
 // the installer's folder, which holds it alone, and never a folder that holds more.

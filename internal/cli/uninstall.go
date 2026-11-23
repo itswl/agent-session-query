@@ -186,7 +186,12 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 			fmt.Fprintln(io.out, "  "+cmd)
 		}
 	}
-	if manager, _ := packageOf(m.OS, self); manager == "" {
+	switch manager, _ := packageOf(m.OS, self); {
+	case manager != "":
+	case m.OS == "windows":
+		// The installer adds the binary's folder to the user's PATH, which no file holds
+		fmt.Fprintln(io.out, "\nthe asq entry in your user PATH, added when installing, can go too")
+	default:
 		fmt.Fprintln(io.out, "\na line that put asq on the PATH, added when installing, can go too")
 	}
 	return nil

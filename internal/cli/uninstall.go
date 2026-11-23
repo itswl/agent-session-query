@@ -210,6 +210,13 @@ const sqliteHeader = "SQLite format 3\x00"
 // copies, beside the CLI's own store — and the command that would remove it. Nil when the
 // folder holds no file.
 func keptCopies(ctx context.Context, stores catalog.Config, folder, goos string) *leftBehind {
+	// A folder that is a link holds what it leads to: that is where the copies are, and what
+	// stays when the link goes with the state
+	if info, err := os.Lstat(folder); err == nil && !info.IsDir() {
+		if real, err := filepath.EvalSymlinks(folder); err == nil {
+			folder = real
+		}
+	}
 	if files, _ := keep.Size(folder); files == 0 {
 		return nil
 	}

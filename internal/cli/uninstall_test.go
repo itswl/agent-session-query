@@ -415,6 +415,36 @@ func TestUninstallFollowsNoLinkOnTheWayToTheCopies(t *testing.T) {
 	}
 }
 
+// A folder of copies that is itself a link holds what it leads to: those are named, by
+// where they are, and stay when the link goes with the state.
+func TestUninstallNamesTheCopiesAKeptLinkLeadsTo(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symbolic links take a privilege on Windows")
+	}
+	home, _ := uninstallHome(t, runtime.GOOS, nil)
+	state := defaultState(t, home)
+	if err := keep.Save(state, keep.Settings{All: true}); err != nil {
+		t.Fatal(err)
+	}
+	outside, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	copies := keptHere(t, home, outside)
+	if err := os.Symlink(outside, filepath.Join(state, "kept")); err != nil {
+		t.Fatal(err)
+	}
+
+	got := uninstallJSON(t)
+	gone(t, state)
+	for _, p := range copies {
+		there(t, p)
+	}
+	if len(got.Left) != 1 || got.Left[0].Path != outside || got.Left[0].Transcripts != 2 {
+		t.Errorf("left %+v, want %s and its two transcripts", got.Left, outside)
+	}
+}
+
 // What keeps asq serve running is taken down first: asq service uninstall for the service
 // asq service install wrote — it needs the binary, which goes last —, brew services stop for
 // Homebrew's, and the manager's own commands for one set up by hand; never both for one

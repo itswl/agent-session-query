@@ -543,6 +543,25 @@ func TestArchivedSessionsAndFailedTool(t *testing.T) {
 	}
 }
 
+// A picture in a prompt is marked after its words, and is part of that prompt even when
+// its chunk was written a moment after them.
+func TestAPictureInAPrompt(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "%2Fw", "sid-pic")
+	sourcetest.Write(t, filepath.Join(dir, "summary.json"), `{"info":{"id":"sid-pic"},"created_at":1790000000}`)
+	sourcetest.Write(t, filepath.Join(dir, "updates.jsonl"),
+		chunk(1790000001, "user_message_chunk", "why is this red"),
+		`{"timestamp":1790000002,"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo="}}}}`,
+		chunk(1790000003, "agent_message_chunk", "It is an error state."),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	turn := s.Turn(t, 1)
+	if s.Stats.Turns != 1 || turn.Ask != "why is this red\n[image · png · 8 bytes]" || len(turn.Items[0].Attachments) != 1 {
+		t.Errorf("%d turns, ask %q, %+v", s.Stats.Turns, turn.Ask, turn.Items[0].Attachments)
+	}
+}
+
 // What is not a transcript line does not end the read, and a field that changed type
 // costs that field alone.
 func TestLinesThatAreNotUpdates(t *testing.T) {
@@ -554,7 +573,8 @@ func TestLinesThatAreNotUpdates(t *testing.T) {
 		`not json`,
 		`{"timestamp":1790000000,"method":"session/update","params":{"update":{"sessionUpdate":"current_mode_update","currentModeId":"plan"}}}`,
 		chunk(1790000001, "user_message_chunk", "read it"),
-		// an image where text was expected, and an empty chunk, add nothing
+		// an image whose data is not its bytes is marked as an image all the same, and an
+		// empty chunk adds nothing
 		`{"timestamp":1790000001,"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"image","data":"…"}}}}`,
 		chunk(1790000001, "agent_message_chunk", ""),
 		`{"timestamp":"1790000002","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"c1","title":7,"status":{"was":"a string"},"rawInput":{"target_file":"a.go"},"_meta":{"x.ai/tool":{"name":"read_file"}}}}}`,
@@ -567,7 +587,7 @@ func TestLinesThatAreNotUpdates(t *testing.T) {
 	// change and a call still in progress are kinds Grok writes, passed over on purpose
 	sourcetest.NothingUnread(t, s)
 	turn := s.Turn(t, 1)
-	if got := sourcetest.Kinds(turn); got != "prompt tool" || turn.Ask != "read it" {
+	if got := sourcetest.Kinds(turn); got != "prompt tool" || turn.Ask != "read it\n[image]" {
 		t.Fatalf("items = %s, ask = %q", got, turn.Ask)
 	}
 	tool := sourcetest.Tools(turn)[0]

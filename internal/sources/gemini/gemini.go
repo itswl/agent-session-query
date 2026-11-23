@@ -522,6 +522,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			next = t
 		}
 	}
+	rd.files = returned(msgs)
 	for i, m := range msgs {
 		rd.add(m, wentOn[i])
 	}
@@ -573,10 +574,11 @@ func laterOf(a, b time.Time) time.Time {
 // user row that brings it.
 type reader struct {
 	w        *transcript.Writer
-	answered map[string]bool   // call id → answered on the call itself
-	issued   map[string]bool   // call id → its call is in the transcript already
-	statuses map[string]string // call id → a status that came without its output
-	last     time.Time         // the time on the latest row that had one
+	answered map[string]bool                    // call id → answered on the call itself
+	issued   map[string]bool                    // call id → its call is in the transcript already
+	statuses map[string]string                  // call id → a status that came without its output
+	files    map[string][]transcript.Attachment // call id → the files its response carried (see returned)
+	last     time.Time                          // the time on the latest row that had one
 	// owed says the model has yet to answer: the person or a tool's result spoke last, or
 	// the model last asked for calls, whose results go back to it
 	owed bool
@@ -759,12 +761,13 @@ func partsText(v any) string {
 	return ""
 }
 
-// withText puts text in place of a row's text blocks, where the first of them stood.
+// withText puts text in place of a row's text blocks, where the first of them stood. The
+// files the row carried stay.
 func withText(blocks []transcript.Block, text string) []transcript.Block {
 	out := make([]transcript.Block, 0, len(blocks)+1)
 	placed := false
 	for _, b := range blocks {
-		if b.Type != transcript.Text {
+		if b.Type != transcript.Text || len(b.Attachments) > 0 {
 			out = append(out, b)
 			continue
 		}
@@ -796,6 +799,7 @@ func (rd *reader) blocks(m *message) ([]transcript.Block, []answer) {
 		out = append(out, transcript.ThinkingOf(thoughts))
 	}
 	var listed *entries // the row's toolCalls, once a call part asks after them
+	responded := false  // a functionResponse came: the files after it are its tool's
 	var parts []any
 	switch content := m.Content.(type) {
 	case string:
@@ -834,10 +838,11 @@ func (rd *reader) blocks(m *message) ([]transcript.Block, []answer) {
 				continue
 			}
 			id := kit.Str(fr["id"])
+			responded = true
 			if id != "" && rd.answered[id] {
 				continue // already answered on the call itself
 			}
-			out = append(out, result(id, kit.Str(fr["name"]), kit.Map(fr["response"]), "", rd.statuses[id]))
+			out = append(out, result(id, kit.Str(fr["name"]), kit.Map(fr["response"]), "", rd.statuses[id]).With(rd.files[id]...))
 		case "functionCall":
 			// A call as the model's history holds it, in a row rewritten from that
 			// history. Where the row's toolCalls has it, that entry is the same call
@@ -865,7 +870,11 @@ func (rd *reader) blocks(m *message) ([]transcript.Block, []answer) {
 			}
 		case "inlineData", "fileData":
 			// An image, a PDF or another file sent with the message, by value or by
-			// reference: there is no text in it to read
+			// reference: no text, and marked where it came. One after a functionResponse
+			// is what that tool returned, and goes with its result (see returned)
+			if !responded {
+				out = append(out, transcript.AttachmentOf(fileOf(kind, entry)))
+			}
 		case "":
 			// Nothing but what qualifies a part — a thought signature on its own — or
 			// nothing that is a part at all: an empty object, a null, a number
@@ -921,7 +930,7 @@ func (rd *reader) blocks(m *message) ([]transcript.Block, []answer) {
 			}
 			continue
 		}
-		answers = append(answers, answer{at: kit.Time(call["timestamp"]), block: result(id, name, response, display, status)})
+		answers = append(answers, answer{at: kit.Time(call["timestamp"]), block: result(id, name, response, display, status).With(rd.files[id]...)})
 		if id != "" {
 			rd.answered[id] = true
 		}
@@ -966,6 +975,42 @@ func (e *entries) has(id, name string) bool {
 // data. The others say something about that data — that it is thinking, the signature
 // that goes with it, which frames of a video are meant, at what resolution — and are no
 // kind of their own. A part with no data field is "".
+// fileOf is the file an inlineData part holds, or a fileData part names.
+func fileOf(kind string, part map[string]any) transcript.Attachment {
+	d := kit.Map(part[kind])
+	if kind == "fileData" {
+		return transcript.Referenced(kit.Str(d["mimeType"]), kit.Str(d["fileUri"]))
+	}
+	return transcript.Embedded(kit.Str(d["mimeType"]), kit.Str(d["data"]))
+}
+
+// returned is the files each tool's response carried, by the call it answers. Gemini CLI
+// sends what a tool returned beyond words — the picture read_file read — as parts after
+// the functionResponse, on the user row that hands the response to the model; and where
+// the call was answered in place, that row is not where its result is read from.
+func returned(msgs []*message) map[string][]transcript.Attachment {
+	files := map[string][]transcript.Attachment{}
+	for _, m := range msgs {
+		if m.Type != "user" {
+			continue
+		}
+		parts, _ := m.Content.([]any)
+		id, responded := "", false
+		for _, item := range parts {
+			entry := kit.Map(item)
+			switch kind := partKind(entry); kind {
+			case "functionResponse":
+				id, responded = kit.Str(kit.Map(entry["functionResponse"])["id"]), true
+			case "inlineData", "fileData":
+				if responded && id != "" {
+					files[id] = append(files[id], fileOf(kind, entry))
+				}
+			}
+		}
+	}
+	return files
+}
+
 func partKind(part map[string]any) string {
 	for _, kind := range []string{"text", "functionResponse", "functionCall", "inlineData", "fileData"} {
 		if _, ok := part[kind]; ok {

@@ -165,6 +165,26 @@ var rowsV2 = []string{
 	`INSERT INTO session_v2 VALUES ('ses_child', 'ses_2', 'c', '/w/two', 'Look into pkg', '2.3.1', 'explore', NULL, 1790000003000, 1790000004000, NULL)`,
 }
 
+// A picture pasted into a 1.x prompt is a file part holding it as a data: URL, and one
+// attached from disk a file part naming it: each is marked after the words. A text file
+// the prompt names is the prompt's own business, and adds nothing.
+func TestAPictureAttachedToAPrompt(t *testing.T) {
+	src, _ := build(t, append([]string{schemaV1}, append(rowsV1,
+		`INSERT INTO part VALUES ('pf1', 'msg_u1', 'ses_live', 11, 11, '{"type":"file","mime":"image/png","filename":"clipboard","url":"data:image/png;base64,iVBORw0KGgo="}')`,
+		`INSERT INTO part VALUES ('pf2', 'msg_u1', 'ses_live', 12, 12, '{"type":"file","mime":"image/jpeg","filename":"plot.jpg","url":"file:///w/proj/plot.jpg"}')`,
+		`INSERT INTO part VALUES ('pf3', 'msg_u1', 'ses_live', 13, 13, '{"type":"file","mime":"text/plain","filename":"notes.txt","url":"file:///w/proj/notes.txt"}')`,
+	)...)...)
+	live := sourcetest.ByID(t, sourcetest.All(t, src), "ses_live")
+	sourcetest.NothingUnread(t, live)
+	turn := live.Turn(t, 1)
+	if turn.Ask != "set up an Nginx reverse proxy\n[image · png · 8 bytes]\n[image · jpeg · plot.jpg]" || live.Session.Title != "询问模型身份" {
+		t.Errorf("ask %q", turn.Ask)
+	}
+	if a := turn.Items[0].Attachments; len(a) != 2 || !a[0].Inline || a[1].Inline || a[1].Name != "plot.jpg" {
+		t.Errorf("the prompt carries %+v", a)
+	}
+}
+
 func TestV2(t *testing.T) {
 	src, _ := build(t, append([]string{schemaV2}, rowsV2...)...)
 	all := sourcetest.All(t, src)

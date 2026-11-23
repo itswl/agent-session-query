@@ -36,6 +36,7 @@ func TestAnAttachmentIsMarkedAsWhatItIs(t *testing.T) {
 		{"plain text", Embedded("text/plain", ""), "[document · text]", "text/plain", 0},
 		{"a sound", Embedded("audio/x-wav", "AAAA"), "[audio · wav · 3 bytes]", "audio/x-wav", 3},
 		{"not a media type", Embedded("a]b", "AAAA"), "[file · 3 bytes]", "", 3},
+		{"not its bytes", Embedded("image/png", "…"), "[image · png]", "image/png", 0},
 	}
 	for _, c := range cases {
 		if got := c.a.Marker(); got != c.want || c.a.Mime != c.mime || c.a.Size != c.size {

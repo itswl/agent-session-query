@@ -60,7 +60,7 @@ var Spec = sources.Spec{
 	Open:    func(location string) sources.Source { return &Source{root: location} },
 	Movable: true,
 	Resume:  "grok -r",
-	Reads:   2,
+	Reads:   3,
 	Store:   "~/.grok/sessions/<url-encoded-cwd>/<session-id>/updates.jsonl",
 }
 
@@ -300,6 +300,29 @@ func (f *folder) speak(role transcript.Role, at time.Time) {
 }
 
 // add appends a whole block to role's message.
+// attach adds a picture to the prompt being built. It is part of that prompt whenever its
+// chunk was written: a prompt is not split at it, as a message is at a block of another
+// moment.
+func (f *folder) attach(at time.Time, file transcript.Attachment) {
+	f.speak(transcript.User, at)
+	f.seal()
+	f.msg.Blocks = append(f.msg.Blocks, transcript.AttachmentOf(file))
+}
+
+// imageOf is the picture an Agent Client Protocol image block holds — data, base64, and
+// its mimeType — or names by its uri.
+func imageOf(v any) (transcript.Attachment, bool) {
+	block := kit.Map(v)
+	if kit.Str(block["type"]) != "image" {
+		return transcript.Attachment{}, false
+	}
+	mime, data := kit.First(kit.Str(block["mimeType"]), "image/*"), kit.Str(block["data"])
+	if uri := kit.Str(block["uri"]); data == "" && uri != "" {
+		return transcript.Referenced(mime, uri), true
+	}
+	return transcript.Embedded(mime, data), true
+}
+
 func (f *folder) add(role transcript.Role, at time.Time, b transcript.Block) {
 	f.speak(role, at)
 	f.open(at, b)
@@ -472,6 +495,10 @@ func (f *folder) update(u *update, at time.Time) {
 		// the summary only knows the model the session ended on
 		if u.Meta.ModelID != "" {
 			f.model = u.Meta.ModelID
+		}
+		if file, ok := imageOf(u.Content); ok {
+			f.attach(at, file)
+			return
 		}
 		f.chunk(transcript.User, at, transcript.Text, kit.ContentText(u.Content))
 	case "agent_message_chunk":

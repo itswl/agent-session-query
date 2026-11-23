@@ -44,8 +44,10 @@ func Embedded(mime, data string) Attachment {
 		data = payload
 	}
 	data = strings.TrimSpace(data)
-	if data == "" {
-		return a // named as a file of its kind, with its bytes left out of the transcript
+	if data == "" || !base64ish(data) {
+		// Named as a file of its kind, with its bytes left out of the transcript — or with
+		// something in their place that is not them
+		return a
 	}
 	a.Data = data
 	a.Size = len(strings.TrimRight(data, "=")) * 6 / 8 // what the base64 decodes to
@@ -53,6 +55,19 @@ func Embedded(mime, data string) Attachment {
 		a.Mime = firstOf(Sniff(head(data)), a.Mime)
 	}
 	return a
+}
+
+// base64ish reports whether s is written in base64's alphabet, either of them.
+func base64ish(s string) bool {
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9',
+			c == '+', c == '/', c == '-', c == '_', c == '=':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // vague reports whether a media type names only a kind of file: image/*.

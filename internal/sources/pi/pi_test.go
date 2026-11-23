@@ -155,7 +155,7 @@ func TestToolResultPairing(t *testing.T) {
 	root := t.TempDir()
 	sourcetest.Write(t, filepath.Join(root, "proj", "2026-10-01T10-00-00_pppp.jsonl"),
 		header("pppp", "/w"),
-		msgRow("m1", "2026-10-06T18:40:00Z", M{"role": "user", "content": text("run it"), "timestamp": ms(0)}),
+		msgRow("m1", "2026-10-06T18:40:00Z", M{"role": "user", "content": []M{{"type": "image", "data": "iVBORw0KGgo="}, {"type": "text", "text": "run it"}}, "timestamp": ms(0)}),
 		msgRow("m2", "2026-10-06T18:40:01Z", M{"role": "assistant", "stopReason": "toolUse", "timestamp": ms(time.Second), "durationMs": 800,
 			"content": []M{
 				{"type": "toolCall", "id": "c1", "name": "bash", "arguments": M{"command": "pwd"}},
@@ -163,7 +163,8 @@ func TestToolResultPairing(t *testing.T) {
 			}}),
 		msgRow("m3", "2026-10-06T18:40:03Z", M{"role": "toolResult", "toolCallId": "c1", "toolName": "bash", "isError": true, "durationMs": 120,
 			"timestamp": ms(2 * time.Second), "content": text("boom")}),
-		// an image has no text; the blocks that do are the output
+		// an image has no text: the blocks that do are the output, and the image is marked
+		// after them
 		msgRow("m4", "2026-10-06T18:40:03Z", M{"role": "toolResult", "toolCallId": "c2", "toolName": "read", "isError": false,
 			"timestamp": ms(2 * time.Second), "content": []M{{"type": "text", "text": "line 1"}, {"type": "image", "data": "AAAA", "mimeType": "image/png"}, {"type": "text", "text": "line 2"}}}),
 		msgRow("m5", "2026-10-06T18:40:04Z", M{"role": "assistant", "stopReason": "stop", "timestamp": ms(3 * time.Second), "content": text("it failed")}),
@@ -173,6 +174,10 @@ func TestToolResultPairing(t *testing.T) {
 	turn := s.Turn(t, 1)
 	if got := sourcetest.Kinds(turn); got != "prompt tool tool reply" {
 		t.Errorf("items = %s", got)
+	}
+	// A picture pasted with the words is marked after them, as what its bytes say it is
+	if turn.Ask != "run it\n[image · png · 8 bytes]" || len(turn.Items[0].Attachments) != 1 {
+		t.Errorf("ask %q, %+v", turn.Ask, turn.Items[0].Attachments)
 	}
 	tools := sourcetest.Tools(turn)
 	if len(tools) != 2 {
@@ -185,7 +190,7 @@ func TestToolResultPairing(t *testing.T) {
 	if !bash.Done || bash.Status != model.StatusError || bash.Output != "boom" || bash.DurMs != 120 {
 		t.Errorf("result = %+v", bash)
 	}
-	if read.Status != model.StatusOK || read.Output != "line 1\nline 2" || len(read.Files) != 1 || read.Files[0] != "/w/a.go" {
+	if read.Status != model.StatusOK || read.Output != "line 1\nline 2\n[image · png · 3 bytes]" || len(read.Files) != 1 || read.Files[0] != "/w/a.go" {
 		t.Errorf("read = %+v", read)
 	}
 	if turn.Tools != 2 || turn.Failures != 1 {

@@ -96,7 +96,9 @@ Every adapter converts its CLI's transcript into [the record](model.md). The dif
 show through:
 
 A picture, a document or a sound a message carried is [marked where it came](model.md#session--turn--item)
-by the adapters of the CLIs that are known to record one: Claude Code and Codex.
+by the adapters of the CLIs known to record one: Claude Code, Codex, Gemini CLI, OpenCode, Grok,
+Pi and OpenClaw — in an ask, and in the result of a tool that returned one. Gemini CLI sends a
+tool's picture on the row after the call; it is read as that call's.
 
 **Claude Code** — one JSONL file per session. Subagents (`<session>/subagents/agent-*.jsonl`)
 and workflow agents are read as sessions beneath the one they ran in, tied to the tool call that

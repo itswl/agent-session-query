@@ -530,6 +530,32 @@ func TestAMessageWrittenAgainIsStillOneMessage(t *testing.T) {
 	}
 }
 
+// Where a call's result comes back on the user row — no status on the call — the files
+// after its functionResponse go with that result; a file the person sent goes with the
+// ask, and one the model made with its words.
+func TestFilesGoWithWhatCarriedThem(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "9f2c", "chats", "session-2026-11-02T09-00-1c6f2b8d.jsonl"),
+		`{"sessionId":"1c6f2b8d","projectHash":"9f2c","startTime":"2026-11-02T09:00:00.000Z","lastUpdated":"2026-11-02T09:00:00.000Z","kind":"main"}`,
+		`{"id":"u1","timestamp":"2026-11-02T09:00:01.000Z","type":"user","content":[{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}},{"fileData":{"mimeType":"application/pdf","fileUri":"/work/spec.pdf"}}]}`,
+		`{"id":"g1","timestamp":"2026-11-02T09:00:02.000Z","type":"gemini","content":"","model":"gemini-3-pro-preview","toolCalls":[{"id":"shot-1","name":"take_screenshot","args":{}}],"tokens":{"input":10,"output":2,"total":12}}`,
+		`{"id":"u2","timestamp":"2026-11-02T09:00:03.000Z","type":"user","content":[{"functionResponse":{"id":"shot-1","name":"take_screenshot","response":{"output":"Took it."}}},{"inlineData":{"mimeType":"image/jpeg","data":"/9j/4AAQ"}}]}`,
+		`{"id":"g2","timestamp":"2026-11-02T09:00:04.000Z","type":"gemini","content":[{"text":"Here it is, redrawn."},{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}}],"model":"gemini-3-pro-image","tokens":{"input":20,"output":5,"total":25}}`,
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	turn := s.Turn(t, 1)
+	if turn.Ask != "[image · png · 8 bytes]\n[document · pdf · spec.pdf]" {
+		t.Errorf("a picture and a document sent alone ask %q", turn.Ask)
+	}
+	if tools := sourcetest.Tools(turn); len(tools) != 1 || tools[0].Output != "Took it.\n[image · jpeg · 6 bytes]" {
+		t.Errorf("tools = %+v", tools)
+	}
+	if turn.Answer != "Here it is, redrawn.\n[image · png · 8 bytes]" {
+		t.Errorf("answer %q", turn.Answer)
+	}
+}
+
 // The rows as Gemini CLI writes them now: the metadata names its project and kind, a patch
 // sets the workspace's directories, an attached image travels as an inlineData part, a
 // call's result comes back on a user row of its own, an image a tool read is acknowledged
@@ -569,8 +595,9 @@ func TestTheFormatAsGeminiCLIWritesIt(t *testing.T) {
 		t.Fatalf("turns = %+v", s.Turns)
 	}
 	turn := s.Turn(t, 1)
-	// The ask is what was typed; what the CLI sent in its place, the model read too
-	if turn.Ask != "what is in @shot.png?" || turn.Answer != "It is a login form." {
+	// The ask is what was typed, and the picture it named; what the CLI sent in its place,
+	// the model read too
+	if turn.Ask != "what is in @shot.png?\n[image · png · 8 bytes]" || turn.Answer != "It is a login form." {
 		t.Errorf("ask %q answer %q", turn.Ask, turn.Answer)
 	}
 	// The thought part of a row with thoughts of its own is not read twice, the call part
@@ -588,6 +615,11 @@ func TestTheFormatAsGeminiCLIWritesIt(t *testing.T) {
 	tools := sourcetest.Tools(turn)
 	if len(tools) != 1 || tools[0].CallID != "read-1" || tools[0].Status != model.StatusOK || !tools[0].Done {
 		t.Errorf("tools = %+v", tools)
+	}
+	// The picture read_file read came back on the row after the call was answered in place:
+	// it is the call's, not a picture the person sent, and the info row's copy is not read
+	if tools[0].Output != "Read image file: diagram.png\n[image · png · 8 bytes]" || len(turn.Items[3].Attachments) != 1 {
+		t.Errorf("the image read = %q, %+v", tools[0].Output, turn.Items[3].Attachments)
 	}
 	if s.Stats.Calls != 5 || s.Stats.Usage.CacheRead != 6000 {
 		t.Errorf("%d calls, usage %+v", s.Stats.Calls, s.Stats.Usage)

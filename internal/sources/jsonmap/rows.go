@@ -90,6 +90,15 @@ type part struct {
 	ToolName   string          `json:"toolName"`
 	Content    json.RawMessage `json:"content"`
 	IsError    *bool           `json:"isError"`
+
+	// an image: its bytes, base64, and what it is
+	Data     string `json:"data"`
+	MimeType string `json:"mimeType"`
+}
+
+// file is the picture an image block holds.
+func (p part) file() transcript.Attachment {
+	return transcript.Embedded(kit.First(p.MimeType, "image/*"), p.Data)
 }
 
 // Reader turns a transcript's rows into messages, and keeps what the rows say about the
@@ -282,7 +291,8 @@ func (r *Reader) typed(x *row) (transcript.Message, bool) {
 		// a command, how it exited and how long it ran
 		var details map[string]any
 		_ = json.Unmarshal(msg.Details, &details)
-		m.Blocks = []transcript.Block{transcript.ResultOf(msg.ToolCallID, msg.ToolName, partsText(msg.Content, r.note), outcomeOf(kit.Truthy(msg.IsError), details))}
+		output, files := partsFiles(msg.Content, r.note)
+		m.Blocks = []transcript.Block{transcript.ResultOf(msg.ToolCallID, msg.ToolName, output, outcomeOf(kit.Truthy(msg.IsError), details)).With(files...)}
 		// A tool that called a model of its own says what that cost on its result
 		if u, cost := Usage(msg.Usage); !u.IsZero() || cost > 0 {
 			r.spent = &transcript.Message{Role: transcript.Assistant, At: at, Model: kit.First(msg.Model, r.Model), Usage: &u, CostUSD: cost}
@@ -642,12 +652,20 @@ func partText(p part) string {
 // partsText is the text of a content array, one block per line. An image has none and
 // adds nothing. unread is told of every block of a type such content does not hold.
 func partsText(raw json.RawMessage, unread func(kind string)) string {
+	text, _ := partsFiles(raw, unread)
+	return text
+}
+
+// partsFiles is partsText, and apart from the text the pictures a tool returned.
+func partsFiles(raw json.RawMessage, unread func(kind string)) (string, []transcript.Attachment) {
 	var texts []string
+	var files []transcript.Attachment
 	for _, p := range parts(raw) {
 		switch p.Type {
 		case "text": // read below
 		case "image":
-			continue // a picture a tool returned, which has no text
+			files = append(files, p.file())
+			continue
 		default:
 			// Its text, if it has any, is still what the block said
 			unread(unknown("block", p.Type))
@@ -656,7 +674,7 @@ func partsText(raw json.RawMessage, unread func(kind string)) string {
 			texts = append(texts, text)
 		}
 	}
-	return strings.Join(texts, "\n")
+	return strings.Join(texts, "\n"), files
 }
 
 // resultBlock is a result written as a block of a message's content, the shape older
@@ -666,7 +684,8 @@ func resultBlock(p part, unread func(kind string)) transcript.Block {
 	if p.IsError != nil {
 		outcome.Status = transcript.StatusOf(*p.IsError)
 	}
-	return transcript.ResultOf(p.ToolCallID, p.ToolName, partsText(p.Content, unread), outcome)
+	output, files := partsFiles(p.Content, unread)
+	return transcript.ResultOf(p.ToolCallID, p.ToolName, output, outcome).With(files...)
 }
 
 // wordBlocks is a message's words: the blocks that carry text, and any result among them.
@@ -680,7 +699,9 @@ func wordBlocks(raw json.RawMessage, unread func(kind string)) []transcript.Bloc
 			continue
 		case "text": // read below
 		case "image":
-			continue // a picture attached to the message, which has no words
+			// a picture attached to the message: no words, and marked where it came
+			out = append(out, transcript.AttachmentOf(p.file()))
+			continue
 		default:
 			// Its text, if it has any, is still what the message said
 			unread(unknown("block", p.Type))

@@ -510,7 +510,8 @@ func besideV1(kind string) bool {
 		// OpenCode's bookkeeping for undo; the tools that changed them are read
 	case "file", "agent":
 		// A file the person attached to a prompt, an agent they @-mentioned in it — what
-		// the prompt's text names; 2.x keeps both on the user row, not read there either
+		// the prompt's text names, but for a picture or a PDF (see attached); 2.x keeps
+		// both on the user row, not read there either
 	case "subtask":
 		// A command handing a prompt to a subagent, whose session is listed on its own
 	case "retry":
@@ -522,6 +523,20 @@ func besideV1(kind string) bool {
 		return false
 	}
 	return true
+}
+
+// attached is a picture or a PDF the person attached to a 1.x prompt: by value, as a
+// data: URL — a picture pasted — or by its path. Any other file is text the prompt names
+// and OpenCode put before the model in words of its own.
+func attached(part map[string]any) (transcript.Attachment, bool) {
+	mime, url := kit.Str(part["mime"]), kit.Str(part["url"])
+	if !strings.HasPrefix(mime, "image/") && mime != "application/pdf" {
+		return transcript.Attachment{}, false
+	}
+	if strings.HasPrefix(url, "data:") {
+		return transcript.Embedded(mime, url), true
+	}
+	return transcript.Referenced(mime, kit.First(kit.Str(part["filename"]), url)), true
 }
 
 // toolOutput is what a finished tool returned: a plain string in 1.x (state.output), a
@@ -793,7 +808,15 @@ WHERE m.session_id = ? ORDER BY m.time_created, m.id, p.time_created, p.id`, id)
 			continue
 		}
 		var part map[string]any
-		if json.Unmarshal([]byte(partRaw.String), &part) == nil && part != nil && !besideV1(kit.Str(part["type"])) {
+		if json.Unmarshal([]byte(partRaw.String), &part) != nil || part == nil {
+			continue
+		}
+		switch kind := kit.Str(part["type"]); {
+		case kind == "file" && cur.Role == transcript.User:
+			if f, ok := attached(part); ok {
+				cur.Blocks = append(cur.Blocks, transcript.AttachmentOf(f))
+			}
+		case !besideV1(kind):
 			cur.Blocks = append(cur.Blocks, blocksOf(part, unread)...)
 		}
 	}

@@ -203,6 +203,8 @@ type part struct {
 	ID        string          `json:"id"`
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
+	Data      string          `json:"data"`     // an image's bytes, base64
+	MimeType  string          `json:"mimeType"` // and what it is
 }
 
 // branchSummary is pi's own name for the entry a branch left behind is summarized in.
@@ -302,8 +304,16 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			}
 			switch m.Role {
 			case "user":
-				if text := textOf(m.Content, w.Unread); text != "" {
-					add(transcript.Message{Role: transcript.User, At: at, Blocks: []transcript.Block{transcript.TextOf(text)}})
+				text, files := filesOf(m.Content, w.Unread)
+				var blocks []transcript.Block
+				if text != "" {
+					blocks = append(blocks, transcript.TextOf(text))
+				}
+				for _, f := range files {
+					blocks = append(blocks, transcript.AttachmentOf(f))
+				}
+				if len(blocks) > 0 {
+					add(transcript.Message{Role: transcript.User, At: at, Blocks: blocks})
 				}
 			case "assistant":
 				// One message is one response, timed from its creation to its last token:
@@ -321,12 +331,12 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				// whether it failed ride on the message, and the output is its content
 				// (measured over the newest 40 sessions: 554 results, 49 of them failures).
 				// Its time is when the tool finished, its duration how long the tool ran.
-				output := textOf(m.Content, w.Unread)
+				output, files := filesOf(m.Content, w.Unread)
 				outcome := transcript.Outcome{Status: transcript.StatusOf(m.IsError), DurMs: millis(m.DurationMs)}
 				if m.IsError {
 					outcome.Exit = exitCode(output)
 				}
-				blocks := []transcript.Block{transcript.ResultOf(m.ToolCallID, m.ToolName, output, outcome)}
+				blocks := []transcript.Block{transcript.ResultOf(m.ToolCallID, m.ToolName, output, outcome).With(files...)}
 				add(transcript.Message{Role: transcript.ToolRole, At: at, Dir: w.S.Cwd, Blocks: append(blocks, nested(m.NestedCalls, w.Unread)...)})
 				spend(at, m.Usage)
 			case "bashExecution":
@@ -483,12 +493,20 @@ func objects(raw json.RawMessage) []part {
 // textOf is the text of a message's content, its blocks joined. unread is told of every
 // block of a type pi does not put in such content.
 func textOf(raw json.RawMessage, unread func(kind string)) string {
+	text, _ := filesOf(raw, unread)
+	return text
+}
+
+// filesOf is textOf, and apart from the text the pictures the person or a tool attached.
+func filesOf(raw json.RawMessage, unread func(kind string)) (string, []transcript.Attachment) {
 	var texts []string
+	var files []transcript.Attachment
 	for _, p := range parts(raw) {
 		switch p.Type {
 		case "text": // read below
 		case "image":
-			continue // a picture the person or a tool attached, which has no text
+			files = append(files, transcript.Embedded(kit.First(p.MimeType, "image/*"), p.Data))
+			continue
 		default:
 			// Its text, if it has any, is still what the block said
 			unread(unknown("block", p.Type))
@@ -497,7 +515,7 @@ func textOf(raw json.RawMessage, unread func(kind string)) string {
 			texts = append(texts, p.Text)
 		}
 	}
-	return strings.Join(texts, "\n")
+	return strings.Join(texts, "\n"), files
 }
 
 // assistantBlocks is what a response said and did. unread is told of every block of a

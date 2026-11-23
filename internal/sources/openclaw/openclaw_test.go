@@ -383,7 +383,8 @@ func TestUnknownKindsAreCounted(t *testing.T) {
 		}
 	}
 	turn := s.Turn(t, 1)
-	if got := sourcetest.Kinds(turn); got != "prompt context reply reply" || turn.Ask != "what is in notes.txt" {
+	// The picture is marked as one, though the event left its bytes out
+	if got := sourcetest.Kinds(turn); got != "prompt context reply reply" || turn.Ask != "what is in notes.txt\n[image · png]" {
 		t.Errorf("items = %s, ask %q", got, turn.Ask)
 	}
 	if turn.Items[1].Text != "a role from a later OpenClaw" || turn.Items[2].Text != "from notes.txt" || !strings.HasSuffix(turn.Answer, "It says the deploy runs at noon.") {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/itswl/agent-session-query/internal/model"
+	"github.com/itswl/agent-session-query/internal/transcript"
 )
 
 // Two keys that fold to one counter — input beside input_tokens — give the larger, and so
@@ -51,6 +52,41 @@ func TestIsSilent(t *testing.T) {
 		"": false, "  ": false, "NO_REPLY, the build passed": false, "NO_REPLYING": false, "DONE": false} {
 		if got := isSilent(text); got != want {
 			t.Errorf("isSilent(%q) = %v, want %v", text, got, want)
+		}
+	}
+}
+
+// A picture in a typed message is marked where it came: after the words of the person's
+// message, after the output of the tool that returned it — in a result message or a result
+// block — as what its bytes say it is where the row does not.
+func TestPicturesAreMarked(t *testing.T) {
+	const png = "iVBORw0KGgo="
+	var r Reader
+	c := &transcript.Collector{}
+	w := transcript.New(c)
+	for i, line := range []string{
+		`{"type":"message","message":{"role":"user","content":[{"type":"image","data":"` + png + `"},{"type":"text","text":"look"}]}}`,
+		`{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"browser"},{"type":"toolCall","id":"c2","name":"read"}]}}`,
+		`{"type":"message","message":{"role":"toolResult","toolCallId":"c1","toolName":"browser","content":[{"type":"text","text":"shot"},{"type":"image","data":"` + png + `","mimeType":"image/png"}]}}`,
+		`{"type":"message","message":{"role":"user","content":[{"type":"toolResult","toolCallId":"c2","toolName":"read","content":[{"type":"image","data":"` + png + `"}]}]}}`,
+	} {
+		m, ok := r.Row([]byte(line))
+		if !ok {
+			t.Fatalf("row %d not read", i)
+		}
+		w.Add(m)
+	}
+	if _, err := w.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	turn := c.Turns[0]
+	if turn.Ask != "look\n[image · png · 8 bytes]" {
+		t.Errorf("ask = %q", turn.Ask)
+	}
+	for i, want := range []string{"shot\n[image · png · 8 bytes]", "[image · png · 8 bytes]"} {
+		it := turn.Items[1+i]
+		if it.Tool == nil || it.Tool.Output != want || len(it.Attachments) != 1 {
+			t.Errorf("result %d = %+v, want %q", i, it, want)
 		}
 	}
 }

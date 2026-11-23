@@ -67,6 +67,10 @@ func TestCommands(t *testing.T) {
 		{[]string{"search", "flaky", "nothinglikethis"}, []string{"No turn holds all 2 words; none holds “nothinglikethis”.", "lacks  nothinglikethis"}},
 		{[]string{"search", "nothinglikethis", "norethis"}, []string{"No turn holds “nothinglikethis” or “norethis”."}},
 		{[]string{"search", "keys flaky -ECONNREFUSED"}, []string{"No turn matches."}},
+		{[]string{"search", "--since", "1d", "rotate"}, []string{"No turn the filters select holds “rotate”.\n1 turn in 1 session outside them matches: drop --since to see it.\n"}},
+		{[]string{"search", "--since", "1d", "--project", "alpha", "rotating", "keys"}, []string{"No turn the filters select holds all 2 words; none holds “rotating”.\n" +
+			"1 turn in 1 session outside them matches: drop --project, --since to see it.\nPartial matches, closest first"}},
+		{[]string{"search", "--since", "1d", "nothinglikethis"}, []string{"No turn the filters select holds “nothinglikethis”.\nNor does any outside them.\n"}},
 		{[]string{"show", alpha}, []string{"Fix flaky test", "#1", "#2", "fix the flaky test", "/work/alpha && claude --resume", "Subagents", "Explore"}},
 		{[]string{"show", alpha + "#1"}, []string{"go test ./...", "[2]", "The test depended on map order"}},
 		{[]string{"show", alpha, "--turns", "last"}, []string{"schema.sql", "索引已加上"}},

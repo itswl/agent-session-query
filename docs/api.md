@@ -104,9 +104,23 @@ When no turn holds every word, the answer is the turns that hold the most of the
 
 `partial` is how many words the query asks for and how many of them the closest hits hold; a
 hit's `lacks` is the words it does not hold, as typed (`ask:deploy`, `"exit status 1"`);
-`missing` the words no turn holds at all — which may come back with no hits, when there is
-nothing to come close with. A search some turn matches whole has neither, and so has one that
-turns would match whole but for a word it excludes: it has no hits.
+`missing` the words no turn the filters select holds at all — which may come back with no hits,
+when there is nothing to come close with. A search some turn matches whole has neither, and so
+has one that turns would match whole but for a word it excludes: it has no hits.
+
+When the filters given kept such a search from matching whole, `outside` says how many turns
+would match it without them:
+
+```json
+{"hits": [], "total": 0, "sessions": 0, "missing": ["retry"],
+ "outside": {"turns": 7, "sessions": 7, "filters": ["since"]}}
+```
+
+`filters` names the parameters given — `source`, `project`, `branch`, `text`, `since`, `until`;
+`turns` and `sessions` are what dropping them would find, `0` when nothing would; and
+`archived: true` says those turns are in archived sessions alone, which take `archived=1` as
+well. A search given no filter has `outside` only for a match archived sessions alone hold, and
+one confined to a `session` never has it.
 
 ## Reports
 

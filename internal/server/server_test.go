@@ -219,6 +219,13 @@ func TestRoutes(t *testing.T) {
 		!reflect.DeepEqual(found.Hits[0].Lacks, []string{"postgres"}) || found.Hits[0].Failed != 1 {
 		t.Errorf("a partial match = %+v", found)
 	}
+	// No turn of the day holds it; beta, three days old, does
+	found = index.SearchResult{}
+	get(t, s, "/api/search?q=rotate&since=1d", &found)
+	if o := found.Outside; found.Total != 0 || !reflect.DeepEqual(found.Missing, []string{"rotate"}) || o == nil ||
+		o.Turns != 1 || o.Sessions != 1 || !reflect.DeepEqual(o.Filters, []string{"since"}) || o.Archived {
+		t.Errorf("a search the window kept from matching = %+v, outside %+v", found, found.Outside)
+	}
 	var fails index.FailureReport
 	get(t, s, "/api/failures?q=econnrefused", &fails)
 	if fails.Total != 1 {

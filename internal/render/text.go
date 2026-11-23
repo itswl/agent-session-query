@@ -172,22 +172,31 @@ func Sessions(w io.Writer, list []index.Session, total int, st Style) {
 
 // Hits prints search results: each turn with how it ended, what was asked there, where
 // the words are and what it concluded. A search no turn matched whole says which words
-// no turn holds, and marks its hits as partial matches, each with the words it lacks.
+// no turn holds, and marks its hits as partial matches, each with the words it lacks —
+// and, when the filters left out turns that match it whole, says so, and what to change.
 func Hits(w io.Writer, res index.SearchResult, offset int, st Style) {
+	none := "No turn"
+	if o := res.Outside; o != nil && len(o.Filters) > 0 {
+		none = "No turn the filters select"
+	} else if o != nil {
+		none = "No turn outside archived sessions"
+	}
 	if len(res.Hits) == 0 {
 		if len(res.Missing) > 0 {
-			fmt.Fprintf(w, "No turn holds %s.\n", quoted(res.Missing, "or"))
+			fmt.Fprintf(w, "%s holds %s.\n", none, quoted(res.Missing, "or"))
 		} else {
-			fmt.Fprintln(w, "No turn matches.")
+			fmt.Fprintf(w, "%s matches.\n", none)
 		}
+		outside(w, res.Outside, st)
 		return
 	}
 	if p := res.Partial; p != nil {
-		line := fmt.Sprintf("No turn holds all %d words", p.Words)
+		line := fmt.Sprintf("%s holds all %d words", none, p.Words)
 		if len(res.Missing) > 0 {
 			line += "; none holds " + quoted(res.Missing, "or")
 		}
 		fmt.Fprintln(w, line+".")
+		outside(w, res.Outside, st)
 		fmt.Fprintln(w, st.Warn(fmt.Sprintf("Partial matches, closest first: %s in %s, the closest holding %d of the %d.",
 			plural(res.Total, "turn"), plural(res.Sessions, "session"), p.Held, p.Words)))
 	} else {
@@ -230,6 +239,40 @@ func Hits(w io.Writer, res index.SearchResult, offset int, st Style) {
 	if shown := offset + len(res.Hits); shown < res.Total {
 		fmt.Fprintln(w, st.dim(fmt.Sprintf("\n… more turns match: %s %d for the next page, or narrow the search", st.opt("offset"), shown)))
 	}
+}
+
+// outside says how many turns the filters kept from matching a search whole, and what
+// would show them: the filters dropped, archived sessions included.
+func outside(w io.Writer, o *index.Outside, st Style) {
+	switch {
+	case o == nil:
+		return
+	case o.Turns == 0:
+		fmt.Fprintln(w, "Nor does any outside them.")
+		return
+	}
+	sessions := plural(o.Sessions, "session")
+	if o.Archived {
+		sessions = plural(o.Sessions, "archived session")
+	}
+	where := plural(o.Turns, "turn") + " in " + sessions
+	var change []string
+	if len(o.Filters) > 0 {
+		where += " outside them"
+		opts := make([]string, len(o.Filters))
+		for i, name := range o.Filters {
+			opts[i] = st.opt(name)
+		}
+		change = append(change, "drop "+strings.Join(opts, ", "))
+	}
+	if o.Archived {
+		change = append(change, "add "+st.opt("archived"))
+	}
+	verb, them := "match", "them"
+	if o.Turns == 1 {
+		verb, them = "matches", "it"
+	}
+	fmt.Fprintln(w, st.Warn(fmt.Sprintf("%s %s: %s to see %s.", where, verb, strings.Join(change, " and "), them)))
 }
 
 // ending says how a hit's turn ended: the calls that failed, and how many of them the same

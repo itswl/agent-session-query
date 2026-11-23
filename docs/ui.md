@@ -44,7 +44,9 @@ found (*retried* for retries) among them, and how many of its calls failed and h
 passed later. The query syntax is the [command line's](cli.md#finding); `?` shows it. A search
 keeps the list's filters, and from a report the project it is narrowed to. When no turn holds
 every word, a note above the results says so and names any word no turn holds, and the results
-are the turns that come closest, each saying which words it lacks. A result opens its session at
+are the turns that come closest, each saying which words it lacks. When the filters kept the
+search from matching, it says how many turns outside them match, with a link that clears them —
+or, for a match only archived sessions hold, includes those. A result opens its session at
 that turn, on the step that matched. Nothing in the
 results is marked as new: they are ranked, not dated, so there is no line where the older ones
 begin. A search is not a look at the list either, and does not move the time the list is marked

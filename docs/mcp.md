@@ -71,7 +71,7 @@ All ten only read. Each takes the selection arguments that make sense for it —
 
 | tool | answers | key arguments |
 |---|---|---|
-| `search` | Where was this said? The turns that match, best first, each with how it ended, the lines the words were found in and its answer — or, when no turn holds every word, the closest, marked with what each lacks | `query` ([syntax](cli.md#finding)), `recent`, `per_session` |
+| `search` | Where was this said? The turns that match, best first, each with how it ended, the lines the words were found in and its answer — or, when no turn holds every word, the closest, marked with what each lacks, and how many turns the filters given left out that match whole | `query` ([syntax](cli.md#finding)), `recent`, `per_session`, `archived` |
 | `sessions` | What was worked on? Recent sessions, one line of where and when, one of what | `text`, `archived`, `agents` |
 | `read` | A session at the depth asked for: its outline; some turns step by step; one step whole | `ref`, `turns`, `seq`, `full` |
 | `brief` | A handoff brief of a session: asked, changed and how each file stands now, failed and whether it passed later, concluded | `ref`, `turn`, `from`, `since` (`all` for the whole session) |
@@ -101,6 +101,17 @@ Partial matches, closest first: 2 turns in 1 session, the closest holding 2 of t
    lacks  queue
    ask    Failed webhook deliveries are retried every minute, forever. Cap the attempts and back off exponentially.
    answer Each retry now waits twice as long as the one before — exponential backoff from a minute, capped at six hours …
+```
+
+An agent narrows a search as it is told to — `since`, `project` — and an empty answer to a
+narrowed search is not an empty history. When the filters kept a search from matching whole,
+the answer speaks of the turns they select, and says how many outside them match and which
+argument to drop, or that none do; and of a match only archived sessions hold, that `archived`
+finds it:
+
+```
+No turn the filters select holds “retry”.
+7 turns in 7 sessions outside them match: drop since to see them.
 ```
 
 An agent is told when to take that path before it calls anything. The server's `instructions`

@@ -94,7 +94,19 @@ Partial matches, closest first: 2 turns in 1 session, the closest holding 2 of t
 ```
 
 A search some turn matches whole lists those turns and no others, and one that turns would
-match whole but for a word it excludes lists none. `--recent` orders by time instead of
+match whole but for a word it excludes lists none.
+
+When the filters given — `--since`, `--project`, `--source`, `--branch`, `--until` — keep a
+search from matching whole, the answer speaks of the turns they select, and says how many
+turns outside them match it and which flags to drop to see them; or that none do, so that
+dropping them is not tried for nothing. A search leaves out archived sessions unless
+`--archived` is given, and says the same of a match only they hold:
+
+```console
+$ asq search retry --since 1h
+No turn the filters select holds “retry”.
+7 turns in 7 sessions outside them match: drop --since to see them.
+``` `--recent` orders by time instead of
 relevance; `--per-session N` bounds how many turns of one session are shown (default 3, `0` for
 no bound).
 

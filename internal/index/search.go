@@ -75,9 +75,26 @@ type SearchResult struct {
 	// turns that hold the most of them, each saying which it lacks. A search some turn
 	// matches whole is answered with those turns alone.
 	Partial *Partial `json:"partial,omitempty"`
-	// Missing are the words of the query no turn holds at all, as typed — said when no
-	// turn holds every word.
+	// Missing are the words of the query no turn the filter selects holds at all, as
+	// typed — said when no turn holds every word.
 	Missing []string `json:"missing,omitempty"`
+	// Outside is what the filters a person set left out of a search no turn they select
+	// matches whole — or in part only — and what it would take to see it.
+	Outside *Outside `json:"outside,omitempty"`
+}
+
+// Outside is how many turns would match a search whole without the filters that kept them
+// out: the ones a person set and, should that find none, the sessions their CLI archived,
+// which a search leaves out unless asked.
+type Outside struct {
+	Turns    int `json:"turns"`    // 0: not even without them
+	Sessions int `json:"sessions"` // the sessions those turns are in
+	// Filters names the filters set, as the API's parameters and the command line's flags
+	// are named: source, project, branch, text, since, until.
+	Filters []string `json:"filters,omitempty"`
+	// Archived says those turns are in archived sessions alone: they take including those,
+	// as well as dropping the filters.
+	Archived bool `json:"archived,omitempty"`
 }
 
 // Partial is how near the hits of a partial match come to the query.
@@ -126,16 +143,76 @@ func (ix *Index) Search(ctx context.Context, q Query, f Filter, o SearchOptions)
 	if total == 0 {
 		// Turns that hold every word, each with a word the query excludes: none matches, and
 		// none is called close for holding fewer
+		excluded := false
 		if w := q.words(); len(w.Terms) < len(q.Terms) {
-			if held, err := ix.holds(ctx, inTurns(w.match(), f), f); err != nil || held {
+			if excluded, err = ix.holds(ctx, inTurns(w.match(), f), f); err != nil {
 				return res, err
 			}
 		}
-		return ix.closest(ctx, q, f, o)
+		if !excluded {
+			if res, err = ix.closest(ctx, q, f, o); err != nil {
+				return res, err
+			}
+		}
+		res.Outside, err = ix.outside(ctx, match, f)
+		return res, err
 	}
 	res.Total, res.Sessions = total, sessions
 	res.Hits = ix.hits(ctx, cands, q, o, nil, f.SID == 0)
 	return res, nil
+}
+
+// outside counts the turns an expression matches that the filter leaves out: with the
+// filters a person set dropped — the store, the directory, the branch, the text, the time —
+// and, should that find none, with archived sessions too. A search no turn the filter
+// selects matches would otherwise answer that there is none, and be taken at its word, when
+// a week, a project or an archive was all that hid it. Nil when there is nothing to say: no
+// filter was set and no archived session holds it, or the search is of one session.
+func (ix *Index) outside(ctx context.Context, match string, f Filter) (*Outside, error) {
+	if f.SID != 0 {
+		return nil, nil
+	}
+	o := &Outside{}
+	for _, c := range []struct {
+		name string
+		set  bool
+	}{
+		{"source", f.Source != ""},
+		{"project", f.Project != "" || len(f.Dirs) > 0 || len(f.In) > 0},
+		{"branch", f.Branch != ""},
+		{"text", f.Text != ""},
+		{"since", !f.Since.IsZero()},
+		{"until", !f.Until.IsZero()},
+	} {
+		if c.set {
+			o.Filters = append(o.Filters, c.name)
+		}
+	}
+	if len(o.Filters) == 0 && f.Archived {
+		return nil, nil
+	}
+	wide := f
+	wide.Source, wide.Project, wide.Dirs, wide.In, wide.Branch, wide.Text = "", "", nil, nil, "", ""
+	wide.Since, wide.Until, wide.Archived = time.Time{}, time.Time{}, true
+	where, args := wide.where()
+	var turns, sessions, kept, keptSessions int
+	err := ix.ro.QueryRowContext(ctx, `SELECT count(*), count(DISTINCT t.sid), coalesce(sum(s.archived = 0), 0), count(DISTINCT CASE WHEN s.archived = 0 THEN t.sid END)`+
+		wordsFrom+` WHERE words MATCH ? AND `+where, append([]any{match}, args...)...).Scan(&turns, &sessions, &kept, &keptSessions)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case f.Archived:
+		o.Turns, o.Sessions = turns, sessions
+	case kept > 0:
+		o.Turns, o.Sessions = kept, keptSessions
+	case turns > 0:
+		o.Turns, o.Sessions, o.Archived = turns, sessions, true
+	}
+	if len(o.Filters) == 0 && o.Turns == 0 {
+		return nil, nil
+	}
+	return o, nil
 }
 
 // turnColumns are the columns of the words table that hold a turn's own words.

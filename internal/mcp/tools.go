@@ -62,13 +62,15 @@ var tools = []tool{
 		title: "Search the history",
 		about: "Full-text search over every turn of every session: what was asked, what the agent replied and thought, the tools it called and what they printed, and the session's title, searched with its first turn. " +
 			"Returns the matching turns, best first, each with its ref (store/id#turn), how the turn ended (✓ no call failed; ✗N failed, and how many of those the same command passed later; ⚠ interrupted), the lines the words were found in, and the turn's final answer. " +
-			"When no turn holds every word, it says which words no turn holds at all and returns the turns that hold the most of them, marked as partial matches, each with the words it lacks. " +
+			"When no turn holds every word, it says which words no turn holds at all and returns the turns that hold the most of them, marked as partial matches, each with the words it lacks — " +
+			"and when the filters given left out turns that match whole, how many, and which filter to drop to see them. " +
 			"Use it for \"how did I solve this before\", \"where did that error come up\", \"which session touched X\". " +
 			"Query syntax: bare words must all appear, each matching as a prefix and in any form of the English word (retries finds retried); \"quoted words\" match as a phrase, as written; -word excludes; " +
 			"ask:word, reply:word, thinking:word, tool:word, output:word and title:word confine a word to the person's ask, the agent's reply, its reasoning, a tool's input, a tool's output, or the session's title.",
 		props: []prop{
 			{"query", "string", "What to look for, e.g.  connection refused  ·  \"rate limit\" -test  ·  ask:deploy output:ECONNREFUSED"},
 			pSource, pProject, pBranch, pSince, pUntil,
+			{"archived", "boolean", "Include sessions their CLI has archived."},
 			{"recent", "boolean", "Newest first instead of best match first."},
 			{"per_session", "integer", "At most this many turns of any one session (default 3; 0 for no bound)."},
 			pLimit, pOffset, pChars,

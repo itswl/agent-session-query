@@ -150,7 +150,8 @@ id, the way a commit is named. `#4` names a turn. Every command takes `--json`.
 prefixes (`rebind` finds `rebinding`) and in their other English forms (`retries` finds
 `retried`). Chinese, Japanese, Korean and Thai are matched by substring: `asq search 数据库`
 works. When no turn holds every word, the answer says which word is missing and lists the turns
-that come closest, marked as partial matches.
+that come closest, marked as partial matches; when a filter — `--since`, `--project` — kept the
+turns that hold them out, it says how many there are, and which flag to drop.
 → [Command line](docs/cli.md)
 
 ## The page

@@ -43,7 +43,7 @@ function hrefWith(route, changes) {
 }
 
 export function mount(main, route, ctx) {
-  const v = { route, items: [], total: 0, sessions: 0, partial: null, missing: [], end: false, sel: null, busy: null, rows: new Map(), renew: false, failed: false, base: 0 };
+  const v = { route, items: [], total: 0, sessions: 0, partial: null, missing: [], outside: null, end: false, sel: null, busy: null, rows: new Map(), renew: false, failed: false, base: 0 };
   const aside = h('aside', { class: 'filters', id: 'filters', 'aria-label': 'Filters' });
   const toggle = h('button', { type: 'button', class: 'btn filters-toggle', 'aria-expanded': 'false', 'aria-controls': 'filters' }, icon('filter'), 'Filters');
   toggle.addEventListener('click', () => {
@@ -193,6 +193,14 @@ export function mount(main, route, ctx) {
       return empty('Search every turn of every session.', 'Type in the search box above. Words match what they begin, and other forms of an English word: "deploy" finds "deployment", "retries" finds "retried".',
         'Use "a phrase" in quotes, -word to exclude, and ask: reply: thinking: tool: output: title: to search one part of a turn.');
     }
+    if (searching() && v.outside) {
+      // The filters, or archived sessions being left out, are what kept the search from
+      // matching: said, and undone in one link
+      const o = v.outside;
+      const show = o.turns > 0 && h('a', { href: hrefWith(v.route, { source: '', project: '', branch: '', since: '', archived: o.archived ? '1' : v.route.query.get('archived') }) },
+        o.filters?.length ? (o.archived ? 'Clear the filters and include archived sessions' : 'Clear the filters') : 'Include archived sessions');
+      return empty(`${noTurn(o)} ${v.missing.length ? `holds ${quoted(v.missing)}` : `matches “${q}”`}.`, beyond(o), show || clear);
+    }
     if (searching() && v.missing.length) {
       return empty(`No turn holds ${quoted(v.missing)}.`, 'Check the spelling, or try another word for it.', clear);
     }
@@ -216,6 +224,7 @@ export function mount(main, route, ctx) {
       v.total = 0;
       v.partial = null;
       v.missing = [];
+      v.outside = null;
       v.end = false;
       saidEmpty = false;
       note.say();
@@ -233,6 +242,7 @@ export function mount(main, route, ctx) {
         v.sessions = r.sessions;
         v.partial = r.partial || null;
         v.missing = r.missing || [];
+        v.outside = r.outside || null;
         v.end = r.hits.length < HITS;
       } else {
         const r = await api('/api/sessions' + qs({ ...apiFilters(v.route.query), agents: v.route.query.get('agents') === '1', limit: PAGE, offset: v.items.length }), { signal });
@@ -332,7 +342,7 @@ export function mount(main, route, ctx) {
     if (!v.items.length) return;
     const key = keyOf(v.route);
     kept.delete(key);
-    kept.set(key, { items: v.items, total: v.total, sessions: v.sessions, partial: v.partial, missing: v.missing, end: v.end, sel: v.sel });
+    kept.set(key, { items: v.items, total: v.total, sessions: v.sessions, partial: v.partial, missing: v.missing, outside: v.outside, end: v.end, sel: v.sel });
     if (kept.size > KEPT) kept.delete(kept.keys().next().value);
   }
   start(ctx.how);
@@ -424,8 +434,18 @@ const quoted = (words) => words.map((w) => `“${w}”`).join(words.length === 2
 // partialNote says that no turn holds every word of a search, and what the turns listed
 // are instead: the closest, each with the words it lacks.
 const partialNote = (v) => h('p', { class: 'notice warn partial-note', role: 'note' },
-  `No turn holds all ${v.partial.words} words${v.missing.length ? `; none holds ${quoted(v.missing)}` : ''}. ` +
+  `${noTurn(v.outside)} holds all ${v.partial.words} words${v.missing.length ? `; none holds ${quoted(v.missing)}` : ''}. ` +
+  (v.outside ? beyond(v.outside) + ' ' : '') +
   `These are partial matches, closest first: the closest hold ${v.partial.held} of the ${v.partial.words}.`);
+
+// noTurn begins what a search found none of: of the turns the filters select, when they
+// left out turns that match it, or of those outside archived sessions.
+const noTurn = (o) => (!o ? 'No turn' : o.filters?.length ? 'No turn these filters select' : 'No turn outside archived sessions');
+
+// beyond says how many turns would match a search without the filters, or with archived
+// sessions included.
+const beyond = (o) => (!o.turns ? 'Nor does any outside them.'
+  : `${f.plural(o.turns, 'turn')} in ${f.plural(o.sessions, o.archived ? 'archived session' : 'session')}${o.filters?.length ? ' outside them' : ''} ${o.turns === 1 ? 'matches' : 'match'}.`);
 
 function hitRow(hit, query) {
   const s = hit.session;

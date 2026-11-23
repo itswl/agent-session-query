@@ -191,6 +191,9 @@ func TestEveryToolAnswers(t *testing.T) {
 		{"search", map[string]any{"query": "rotating keys"}, []string{"claude/" + fixture.Beta + "#1", "rotate the deploy key"}},
 		{"search", map[string]any{"query": "ECONNREFUSED 数据库 postgres"}, []string{
 			"No turn holds all 3 words; none holds “postgres”.", "Partial matches, closest first", "lacks  数据库 postgres", "lacks  ECONNREFUSED postgres", "another word for what one lacks"}},
+		{"search", map[string]any{"query": "rotate", "archived": true}, []string{"claude/" + fixture.Beta + "#1"}},
+		{"search", map[string]any{"query": "rotate", "since": "1d"}, []string{
+			"No turn the filters select holds “rotate”.\n1 turn in 1 session outside them matches: drop since to see it."}},
 		{"failures", map[string]any{"query": "econnrefused"}, []string{"1 failure", "go test ./..."}},
 		{"failures", map[string]any{"query": "econnrefused -5432"}, []string{"No failed calls hold those words. In this window: Bash 1"}},
 		{"read", map[string]any{"ref": "aaaa1111"}, []string{"Fix flaky test", "#1", "#2", "fix the flaky test", "Subagents", "Explore"}},

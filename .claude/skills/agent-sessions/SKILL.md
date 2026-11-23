@@ -40,7 +40,7 @@ Two ways to ask, the same answers either way:
 | The user is asking | Reach for |
 |---|---|
 | "How did I solve X before?" / "Where did that error come up?" | `search(query="…")` — hits are turns, each with how it ended, the lines the words were found in, and its answer. Words match their other forms (*retries* finds *retried*) and the session's title; when no turn holds them all, the closest come back marked with the words they lack — try another word for those |
-| "…in this repo" / "…with Codex" / "…last month" | add `project="…"`, `source="codex"`, `since="30d"` — narrow rather than raise `limit` |
+| "…in this repo" / "…with Codex" / "…last month" | add `project="…"`, `source="codex"`, `since="30d"` — narrow rather than raise `limit`. A narrowed search that finds nothing says how many turns outside the filters match ("7 turns in 7 sessions outside them match: drop since"): that is not "never dealt with" — drop the filter it names |
 | "What did I *ask* about X?" | `search(query="ask:X")`. Also `reply:` `thinking:` `tool:` (a tool's input) `output:` (what a tool printed) `title:` (the session's title) |
 | "The exact message was …" | `search(query="\"exit status 1\"")` — quotes match a phrase as written; bare words match as prefixes and in their other forms; `-word` excludes |
 | "What was I working on?" / "…last week?" | `sessions(since="7d")`, with `project` / `source` / `branch` / `text` |

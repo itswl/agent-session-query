@@ -106,13 +106,15 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 			if st.Dir != "" {
 				folders = append(folders, filepath.Join(state, "kept"))
 			}
+			// What stays is each CLI's folder of copies; around them the state goes as it
+			// would without them, even when asq keep --dir named the state itself
 			var spares []string
-			for _, folder := range folders {
-				copies := keptCopies(ctx, cfg.Stores, folder, m.OS)
-				if copies == nil || slices.ContainsFunc(spares, func(s string) bool { return inside(s, copies.Path) && inside(copies.Path, s) }) {
+			for i, folder := range folders {
+				copies, held := keptCopies(ctx, cfg.Stores, folder)
+				if copies == nil || i > 0 && inside(copies.Path, folders[0]) && inside(folders[0], copies.Path) {
 					continue
 				}
-				spares = append(spares, copies.Path)
+				spares = append(spares, held...)
 				done.Left = append(done.Left, *copies)
 			}
 			if os.Getenv("ASQ_STATE") != "" {
@@ -145,6 +147,12 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 			case took:
 				removed(state, "the state but for the copies in it"+held)
 			}
+		}
+	}
+
+	for i, l := range done.Left {
+		if l.What == "copies" {
+			done.Left[i].Remove = removeCopies(m.OS, l.Path)
 		}
 	}
 
@@ -234,9 +242,9 @@ const sqliteHeader = "SQLite format 3\x00"
 
 // keptCopies is the folder of the copies asq keep made, said as what is left: where it is,
 // what it holds — counted as asq keep counts it, by each CLI's adapter on its folder of
-// copies, beside the CLI's own store — and the command that would remove the copies. Nil
-// when it holds none.
-func keptCopies(ctx context.Context, stores catalog.Config, folder, goos string) *leftBehind {
+// copies, beside the CLI's own store —; and the folders in it that hold them, one for each
+// CLI. Nil when it holds none.
+func keptCopies(ctx context.Context, stores catalog.Config, folder string) (*leftBehind, []string) {
 	// A folder that is a link holds what it leads to: that is where the copies are, and what
 	// stays when the link goes with the state
 	if info, err := os.Lstat(folder); err == nil && !info.IsDir() {
@@ -244,13 +252,15 @@ func keptCopies(ctx context.Context, stores catalog.Config, folder, goos string)
 			folder = real
 		}
 	}
-	dirs, files := keptIn(folder), 0
+	dirs := keptIn(folder)
+	var held []string
 	for _, dir := range dirs {
-		n, _ := keep.Size(dir)
-		files += n
+		if n, _ := keep.Size(dir); n > 0 {
+			held = append(held, dir)
+		}
 	}
-	if files == 0 {
-		return nil
+	if len(held) == 0 {
+		return nil, nil
 	}
 	l := &leftBehind{Path: folder, What: "copies", Why: "the copies asq keep made"}
 	stores.Only, stores.Kept = nil, ""
@@ -270,9 +280,15 @@ func keptCopies(ctx context.Context, stores catalog.Config, folder, goos string)
 	case l.Transcripts > 0:
 		l.Why += ": " + plural(l.Transcripts, "transcript")
 	}
-	// The folder goes when the copies are all it holds. One asq keep --dir named may be a
-	// folder a person keeps more in — their home, a synced folder —: then the CLIs' folders
-	// in it go, which hold the copies alone
+	return l, held
+}
+
+// removeCopies is the command that removes the copies in folder, said once the state around
+// them has gone: the folder when they are all it holds; else the CLIs' folders in it, which
+// hold the copies alone — one asq keep --dir named may be a folder a person keeps more in,
+// their home or a synced folder.
+func removeCopies(goos, folder string) string {
+	dirs := keptIn(folder)
 	names := make([]string, len(dirs))
 	for i, dir := range dirs {
 		names[i] = filepath.Base(dir)
@@ -280,8 +296,7 @@ func keptCopies(ctx context.Context, stores catalog.Config, folder, goos string)
 	if holdsOnly(folder, names...) {
 		dirs = []string{folder}
 	}
-	l.Remove = removeAll(goos, dirs...)
-	return l
+	return removeAll(goos, dirs...)
 }
 
 // keptIn is the folders in folder that asq keep writes copies in: one for each CLI whose

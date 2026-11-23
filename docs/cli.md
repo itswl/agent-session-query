@@ -422,18 +422,19 @@ differently whether a failed command passed later judges every failure again the
 `ASQ_INDEX` followed where it points, when what is there is an index: a SQLite database of an
 index's tables alone, not a CLI's database it was pointed at, which holds tables of its own; of
 a folder `ASQ_STATE` names, the files asq writes there alone, and the folder once that leaves
-it empty — but for the copies `asq keep` made, which may be all there is of what a CLI deleted:
-their folder stays — the one `asq keep --dir` named, and `kept` in the state directory, where
-copies made before it was named are — and is said with how many transcripts it holds, how many
-of those the CLI has deleted since, and the command that would remove them: the folder when
-they are all it holds, or else the folder of each CLI's copies in it. A state dir that is a home, or holds one — an `ASQ_STATE` pointed too wide
-— is refused, not removed, and so is one whose `keep.json`, which says where the copies are,
-does not read. What the command will not do itself is said as commands, in the order to
-run them. First what keeps `asq serve` running: `asq service uninstall` for the service it set
-up, which needs the binary; `brew services stop asq` for Homebrew's; for one set up by hand,
-found by what its plist, its unit or its task names, the manager's own commands. Then, when
-there was one, `asq uninstall` again, for the index the server wrote until it was down. Last
-the binary: `brew uninstall asq`, with `brew untap` when the tap is this repository, or
+it empty — but for the copies `asq keep` made, which may be all there is of what a CLI deleted.
+Each CLI's folder of them stays, in the folder `asq keep --dir` named and in `kept` in the
+state directory, where copies made before it was named are; each folder they are in is said
+with how many transcripts it holds, how many of those the CLI has deleted since, and the
+command that would remove them: the folder when they are all it holds, or else each CLI's
+folder of them. A state dir that is a home, or holds one — an `ASQ_STATE` pointed too wide —
+is refused, not removed, and so is one whose `keep.json`, which says where the copies are,
+does not read. What the command will not do itself is said as commands, in the order to run
+them. First what keeps `asq serve` running: `asq service uninstall` for the service it set up,
+which needs the binary; `brew services stop asq` for Homebrew's; for one set up by hand, found
+by what its plist, its unit or its task names, the manager's own commands. Then, when there
+was one, `asq uninstall` again, for the index the server wrote until it was down. Last the
+binary: `brew uninstall asq`, with `brew untap` when the tap is this repository, or
 `scoop uninstall asq`, for one they installed; otherwise `rm`, `sudo` when its directory is
 not this account's to write, or on Windows `Remove-Item` of its folder when that holds
 nothing else. The CLIs' stores are never touched, nor the MCP servers and skills the agent

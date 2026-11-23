@@ -273,18 +273,45 @@ type Health struct {
 	Warnings   []index.Warning `json:"warnings"`
 }
 
+// Looked is a store asq looked in, and what it found there.
+type Looked struct {
+	Source   string
+	Location string
+	Found    bool
+	Unread   bool // there, and could not be read
+}
+
+// State says what was found there, in a few words.
+func (l Looked) State() string {
+	switch {
+	case !l.Found:
+		return "not there"
+	case l.Unread:
+		return "there, and could not be read"
+	}
+	return "there, and empty"
+}
+
 // NothingFound is every store this process reads, found or not, when the index holds no
 // session of any of them; nil when it holds one. An empty answer then says where asq looked,
 // rather than only that there is nothing: a service started without the variable that
 // moves a CLI's store, or a container with a store mounted in the wrong place, finds none.
-func (a *App) NothingFound(ctx context.Context) ([]StoreStatus, error) {
+func (a *App) NothingFound(ctx context.Context) ([]Looked, error) {
 	_, n, err := a.Index.Sessions(ctx, index.Filter{Stores: a.Stores(), Archived: true, Agents: true, Empty: true}, index.Page{Limit: 1})
 	if err != nil || n > 0 {
 		return nil, err
 	}
-	var looked []StoreStatus
+	warnings, err := a.Index.Warnings(ctx, a.Stores())
+	if err != nil {
+		return nil, err
+	}
+	unread := map[string]bool{}
+	for _, w := range warnings {
+		unread[w.Source] = true
+	}
+	var looked []Looked
 	for _, st := range a.Set.All() {
-		looked = append(looked, StoreStatus{Source: st.Name, Title: st.Spec.Title, Location: st.Source.Location(), Found: st.Source.Exists()})
+		looked = append(looked, Looked{Source: st.Name, Location: st.Source.Location(), Found: st.Source.Exists(), Unread: unread[st.Name]})
 	}
 	return looked, nil
 }

@@ -13,11 +13,11 @@ import (
 const lookedRun = `
 import { looked } from './format.mjs';
 const cases = JSON.parse(process.argv[2]);
-console.log(JSON.stringify(cases.map((c) => (looked(c.health, c.sync) || []).map((s) => s.source))));
+console.log(JSON.stringify(cases.map((c) => (looked(c.health, c.sync) || []).map((s) => s.source + ': ' + s.state))));
 `
 
-// The sessions list says where asq looked when no store it reads held a session — and not
-// while a first read is under way, nor when any store holds one.
+// The sessions list says where asq looked when no store it reads held a session, and what
+// it found in each — and not while a first read is under way, nor when any store holds one.
 func TestTheListSaysWhereItLookedWhenNothingWasFound(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -27,6 +27,8 @@ func TestTheListSaysWhereItLookedWhenNothingWasFound(t *testing.T) {
 		{"source": "claude", "found": false, "transcripts": 0},
 		{"source": "codex", "found": true, "transcripts": 0},
 	}}
+	unread := map[string]any{"stores": none["stores"], "warnings": []map[string]any{{"source": "codex", "error": "permission denied"}}}
+	reading := map[string]any{"stores": none["stores"], "sync": map[string]any{"running": true}}
 	some := map[string]any{"stores": []map[string]any{
 		{"source": "claude", "found": true, "transcripts": 0},
 		{"source": "codex", "found": true, "transcripts": 3},
@@ -37,8 +39,10 @@ func TestTheListSaysWhereItLookedWhenNothingWasFound(t *testing.T) {
 		Sync   any `json:"sync"`
 		want   string
 	}{
-		{"nothing anywhere", none, map[string]any{"running": false}, "claude codex"},
+		{"nothing anywhere", none, map[string]any{"running": false}, "claude: not there|codex: there, and empty"},
+		{"a store that could not be read", unread, map[string]any{"running": false}, "claude: not there|codex: there, and could not be read"},
 		{"nothing yet, while reading", none, map[string]any{"running": true}, ""},
+		{"nothing yet, while reading, before the stream says so", reading, nil, ""},
 		{"one store holds some", some, nil, ""},
 		{"no report yet", nil, nil, ""},
 	}
@@ -64,7 +68,7 @@ func TestTheListSaysWhereItLookedWhenNothingWasFound(t *testing.T) {
 		t.Fatalf("node said %q (%v)", out, err)
 	}
 	for i, tc := range cases {
-		if strings.Join(got[i], " ") != tc.want {
+		if strings.Join(got[i], "|") != tc.want {
 			t.Errorf("%s: looked in %q, want %q", tc.name, got[i], tc.want)
 		}
 	}

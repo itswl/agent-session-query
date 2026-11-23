@@ -223,11 +223,7 @@ func warn(ctx context.Context, a *app.App, io *streams) {
 	st := render.Style{Home: os.Getenv("HOME")}
 	fmt.Fprintln(io.err, "asq: no CLI's sessions were found. Looked in:")
 	for _, s := range looked {
-		state := "not there"
-		if s.Found {
-			state = "there, and empty"
-		}
-		fmt.Fprintf(io.err, "  %-12s %-44s %s\n", s.Source, st.Path(s.Location), state)
+		fmt.Fprintf(io.err, "  %-12s %-44s %s\n", s.Source, st.Path(s.Location), s.State())
 	}
 	fmt.Fprintln(io.err, "asq: asq doctor says more; a store somewhere else is named with --path name=dir, or ASQ_PATH")
 }

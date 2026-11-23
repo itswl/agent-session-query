@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/itswl/agent-session-query/internal/fixture"
+	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
 )
 
 // An index file that is not a database fails doctor, and the next command sets it aside,
@@ -90,4 +91,19 @@ func TestNothingFoundSaysWhereItLooked(t *testing.T) {
 	if code != 0 || !strings.Contains(errs.String(), "there, and empty") {
 		t.Errorf("search of an empty store: exit %d\n%s%s", code, &out, &errs)
 	}
+
+	// A store that is there and could not be read is not said to be empty
+	t.Run("unreadable", func(t *testing.T) {
+		locked := filepath.Join(t.TempDir(), "projects")
+		if err := os.MkdirAll(locked, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		sourcetest.Unreadable(t, locked)
+		var out, errs bytes.Buffer
+		code := Run([]string{"ls", "--index", filepath.Join(t.TempDir(), "index.db"), "--only", "claude", "--path", "claude=" + locked}, strings.NewReader(""), &out, &errs)
+		if code != 0 || !strings.Contains(errs.String(), "claude could not be read") || !strings.Contains(errs.String(), "there, and could not be read") ||
+			strings.Contains(errs.String(), "there, and empty") {
+			t.Errorf("ls of a store that could not be read: exit %d\n%s%s", code, &out, &errs)
+		}
+	})
 }

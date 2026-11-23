@@ -220,8 +220,8 @@ the page. See [who may ask](deploy.md#who-may-ask).
 If the index is still reading a large history, the bar says how far it is and what is on screen
 covers what has been read. If a store could not be read, a notice says which and why: an empty
 list is never the only sign that something broke. If no store held a session at all, the list
-says where the server looked — each store's place, and whether it is there — and that `asq
-doctor` on that machine says more.
+says where the server looked — each store's place, and whether it is there and could be read —
+and that `asq doctor` on that machine says more.
 
 Which `asq` is running is at the foot of the help (`?`), with a link to what that release
 changed, and on the name in the bar. A page left open while the server was upgraded still runs

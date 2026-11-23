@@ -124,11 +124,13 @@ export function firstLine(text, max = 160) {
 }
 
 // looked is the stores a server reads, from its health report, when none of them held a
-// session and nothing is being read: where it looked, for a list that would otherwise say
-// only that there is nothing. Null otherwise, and while a read is under way — a first read
-// of a large history has found nothing yet for a while.
+// session and nothing is being read: where it looked, each with what it found there, for a
+// list that would otherwise say only that there is nothing. Null otherwise, and while a
+// read is under way — a first read of a large history has found nothing yet for a while;
+// until the live stream has said how the reading stands, the report says it.
 export function looked(health, sync) {
   const stores = health?.stores || [];
-  if (!stores.length || sync?.running || stores.some((s) => s.transcripts > 0)) return null;
-  return stores;
+  if (!stores.length || (sync || health.sync)?.running || stores.some((s) => s.transcripts > 0)) return null;
+  const unread = new Set((health.warnings || []).map((w) => w.source));
+  return stores.map((s) => ({ ...s, state: !s.found ? 'not there' : unread.has(s.source) ? 'there, and could not be read' : 'there, and empty' }));
 }

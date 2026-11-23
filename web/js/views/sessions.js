@@ -247,7 +247,7 @@ export function mount(main, route, ctx) {
     return h('div', { class: 'empty' },
       h('p', { class: 'empty-title' }, 'No CLI\'s sessions were found.'),
       h('p', null, 'asq looked in these places, on the machine it runs on:'),
-      h('ul', { class: 'looked' }, stores.map((s) => h('li', null, h('span', { class: 'mono' }, s.location), ` — ${s.title || s.source}, ${s.found ? 'there, and empty' : 'not there'}`))),
+      h('ul', { class: 'looked' }, stores.map((s) => h('li', null, h('span', { class: 'mono' }, s.location), ` — ${s.title || s.source}, ${s.state}`))),
       h('p', null, h('code', null, 'asq doctor'), ' on that machine says more. A store somewhere else is named with ', h('code', null, 'ASQ_PATH'),
         '. A service reads the variables that move a store (', h('code', null, 'CLAUDE_CONFIG_DIR'), ', ', h('code', null, 'CODEX_HOME'), ', …) from its own environment, not from a shell\'s.'));
   }

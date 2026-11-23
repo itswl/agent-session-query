@@ -43,7 +43,8 @@ to case. An empty answer says on stderr which directory was looked in, since `.`
 the command happened to run.
 
 When no store holds a session at all, every command says so on stderr beside its answer, with
-where it looked — each store's place, there or not — and that `asq doctor` says more.
+where it looked — each store's place, and whether it is there and could be read — and that
+`asq doctor` says more.
 
 ## Finding
 

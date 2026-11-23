@@ -1,5 +1,5 @@
-// What the model calls consumed: rolling windows, the last thirty days, and where it went
-// in the window chosen.
+// What the model calls consumed: rolling windows, the last thirty days, and where and when it
+// went in the window chosen.
 
 import { h, mark, skeleton, errorBox, stale, choices } from '../dom.js';
 import { api, qs, last, sessionHref } from '../api.js';
@@ -18,6 +18,12 @@ const windowIn = (query) => windowOf(query, 'all');
 // first is what the view asks for when it opens, so that it can be asked for ahead.
 export const first = (query) => '/api/usage' + qs({ since: windowIn(query), project: query.get('project') });
 
+// The window by the calendar, where it holds more than one of them: weeks in a window longer
+// than a week, months in all time. Each is the latest CALENDAR of them, in order
+const CALENDAR = 12;
+const calendars = (since) => [since === '30d' || since === 'all' ? 'week' : null, since === 'all' ? 'month' : null].filter(Boolean);
+const calendarOf = (query, by) => '/api/usage' + qs({ by, since: windowIn(query), project: query.get('project'), limit: CALENDAR });
+
 export function mount(main, route, ctx) {
   document.title = 'Usage · asq';
   const since = windowIn(route.query);
@@ -25,7 +31,8 @@ export function mount(main, route, ctx) {
   // All time, the view's own window, is no since in its address
   const href = (changes) => '/usage' + qs({ since: since === 'all' ? '' : since, project, ...changes });
   // What it showed last time is shown at once; the fresh report replaces it when it comes
-  const state = { withCache: true, table: false, report: last(first(route.query)) };
+  const state = { withCache: true, table: false, report: last(first(route.query)), by: {} };
+  for (const by of calendars(since)) state.by[by] = last(calendarOf(route.query, by));
   const body = h('div', { class: 'page-body' }, state.report ? null : skeleton(6, 'line'));
   const note = stale();
   main.append(h('div', { class: 'page' },
@@ -36,10 +43,14 @@ export function mount(main, route, ctx) {
 
   async function load() {
     try {
-      const report = await api(first(route.query), { signal: ctx.signal, keep: true });
+      const asked = calendars(since);
+      const [report, ...rows] = await Promise.all([first(route.query), ...asked.map((by) => calendarOf(route.query, by))]
+        .map((path) => api(path, { signal: ctx.signal, keep: true })));
       note.say();
-      if (report === state.report) return; // nothing changed: what is drawn stays as it is, under the pointer
+      // nothing changed: what is drawn stays as it is, under the pointer
+      if (report === state.report && asked.every((by, i) => rows[i] === state.by[by])) return;
       state.report = report;
+      asked.forEach((by, i) => { state.by[by] = rows[i]; });
       render();
     } catch (e) {
       if (e.name === 'AbortError') return;
@@ -61,6 +72,8 @@ export function mount(main, route, ctx) {
           w.total > 0 && h('span', null, f.pct(w.cacheHit) + ' cached'),
           w.agentMs > 0 && h('span', { title: AGENT_TIME(w) }, f.work(w.agentMs) + ' agent time'))))),
       chart(r.byDay),
+      state.by.week && section('By week', span(since), table(state.by.week.rows, state.by.week.total, 'Week', (k) => 'Week of ' + WEEK.format(calendarDay(k)))),
+      state.by.month && section('By month', span(since), table(state.by.month.rows, state.by.month.total, 'Month', (k) => MONTH.format(calendarDay(k + '-01')))),
       section('By model', span(since), table(r.byModel, r.total, 'Model', (k) => k || '(not recorded)')),
       section('By store', span(since), table(r.bySource, r.total, 'Store', (k) => h('span', { class: 'store' }, mark(k), k))),
       // a project's sessions, in the window its row is of
@@ -127,6 +140,12 @@ function lastDays(rows, n) {
   }
   return out;
 }
+
+// A week is keyed by the Monday it begins on, a month as 2026-11: days of the local calendar,
+// read at noon so that no change of the clock moves them to another
+const calendarDay = (key) => new Date(key + 'T12:00:00');
+const WEEK = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+const MONTH = new Intl.DateTimeFormat('en-GB', { month: 'long', year: 'numeric' });
 
 function niceMax(v) {
   const p = 10 ** Math.floor(Math.log10(v));

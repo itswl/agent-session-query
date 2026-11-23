@@ -439,7 +439,7 @@ func (s *Server) handleFailures(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	rep, err := s.app.Failures(r.Context(), f, win, r.URL.Query().Get("tool"), r.URL.Query().Get("q"), page)
+	rep, err := s.app.Index.Failures(r.Context(), f, win, r.URL.Query().Get("tool"), r.URL.Query().Get("q"), page)
 	if err != nil {
 		s.fail(w, r, err)
 		return

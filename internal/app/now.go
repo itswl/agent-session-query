@@ -43,8 +43,6 @@ const (
 	// Writes within this long of the turn's end are the turn's own: a modification time
 	// and a transcript's timestamp are not taken from one clock to the millisecond
 	slack = 2 * time.Second
-	// How many turns after a failure are looked through for the same command succeeding
-	laterTurns = 3
 )
 
 // lookWait is how long one look at a file is waited for.
@@ -158,23 +156,6 @@ func (a *App) Files(ctx context.Context, f index.Filter, w index.Window, path st
 	return list, total, nil
 }
 
-// Failures is the index's Failures, each command with where it next succeeded in its
-// session (see index.Failure.Later).
-func (a *App) Failures(ctx context.Context, f index.Filter, w index.Window, tool, text string, p index.Page) (index.FailureReport, error) {
-	rep, err := a.Index.Failures(ctx, f, w, tool, text, p)
-	if err != nil {
-		return rep, err
-	}
-	look := newLooker(a)
-	for i := range rep.Failures {
-		if ctx.Err() != nil {
-			break
-		}
-		rep.Failures[i].Later = look.later(ctx, &rep.Failures[i])
-	}
-	return rep, nil
-}
-
 // Search is the index's Search, each hit whose turn had calls fail saying how many of them
 // were followed by the same command succeeding (index.Hit.PassedLater): what a reader
 // weighing which turn to open wants to know, and would otherwise open each to learn.
@@ -183,37 +164,13 @@ func (a *App) Search(ctx context.Context, q index.Query, f index.Filter, o index
 	if err != nil {
 		return res, err
 	}
-	look := newLooker(a)
 	for i := range res.Hits {
 		h := &res.Hits[i]
-		if ctx.Err() != nil {
-			break
-		}
 		if h.Failed == 0 {
 			continue
 		}
-		ref := h.Session.Ref
-		if _, ok := look.sessions[ref]; !ok {
-			s := h.Session
-			look.sessions[ref] = &s
-		}
-		for _, t := range look.turns(ctx, ref, h.Turn, h.Turn+laterTurns) { // the turns later looks in, read once
-			if t.Index != h.Turn {
-				continue
-			}
-			for _, item := range t.Items {
-				tool := item.Tool
-				if tool == nil || item.Inherited || !tool.Failed() {
-					continue
-				}
-				f := index.Failure{Session: ref, Turn: h.Turn, Seq: item.Seq, At: item.At, Tool: tool.Name, Command: tool.Command}
-				if !tool.EndAt.IsZero() {
-					f.At = tool.EndAt
-				}
-				if look.later(ctx, &f) != nil {
-					h.PassedLater++
-				}
-			}
+		if h.PassedLater, err = a.Index.PassedLater(ctx, &h.Session, h.Turn); err != nil {
+			return res, err
 		}
 	}
 	return res, nil
@@ -627,85 +584,3 @@ func samePath(name, path string) bool {
 	name = filepath.ToSlash(filepath.Clean(name))
 	return strings.HasSuffix(filepath.ToSlash(path), "/"+strings.TrimPrefix(name, "./"))
 }
-
-// later finds where the command that failed next succeeded in its session.
-//
-// "The command" is the program and what it was asked to do — go test, pnpm build, git
-// push — read past what prepares for it (see commandKey). An agent rarely runs a failed
-// command again word for word: it narrows the test, adds a flag. Measured on a real
-// history, the same command word for word came back in none of 37 failures and the same
-// program and subcommand in 28 of 40, all within three turns. The match is loose, so
-// what passed is shown whole beside it: the reader judges whether "go test ./internal/x"
-// passing says anything about "go test ./..." failing.
-//
-// Succeeded is taken strictly (see passed). A run begun before the failure was known —
-// beside it, in the same response — is not later than it.
-func (l *looker) later(ctx context.Context, f *index.Failure) *index.Later {
-	key := commandKey(f.Command)
-	if key == "" {
-		return nil
-	}
-	turns := l.turns(ctx, f.Session, f.Turn, f.Turn+laterTurns)
-	call := 0 // the response the failed call was part of
-	for _, turn := range turns {
-		for _, item := range turn.Items {
-			if turn.Index == f.Turn && item.Seq == f.Seq {
-				call = item.Call
-			}
-		}
-	}
-	for _, turn := range turns {
-		for _, item := range turn.Items {
-			t := item.Tool
-			if item.Seq <= f.Seq || t == nil || t.Name != f.Tool || commandKey(t.Command) != key {
-				continue
-			}
-			if turn.Index == f.Turn && call != 0 && item.Call == call {
-				continue // asked for in the same response: run beside the failure, not after it
-			}
-			if !f.At.IsZero() && !item.At.IsZero() && item.At.Before(f.At) {
-				continue // begun before the failure was known
-			}
-			if !t.Done {
-				return nil // run again, and never answered: nothing is known of it
-			}
-			if !passed(t) {
-				continue // failed again, or ended in a way that says nothing: the next run may be the one
-			}
-			return &index.Later{Turn: turn.Index, Seq: item.Seq, At: item.At, Command: oneSpace(t.Command)}
-		}
-	}
-	return nil
-}
-
-// passed reports whether a call says its command succeeded: it ended well — an exit
-// status of 0 where one was recorded, an "ok" where none was — the line's status was the
-// command's own, at every level the line was read through (nothing after it could hide a
-// failure: see resolve), and what came back was its end, not word that it runs on in the
-// background. A command that outlasted a CLI's wait — Codex's — has no status, and so
-// did not pass.
-func passed(t *model.Tool) bool {
-	switch {
-	case t.Exit != nil:
-		if *t.Exit != 0 {
-			return false
-		}
-	case t.Status != model.StatusOK:
-		return false
-	}
-	if _, decides := resolve(t.Command, 0); !decides {
-		return false
-	}
-	return !stillRunning(t)
-}
-
-// stillRunning reports whether a call's answer is that its command was started and runs
-// on: Claude Code's run_in_background, which answers ok at once.
-func stillRunning(t *model.Tool) bool {
-	var in struct {
-		Background bool `json:"run_in_background"`
-	}
-	return json.Unmarshal(t.Input, &in) == nil && in.Background
-}
-
-func oneSpace(s string) string { return strings.Join(strings.Fields(s), " ") }

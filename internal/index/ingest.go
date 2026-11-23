@@ -70,6 +70,7 @@ type turnRow struct {
 	usage                      []usageRow
 	files                      []model.File
 	failed                     []failureRow
+	runs                       []run     // the calls that ran a command, until the reading is judged
 	words                      [5]string // ask, reply, thinking, tool, output
 }
 
@@ -95,6 +96,8 @@ type failureRow struct {
 	exit    *int
 	command string
 	output  string
+	key     string // the program and its subcommand (command.Key)
+	later   *Later // where that next succeeded (see reading.judge)
 }
 
 // turnBody is what a turn's body column holds.
@@ -161,6 +164,7 @@ func (ix *Index) read(ctx context.Context, st Store, ref sources.Ref) *reading {
 			last.hash = append(last.hash, []byte(strconv.FormatInt(r.Usage.Total(), 36))...)
 		}
 	}
+	rd.judge()
 	for i := range rd.turns {
 		t := &rd.turns[i]
 		rd.size += len(t.head) + len(t.body)
@@ -196,6 +200,7 @@ func (ix *Index) turnRow(rd *reading, t *model.Turn) turnRow {
 		row.firstSeq = t.Items[0].Seq
 	}
 	row.words = turnWords(t.Items)
+	row.runs = runsOf(t.Index, t.Items)
 	h := sha256.New()
 
 	for i := range t.Items {
@@ -592,6 +597,10 @@ RETURNING sid`,
 			}
 			words = append(words, wordsOp{id: turnRowID(sid, idx), again: true})
 		}
+		// The failures before the turns written, whose command may have passed in them
+		if err := judged(ctx, tx, sid, rd); err != nil {
+			return err
+		}
 		// Every turn the session has now holds the words this asq writes — which, in a newer
 		// asq's table, that asq is still to write its own way
 		if ahead {
@@ -706,9 +715,15 @@ VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		if f.exit != nil {
 			exit = *f.exit
 		}
+		var later Later
+		if f.later != nil {
+			later = *f.later
+		}
 		if _, err := tx.ExecContext(ctx, `
-INSERT OR REPLACE INTO failures (sid, seq, idx, at, tool, kind, status, exit_code, command, output) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-			sid, f.seq, t.idx, f.at, f.tool, f.kind, f.status, exit, f.command, f.output); err != nil {
+INSERT OR REPLACE INTO failures (sid, seq, idx, at, tool, kind, status, exit_code, command, output,
+  command_key, later_idx, later_seq, later_at, later_command, judged) VALUES (?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?)`,
+			sid, f.seq, t.idx, f.at, f.tool, f.kind, f.status, exit, f.command, f.output,
+			f.key, later.Turn, later.Seq, ms(later.At), later.Command, laterVersion); err != nil {
 			return err
 		}
 	}
@@ -738,7 +753,9 @@ func deleteSession(ctx context.Context, tx *sql.Tx, sid int64) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM words WHERE rowid >= ? AND rowid <= ?`, turnRowID(sid, 0), turnRowID(sid, maxTurnIndex)); err != nil {
 		return err
 	}
-	for _, table := range []string{"turns", "bodies", "usage", "files", "failures", "words_stale", "sessions"} {
+	// The failures before the turns, which would otherwise be marked to be judged again as
+	// each turn goes (see failuresJudged)
+	for _, table := range []string{"failures", "turns", "bodies", "usage", "files", "words_stale", "sessions"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE sid = ?`, sid); err != nil {
 			return err
 		}

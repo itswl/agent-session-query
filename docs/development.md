@@ -31,6 +31,7 @@ internal/sources        the adapter contract (Source, Spec)
 internal/sources/<cli>  one adapter per CLI
 internal/sources/kit    what adapters share: reading lines, lenient values, SQLite, stamps
 internal/transcript     the Writer every adapter feeds: messages in, turns out
+internal/command        what a command line runs: its program, and whether its status is that program's
         │
 internal/model          the record: Session, Turn, Item, Tool, Usage
 internal/txt            cleaning and cutting text
@@ -137,6 +138,12 @@ One package and one line.
    is: the older one searches it and writes the columns it knows, and leaves the turns it writes
    for the newer one to write again. So a change keeps the columns there are, in their order, and
    adds any after them.
+
+   A change to how a failure is judged to have passed later — the rule in
+   `internal/index/later.go`, or `command.Key` and `command.Passed` beneath it — raises
+   `laterVersion` beside them. Each failure keeps the version that judged it; one an older `asq`
+   judged, or none, is judged again at the next sync from the turns the index holds, without
+   reading a transcript. One a newer `asq` judged is left to it.
 
    `Retention` is for a CLI that deletes its own old sessions by default: one clause saying what
    it deletes, after how long, and the setting and file that change it, as the CLI's own

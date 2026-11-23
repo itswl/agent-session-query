@@ -162,6 +162,10 @@ and the next command rebuilds it from the stores.
   turns read for four numbers each would be most of the file. So are which turn each hit of a
   search is and when it was, for search and `files` alike: a word most turns hold is counted
   and ranked without a turn's text being read, until the page shown is.
+- **A failure says whether it passed later.** Where the same command next succeeded is worked
+  out when the session is read, and kept beside the failure: the failures report, a search's
+  hits and a brief read it rather than the turns after each failure. A turn the session gains
+  has the failures of the three before it worked out again, whichever `asq` wrote it.
 - **Long text is kept twice.** A turn holds a preview of each long output — the head and, larger,
   the tail, since the end of an output is where a command says why it failed — and the whole text
   sits beside it, read only when asked for.

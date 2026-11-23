@@ -273,7 +273,8 @@ it), and with it any index an earlier version of `asq` left beside it, which `as
 new release that reads a CLI's files differently has that CLI's sessions read again by itself, at
 the first sync after the upgrade; a rebuild is not needed for that. One that keeps a search's
 words differently writes them again from what the index holds, at the first sync too, reading
-no transcript; until it is done a search finds what has been written so far.
+no transcript; until it is done a search finds what has been written so far. One that judges
+differently whether a failed command passed later judges every failure again the same way.
 
 ## Environment
 

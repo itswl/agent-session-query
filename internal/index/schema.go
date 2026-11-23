@@ -180,7 +180,8 @@ CREATE TABLE IF NOT EXISTS files (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS files_path ON files (path);
 
--- The tool calls that failed.
+-- The tool calls that failed, and where the command each ran next succeeded (see later.go).
+-- The columns after output an older asq lacks are added to its table (see failuresColumns).
 CREATE TABLE IF NOT EXISTS failures (
   sid     INTEGER NOT NULL,
   seq     INTEGER NOT NULL,
@@ -192,6 +193,12 @@ CREATE TABLE IF NOT EXISTS failures (
   exit_code INTEGER,
   command TEXT    NOT NULL DEFAULT '',
   output  TEXT    NOT NULL DEFAULT '',
+  command_key   TEXT    NOT NULL DEFAULT '',  -- the program and its subcommand: go test (command.Key)
+  later_idx     INTEGER NOT NULL DEFAULT 0,   -- where the same command next succeeded: its turn,
+  later_seq     INTEGER NOT NULL DEFAULT 0,   --   its step — 0: it did not —
+  later_at      INTEGER NOT NULL DEFAULT 0,   --   when, and the command as it ran then
+  later_command TEXT    NOT NULL DEFAULT '',
+  judged        INTEGER NOT NULL DEFAULT 0,   -- the laterVersion that worked these out; 0: none
   PRIMARY KEY (sid, seq)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS failures_at ON failures (at DESC);
@@ -253,6 +260,44 @@ CREATE TRIGGER IF NOT EXISTS words_stale_title AFTER UPDATE OF title ON sessions
 WHEN NEW.title IS NOT OLD.title
 BEGIN
   INSERT OR IGNORE INTO words_stale (sid, idx) SELECT sid, idx FROM turns WHERE sid = NEW.sid AND idx = 1;
+END`
+
+// failuresColumns are the columns of the failures table an asq before laterVersion did not
+// make, with their declarations (see addColumn).
+var failuresColumns = [][2]string{
+	{"command_key", "TEXT NOT NULL DEFAULT ''"},
+	{"later_idx", "INTEGER NOT NULL DEFAULT 0"},
+	{"later_seq", "INTEGER NOT NULL DEFAULT 0"},
+	{"later_at", "INTEGER NOT NULL DEFAULT 0"},
+	{"later_command", "TEXT NOT NULL DEFAULT ''"},
+	{"judged", "INTEGER NOT NULL DEFAULT 0"},
+}
+
+// laterVersion numbers how a failure is judged to have passed later — the rule in later.go,
+// and command.Key and command.Passed that it rests on: a change to any of them raises it. A
+// failure the failures table says an older one judged — a lower number in judged, or none —
+// is judged again at the next sync, from what the index holds, without reading a transcript
+// (see Index.judge). One a newer asq judged is left to it.
+//
+// 1: the first.
+const laterVersion = 1
+
+// failuresJudged makes the failures whose judgement a turn written may change judged by
+// none: those of the turns before it, as far back as laterTurns, where the same command may
+// have passed in it, or no longer does. A failure another asq writes has none already, and
+// one that does not judge failures writes turns without judging those before them: this one
+// judges them all at its next sync (see Index.judge). It writes them again itself, from the
+// reading, as it writes a session (see judged). The triggers are in the file, and fire
+// whichever asq writes. A change of laterTurns would have them made anew.
+const failuresJudged = `
+CREATE INDEX IF NOT EXISTS failures_judged ON failures (judged);
+CREATE TRIGGER IF NOT EXISTS failures_judged_turn AFTER INSERT ON turns
+BEGIN
+  UPDATE failures SET judged = 0 WHERE sid = NEW.sid AND idx >= NEW.idx - 3 AND idx <= NEW.idx AND judged != 0;
+END;
+CREATE TRIGGER IF NOT EXISTS failures_judged_gone AFTER DELETE ON turns
+BEGIN
+  UPDATE failures SET judged = 0 WHERE sid = OLD.sid AND idx >= OLD.idx - 3 AND idx < OLD.idx AND judged != 0;
 END`
 
 // turnRowID is the words table's rowid for a turn.

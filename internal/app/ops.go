@@ -141,11 +141,10 @@ func (a *App) Above(ctx context.Context, s *index.Session) ([]index.Session, err
 	return Listed(chain), nil
 }
 
-// Brief renders a session's handoff brief: its outline, the failed calls of the turns the
-// brief names, each with where the same command later passed, and the files it names as
-// changed, each with how it stands now. Both are looked up as the failures and files
-// reports look them up — a file within lookWait, and not at all in a folder a look is
-// waiting in — and for what the brief names alone.
+// Brief renders a session's handoff brief: its outline, its failed calls, each with where
+// the same command later passed, and the files it names as changed, each with how it
+// stands now — looked up as the files report looks them up, a file within lookWait and not
+// at all in a folder a look is waiting in, and for what the brief names alone.
 func (a *App) Brief(ctx context.Context, s *index.Session, o render.BriefOptions) (string, error) {
 	turns, err := a.Index.Outline(ctx, s)
 	if err != nil {
@@ -160,14 +159,6 @@ func (a *App) Brief(ctx context.Context, s *index.Session, o render.BriefOptions
 	if s.Stats.Failures > 0 {
 		if o.Failures, err = a.Index.FailuresOf(ctx, s); err != nil {
 			return "", err
-		}
-		for i := range o.Failures {
-			if ctx.Err() != nil {
-				break
-			}
-			if plan.Names(o.Failures[i].Turn) {
-				o.Failures[i].Later = look.later(ctx, &o.Failures[i])
-			}
 		}
 	}
 	o.Files = plan.Files

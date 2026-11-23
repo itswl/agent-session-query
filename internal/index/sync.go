@@ -245,14 +245,23 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 			return res, err
 		}
 	}
+	// Sessions with failures to judge from the index (see judge): before anything is read,
+	// since until then such a failure reads as one whose command never passed
+	var unjudged int
+	if err := ix.rw.QueryRowContext(ctx, `SELECT count(DISTINCT sid) FROM failures WHERE judged < ?`, laterVersion).Scan(&unjudged); err != nil {
+		return res, err
+	}
 	found := hex.EncodeToString(condition.Sum(nil)[:5])
 	ix.setState(func(s *SyncState) {
-		s.Running, s.Total, s.Done, s.Began, s.Stores = true, stale+len(jobs), 0, start, found
+		s.Running, s.Total, s.Done, s.Began, s.Stores = true, stale+unjudged+len(jobs), 0, start, found
 	})
 
 	var firstErr error
 	if stale > 0 {
 		firstErr = ix.refill(ctx, func() { ix.setState(func(s *SyncState) { s.Done++ }) })
+	}
+	if unjudged > 0 && firstErr == nil {
+		firstErr = ix.judge(ctx, func() { ix.setState(func(s *SyncState) { s.Done++ }) })
 	}
 	published := 0
 	// settle makes what has been written so far whole: the sessions linked to one another

@@ -242,9 +242,16 @@ func Open(path string) (*Index, error) {
 			return nil, fmt.Errorf("index: %s: %w", path, err)
 		}
 	}
+	for _, col := range failuresColumns {
+		if err := addColumn(rw, "failures", col[0], col[1]); err != nil {
+			rw.Close()
+			return nil, fmt.Errorf("index: %s: %w", path, err)
+		}
+	}
 	for _, step := range []func(*sql.DB) error{
 		func(db *sql.DB) error { _, err := db.Exec(readsTrigger); return err },
 		func(db *sql.DB) error { _, err := db.Exec(wordsStale); return err },
+		func(db *sql.DB) error { _, err := db.Exec(failuresJudged); return err },
 		newWords,
 	} {
 		if err := step(rw); err != nil {

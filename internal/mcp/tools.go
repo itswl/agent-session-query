@@ -643,7 +643,7 @@ func runFailures(ctx context.Context, s *Server, a *args) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	rep, err := s.App.Failures(ctx, f, w, a.str("tool"), a.str("query"), index.Page{Limit: a.limit(10), Offset: a.offset()})
+	rep, err := s.App.Index.Failures(ctx, f, w, a.str("tool"), a.str("query"), index.Page{Limit: a.limit(10), Offset: a.offset()})
 	if err != nil {
 		return "", err
 	}

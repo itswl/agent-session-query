@@ -1,13 +1,16 @@
-package app
+// Package command reads what a command line runs, the way a shell would read it — closely
+// enough to tell which program a line is about, and whether its exit status is that
+// program's: what it takes to say that a command that failed passed later.
+package command
 
 import (
+	"encoding/json"
 	"regexp"
 	"slices"
 	"strings"
-)
 
-// What a command line runs, read the way a shell would read it — closely enough to tell
-// which program a line is about, and whether its exit status is that program's.
+	"github.com/itswl/agent-session-query/internal/model"
+)
 
 // segment is one simple command of a line, and the operator that follows it: "&&",
 // "||", ";", "|", "&", or "" at the end.
@@ -290,14 +293,14 @@ func resolve(line string, depth int) (words []string, decides bool) {
 	}
 }
 
-// commandKey is what a command line asks of which program: the program and its first
+// Key is what a command line asks of which program: the program and its first
 // argument when that is a word and not a flag — "go test", "git push", "make",
 // "./run.sh" — of the command the line resolves to (see resolve), past the options that
 // come before a subcommand. A runner's run is what it runs ("npm run build", "uv run
 // pytest", "npx tsc"). Code given inline — python -c, node -e, a script fed in by a
 // here-document — is no command that can be recognised again, and has no key; nor has a
 // line with none.
-func commandKey(line string) string {
+func Key(line string) string {
 	words, _ := resolve(line, 0)
 	return keyOf(words, 0)
 }
@@ -428,4 +431,34 @@ func skipOptions(args []string, withValue string, long ...string) []string {
 		}
 	}
 	return args
+}
+
+// Passed reports whether a call says its command succeeded: it ended well — an exit
+// status of 0 where one was recorded, an "ok" where none was — the line's status was the
+// command's own, at every level the line was read through (nothing after it could hide a
+// failure: see resolve), and what came back was its end, not word that it runs on in the
+// background. A command that outlasted a CLI's wait — Codex's — has no status, and so
+// did not pass.
+func Passed(t *model.Tool) bool {
+	switch {
+	case t.Exit != nil:
+		if *t.Exit != 0 {
+			return false
+		}
+	case t.Status != model.StatusOK:
+		return false
+	}
+	if _, decides := resolve(t.Command, 0); !decides {
+		return false
+	}
+	return !stillRunning(t)
+}
+
+// stillRunning reports whether a call's answer is that its command was started and runs
+// on: Claude Code's run_in_background, which answers ok at once.
+func stillRunning(t *model.Tool) bool {
+	var in struct {
+		Background bool `json:"run_in_background"`
+	}
+	return json.Unmarshal(t.Input, &in) == nil && in.Background
 }

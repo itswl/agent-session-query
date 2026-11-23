@@ -133,8 +133,7 @@ type Failure struct {
 	Output  string    `json:"output,omitempty"` // the end of it, where it says why
 	// Later is where the same program, asked the same thing by the same tool, next
 	// succeeded in the same session — go test after go test — when it did within a few
-	// turns; the fix, if there was one, lies between. Filled in by the program (see
-	// app.Failures): the failures table knows only the failures.
+	// turns; the fix, if there was one, lies between (see later.go).
 	Later *Later `json:"passedLater,omitempty"`
 }
 
@@ -216,7 +215,7 @@ func (ix *Index) Failures(ctx context.Context, f Filter, w Window, tool, text st
 		p.Limit = 50
 	}
 	rows, err = ix.ro.QueryContext(ctx, `
-SELECT s.source, s.id, s.title, s.cwd, x.idx, x.seq, x.at, x.tool, x.kind, x.status, x.exit_code, x.command, x.output`+from+`
+SELECT s.source, s.id, s.title, s.cwd, `+failureColumns+from+`
 ORDER BY x.at DESC, x.sid DESC, x.seq DESC LIMIT ? OFFSET ?`, append(args, p.Limit, p.Offset)...)
 	if err != nil {
 		return rep, err
@@ -225,15 +224,34 @@ ORDER BY x.at DESC, x.sid DESC, x.seq DESC LIMIT ? OFFSET ?`, append(args, p.Lim
 	for rows.Next() {
 		var x Failure
 		var source, id string
-		var at int64
-		var exit *int
-		if err := rows.Scan(&source, &id, &x.Title, &x.Cwd, &x.Turn, &x.Seq, &at, &x.Tool, &x.Kind, &x.Status, &exit, &x.Command, &x.Output); err != nil {
+		if err := scanFailure(rows, &x, &source, &id, &x.Title, &x.Cwd); err != nil {
 			return rep, err
 		}
-		x.Session, x.At, x.Exit = source+"/"+id, fromMs(at), exit
+		x.Session = source + "/" + id
 		rep.Failures = append(rep.Failures, x)
 	}
 	return rep, rows.Err()
+}
+
+// failureColumns are what a Failure is read from, of the failures table aliased x.
+const failureColumns = `x.idx, x.seq, x.at, x.tool, x.kind, x.status, x.exit_code, x.command, x.output,
+  x.later_idx, x.later_seq, x.later_at, x.later_command`
+
+// scanFailure reads a Failure from failureColumns, after the columns named in front.
+func scanFailure(row scanner, x *Failure, front ...any) error {
+	var at, laterAt int64
+	var later Later
+	err := row.Scan(append(front, &x.Turn, &x.Seq, &at, &x.Tool, &x.Kind, &x.Status, &x.Exit, &x.Command, &x.Output,
+		&later.Turn, &later.Seq, &laterAt, &later.Command)...)
+	if err != nil {
+		return err
+	}
+	x.At = fromMs(at)
+	if later.Seq > 0 { // a step after the failure, which is at 0 or later
+		later.At = fromMs(laterAt)
+		x.Later = &later
+	}
+	return nil
 }
 
 // FileTouch is one turn naming a file.
@@ -604,7 +622,7 @@ func (ix *Index) UsageTotal(ctx context.Context, f Filter, w Window) (UsageRow, 
 
 // FailuresOf lists one session's failed tool calls, in the order they happened.
 func (ix *Index) FailuresOf(ctx context.Context, s *Session) ([]Failure, error) {
-	rows, err := ix.ro.QueryContext(ctx, `SELECT idx, seq, at, tool, kind, status, exit_code, command, output FROM failures WHERE sid = ? ORDER BY seq`, s.sid)
+	rows, err := ix.ro.QueryContext(ctx, `SELECT `+failureColumns+` FROM failures x WHERE x.sid = ? ORDER BY x.seq`, s.sid)
 	if err != nil {
 		return nil, err
 	}
@@ -612,11 +630,9 @@ func (ix *Index) FailuresOf(ctx context.Context, s *Session) ([]Failure, error) 
 	var out []Failure
 	for rows.Next() {
 		x := Failure{Session: s.Ref, Title: s.Title, Cwd: s.Cwd}
-		var at int64
-		if err := rows.Scan(&x.Turn, &x.Seq, &at, &x.Tool, &x.Kind, &x.Status, &x.Exit, &x.Command, &x.Output); err != nil {
+		if err := scanFailure(rows, &x); err != nil {
 			return nil, err
 		}
-		x.At = fromMs(at)
 		out = append(out, x)
 	}
 	return out, rows.Err()

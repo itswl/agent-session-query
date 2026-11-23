@@ -133,7 +133,7 @@ func (a *App) Paths(ctx context.Context, dirs []string, below bool) ([]string, e
 			continue // not on this machine: nothing recorded here leads to it
 		}
 		out = appendNew(out, real)
-		reals = appendNew(reals, strings.ToLower(real))
+		reals = appendNew(reals, real)
 	}
 	if len(reals) == 0 {
 		return out, nil
@@ -148,23 +148,38 @@ func (a *App) Paths(ctx context.Context, dirs []string, below bool) ([]string, e
 	if err != nil {
 		return nil, err
 	}
+	// A directory the paths given already hold, as the index's filter holds them, is not
+	// looked at: a --project of . in a repository is every directory the repository's
+	// sessions ran in, and each would be a term of every query, and a look at the disk
+	given := len(out)
 	for _, cwd := range cwds {
-		if slices.Contains(out, cwd) || ctx.Err() != nil {
+		if ctx.Err() != nil {
+			break
+		}
+		if slices.Contains(out, cwd) || below && slices.ContainsFunc(out[:given], func(d string) bool { return dirHolds(d, cwd, true) }) {
 			continue
 		}
 		real, err := filepath.EvalSymlinks(cwd)
 		if err != nil {
 			continue
 		}
-		real = strings.ToLower(real)
-		for _, r := range reals {
-			if real == r || below && strings.HasPrefix(real, strings.TrimRight(r, `/\`)+string(filepath.Separator)) {
-				out = append(out, cwd)
-				break
-			}
+		if slices.ContainsFunc(reals, func(r string) bool { return dirHolds(r, real, below) }) {
+			out = append(out, cwd)
 		}
 	}
 	return out, ctx.Err()
+}
+
+// dirHolds reports whether path is dir, or with below one beneath it, without regard to case
+// or to the separator it is written with: /work/api holds /work/api/web, and not
+// /work/api-old.
+func dirHolds(dir, path string, below bool) bool {
+	dir, path = strings.ToLower(dir), strings.ToLower(path)
+	if path == dir {
+		return true
+	}
+	base := strings.TrimRight(dir, `/\`)
+	return below && (path == base || strings.HasPrefix(path, base+"/") || strings.HasPrefix(path, base+`\`))
 }
 
 // appendNew appends to list each of paths it does not hold yet.

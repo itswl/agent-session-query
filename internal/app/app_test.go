@@ -370,6 +370,13 @@ func TestPathsThroughALink(t *testing.T) {
 	if paths, err = a.Paths(ctx, []string{dir}, true); err != nil || !slices.Contains(paths, filepath.Join(link, "web")) {
 		t.Errorf("the directory and below = %q, %v", paths, err)
 	}
+	// Given the link, what was recorded beneath it is held already, and is not a path more
+	if paths, err = a.Paths(ctx, []string{link}, true); err != nil || slices.Contains(paths, filepath.Join(link, "web")) || len(paths) > 3 {
+		t.Errorf("the link and below = %q, %v; want the link, cleaned and resolved, alone", paths, err)
+	}
+	if list, _, err := a.Index.Sessions(ctx, index.Filter{Dirs: paths}, index.Page{Limit: 5}); err != nil || len(list) != 2 {
+		t.Errorf("the sessions in the link and below = %d, %v; want both", len(list), err)
+	}
 	if self, err := a.Self(ctx, "", "", []string{dir}); err != nil || self.ID != "eeee5555-0000-4000-8000-000000000005" {
 		t.Errorf("the session in the directory, recorded through the link = %+v, %v", self.Ref, err)
 	}

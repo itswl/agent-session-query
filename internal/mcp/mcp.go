@@ -15,20 +15,45 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/itswl/agent-session-query/internal/app"
 )
 
-// The protocol revisions this server answers to, newest first. A tools-only server reads
-// the same in all of them.
+// The protocol revisions this server answers to after initialize, newest first. A server
+// of tools and prompts reads the same in all of them.
 var protocols = []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"}
+
+// modern is the revision that does without initialize: each request says in its _meta which
+// revision it speaks, which client sent it and what that client can do, and is answered on
+// its own. This server keeps nothing from one request to the next, so it answers either kind,
+// as each request opens: one that says its revision is answered in that revision, one that
+// does not as initialize agreed.
+const modern = "2026-07-28"
+
+// supported is every revision this server speaks, newest first.
+func supported() []string { return append([]string{modern}, protocols...) }
+
+// The keys of _meta in which a request of the modern revision says what it speaks and who
+// sent it, and an answer says which server gave it.
+const (
+	metaVersion    = "io.modelcontextprotocol/protocolVersion"
+	metaCaps       = "io.modelcontextprotocol/clientCapabilities"
+	metaServerInfo = "io.modelcontextprotocol/serverInfo"
+)
+
+// listTTL is how long a client may keep the lists of tools and prompts, and what
+// server/discover says: they change only with the binary.
+const listTTL = int64(time.Hour / time.Millisecond)
 
 // Instructions is said once, before any tool is called: what the content is, when to
 // reach for it, and which tool answers which. A client that loads tools only when a model
@@ -92,6 +117,7 @@ type request struct {
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
 }
 
 type response struct {
@@ -106,6 +132,10 @@ const (
 	codeInvalid  = -32600
 	codeNoMethod = -32601
 	codeParams   = -32602
+	// The modern revision's: the HTTP headers say other than the body, and a revision
+	// this server does not speak
+	codeHeaderMismatch = -32020
+	codeUnsupported    = -32022
 )
 
 func (s *Server) logf(format string, args ...any) {
@@ -283,13 +313,66 @@ func (s *Server) answer(ctx context.Context, req request) (response, bool) {
 		reply.Error = &rpcError{Code: codeInvalid, Message: "a request names a method"}
 		return reply, true
 	}
+	isModern, rpcErr := checkModern(req)
+	if rpcErr != nil {
+		reply.Error = rpcErr
+		return reply, true
+	}
 	result, rpcErr := s.dispatch(ctx, req.Method, req.Params)
 	if rpcErr != nil {
 		reply.Error = rpcErr
+	} else if isModern || req.Method == "server/discover" {
+		reply.Result = modernResult(req.Method, result)
 	} else {
 		reply.Result = result
 	}
 	return reply, true
+}
+
+// checkModern reads which era a request is of: one that says its revision in _meta is of
+// the modern one, unless the revision it says is one initialize agrees on. It must then be
+// a revision this server speaks, and say what its client can do.
+func checkModern(req request) (bool, *rpcError) {
+	var p struct {
+		Meta map[string]json.RawMessage `json:"_meta"`
+	}
+	if json.Unmarshal(req.Params, &p) != nil || p.Meta[metaVersion] == nil {
+		return false, nil
+	}
+	var version string
+	_ = json.Unmarshal(p.Meta[metaVersion], &version)
+	switch {
+	case slices.Contains(protocols, version):
+		return false, nil // a revision of initialize, named in passing: answered as before
+	case version != modern:
+		return false, &rpcError{Code: codeUnsupported, Message: "Unsupported protocol version",
+			Data: map[string]any{"supported": supported(), "requested": version}}
+	case p.Meta[metaCaps] == nil:
+		return false, &rpcError{Code: codeParams, Message: "a request of revision " + modern + " says what its client can do, in _meta " + metaCaps}
+	}
+	return true, nil
+}
+
+// modernResult is a result as the modern revision has it: saying what kind of result it is
+// and which server gave it, and for a list a client may keep, for how long and to whom.
+func modernResult(method string, result any) any {
+	m, ok := result.(map[string]any)
+	if !ok {
+		return result
+	}
+	m["resultType"] = "complete"
+	m["_meta"] = map[string]any{metaServerInfo: serverInfo()}
+	switch method {
+	case "server/discover", "tools/list", "prompts/list":
+		// The same for every caller: nothing in them is anyone's
+		m["ttlMs"], m["cacheScope"] = listTTL, "public"
+	}
+	return m
+}
+
+// serverInfo is what this server says it is.
+func serverInfo() map[string]any {
+	return map[string]any{"name": "asq", "title": "Agent session history", "version": app.Version}
 }
 
 func (s *Server) dispatch(ctx context.Context, method string, params json.RawMessage) (any, *rpcError) {
@@ -309,8 +392,17 @@ func (s *Server) dispatch(ctx context.Context, method string, params json.RawMes
 		return map[string]any{
 			"protocolVersion": negotiate(p.ProtocolVersion),
 			"capabilities":    capabilities(),
-			"serverInfo":      map[string]any{"name": "asq", "title": "Agent session history", "version": app.Version},
+			"serverInfo":      serverInfo(),
 			"instructions":    Instructions,
+		}, nil
+	case "server/discover":
+		// What initialize says, for a client that does without it: the revisions, what is
+		// offered, and the instructions, which a client of the modern revision has from here
+		// or nowhere
+		return map[string]any{
+			"supportedVersions": supported(),
+			"capabilities":      capabilities(),
+			"instructions":      Instructions,
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -367,15 +459,99 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{Code: codeParse, Message: "not a JSON-RPC message: " + err.Error()}})
 		return
 	}
-	replies := s.answerAll(r.Context(), reqs)
-	switch {
-	case len(replies) == 0:
-		w.WriteHeader(http.StatusAccepted) // notifications only
-	case batch:
-		writeJSON(w, http.StatusOK, replies)
-	default:
-		writeJSON(w, http.StatusOK, replies[0])
+	if !batch {
+		// A request of the modern revision is turned down with 400 when it cannot be
+		// answered as it is — a revision not spoken, headers that say other than the
+		// body — and a method this server does not have is 404: a client that speaks both
+		// revisions falls back to initialize on a 4xx without such an error in it, and
+		// must not be sent there by one
+		req := reqs[0]
+		isModern, rpcErr := checkModern(req)
+		if rpcErr == nil && isModern {
+			rpcErr = headersAgree(r.Header, req)
+		}
+		if rpcErr != nil {
+			writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0", ID: idOf(req), Error: rpcErr})
+			return
+		}
+		reply, ok := s.answer(r.Context(), req)
+		switch {
+		case !ok:
+			w.WriteHeader(http.StatusAccepted) // a notification
+		case isModern && reply.Error != nil && reply.Error.Code == codeNoMethod:
+			writeJSON(w, http.StatusNotFound, reply)
+		default:
+			writeJSON(w, http.StatusOK, reply)
+		}
+		return
 	}
+	replies := s.answerAll(r.Context(), reqs)
+	if len(replies) == 0 {
+		w.WriteHeader(http.StatusAccepted) // notifications only
+		return
+	}
+	writeJSON(w, http.StatusOK, replies)
+}
+
+// idOf is the id an error about a request is sent back with: null for a notification.
+func idOf(req request) json.RawMessage {
+	if len(req.ID) == 0 {
+		return json.RawMessage("null")
+	}
+	return req.ID
+}
+
+// headersAgree checks what the modern revision has a client say twice over HTTP — in the
+// headers, for whatever stands between it and the server, and in the body, which this
+// server acts on — and turns down a request where the two differ, or a header is missing:
+// what routes a request by its headers must route the request that is answered.
+func headersAgree(h http.Header, req request) *rpcError {
+	var p struct {
+		Name string                     `json:"name"`
+		URI  string                     `json:"uri"`
+		Meta map[string]json.RawMessage `json:"_meta"`
+	}
+	_ = json.Unmarshal(req.Params, &p)
+	var version string
+	_ = json.Unmarshal(p.Meta[metaVersion], &version)
+	want := [][2]string{{"MCP-Protocol-Version", version}, {"Mcp-Method", req.Method}}
+	switch req.Method {
+	case "tools/call", "prompts/get":
+		want = append(want, [2]string{"Mcp-Name", p.Name})
+	case "resources/read":
+		want = append(want, [2]string{"Mcp-Name", p.URI})
+	}
+	for _, w := range want {
+		values := h.Values(w[0])
+		if len(values) == 0 {
+			return &rpcError{Code: codeHeaderMismatch, Message: "Header mismatch: the " + w[0] + " header is missing"}
+		}
+		got := values[0]
+		if w[0] == "Mcp-Name" {
+			got = unsentinel(got)
+		}
+		if len(values) > 1 || got != w[1] {
+			return &rpcError{Code: codeHeaderMismatch, Message: fmt.Sprintf("Header mismatch: %s header value %q does not match body value %q", w[0], got, w[1])}
+		}
+	}
+	return nil
+}
+
+// unsentinel reads a header value a client wrote as =?base64?…?= because it could not be
+// sent as it is; anything else is the value itself.
+func unsentinel(v string) string {
+	inner, ok := strings.CutPrefix(v, "=?base64?")
+	if !ok {
+		return v
+	}
+	if inner, ok = strings.CutSuffix(inner, "?="); !ok {
+		return v
+	}
+	b, err := base64.StdEncoding.DecodeString(inner)
+	if err != nil {
+		return v
+	}
+	return string(b)
 }
 
 // writeJSON sends a reply the way the stdio transport does: <, > and & leave as

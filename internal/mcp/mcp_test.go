@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -759,6 +760,136 @@ func TestPrompts(t *testing.T) {
 		s.Caller = tc.caller
 		if _, rpcErr := getPrompt(t, s, tc.prompt, tc.args); rpcErr == nil || rpcErr.Code != codeParams || !strings.Contains(rpcErr.Message, tc.want) {
 			t.Errorf("%s %v = %+v, want an error saying %q", tc.prompt, tc.args, rpcErr, tc.want)
+		}
+	}
+}
+
+// The 2026-07-28 revision does without initialize: each request says its revision, its
+// client and what that client can do in _meta, and is answered on its own — server/discover
+// saying what initialize said. The earlier revisions are answered as they were, over stdio
+// and over HTTP, and the two can come to the same server.
+func TestTheStatelessRevision(t *testing.T) {
+	s := server(t)
+	m := func(extra string) string {
+		return `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"ExampleClient","version":"1.0.0"},"io.modelcontextprotocol/clientCapabilities":{}` + extra + `}`
+	}
+	var out bytes.Buffer
+	if err := s.Serve(t.Context(), strings.NewReader(strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + m("") + `}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{` + m("") + `}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"projects","arguments":{},` + m("") + `}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"prompts/list","params":{` + m("") + `}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2099-01-01","io.modelcontextprotocol/clientCapabilities":{}}}}`,
+		`{"jsonrpc":"2.0","id":6,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`,
+		`{"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"notifications":{"toolsListChanged":true},` + m("") + `}}`,
+		// The earlier revisions, beside it
+		`{"jsonrpc":"2.0","id":8,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{}}}`,
+		`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"projects","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":10,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2025-06-18"}}}`,
+	}, "\n")+"\n"), &out); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]map[string]any{}
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		var r map[string]any
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatalf("not the protocol: %q", line)
+		}
+		got[fmt.Sprint(r["id"])] = r
+	}
+	result := func(id string) map[string]any {
+		r, _ := got[id]["result"].(map[string]any)
+		if r == nil {
+			t.Fatalf("%s: no result in %v", id, got[id])
+		}
+		return r
+	}
+	code := func(id string) float64 {
+		e, _ := got[id]["error"].(map[string]any)
+		c, _ := e["code"].(float64)
+		return c
+	}
+
+	d := result("1")
+	versions, _ := d["supportedVersions"].([]any)
+	caps, _ := d["capabilities"].(map[string]any)
+	info, _ := d["_meta"].(map[string]any)["io.modelcontextprotocol/serverInfo"].(map[string]any)
+	if len(versions) != 5 || versions[0] != "2026-07-28" || versions[1] != "2025-11-25" || versions[4] != "2024-11-05" ||
+		caps["tools"] == nil || caps["prompts"] == nil || d["instructions"] != Instructions || d["resultType"] != "complete" ||
+		info["name"] != "asq" || d["ttlMs"].(float64) <= 0 || d["cacheScope"] != "public" {
+		t.Errorf("server/discover = %v", d)
+	}
+	if l := result("2"); len(l["tools"].([]any)) != 10 || l["resultType"] != "complete" || l["ttlMs"].(float64) <= 0 || l["cacheScope"] != "public" {
+		t.Errorf("tools/list = %v", l)
+	}
+	if c := result("3"); c["resultType"] != "complete" || !strings.Contains(fmt.Sprint(c["content"]), "/work/alpha") || c["_meta"] == nil || c["ttlMs"] != nil {
+		t.Errorf("tools/call = %v", c)
+	}
+	if p := result("4"); len(p["prompts"].([]any)) != 2 || p["ttlMs"] == nil {
+		t.Errorf("prompts/list = %v", p)
+	}
+	e5, _ := got["5"]["error"].(map[string]any)
+	data, _ := e5["data"].(map[string]any)
+	if code("5") != codeUnsupported || data["requested"] != "2099-01-01" || len(data["supported"].([]any)) != 5 {
+		t.Errorf("a revision it does not speak = %v", got["5"])
+	}
+	if code("6") != codeParams || !strings.Contains(fmt.Sprint(got["6"]["error"]), "clientCapabilities") {
+		t.Errorf("a request that does not say what its client can do = %v", got["6"])
+	}
+	if code("7") != codeNoMethod {
+		t.Errorf("subscriptions/listen, to a server whose lists do not change = %v", got["7"])
+	}
+	if r := result("8"); r["protocolVersion"] != "2025-11-25" || r["instructions"] != Instructions || r["resultType"] != nil {
+		t.Errorf("initialize = %v", r)
+	}
+	if r := result("9"); r["resultType"] != nil || r["_meta"] != nil {
+		t.Errorf("a call after initialize is answered as it was = %v", r)
+	}
+	if r := result("10"); r["resultType"] != nil || len(r["tools"].([]any)) != 10 {
+		t.Errorf("a revision of initialize named in _meta = %v", r)
+	}
+
+	// Over HTTP the headers say again what the body says, and must agree with it
+	post := func(body string, headers map[string]string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		s.ServeHTTP(rec, req)
+		return rec
+	}
+	h := func(method string, more ...string) map[string]string {
+		hs := map[string]string{"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": method}
+		for i := 0; i+1 < len(more); i += 2 {
+			hs[more[i]] = more[i+1]
+		}
+		return hs
+	}
+	call := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"projects","arguments":{},` + m("") + `}}`
+	for _, tc := range []struct {
+		body    string
+		headers map[string]string
+		status  int
+		want    string
+	}{
+		{`{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + m("") + `}}`, h("server/discover"), 200, `"supportedVersions":["2026-07-28","2025-11-25"`},
+		{call, h("tools/call", "Mcp-Name", "projects"), 200, "/work/alpha"},
+		{call, h("tools/call", "Mcp-Name", "=?base64?cHJvamVjdHM=?="), 200, "/work/alpha"},
+		{call, h("tools/call"), 400, `"code":-32020`},
+		{call, h("tools/call", "Mcp-Name", "search"), 400, "Mcp-Name header value"},
+		{call, map[string]string{"MCP-Protocol-Version": "2026-07-28", "Mcp-Name": "projects"}, 400, "the Mcp-Method header is missing"},
+		{call, h("tools/call", "Mcp-Name", "projects", "MCP-Protocol-Version", "2025-11-25"), 400, `MCP-Protocol-Version header value \"2025-11-25\" does not match body value \"2026-07-28\"`},
+		{`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2099-01-01","io.modelcontextprotocol/clientCapabilities":{}}}}`,
+			map[string]string{"MCP-Protocol-Version": "2099-01-01", "Mcp-Method": "tools/list"}, 400, `"code":-32022`},
+		{`{"jsonrpc":"2.0","id":1,"method":"resources/list","params":{` + m("") + `}}`, h("resources/list"), 404, `"code":-32601`},
+		// The earlier revisions, as they were: no headers asked for, an unknown method 200
+		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"projects","arguments":{}}}`, nil, 200, "/work/alpha"},
+		{`{"jsonrpc":"2.0","id":1,"method":"resources/list"}`, map[string]string{"MCP-Protocol-Version": "2025-11-25"}, 200, `"code":-32601`},
+	} {
+		rec := post(tc.body, tc.headers)
+		if rec.Code != tc.status || !strings.Contains(rec.Body.String(), tc.want) {
+			t.Errorf("POST %s %v = %d %s; want %d with %q", tc.body, tc.headers, rec.Code, rec.Body, tc.status, tc.want)
 		}
 	}
 }

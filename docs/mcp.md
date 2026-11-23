@@ -251,7 +251,23 @@ skill that teaches an agent when to reach for these tools and how to move throug
 
 ## Protocol notes
 
-Tools and prompts; no resources or sampling. Revisions 2024-11-05 through 2025-11-25 are
-answered in kind. On stdio each request runs on its own, so a slow search does not hold up a
-ping, and `notifications/cancelled` stops the request it names. stdout carries the protocol and
-nothing else; anything the server has to say goes to stderr.
+Tools and prompts; no resources, sampling or subscriptions — nothing it offers changes while it
+runs. Revisions 2024-11-05 through 2025-11-25 are answered in kind after `initialize`, and
+2026-07-28, which does without it, request by request, on the same server and over both
+transports:
+
+- `server/discover` says what `initialize` says — the revisions, what is offered, and the
+  instructions, which a client of that revision has from here or not at all.
+- A request that names 2026-07-28 in `_meta` must say what its client can do
+  (`clientCapabilities`), and is answered with `resultType` and the server's name; the lists
+  of tools and prompts say a client may keep them an hour. One that names a revision the server
+  does not speak is answered `-32022` with those it does. One that names none, or an earlier
+  one, is answered as `initialize` agreed.
+- Over HTTP such a request carries its revision, method and tool or prompt name in headers
+  too (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`), and one whose headers are missing or
+  say other than its body is answered `400`, as is a revision not spoken; a method the server
+  does not have is `404`. A request of an earlier revision is answered as before.
+
+On stdio each request runs on its own, so a slow search does not hold up a ping, and
+`notifications/cancelled` stops the request it names. stdout carries the protocol and nothing
+else; anything the server has to say goes to stderr.

@@ -106,8 +106,8 @@ Partial matches, closest first: 2 turns in 1 session, the closest holding 2 of t
 An agent narrows a search as it is told to — `since`, `project` — and an empty answer to a
 narrowed search is not an empty history. When the filters kept a search from matching whole,
 the answer speaks of the turns they select, and says how many outside them match and which
-argument to drop, or that none do; and of a match only archived sessions hold, that `archived`
-finds it:
+argument to drop — or that none do, and which of the words turns outside them hold; and of a
+match only archived sessions hold, that `archived` finds it:
 
 ```
 No turn the filters select holds “retry”.

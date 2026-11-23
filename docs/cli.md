@@ -100,16 +100,22 @@ match whole but for a word it excludes lists none.
 When the filters given — `--since`, `--project`, `--source`, `--branch`, `--until` — keep a
 search from matching whole, the answer speaks of the turns they select, and says how many
 turns outside them match it and which flags to drop to see them; or that none do, so that
-dropping them is not tried for nothing. A search leaves out archived sessions unless
-`--archived` is given, and says the same of a match only they hold:
+dropping them is not tried for nothing, and which of its words turns outside them hold. A search
+leaves out archived sessions unless `--archived` is given, and says the same of a match only
+they hold:
 
 ```console
 $ asq search retry --since 1h
 No turn the filters select holds “retry”.
 7 turns in 7 sessions outside them match: drop --since to see them.
-``` `--recent` orders by time instead of
-relevance; `--per-session N` bounds how many turns of one session are shown (default 3, `0` for
-no bound).
+
+$ asq search retry zeromq --since 1h
+No turn the filters select holds “retry” or “zeromq”.
+None outside them matches either, though some hold “retry”.
+```
+
+`--recent` orders by time instead of relevance; `--per-session N` bounds how many turns of one
+session are shown (default 3, `0` for no bound).
 
 **`asq files <path>`** — the turns that named a file, newest first, each with the ask that led
 to it. `--changed` keeps only turns that changed it. Each says how the file stands now against

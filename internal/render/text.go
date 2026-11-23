@@ -247,6 +247,9 @@ func outside(w io.Writer, o *index.Outside, st Style) {
 	switch {
 	case o == nil:
 		return
+	case o.Turns == 0 && len(o.Held) > 0:
+		fmt.Fprintf(w, "None outside them matches either, though some hold %s.\n", quoted(o.Held, "and"))
+		return
 	case o.Turns == 0:
 		fmt.Fprintln(w, "Nor does any outside them.")
 		return

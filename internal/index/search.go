@@ -95,6 +95,10 @@ type Outside struct {
 	// Archived says those turns are in archived sessions alone: they take including those,
 	// as well as dropping the filters.
 	Archived bool `json:"archived,omitempty"`
+	// Held are the words no turn the filters select holds (SearchResult.Missing) that turns
+	// outside them hold, as typed — said when none outside them matches whole: the words are
+	// not unheard of, only not all in one turn.
+	Held []string `json:"held,omitempty"`
 }
 
 // Partial is how near the hits of a partial match come to the query.
@@ -154,7 +158,7 @@ func (ix *Index) Search(ctx context.Context, q Query, f Filter, o SearchOptions)
 				return res, err
 			}
 		}
-		res.Outside, err = ix.outside(ctx, match, f)
+		res.Outside, err = ix.outside(ctx, q, match, f, res.Missing)
 		return res, err
 	}
 	res.Total, res.Sessions = total, sessions
@@ -166,9 +170,11 @@ func (ix *Index) Search(ctx context.Context, q Query, f Filter, o SearchOptions)
 // filters a person set dropped — the store, the directory, the branch, the text, the time —
 // and, should that find none, with archived sessions too. A search no turn the filter
 // selects matches would otherwise answer that there is none, and be taken at its word, when
-// a week, a project or an archive was all that hid it. Nil when there is nothing to say: no
-// filter was set and no archived session holds it, or the search is of one session.
-func (ix *Index) outside(ctx context.Context, match string, f Filter) (*Outside, error) {
+// a week, a project or an archive was all that hid it. Should none match even so, it says
+// which of the words missing within the filter, missing, turns outside it hold. Nil when
+// there is nothing to say: no filter was set and no archived session holds it, or the
+// search is of one session.
+func (ix *Index) outside(ctx context.Context, q Query, match string, f Filter, missing []string) (*Outside, error) {
 	if f.SID != 0 {
 		return nil, nil
 	}
@@ -211,6 +217,21 @@ func (ix *Index) outside(ctx context.Context, match string, f Filter) (*Outside,
 	}
 	if len(o.Filters) == 0 && o.Turns == 0 {
 		return nil, nil
+	}
+	if o.Turns == 0 && len(missing) > 0 {
+		wide.Archived = f.Archived
+		for _, t := range q.Terms {
+			if t.Not || !slices.Contains(missing, t.String()) {
+				continue
+			}
+			held, err := ix.holds(ctx, t.expr(), wide)
+			if err != nil {
+				return nil, err
+			}
+			if held {
+				o.Held = append(o.Held, t.String())
+			}
+		}
 	}
 	return o, nil
 }

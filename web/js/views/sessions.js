@@ -429,7 +429,7 @@ const seenLine = (base, markSeen) =>
     h('span', { class: 'dots' }, h('span', null, 'Changed since your last visit'), time(base, 'stamp')),
     h('button', { type: 'button', class: 'link-btn', onclick: markSeen }, 'Mark as seen'));
 
-const quoted = (words) => words.map((w) => `“${w}”`).join(words.length === 2 ? ' or ' : ', ');
+const quoted = (words, or = 'or') => words.map((w) => `“${w}”`).join(words.length === 2 ? ` ${or} ` : ', ');
 
 // partialNote says that no turn holds every word of a search, and what the turns listed
 // are instead: the closest, each with the words it lacks.
@@ -443,9 +443,10 @@ const partialNote = (v) => h('p', { class: 'notice warn partial-note', role: 'no
 const noTurn = (o) => (!o ? 'No turn' : o.filters?.length ? 'No turn these filters select' : 'No turn outside archived sessions');
 
 // beyond says how many turns would match a search without the filters, or with archived
-// sessions included.
-const beyond = (o) => (!o.turns ? 'Nor does any outside them.'
-  : `${f.plural(o.turns, 'turn')} in ${f.plural(o.sessions, o.archived ? 'archived session' : 'session')}${o.filters?.length ? ' outside them' : ''} ${o.turns === 1 ? 'matches' : 'match'}.`);
+// sessions included — or, when none would, which of its words turns outside them hold.
+const beyond = (o) => (o.turns ? `${f.plural(o.turns, 'turn')} in ${f.plural(o.sessions, o.archived ? 'archived session' : 'session')}${o.filters?.length ? ' outside them' : ''} ${o.turns === 1 ? 'matches' : 'match'}.`
+  : o.held?.length ? `None outside them matches either, though some hold ${quoted(o.held, 'and')}.`
+    : 'Nor does any outside them.');
 
 function hitRow(hit, query) {
   const s = hit.session;

@@ -119,8 +119,9 @@ would match it without them:
 `filters` names the parameters given — `source`, `project`, `branch`, `text`, `since`, `until`;
 `turns` and `sessions` are what dropping them would find, `0` when nothing would; and
 `archived: true` says those turns are in archived sessions alone, which take `archived=1` as
-well. A search given no filter has `outside` only for a match archived sessions alone hold, and
-one confined to a `session` never has it.
+well. When nothing would, `held` names the words of `missing` that turns outside the filters
+hold: they are there, only not all in one turn. A search given no filter has `outside` only for
+a match archived sessions alone hold, and one confined to a `session` never has it.
 
 ## Reports
 

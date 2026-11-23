@@ -157,7 +157,8 @@ Windows 上正在运行的 `asq.exe` 无法被替换：先 `schtasks /end /tn as
   里的 `kept`，或者 `asq keep --dir` 指定的目录——卸载时会说明在哪里、有多少份 transcript、
   其中多少已被 CLI 删掉，以及删除它们的命令。
 - 各 CLI 的存储：那是你的历史，asq 从不改动。
-- `ASQ_STATE` 指定的目录里其他的东西：只删 asq 在里面写的文件，删完目录空了，才连目录一起删。
+- `ASQ_STATE` 指定的目录、或状态目录是链接时它指向的目录里其他的东西：只删 asq 在里面写的文件，
+  删完目录空了，才连目录一起删。
 - 交给过各 agent CLI 的 `asq` MCP server：在你告诉它们不用之前，它们会一直去找它——用各 CLI
   自己的命令或在它的设置里删掉；存过 skill 的话，还有 `~/.claude/skills/agent-sessions` 和
   `~/.agents/skills/agent-sessions` 目录。

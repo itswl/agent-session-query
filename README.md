@@ -170,8 +170,8 @@ order to run them:
   `asq keep --dir` named — and uninstall says where, how many transcripts they hold and how many
   of those the CLI has deleted, and the command that removes them.
 - The CLIs' stores, which are your history, and are never touched.
-- What else is in a folder `ASQ_STATE` names: only the files asq writes there go, and the
-  folder itself once that leaves it empty.
+- What else is in a folder `ASQ_STATE` names, or one the state directory is a link to: only
+  the files asq writes there go, and the folder itself once that leaves it empty.
 - The `asq` MCP server each agent CLI was given, which it goes on asking for until told
   otherwise: remove it with the CLI's own command or from its settings; and the skill's folders,
   `~/.claude/skills/agent-sessions` and `~/.agents/skills/agent-sessions`, where it was saved.

@@ -421,27 +421,27 @@ differently whether a failed command passed later judges every failure again the
 **`asq uninstall`** — takes asq off the machine. The index and the state are removed — an
 `ASQ_INDEX` followed where it points, when what is there is an index: a SQLite database of an
 index's tables alone, not a CLI's database it was pointed at, which holds tables of its own; of
-a folder `ASQ_STATE` names, the files asq writes there alone, and the folder once that leaves
-it empty — but for the copies `asq keep` made, which may be all there is of what a CLI deleted.
-Each CLI's folder of them stays, in the folder `asq keep --dir` named and in `kept` in the
-state directory, where copies made before it was named are; each folder they are in is said
-with how many transcripts it holds, how many of those the CLI has deleted since, and the
-command that would remove them: the folder when they are all it holds, or else each CLI's
-folder of them. A state dir that is a home, or holds one — an `ASQ_STATE` pointed too wide — is
-refused, not removed, and so is one whose `keep.json`, which says where the copies are, does
-not read. What cannot be removed — on Windows, a file a running server holds open — is said as
-left, and the rest goes on. What the command will not do itself is said as commands, in the
-order to run them. First what keeps `asq serve` running: `asq service uninstall` for the
-service it set up, which needs the binary; `brew services stop asq` for Homebrew's; for one set
-up by hand — a LaunchAgent or a user unit that runs `asq serve` or names this binary, or the
-task named `asq` — the manager's own commands. Then, when there was one, `asq uninstall` again,
-for the index the server wrote until it was down. Last the binary: `brew uninstall asq`, with
-`brew untap` when the tap is this repository, or `scoop uninstall asq`, with `--global` for one
-in Scoop's folder for every user, for one they installed; otherwise `rm`, `sudo` when its
-directory is not this account's to write, or on Windows `Remove-Item` of its folder when that
-holds nothing else. The CLIs' stores are never touched, nor the MCP servers and skills the
-agent CLIs were given, nor what a browser keeps of the page offline. `--json` answers
-`removed`, `left` and `run`.
+a folder `ASQ_STATE` names, or the state directory is a link to, the files asq writes there
+alone, and the folder once that leaves it empty — but for the copies `asq keep` made, which may
+be all there is of what a CLI deleted. Each CLI's folder of them stays, in the folder
+`asq keep --dir` named and in `kept` in the state directory, where copies made before it was
+named are; each folder they are in is said with how many transcripts it holds, how many of
+those the CLI has deleted since, and the command that would remove them: the folder when they
+are all it holds, or else each CLI's folder of them. A state dir that is a home, or holds one —
+an `ASQ_STATE` pointed too wide — is refused, not removed, and so is one whose `keep.json`,
+which says where the copies are, does not read. What cannot be removed — on Windows, a file a
+running server holds open — is said as left, and the rest goes on. What the command will not do
+itself is said as commands, in the order to run them. First what keeps `asq serve` running:
+`asq service uninstall` for the service it set up, which needs the binary;
+`brew services stop asq` for Homebrew's; for one set up by hand — a LaunchAgent or a user unit
+that runs `asq serve` or names this binary, or the task named `asq` — the manager's own
+commands. Then, when there was one, `asq uninstall` again, for the index the server wrote until
+it was down. Last the binary: `brew uninstall asq`, with `brew untap` when the tap is this
+repository, or `scoop uninstall asq`, with `--global` for one in Scoop's folder for every user,
+for one they installed; otherwise `rm`, `sudo` when its directory is not this account's to
+write, or on Windows `Remove-Item` of its folder when that holds nothing else. The CLIs' stores
+are never touched, nor the MCP servers and skills the agent CLIs were given, nor what a browser
+keeps of the page offline. `--json` answers `removed`, `left` and `run`.
 
 ## Environment
 

@@ -482,7 +482,9 @@ func (a *App) Health(ctx context.Context) (Health, error) {
 		if err != nil {
 			return h, err
 		}
-		_, listed, err := a.Index.Sessions(ctx, index.Filter{Stores: []string{st.Name}}, index.Page{Limit: 1})
+		// What the list shows of it, which reads every store: a copy folded into the
+		// session it is a copy of is listed as that one, not as a session of its own store
+		_, listed, err := a.Index.Sessions(ctx, index.Filter{Stores: a.Stores(), Store: st.Name}, index.Page{Limit: 1})
 		if err != nil {
 			return h, err
 		}

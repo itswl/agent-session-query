@@ -2,8 +2,10 @@ package index_test
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/itswl/agent-session-query/internal/app"
@@ -99,6 +101,10 @@ func TestASessionTwoStoresHoldIsCountedOnce(t *testing.T) {
 	if len(byStore) != 1 || byStore[0].Key != "claude" {
 		t.Errorf("usage by store = %+v, want claude alone", byStore)
 	}
+	// and the health report, which the page's store picker counts from, says the same
+	if got := listedBy(t, a); got != "claude 2, claude@kept 0" {
+		t.Errorf("sessions by store in the health report = %s, want them as the list has them", got)
+	}
 	// A ref to the copy is the session it is a copy of
 	s, err := a.Index.Resolve(ctx, "claude@kept/"+fixture.Beta[:8], a.Stores())
 	if err != nil || s.Source != "claude" {
@@ -125,9 +131,26 @@ func TestASessionTwoStoresHoldIsCountedOnce(t *testing.T) {
 	if got.sources != "claude/aaaa claude@kept/bbbb " {
 		t.Errorf("listed as %q, want beta as the copy holds it", got.sources)
 	}
+	if got := listedBy(t, a); got != "claude 1, claude@kept 1" {
+		t.Errorf("sessions by store in the health report, after the CLI deleted beta = %s", got)
+	}
 	if s, err := a.Index.Resolve(ctx, "claude/"+fixture.Beta[:8], a.Stores()); err != nil || s.Source != "claude@kept" {
 		t.Errorf("claude/%s = %s, %v; want the copy", fixture.Beta[:8], s.Ref, err)
 	}
+}
+
+// listedBy is how many sessions the health report says each store has listed.
+func listedBy(t *testing.T, a *app.App) string {
+	t.Helper()
+	h, err := a.Health(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var by []string
+	for _, st := range h.Stores {
+		by = append(by, fmt.Sprintf("%s %d", st.Source, st.Sessions))
+	}
+	return strings.Join(by, ", ")
 }
 
 // The CLI deletes a session's transcript and leaves its subagents': they hang beneath what

@@ -110,7 +110,11 @@ type Filter struct {
 	// Empty means no restriction.
 	Stores []string
 	// Source keeps one store, or — given a CLI's name — every store of that CLI.
-	Source  string
+	Source string
+	// Store keeps one store alone, by its name exactly: given a CLI's own store, not the
+	// CLI's others, as Source would. With Stores, a copy folded into the session it is a
+	// copy of is not a session of its own store.
+	Store   string
 	Project string // part of the working directory
 	// Dirs keeps the sessions whose working directory is one of these or below one of
 	// them: one directory by every path that names it, as a CLI may have recorded it
@@ -169,6 +173,10 @@ func (f Filter) where() (string, []any) {
 	if f.Source != "" {
 		conds = append(conds, "(s.source = ? OR s.agent = ?)")
 		args = append(args, f.Source, f.Source)
+	}
+	if f.Store != "" {
+		conds = append(conds, "s.source = ?")
+		args = append(args, f.Store)
 	}
 	if f.Project != "" {
 		conds = append(conds, "instr(lower(s.cwd), lower(?)) > 0")

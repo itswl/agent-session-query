@@ -6,7 +6,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -212,21 +211,6 @@ func (a *App) Behind() time.Duration {
 		return 0
 	}
 	return max(time.Since(a.caughtAt), time.Nanosecond)
-}
-
-// Watch keeps the index in step until ctx ends, looking at the stores every interval.
-// A look that finds nothing changed costs a stat per transcript.
-func (a *App) Watch(ctx context.Context, interval time.Duration) {
-	for {
-		if _, err := a.Sync(ctx, index.SyncOptions{}); err != nil && ctx.Err() == nil {
-			fmt.Fprintf(os.Stderr, "sync: %v\n", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(interval):
-		}
-	}
 }
 
 // Query is a selection of sessions as a person or an agent states it.

@@ -171,7 +171,10 @@ scripts, no requests.
 **`asq resume <ref>`** — prints the command that reopens the session in the CLI that wrote it,
 including the `cd` it needs (`cd /work/api && claude --resume …`). `--run` runs it: on macOS and
 Linux asq hands itself over to the agent, in the session's directory, so that the terminal and its
-signals are the agent's alone.
+signals are the agent's alone. A session read from a store added by name (`claude@box2`) is not
+in its CLI's store here, which is where the CLI looks: resume prints nothing and fails, saying the
+command for the machine it came from. `show` and `brief` give that one as
+`resume where claude@box2 came from: …`.
 
 ## Handing over
 

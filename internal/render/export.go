@@ -114,6 +114,8 @@ func header(s *index.Session, turns []model.Turn) []string {
 	lines = append(lines, strings.Join(sums, " · "))
 	if s.Resume != "" {
 		lines = append(lines, "resume: "+s.Resume)
+	} else if s.ResumeThere != "" {
+		lines = append(lines, "resume where "+s.Source+" came from: "+s.ResumeThere)
 	}
 	return lines
 }

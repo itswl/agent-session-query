@@ -178,6 +178,39 @@ func TestAResumeNeedsItsDirectoryWhereTheCLIDoes(t *testing.T) {
 	}
 }
 
+// A session read from a store added by name is not in its CLI's store here, where the CLI
+// looks for it: there is no command for this machine, and the one for the machine it came
+// from is given as that — in that machine's shell, as its paths say.
+func TestASessionFromAStoreAddedByNameResumesWhereItCameFrom(t *testing.T) {
+	box := index.Session{Session: model.Session{Source: "claude@box2", Agent: "claude", ID: "c-1", Cwd: "/w/qa"}}
+	if got := app.Resume(&box); got != "" {
+		t.Errorf("resume here = %q, want none", got)
+	}
+	if _, argv := app.ResumeArgs(&box); argv != nil {
+		t.Errorf("resume args = %q, want none: asq resume --run would run it here", argv)
+	}
+	if why := app.NoResume(&box); !strings.Contains(why, "read from claude@box2, not from Claude Code's store on this machine") {
+		t.Errorf("no resume because %q", why)
+	}
+	if got := app.ResumeThere(&box); got != "cd /w/qa && claude --resume c-1" {
+		t.Errorf("resume there = %q", got)
+	}
+	win := index.Session{Session: model.Session{Source: "claude@laptop", Agent: "claude", ID: "c-2", Cwd: `C:\w\qa`}}
+	if got := app.ResumeThere(&win); got != `cd /d C:\w\qa && claude --resume c-2` {
+		t.Errorf("resume there, from a Windows machine = %q", got)
+	}
+	// What its CLI reopens nowhere is not reopened there either
+	agent := index.Session{Session: model.Session{Source: "claude@box2", Agent: "claude", ID: "x1", Cwd: "/w/qa", Parent: &model.Parent{Session: "c-1"}}}
+	if got := app.ResumeThere(&agent); got != "" {
+		t.Errorf("resume there for a subagent = %q", got)
+	}
+	// The CLI's own store, relocated or not, is where it looks
+	own := index.Session{Session: model.Session{Source: "claude", Agent: "claude", ID: "c-1", Cwd: "/w/qa"}}
+	if app.ResumeThere(&own) != "" || app.Resume(&own) == "" {
+		t.Errorf("own store: resume %q, there %q", app.Resume(&own), app.ResumeThere(&own))
+	}
+}
+
 // What a brief is asked to cover, as the faces are given it: "all" is the whole session,
 // not a moment — it is no bound in a filter, and a brief with no bound is of its latest turn.
 func TestBriefOf(t *testing.T) {

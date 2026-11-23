@@ -329,6 +329,8 @@ func (p *BriefPlan) write(o BriefOptions, d detail) string {
 	// The cheapest handoff of all is to reopen the session in the CLI that wrote it
 	if s.Resume != "" {
 		fmt.Fprintf(&b, "- resume: %s\n", s.Resume)
+	} else if s.ResumeThere != "" {
+		fmt.Fprintf(&b, "- resume where %s came from: %s\n", s.Source, s.ResumeThere)
 	}
 	if len(real) > 0 {
 		fmt.Fprintf(&b, "- %s · %s → %s\n", plural(len(real), "turn"), shortTime(real[0].StartedAt), shortTime(workEnd(real[len(real)-1])))

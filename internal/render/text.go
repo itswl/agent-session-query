@@ -380,6 +380,8 @@ func Outline(w io.Writer, s *index.Session, turns []model.Turn, children []index
 	}
 	if s.Resume != "" {
 		fmt.Fprintln(w, st.dim("resume: "+s.Resume))
+	} else if s.ResumeThere != "" {
+		fmt.Fprintln(w, st.dim("resume where "+s.Source+" came from: "+s.ResumeThere))
 	}
 	if s.Error != "" {
 		fmt.Fprintln(w, st.red("could not be read whole: "+s.Error))

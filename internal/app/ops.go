@@ -30,7 +30,7 @@ func (a *App) Resolve(ctx context.Context, ref string) (index.Session, int, erro
 		}
 		return s, turn, err
 	}
-	s.Resume = Resume(&s)
+	Resumes(&s)
 	return s, turn, nil
 }
 
@@ -80,7 +80,7 @@ func (a *App) Self(ctx context.Context, source, id string, dirs []string) (Self,
 					}
 				}
 			}
-			self.Resume = Resume(&self.Session)
+			Resumes(&self.Session)
 			return self, nil
 		case err != nil && !errors.Is(err, index.ErrNotFound) && !errors.As(err, &amb):
 			return Self{}, err

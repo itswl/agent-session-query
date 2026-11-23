@@ -130,6 +130,32 @@ func TestCommands(t *testing.T) {
 	}
 }
 
+// A session read from a store added by name, and not in the CLI's own: resume prints no
+// command for this machine, and says the one for the machine it came from.
+func TestResumeOfASessionFromAnotherMachine(t *testing.T) {
+	h, index := setup(t)
+	box := filepath.Join(t.TempDir(), "box2")
+	h.Copy(t, box)
+	if err := os.Remove(filepath.Join(h.Dir, "-work-beta", fixture.Beta+".jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	beta := "claude@box2/" + fixture.Beta[:8]
+	out, errs, code := asq(t, h, index, "resume", beta, "--path", "claude@box2="+box)
+	if code != 1 || out != "" || !strings.Contains(errs, "cannot be resumed here: it was read from claude@box2") ||
+		!strings.Contains(errs, "Where claude@box2 came from:\n  cd /work/beta && claude --resume "+fixture.Beta) {
+		t.Errorf("resume %s = %d, out %q, err %q", beta, code, out, errs)
+	}
+	out, _, _ = asq(t, h, index, "show", beta, "--path", "claude@box2="+box)
+	if !strings.Contains(out, "resume where claude@box2 came from: cd /work/beta && claude --resume "+fixture.Beta) || strings.Contains(out, "\nresume: ") {
+		t.Errorf("show %s =\n%s", beta, out)
+	}
+	// One the CLI's own store holds as well is resumed here, from there
+	out, _, code = asq(t, h, index, "resume", "claude@box2/"+fixture.Alpha[:8], "--path", "claude@box2="+box)
+	if code != 0 || !strings.HasSuffix(strings.TrimSpace(out), "/work/alpha && claude --resume "+fixture.Alpha) {
+		t.Errorf("resume of a copy of a session here = %d, %q", code, out)
+	}
+}
+
 func TestJSON(t *testing.T) {
 	h, index := setup(t)
 	for _, tc := range []struct {

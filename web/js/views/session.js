@@ -175,7 +175,10 @@ export function mount(main, route, ctx) {
         fact('Tokens out', f.tokens(u.output), { title: `${f.num(u.output)} output tokens${u.reasoning ? `, ${f.num(u.reasoning)} of them reasoning` : ''}` }),
         fact('Cache hit', f.pct(f.cacheHit(u))),
         st.costUsd > 0 && fact('Cost', f.cost(st.costUsd), { title: `$${st.costUsd}` })),
-      s.resume && h('div', { class: 'resume' }, h('code', null, s.resume), copyButton(s.resume, 'Copy the resume command')));
+      s.resume && h('div', { class: 'resume' }, h('code', null, s.resume), copyButton(s.resume, 'Copy the resume command')),
+      // Read from a store added by name: the command is for the machine it came from
+      !s.resume && s.resumeThere && h('div', { class: 'resume' }, h('span', { class: 'dim there' }, `Where ${s.source} came from`),
+        h('code', null, s.resumeThere), copyButton(s.resumeThere, `Copy the command that resumes it where ${s.source} came from`)));
     fill(extra,
       s.error && h('p', { class: 'notice warn' }, icon('alert'), h('span', null, 'This transcript could not be read whole: ', s.error)),
       v.agents.length > 0 && agentsList(),

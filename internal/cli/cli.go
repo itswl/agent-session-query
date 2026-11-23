@@ -784,6 +784,11 @@ func cmdResume(ctx context.Context, args []string, io *streams) error {
 		if s.Parent != nil {
 			return fmt.Errorf("%s is a subagent's transcript: resume the session it ran in, %s", s.Ref, s.Root)
 		}
+		if s.ResumeThere != "" {
+			// Said, not printed as the answer: a script that runs what resume prints must not
+			// run a command for another machine on this one
+			return fmt.Errorf("%s cannot be resumed here: %s. Where %s came from:\n  %s", s.Ref, app.NoResume(&s), s.Source, s.ResumeThere)
+		}
 		return fmt.Errorf("%s cannot be resumed: %s", s.Ref, app.NoResume(&s))
 	}
 	if !*run {

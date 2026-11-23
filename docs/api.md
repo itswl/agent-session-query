@@ -44,7 +44,9 @@ signing in and the MCP endpoint. The page is a client of this API and uses nothi
 
 `lastAsk` and `answer` are cut to a row's worth here; a session read on its own carries them
 whole. `stats.passedLater` is how many of its failures the same command passed later, [as failures
-judge it](#reports). `active` means written within the last two minutes — recency, not a process check.
+judge it](#reports). `resume` reopens the session from this machine; a session read from a store
+added by name has none, and `resumeThere` instead: the command for the machine that store came
+from. `active` means written within the last two minutes — recency, not a process check.
 
 `live` is [where the latest turn stands](model.md#where-a-turn-stands), as the transcript
 says it, for the CLIs that record it ([which](sources.md#where-a-turn-stands)): `working`,

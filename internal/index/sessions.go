@@ -67,9 +67,13 @@ type Session struct {
 	Active  bool   `json:"active,omitempty"` // written within ActiveWindow
 	Error   string `json:"error,omitempty"`  // why its transcript could not be read whole
 
-	// Resume is the command that reopens the session in its own CLI. The index does not
-	// know it; the layer that knows the CLIs fills it in.
+	// Resume is the command that reopens the session in its own CLI, on this machine. The
+	// index does not know it; the layer that knows the CLIs fills it in.
 	Resume string `json:"resume,omitempty"`
+	// ResumeThere is, for a session read from a store added by name, the command that
+	// reopens it where that store is its CLI's own: on the machine it came from, not this
+	// one. Resume is then empty.
+	ResumeThere string `json:"resumeThere,omitempty"`
 
 	sid     int64
 	rootSid int64

@@ -46,6 +46,9 @@ asq ls --path claude@box2=/mnt/box2/.claude/projects     # … or: this one as w
   the CLI's own store holds it, while it does; once the CLI has deleted it, as the store that
   holds the most of it, under that store's name. A ref to either copy names it. A subagent's
   transcript is the same one when it ran in the same session and has the same id.
+- A session only a labeled store holds is not in its CLI's store on this machine, which is
+  where the CLI's resume command looks: `asq resume` gives no command for it here, and says the
+  one for the machine the store came from.
 - A label is lowercase letters, digits and dashes.
 - Repeat the flag for several, or set `ASQ_PATH` (comma-separated) so every `asq` process on
   the machine agrees.

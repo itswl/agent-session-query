@@ -326,8 +326,21 @@ func When(s string, now time.Time) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unreadable time %q (want 7d, 12h, 2026-09-01 or 2026-09-01T08:00:00Z)", s)
 }
 
-// NoResume says why there is no command that reopens a session, or "" when there is one.
+// NoResume says why there is no command that reopens a session on this machine, or "" when
+// there is one.
 func NoResume(s *index.Session) string {
+	if why := cannotResume(s); why != "" {
+		return why
+	}
+	if readElsewhere(s) {
+		spec, _ := catalog.Spec(s.Source)
+		return "it was read from " + s.Source + ", not from " + spec.Title + "'s store on this machine, which is where " + spec.Resume + " looks for it"
+	}
+	return ""
+}
+
+// cannotResume says why the session's CLI does not reopen it anywhere, or "".
+func cannotResume(s *index.Session) string {
 	spec, ok := catalog.Spec(s.Source)
 	title := s.Agent
 	if ok {
@@ -346,8 +359,16 @@ func NoResume(s *index.Session) string {
 	return ""
 }
 
-// Resume is the command that reopens a session in the CLI that wrote it, with the cd it
-// needs, or "" when there is none (NoResume says why).
+// readElsewhere says whether a session was read from a store its CLI does not look in on
+// this machine: a store added by name — another machine's, a backup. A CLI reopens a
+// session from its own store, and a copy of it is not there.
+func readElsewhere(s *index.Session) bool {
+	_, label, ok := strings.Cut(s.Source, "@")
+	return ok && label != ""
+}
+
+// Resume is the command that reopens a session in the CLI that wrote it, on this machine,
+// with the cd it needs, or "" when there is none (NoResume says why).
 //
 // The session is found from anywhere — the CLIs resolve an id across working
 // directories. What the directory decides is where the resumed agent then works: it
@@ -357,14 +378,34 @@ func Resume(s *index.Session) string {
 	if NoResume(s) != "" {
 		return ""
 	}
+	return resumeLine(s, runtime.GOOS == "windows")
+}
+
+// ResumeThere is, for a session read from a store added by name, the command that reopens
+// it where that store is its CLI's own — on the machine it came from — or "" when there is
+// none. It is not a command for this machine, and is never given as one.
+func ResumeThere(s *index.Session) string {
+	if !readElsewhere(s) || cannotResume(s) != "" {
+		return ""
+	}
+	// That machine's shell is the one its paths are written for
+	windows := runtime.GOOS == "windows"
+	if isAbsolute(s.Cwd) {
+		windows = !strings.HasPrefix(s.Cwd, "/")
+	}
+	return resumeLine(s, windows)
+}
+
+// resumeLine is the command that reopens a session, for a shell on Windows or not.
+func resumeLine(s *index.Session, windows bool) string {
 	spec, _ := catalog.Spec(s.Source)
-	cmd := spec.Resume + " " + ShellArg(s.ID) // a spec's words are plain: see ResumeArgs
+	cmd := spec.Resume + " " + quoteArg(s.ID, windows) // a spec's words are plain: see ResumeArgs
 	if isAbsolute(s.Cwd) {
 		cd := "cd "
-		if runtime.GOOS == "windows" {
+		if windows {
 			cd = "cd /d " // or cmd stays on the drive it was on
 		}
-		cmd = cd + ShellArg(s.Cwd) + " && " + cmd
+		cmd = cd + quoteArg(s.Cwd, windows) + " && " + cmd
 	}
 	return cmd
 }
@@ -421,9 +462,15 @@ func quoteArg(s string, windows bool) string {
 // Decorate fills in what the index does not know about a session: how to resume it.
 func Decorate(list []index.Session) []index.Session {
 	for i := range list {
-		list[i].Resume = Resume(&list[i])
+		Resumes(&list[i])
 	}
 	return list
+}
+
+// Resumes fills in how a session is resumed: here, or where the store it was read from is
+// its CLI's own.
+func Resumes(s *index.Session) {
+	s.Resume, s.ResumeThere = Resume(s), ResumeThere(s)
 }
 
 // quote is how much of an ask or an answer a row of a list carries. The whole of either
@@ -435,7 +482,7 @@ const quote = 400
 // of a megabyte nobody reads.
 func Listed(list []index.Session) []index.Session {
 	for i := range list {
-		list[i].Resume = Resume(&list[i])
+		Resumes(&list[i])
 		list[i].LastAsk = txt.Cap(list[i].LastAsk, quote)
 		list[i].Answer = txt.Cap(list[i].Answer, quote)
 	}
@@ -447,7 +494,7 @@ func ListedHits(res index.SearchResult) index.SearchResult {
 	for i := range res.Hits {
 		h := &res.Hits[i]
 		h.Ask, h.Answer = txt.Cap(h.Ask, quote), txt.Cap(h.Answer, quote)
-		h.Session.Resume = Resume(&h.Session)
+		Resumes(&h.Session)
 		h.Session.LastAsk, h.Session.Answer = "", "" // the hit's own ask and answer are the ones that matter
 	}
 	return res

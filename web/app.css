@@ -303,6 +303,7 @@ div.row-main { position: relative; }
 .fact.bad dd { color: var(--bad); }
 .resume { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; padding: 3px 3px 3px 10px; background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; }
 .resume code { flex: 1; min-width: 0; overflow-x: auto; font-size: 12px; white-space: nowrap; scrollbar-width: none; }
+.resume .there { flex: none; font-size: 12px; white-space: nowrap; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .details-btn { display: none; }
 .s-info .notice { margin-top: 14px; }

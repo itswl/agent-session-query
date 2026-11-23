@@ -473,3 +473,27 @@ func TestUsageIsTokensAndASessionKeepsItsCost(t *testing.T) {
 		t.Errorf("a session with no cost recorded shows one:\n%s", outline.String())
 	}
 }
+
+// A search the filters, or archived sessions being left out, kept from matching says what
+// would show the turns that match: the flags to drop and to add, in the command line's
+// words or an agent's.
+func TestASearchSaysWhatWouldShowWhatItLeftOut(t *testing.T) {
+	for _, c := range []struct {
+		outside *index.Outside
+		style   Style
+		want    string
+	}{
+		{&index.Outside{Turns: 1, Sessions: 1, Archived: true}, Style{},
+			"No turn outside archived sessions holds “retry”.\n1 turn in 1 archived session matches: add --archived to see it.\n"},
+		{&index.Outside{Turns: 3, Sessions: 2, Filters: []string{"project", "since"}, Archived: true}, Style{Args: true},
+			"No turn the filters select holds “retry”.\n3 turns in 2 archived sessions outside them match: drop project, since and add archived to see them.\n"},
+		{&index.Outside{Filters: []string{"since"}}, Style{},
+			"No turn the filters select holds “retry”.\nNor does any outside them.\n"},
+	} {
+		var b bytes.Buffer
+		Hits(&b, index.SearchResult{Hits: []index.Hit{}, Missing: []string{"retry"}, Outside: c.outside}, 0, c.style)
+		if b.String() != c.want {
+			t.Errorf("outside %+v:\n%s\nwant\n%s", c.outside, b.String(), c.want)
+		}
+	}
+}

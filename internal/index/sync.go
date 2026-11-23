@@ -513,10 +513,12 @@ func (ix *Index) Unkept(ctx context.Context, source string, all bool, ids []stri
 	return ix.transcripts(ctx, source, ids, true)
 }
 
-// Transcripts lists the transcripts of the sessions of a store with these ids, and of
-// their subagents, whatever was copied of them.
-func (ix *Index) Transcripts(ctx context.Context, source string, ids []string) ([]Unkept, error) {
-	if len(ids) == 0 {
+// Transcripts lists the transcripts of a store — every one, or those of the sessions with
+// these ids — and of their subagents, whatever was copied of them.
+func (ix *Index) Transcripts(ctx context.Context, source string, all bool, ids []string) ([]Unkept, error) {
+	if all {
+		ids = nil
+	} else if len(ids) == 0 {
 		return nil, nil
 	}
 	return ix.transcripts(ctx, source, ids, false)

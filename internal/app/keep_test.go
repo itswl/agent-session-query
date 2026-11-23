@@ -336,3 +336,54 @@ func TestNoLongerKeepingASessionLeavesWhatOthersReadWithIt(t *testing.T) {
 		t.Errorf("g-1 = %s in %q, %v; want the copy, in /work/app", s.Ref, s.Cwd, err)
 	}
 }
+
+// What the index says was copied is not taken at its word where the copy is not there: a
+// folder emptied by hand, or named anew, is filled again at the next round, and a copy
+// deleted by hand is made again when a person asks for the session, or for every one.
+func TestWhatIsKeptIsCopiedAgainWhereItsCopyIsGone(t *testing.T) {
+	a, _, kept := keeping(t)
+	ctx := t.Context()
+	if _, err := a.KeepAll(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	betaCopy := filepath.Join(kept, "-work-beta", fixture.Beta+".jsonl")
+	if err := os.RemoveAll(filepath.Dir(kept)); err != nil {
+		t.Fatal(err)
+	}
+	sync(t, a)
+	if _, err := os.Stat(betaCopy); err != nil {
+		t.Errorf("the folder emptied, beta is not copied again: %v", err)
+	}
+	elsewhere := filepath.Join(t.TempDir(), "asq-kept")
+	if err := os.RemoveAll(filepath.Dir(kept)); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.KeepIn(elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	sync(t, a)
+	if _, err := os.Stat(filepath.Join(elsewhere, "claude", "-work-beta", fixture.Beta+".jsonl")); err != nil {
+		t.Errorf("in the folder named anew, beta is not copied: %v", err)
+	}
+	if err := a.KeepIn(""); err == nil {
+		t.Fatal("left a folder that holds copies")
+	}
+
+	betaCopy = filepath.Join(elsewhere, "claude", "-work-beta", fixture.Beta+".jsonl")
+	if err := os.Remove(betaCopy); err != nil {
+		t.Fatal(err)
+	}
+	if copied, err := a.KeepAll(ctx, true); err != nil || copied.Transcripts != 1 {
+		t.Errorf("keep all again = %+v, %v; want beta copied again, and nothing else", copied, err)
+	}
+	if err := os.Remove(betaCopy); err != nil {
+		t.Fatal(err)
+	}
+	beta, _, _ := a.Resolve(ctx, fixture.Beta)
+	if k, err := a.KeepSession(ctx, &beta, true); err != nil || k.Transcripts != 1 {
+		t.Errorf("keep beta = %+v, %v; want it copied again", k, err)
+	}
+	if _, err := os.Stat(betaCopy); err != nil {
+		t.Error(err)
+	}
+}

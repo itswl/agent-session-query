@@ -51,7 +51,7 @@ func (a *App) keepUp(ctx context.Context) {
 		return
 	}
 	if err == nil {
-		_, err = a.copyKept(ctx, st, nil, false)
+		_, err = a.copyKept(ctx, st, nil, false, false)
 	}
 	a.keepMu.Lock()
 	a.keepErr = err
@@ -60,8 +60,10 @@ func (a *App) keepUp(ctx context.Context) {
 
 // copyKept copies what the settings keep and has changed since it was copied — of every
 // store, or of one session alone — into the folder they name. A file still being written
-// waits for a later round (keep.Settle), unless force says to copy it as it is.
-func (a *App) copyKept(ctx context.Context, st keep.Settings, only *index.Session, force bool) (Copied, error) {
+// waits for a later round (keep.Settle), unless force says to copy it as it is. Asked by a
+// person (look), every file kept is looked at, whatever the index says was copied of it,
+// and copied where its copy is missing or not as it is.
+func (a *App) copyKept(ctx context.Context, st keep.Settings, only *index.Session, force, look bool) (Copied, error) {
 	a.copyMu.Lock()
 	defer a.copyMu.Unlock()
 	folder := st.Folder(a.state)
@@ -81,11 +83,17 @@ func (a *App) copyKept(ctx context.Context, st keep.Settings, only *index.Sessio
 			}
 			all, ids = false, []string{only.ID}
 		}
-		rows, err := a.Index.Unkept(ctx, store.Name, all, ids)
+		to := filepath.Join(folder, store.Spec.Name)
+		list := a.Index.Unkept
+		if _, err := os.Stat(to); look || err != nil {
+			// What the index says was copied was copied to a folder that is not there —
+			// named anew, or deleted — or a person asked: every file is looked at
+			list = a.Index.Transcripts
+		}
+		rows, err := list(ctx, store.Name, all, ids)
 		if err != nil {
 			return done, err
 		}
-		to := filepath.Join(folder, store.Spec.Name)
 		for _, row := range rows {
 			if ctx.Err() != nil {
 				return done, errors.Join(errs, ctx.Err())
@@ -123,7 +131,7 @@ func (a *App) KeepAll(ctx context.Context, on bool) (Copied, error) {
 	if !on {
 		return Copied{}, nil
 	}
-	return a.copyKept(ctx, st, nil, false)
+	return a.copyKept(ctx, st, nil, false, true)
 }
 
 // KeepIn names the folder the copies go in; "" is the one in asq's state directory. The
@@ -200,7 +208,7 @@ func (a *App) KeepSession(ctx context.Context, s *index.Session, on bool) (Keepi
 	spec, _ := catalog.Spec(s.Source)
 	switch {
 	case on:
-		copied, err := a.copyKept(ctx, st, s, true)
+		copied, err := a.copyKept(ctx, st, s, true, true)
 		return Keeping{Copied: copied}, err
 	case gone:
 		return Keeping{Stays: "gone"}, nil
@@ -219,7 +227,7 @@ func (a *App) dropCopy(ctx context.Context, st keep.Settings, s *index.Session) 
 		if !ok || store.Name != s.Source {
 			continue
 		}
-		rows, err := a.Index.Transcripts(ctx, store.Name, []string{s.ID})
+		rows, err := a.Index.Transcripts(ctx, store.Name, false, []string{s.ID})
 		if err != nil {
 			return err
 		}

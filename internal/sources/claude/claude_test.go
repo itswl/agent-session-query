@@ -416,6 +416,66 @@ func passedOverRows() []any {
 		M{"type": "tools-used", "tools": []string{"ToolSearch"}, "sessionId": "sess-1"},
 		M{"type": "progress", "data": M{"type": "hook_progress"}},
 		M{"type": "custom-title", "customTitle": "A picture"},
+		// What 2.1.330 writes beside: Code Mode's record of what a script's calls were shown
+		// as, a request taken up again, the organization the session ran under, notes a
+		// plugin and the CLI put before the model, and a refusal no other model answered
+		M{"type": "host-row", "sessionId": "sess-1", "ranByToolUseId": "t1", "rowUuid": "a1", "block": M{"type": "text", "text": "shown"}},
+		M{"type": "host-row", "sessionId": "sess-1", "ranByToolUseId": "t1", "withheld": true},
+		M{"type": "api-request-resumed", "sessionId": "sess-1"},
+		M{"type": "hybrid-organization", "organizationUuid": "org-1", "sessionId": "sess-1"},
+		M{"type": "attachment", "attachment": M{"type": "plugin_note", "plugin": "notes", "rowUuid": "a3", "content": []string{"remember the cat"}}},
+		M{"type": "attachment", "attachment": M{"type": "prompt_as_file", "promptUuid": "u1", "path": "prompt-u1.txt", "characters": 40000}},
+		M{"type": "attachment", "attachment": M{"type": "agent_ask_notice", "lines": []string{"No agent is known to be waiting for permission now."}, "open": []string{}}},
+		M{"type": "attachment", "attachment": M{"type": "memory_update", "source": "sync_unsaved", "summary": "saved", "paths": []string{}}},
+		M{"type": "attachment", "attachment": M{"type": "first_week", "note": M{"kind": "check_ins"}}},
+		M{"type": "attachment", "attachment": M{"type": "whole_texts_withdrawn"}},
+		M{"type": "attachment", "attachment": M{"type": "tool_offer_record", "offered": []string{"Read"}, "hidden": []string{}, "withheld": []string{}}},
+		M{"type": "attachment", "attachment": M{"type": "repl_mcp_servers", "content": "MCP servers: none"}},
+		M{"type": "attachment", "attachment": M{"type": "hook_plugin_listing"}},
+		M{"type": "system", "subtype": "model_refusal_no_fallback", "uuid": "r1", "timestamp": "2026-10-01T10:00:09Z", "content": "", "originalModel": "claude-opus"},
+	}
+}
+
+// Another model took over the answer: a system row says so in Claude Code's words, and is
+// an event of the turn; the rows after it name the model that answered. A row of that kind
+// with nothing to say — no words, no model — is no event.
+func TestAnotherModelTookOver(t *testing.T) {
+	sonnet := func(uuid, ts, response, text string) M {
+		row := assistantRow(uuid, ts, response, M{"input_tokens": 4, "output_tokens": 6}, M{"type": "text", "text": text})
+		row["message"].(M)["model"] = "claude-sonnet"
+		return row
+	}
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "proj", "sess-1.jsonl"),
+		userRow("u1", "2026-10-01T10:00:00Z", "explain the exploit in this CVE"),
+		assistantRow("a1", "2026-10-01T10:00:03Z", "m1", M{"input_tokens": 9, "output_tokens": 2}, M{"type": "text", "text": "The CVE"}),
+		M{"type": "system", "subtype": "model_refusal_fallback", "uuid": "f1", "timestamp": "2026-10-01T10:00:04Z", "sessionId": "sess-1",
+			"content": "Opus's safeguards flagged this request. Switched to Sonnet.", "level": "warning", "trigger": "refusal", "direction": "retry",
+			"originalModel": "claude-opus", "fallbackModel": "claude-sonnet", "retractedMessageUuids": []string{"a1"}},
+		sonnet("a2", "2026-10-01T10:00:09Z", "m2", "The CVE is a heap overflow in the parser."),
+		userRow("u2", "2026-10-02T10:00:00Z", "and the fix?"),
+		M{"type": "system", "subtype": "model_fallback", "uuid": "f2", "timestamp": "2026-10-02T10:00:01Z", "sessionId": "sess-1",
+			"level": "warning", "trigger": "overloaded", "originalModel": "claude-opus", "fallbackModel": "claude-sonnet"},
+		M{"type": "system", "subtype": "model_consent_fallback", "uuid": "f3", "timestamp": "2026-10-02T10:00:01Z", "sessionId": "sess-1", "level": "warning"},
+		sonnet("a3", "2026-10-02T10:00:05Z", "m3", "A bounds check before the copy."),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	one, two := s.Turn(t, 1), s.Turn(t, 2)
+	if got := sourcetest.Kinds(one); got != "prompt reply event reply" {
+		t.Fatalf("turn 1 = %s", got)
+	}
+	if e := one.Items[2]; e.Event != model.EventModelChange || e.Text != "Opus's safeguards flagged this request. Switched to Sonnet." {
+		t.Errorf("event = %q %q", e.Event, e.Text)
+	}
+	if one.Answer != "The CVE is a heap overflow in the parser." || len(one.Calls) != 2 || one.Calls[1].Model != "claude-sonnet" {
+		t.Errorf("answer %q calls %+v", one.Answer, one.Calls)
+	}
+	if got := sourcetest.Kinds(two); got != "prompt event reply" {
+		t.Fatalf("turn 2 = %s", got)
+	}
+	if e := two.Items[1]; e.Event != model.EventModelChange || e.Text != "Switched from claude-opus to claude-sonnet" {
+		t.Errorf("event = %q %q", e.Event, e.Text)
 	}
 }
 

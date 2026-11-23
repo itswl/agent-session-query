@@ -101,7 +101,10 @@ started them. A response written as several rows is one model call. A forked age
 copy of its parent's conversation; those rows are marked inherited and counted nowhere. Tool
 output that Claude Code saved to a file beside the transcript is read in place of the stub left
 in it. Slash commands, hook output, task notifications and compaction summaries are context or
-events, not asks. The session's own cost, when Claude Code recorded one, is used as it is.
+events, not asks. Another model answering in place of the one asked for — after it refused, when
+it failed or is not available, or when using it needed a consent the person did not give — is a
+`model_change` event in the turn, in Claude Code's words. The session's own cost, when Claude
+Code recorded one, is used as it is.
 A failed command's exit code is the line its result opens with (`Exit code 1`); a command that
 passed, or whose code means no failure (`grep` finding nothing), has none recorded. A call the
 person declined at the permission prompt, or stopped before or while it ran, is marked

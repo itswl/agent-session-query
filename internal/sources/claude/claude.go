@@ -143,6 +143,10 @@ type row struct {
 
 	HookErrors []json.RawMessage `json:"hookErrors"`
 
+	// A system row saying another model took over: which, from which
+	OriginalModel string `json:"originalModel"`
+	FallbackModel string `json:"fallbackModel"`
+
 	Message struct {
 		ID         string          `json:"id"`
 		Role       string          `json:"role"`
@@ -412,8 +416,9 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			// queue a prompt typed mid-turn waits in (the prompt is a queued_command
 			// attachment), a call or hook still running (its result says how it ended)
 			return true
-		case "api-request", "api-request-shape", "api-request-blob":
-			// The CLI's log of the requests it sent: each answer is read from its own rows
+		case "api-request", "api-request-shape", "api-request-blob", "api-request-resumed":
+			// The CLI's log of the requests it sent, and of one taken up again after a
+			// restart: each answer is read from its own rows
 			return true
 		case "file-history-snapshot", "file-history-delta", "attribution-snapshot", "content-replacement":
 			// Checkpoints of the files the session edited, kept for a rewind and for saying
@@ -424,9 +429,15 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			"atis-latch", "dev-mods", "worktree-state", "bridge-session", "tools-used", "agent-name",
 			"agent-color", "agent-setting", "relocated", "history-suppression", "derived-from",
 			"data-flow-records", "data-flow-incomplete", "frame-link", "observer-ref", "resume-head-vouch",
-			"artifact-comment-monitor", "artifact-autoreact-ledger":
+			"artifact-comment-monitor", "artifact-autoreact-ledger", "hybrid-organization":
 			// The session's settings and state as the CLI keeps them for itself: its modes,
-			// its owner, its worktree, the tools it has used, how it is tied to other views
+			// its owner and the organizations it ran under, its worktree, the tools it has
+			// used, how it is tied to other views
+			return true
+		case "host-row":
+			// What Code Mode kept of a script's calls for showing them: what a call's row was
+			// shown as, or that the script's rows were held back. The calls themselves, and
+			// their results, are rows of their own, read as any other's
 			return true
 		case "summary", "tag", "pr-link", "continued-in", "ended-by-model":
 			// What the CLI notes about the session for its own lists: the title older
@@ -654,35 +665,45 @@ func contextAttachment(kind string) bool {
 	switch kind {
 	case "hook_success", "hook_blocking_error", "hook_non_blocking_error", "hook_error_during_execution",
 		"hook_cancelled", "hook_additional_context", "hook_stopped_continuation", "hook_system_message",
-		"hook_permission_decision", "hook_deferred_tool", "async_hook_response", "async_hook_response_batch":
+		"hook_permission_decision", "hook_deferred_tool", "async_hook_response", "async_hook_response_batch",
+		"hook_plugin_listing":
 		// What a hook printed or decided; a Stop hook's failure is read from its system row
+	case "plugin_note":
+		// What a plugin put before the model, which Claude Code hands on as a prompt it wrote
+		// itself: not the person's
 	case "file", "directory", "edited_text_file", "edited_image_file", "compact_file_reference",
 		"pdf_reference", "already_read_file", "plan_file_reference", "mcp_resource", "diagnostics",
 		"inlined_image_paths", "selected_lines_in_ide", "selected_lines_in_diff", "opened_file_in_ide",
-		"at_mention_reference", "agent_mention", "skill_mention", "peer_mention", "unknown_command_fallback":
-		// Files, folders and selections laid before the model, and what a prompt mentioned:
-		// the prompt itself is read from its own row
+		"at_mention_reference", "agent_mention", "skill_mention", "peer_mention", "unknown_command_fallback",
+		"prompt_as_file", "whole_texts_withdrawn":
+		// Files, folders and selections laid before the model, and what a prompt mentioned; a
+		// long prompt saved to a file for the model, and whole texts taken back out of what it
+		// is given: the prompt itself is read from its own row
 	case "nested_memory", "relevant_memories", "withheld_memory", "account_memory_recall",
-		"cowork_memory_context", "instruction_files_not_loaded", "project_doc_reads", "message_pdf_reads":
-		// Memory and instruction files, and which of them were read
+		"cowork_memory_context", "instruction_files_not_loaded", "project_doc_reads", "message_pdf_reads",
+		"memory_update":
+		// Memory and instruction files, which of them were read, and what changed in them
 	case "total_tokens_reminder", "silent_turn_reminder", "elapsed_time_reminder", "batching_reminder",
 		"batching_reminder_sent", "secondary_reminder", "secondary_reminder_sent", "critical_system_reminder",
 		"todo_reminder", "task_reminder", "tool_search_usage_reminder", "bash_output_audience_note",
 		"read_truncation_notice", "output_limit_note", "dir_sync_notice", "claude_app_notice",
 		"tool_hosts_notice", "tool_hosts_correction", "linked_plugin_tools_note", "widget_context_hint",
 		"token_usage", "budget_usd", "output_token_usage", "attention_budget", "context_efficiency",
-		"max_turns_reached", "date", "date_change", "poll_events":
+		"max_turns_reached", "date", "date_change", "poll_events", "agent_ask_notice", "first_week":
 		// Reminders and notices the CLI gives the model: of its budget, the time and the
-		// date, what the person sees, the events it was woken by
+		// date, what the person sees, the events it was woken by, the agents waiting on a
+		// permission prompt, what a person new to it is told
 	case "environment", "session_context", "model", "language", "instructions", "sandbox_instructions",
 		"output_style", "output_style_instructions", "command_permissions", "skill_listing", "dynamic_skill",
 		"invoked_skills", "agent_listing_delta", "deferred_tools_delta", "deferred_tools_record",
 		"mcp_instructions_delta", "mcp_dropped_tools_delta", "repl_mcp_needs_auth", "advisor_tool",
 		"context_sections", "coordinator_context", "prefix_delta", "thread_state", "fork_briefing",
 		"remote_session_change", "workflow_keyword_request", "workflow_size_guideline_change",
-		"artifact_opening_prefetch", "proactivity", "goals", "goal_status":
+		"artifact_opening_prefetch", "proactivity", "goals", "goal_status", "repl_mcp_servers",
+		"tool_offer_record":
 		// What the model is told it has and how to work: its environment and instructions,
-		// the skills, agents and tools it can call
+		// the skills, agents and tools it can call — Code Mode's MCP servers among them — and
+		// which tools it was offered
 	case "plan_mode", "plan_mode_reentry", "plan_mode_exit", "auto_mode", "auto_mode_exit",
 		"ultra_effort_enter", "ultra_effort_exit", "ultrathink_effort":
 		// A mode the session went into or out of
@@ -704,8 +725,9 @@ func contextAttachment(kind string) bool {
 }
 
 // systemEvent turns the system rows worth a reader's attention into events: a compaction
-// boundary (the context the model sees was rewritten here) and a stop hook that failed.
-// The rest is bookkeeping, and a subtype it has never heard of is told to unread.
+// boundary (the context the model sees was rewritten here), a stop hook that failed, and
+// another model taking over. The rest is bookkeeping, and a subtype it has never heard of
+// is told to unread.
 func systemEvent(r *row, unread func(kind string)) (transcript.Block, bool) {
 	switch r.Subtype {
 	case "compact_boundary":
@@ -714,6 +736,25 @@ func systemEvent(r *row, unread func(kind string)) (transcript.Block, bool) {
 			text = "Context compacted"
 		}
 		return transcript.EventOf(model.EventCompaction, text), true
+	case "model_refusal_fallback", "model_fallback", "model_consent_fallback":
+		// Another model answered in the one asked for's place: after it refused (the Agent
+		// SDK's SDKModelRefusalFallbackMessage), because it failed or is not available, or
+		// because using it needed a consent the person did not give. Claude Code says which
+		// in words of its own; the rows that follow name the model that answered
+		text := contentText(r.Content)
+		if text == "" && r.FallbackModel != "" {
+			text = "Switched to " + r.FallbackModel
+			if r.OriginalModel != "" {
+				text = "Switched from " + r.OriginalModel + " to " + r.FallbackModel
+			}
+		}
+		if text == "" {
+			return transcript.Block{}, false
+		}
+		return transcript.EventOf(model.EventModelChange, text), true
+	case "model_refusal_no_fallback":
+		// The model refused and no other was asked: the refusal is the assistant's row,
+		// which is read
 	case "stop_hook_summary":
 		var errs []string
 		for _, raw := range r.HookErrors {

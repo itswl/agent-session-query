@@ -56,11 +56,13 @@ export const open = (x) => Math.max((x.failures || 0) - (x.passedLater || 0), 0)
 // passedTitle is what a count of failures says on hover.
 export const passedTitle = 'Calls that failed, and how many of them the same command passed later, in that turn or the three after';
 
+// dur is a span of time, cut down as the command line cuts it, never rounded up: 23.6
+// seconds are 23s there and here.
 export function dur(ms) {
   if (!(ms > 0)) return '';
-  if (ms < 1000) return Math.round(ms) + 'ms';
+  if (ms < 1000) return Math.floor(ms) + 'ms';
   const s = ms / 1000;
-  if (s < 60) return (s < 10 ? s.toFixed(1) : Math.round(s)) + 's';
+  if (s < 60) return (s < 10 ? (Math.floor(s * 10) / 10).toFixed(1) : Math.floor(s)) + 's';
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ${Math.floor(s % 60)}s`;
   const h = Math.floor(m / 60);

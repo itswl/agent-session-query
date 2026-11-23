@@ -84,7 +84,7 @@ time, .dots, .n, dd, td, .count { font-variant-numeric: tabular-nums; }
   font-size: 13px; font-weight: 500; white-space: nowrap;
 }
 .btn:hover { background: var(--sunk); }
-.btn:disabled { opacity: .6; cursor: default; }
+.btn:disabled, .btn[aria-disabled="true"] { opacity: .6; cursor: default; }
 .btn[aria-pressed="true"] { background: var(--raised); }
 .keep-btn .icon.filled { fill: currentColor; }
 .keep-btn.failed { color: var(--bad); }

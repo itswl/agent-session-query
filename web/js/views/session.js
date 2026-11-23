@@ -205,19 +205,26 @@ export function mount(main, route, ctx) {
     keepBtn.replaceChildren(icon('star', on ? 'filled' : ''), on ? 'Kept' : 'Keep');
   }
 
+  // While the request is on its way the button is busy, not disabled: a disabled button
+  // loses the keyboard's focus to the page, and Enter pressed again would do nothing
+  let keeping = false;
   async function keepIt() {
+    if (keeping) return;
     const on = v.sess.kept !== 'one';
-    keepBtn.disabled = true;
+    keeping = true;
+    keepBtn.setAttribute('aria-disabled', 'true');
     try {
       const d = await api(`${base}/keep`, { method: 'POST', body: { keep: on }, signal: ctx.signal });
       v.sess = d.session;
       renderHead();
     } catch (e) {
       if (isAbort(e)) return;
-      keepBtn.disabled = false;
       keepBtn.title = e.message;
       keepBtn.classList.add('failed');
       setTimeout(() => keepBtn.classList.remove('failed'), 1500);
+    } finally {
+      keeping = false;
+      keepBtn.removeAttribute('aria-disabled');
     }
   }
 

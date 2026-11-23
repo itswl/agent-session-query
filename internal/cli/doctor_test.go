@@ -126,7 +126,7 @@ func TestDoctorSaysHowFarBackAStoreGoes(t *testing.T) {
 		stores := []index.Store{{Name: name, Spec: sources.Spec{Name: "mycli", Retention: tc.retention}, Source: tc.store}}
 
 		var out bytes.Buffer
-		if err := doctor(context.Background(), stores, false, render.Style{}, &out); err != nil {
+		if err := doctor(context.Background(), stores, false, false, render.Style{}, &out); err != nil {
 			t.Errorf("%s: %v\n%s", tc.about, err, &out)
 		}
 		text := out.String()
@@ -141,7 +141,7 @@ func TestDoctorSaysHowFarBackAStoreGoes(t *testing.T) {
 		}
 
 		out.Reset()
-		if err := doctor(context.Background(), stores, true, render.Style{}, &out); err != nil {
+		if err := doctor(context.Background(), stores, false, true, render.Style{}, &out); err != nil {
 			t.Errorf("%s --json: %v\n%s", tc.about, err, &out)
 		}
 		var report struct {

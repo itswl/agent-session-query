@@ -278,12 +278,36 @@ runs.
 
 ## Maintaining
 
+**`asq keep`** — copies of the sessions a CLI deletes of its own accord. Claude Code and Gemini
+CLI delete the sessions not used for 30 days by default, and what a CLI deletes leaves the index
+too. Nothing is kept unless asked:
+
+| | |
+|---|---|
+| `asq keep --all` | a copy of every session of Claude Code and Gemini CLI: made now, and again once a session that changed has rested five minutes |
+| `asq keep <ref>` | a copy of one session and its subagents, made now and kept up the same way; `--drop <ref>` stops keeping it |
+| `asq keep --off` | no longer every session; what is kept stays, and so do the sessions kept one by one |
+| `asq keep --dir <folder>` | where the copies go: by default `kept` in the state directory (`ASQ_STATE`) |
+| `asq keep` | what is kept, where, and how much disk it takes |
+
+A copy is a session's files as its CLI wrote them, laid out as in the CLI's store, and is read as
+a store of its own: `claude@kept`. While the CLI's store holds a session the copy is not read, so
+nothing is listed or counted twice; once the CLI deleted it, the session is read from the copy, as
+`claude@kept/…`, and stays in every list, search and report. The copies are made by whichever
+`asq` brings the index up to date — a running `asq serve`, an MCP server, a command — and only
+into asq's folder or the one named, never into a CLI's store. Copies are of what the CLI's own
+store holds; a store added by name is not copied. No longer keeping a session one by one deletes
+its copy while the CLI still holds it; a copy of one the CLI deleted is all there is of it, and
+stays until it is deleted from the folder. A folder that holds copies is not left for another until
+they are moved there. Every `asq` that shares the state directory keeps the same.
+
 **`asq doctor`** — for each store: whether it was found, how many transcripts it lists and the
 day the oldest of them was last written, and whether its newest conversation reads whole. Of a
 CLI that deletes its own old sessions — Claude Code and Gemini CLI, after 30 days unused by
 default — it names the setting that decides it: what the CLI deletes leaves the index too, so
-that day is as far back as `asq` goes for it. A labelled store is a copy or another machine's,
-which this CLI does not sweep, and gets no such line. Listing alone proves little — a format that drifted
+that day is as far back as `asq` goes for it, unless `asq keep --all` keeps a copy of each, which
+the line then says. A labelled store is a copy or another machine's, which this CLI does not
+sweep, and gets no such line; the copies `asq keep` made are counted under `claude@kept`. Listing alone proves little — a format that drifted
 lists fine and reads as empty — so it reads one, and then the next two, and lists what the three
 held that the adapter did not understand: records a CLI has started to write since the adapter
 was written. Those are a warning (see [Sources](sources.md#what-each-adapter-reads)). Sessions
@@ -309,7 +333,7 @@ differently whether a failed command passed later judges every failure again the
 | `ASQ_ONLY` | read only these CLIs, comma-separated |
 | `ASQ_PATH` | stores outside their default place: `name[@label]=dir`, comma-separated |
 | `ASQ_HOST`, `ASQ_PORT`, `ASQ_TOKEN`, `ASQ_CORS_ORIGIN`, `ASQ_PROXY_HEADER` | for `asq serve` |
-| `ASQ_STATE` | the directory for what must outlive the index: the export ledger, and the secret a server signs its cookies with |
+| `ASQ_STATE` | the directory for what must outlive the index: the export ledger, the secret a server signs its cookies with, what `asq keep` keeps and, by default, the copies |
 | `NO_COLOR` | plain text |
 
 Setting `ASQ_ONLY` and `ASQ_PATH` in the environment rather than as flags is what keeps a page

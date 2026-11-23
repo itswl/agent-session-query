@@ -492,3 +492,68 @@ func (ix *Index) Forget(ctx context.Context, keep []Store) (int, error) {
 	ix.recount()
 	return len(sids), err
 }
+
+// Unkept is a transcript whose files have not been copied as the index last read them
+// (see internal/keep).
+type Unkept struct {
+	SID   int64
+	Key   string
+	Stamp string
+}
+
+// Unkept lists the transcripts of a store whose files were not copied at the stamp the
+// index last read them at: every one of the store, or those of the sessions with these
+// ids, and the transcripts of their subagents with them.
+func (ix *Index) Unkept(ctx context.Context, source string, all bool, ids []string) ([]Unkept, error) {
+	if all {
+		ids = nil
+	} else if len(ids) == 0 {
+		return nil, nil
+	}
+	return ix.transcripts(ctx, source, ids, true)
+}
+
+// Transcripts lists the transcripts of the sessions of a store with these ids, and of
+// their subagents, whatever was copied of them.
+func (ix *Index) Transcripts(ctx context.Context, source string, ids []string) ([]Unkept, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return ix.transcripts(ctx, source, ids, false)
+}
+
+func (ix *Index) transcripts(ctx context.Context, source string, ids []string, unkept bool) ([]Unkept, error) {
+	q, args := `SELECT sid, key, stamp FROM sessions WHERE source = ?`, []any{source}
+	if unkept {
+		q += ` AND kept != stamp`
+	}
+	if len(ids) > 0 {
+		q += ` AND (id IN (` + placeholders(len(ids)) + `) OR parent_session IN (` + placeholders(len(ids)) + `))`
+		for range 2 {
+			for _, id := range ids {
+				args = append(args, id)
+			}
+		}
+	}
+	rows, err := ix.ro.QueryContext(ctx, q+` ORDER BY updated_at DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Unkept
+	for rows.Next() {
+		var u Unkept
+		if err := rows.Scan(&u.SID, &u.Key, &u.Stamp); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// Kept notes that a transcript's files were copied as they were at stamp; "" that its
+// copy is gone.
+func (ix *Index) Kept(ctx context.Context, sid int64, stamp string) error {
+	_, err := ix.rw.ExecContext(ctx, `UPDATE sessions SET kept = ? WHERE sid = ?`, stamp, sid)
+	return err
+}

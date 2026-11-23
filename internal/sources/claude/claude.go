@@ -98,6 +98,24 @@ func isSubagent(path string) bool {
 
 func metaPath(path string) string { return strings.TrimSuffix(path, ".jsonl") + ".meta.json" }
 
+// Files is what a transcript is made of (sources.Keeper): a subagent's, and the meta file
+// beside it; a session's, and the outputs saved beside it, which its subagents' rows name
+// too.
+func (s *Source) Files(ref sources.Ref) []string {
+	if isSubagent(ref.Key) {
+		return []string{ref.Key, metaPath(ref.Key)}
+	}
+	files := []string{ref.Key}
+	saved := filepath.Join(strings.TrimSuffix(ref.Key, ".jsonl"), "tool-results")
+	entries, _ := os.ReadDir(saved)
+	for _, e := range entries {
+		if e.Type().IsRegular() {
+			files = append(files, filepath.Join(saved, e.Name()))
+		}
+	}
+	return files
+}
+
 // row is the part of a transcript line that decides what it is. The rest — the content —
 // is decoded only for the rows that are read.
 type row struct {

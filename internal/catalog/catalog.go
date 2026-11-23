@@ -7,10 +7,12 @@ package catalog
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/itswl/agent-session-query/internal/index"
+	"github.com/itswl/agent-session-query/internal/keep"
 	"github.com/itswl/agent-session-query/internal/sources"
 	"github.com/itswl/agent-session-query/internal/sources/antigravity"
 	"github.com/itswl/agent-session-query/internal/sources/claude"
@@ -107,6 +109,10 @@ type Config struct {
 	Only []string
 	// Paths are the stores outside their default location.
 	Paths []Path
+	// Kept is the folder asq keeps copies of sessions in (see internal/keep), or "" when
+	// there is none. Each CLI whose adapter can be kept reads its copies there as a store
+	// of its own, "claude@kept", beside its own store and with it.
+	Kept string
 }
 
 // FromEnv reads the configuration every asq process on a machine shares: ASQ_ONLY, a
@@ -136,6 +142,9 @@ func splitList(s string) []string {
 	return out
 }
 
+// Validate says what is wrong with a configuration, if anything is.
+func (c Config) Validate() error { return c.validate() }
+
 func (c Config) validate() error {
 	for _, name := range c.Only {
 		if _, ok := Find(name); !ok {
@@ -149,8 +158,22 @@ func (c Config) validate() error {
 			return fmt.Errorf("--path: %s given twice", strings.TrimSuffix(key, "@"))
 		}
 		seen[key] = true
+		if c.Kept != "" && p.Label == keep.Label {
+			if spec, _ := Find(p.Agent); keeps(spec) {
+				return fmt.Errorf("--path %s: %s is what asq calls the sessions it keeps (asq keep); give this store another label", key, key)
+			}
+		}
 	}
 	return nil
+}
+
+// keeps reports whether a CLI's sessions can be kept: its adapter says which files make
+// one up.
+func keeps(spec sources.Spec) bool { return spec.Open != nil && isKeeper(spec.Open("")) }
+
+func isKeeper(src sources.Source) bool {
+	_, ok := src.(sources.Keeper)
+	return ok
 }
 
 // Set is the stores a configuration names. Each adapter is built once and kept: an
@@ -197,7 +220,44 @@ func New(cfg Config, env sources.Env) (*Set, error) {
 		spec, _ := Find(p.Agent)
 		set.stores = append(set.stores, index.Store{Name: p.Agent + "@" + p.Label, Spec: spec, Source: spec.Open(p.Dir)})
 	}
+	set.Keep(cfg.Kept)
 	return set, nil
+}
+
+// Keep reads the copies asq keeps in folder (see internal/keep): for each CLI read here
+// whose sessions can be kept, a store of its own beside the CLI's own store, which lists
+// the copies of the sessions that store no longer holds. A folder named again is the one
+// read from then on; "" changes nothing.
+func (s *Set) Keep(folder string) {
+	if folder == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var own []index.Store
+	at := map[string]int{}
+	for i, st := range s.stores {
+		switch {
+		case st.Name == st.Spec.Name && isKeeper(st.Source):
+			own = append(own, st)
+		case keep.IsKept(st.Source):
+			at[st.Name] = i
+		}
+	}
+	for _, st := range own {
+		name := st.Name + "@" + keep.Label
+		dir := filepath.Join(folder, st.Name)
+		i, ok := at[name]
+		if ok && s.stores[i].Source.Location() == dir {
+			continue
+		}
+		kept := index.Store{Name: name, Spec: st.Spec, Source: keep.Store(st.Spec.Open(dir), st.Source)}
+		if ok {
+			s.stores[i] = kept
+		} else {
+			s.stores = append(s.stores, kept)
+		}
+	}
 }
 
 // All lists every configured store, whether or not it is there.

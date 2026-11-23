@@ -49,6 +49,15 @@ type Source interface {
 	Read(ctx context.Context, ref Ref, w *transcript.Writer) error
 }
 
+// Keeper is a store whose sessions are files beneath its location, which asq can copy into
+// a folder of its own and read there with the same adapter (see internal/keep). It is for
+// the CLIs that delete their own sessions (Spec.Retention).
+type Keeper interface {
+	// Files lists the files a session is made of — its transcript and what is read beside
+	// it — each beneath Location. A file that is not there is passed over.
+	Files(ref Ref) []string
+}
+
 // Env is where an adapter looks for its CLI's store: the home directory and the
 // environment, so a test can stand in for both.
 type Env struct {

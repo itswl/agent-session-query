@@ -179,7 +179,9 @@ func (c *command) config() (app.Config, error) {
 		}
 		stores.Paths = append(stores.Paths, p)
 	}
-	return app.Config{IndexPath: c.indexPath, Stores: stores}, nil
+	state := app.StateDir()
+	stores.Kept = app.KeptFolder(state)
+	return app.Config{IndexPath: c.indexPath, Stores: stores, State: state}, stores.Validate()
 }
 
 // style is how text is dressed for where it is going.

@@ -16,6 +16,7 @@ import (
 
 	"github.com/itswl/agent-session-query/internal/catalog"
 	"github.com/itswl/agent-session-query/internal/index"
+	"github.com/itswl/agent-session-query/internal/keep"
 	"github.com/itswl/agent-session-query/internal/txt"
 )
 
@@ -26,6 +27,9 @@ var Version = "dev"
 type Config struct {
 	IndexPath string // empty: the default
 	Stores    catalog.Config
+	// State is the state directory (see StateDir), where what asq keeps of the sessions a
+	// CLI deletes is written down (see internal/keep). Empty: nothing is kept.
+	State string
 }
 
 // App is the open program.
@@ -43,6 +47,11 @@ type App struct {
 	lastErr  error
 
 	waits waits // the folders a look at a file is waiting in (see lookWait)
+
+	state   string     // where what is kept is written down; "" keeps nothing
+	copyMu  sync.Mutex // one round of copying what is kept at a time (see keepUp)
+	keepMu  sync.Mutex
+	keepErr error // what went wrong the last time copies were made
 }
 
 // Open opens the index and resolves the stores.
@@ -59,7 +68,7 @@ func Open(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &App{Index: ix, Set: set}, nil
+	return &App{Index: ix, Set: set, state: cfg.State}, nil
 }
 
 // Close releases the index.
@@ -113,6 +122,9 @@ func (a *App) run(ctx context.Context, opts index.SyncOptions, done, caught chan
 		}
 	}
 	res, err := a.Index.Sync(ctx, a.Set.Present(), opts)
+	if err == nil {
+		a.keepUp(ctx)
+	}
 	a.mu.Lock()
 	a.running, a.caught, a.last, a.lastErr = nil, nil, time.Now(), err
 	a.mu.Unlock()
@@ -334,6 +346,9 @@ func NoResume(s *index.Session) string {
 	}
 	if readElsewhere(s) {
 		spec, _ := catalog.Spec(s.Source)
+		if keptCopy(s) {
+			return spec.Title + " has deleted it, and what is read is the copy asq kept (asq keep), which " + spec.Resume + " does not look in"
+		}
 		return "it was read from " + s.Source + ", not from " + spec.Title + "'s store on this machine, which is where " + spec.Resume + " looks for it"
 	}
 	return ""
@@ -367,6 +382,13 @@ func readElsewhere(s *index.Session) bool {
 	return ok && label != ""
 }
 
+// keptCopy says whether a session is read from the copies asq keeps (see internal/keep):
+// its CLI has deleted it.
+func keptCopy(s *index.Session) bool {
+	_, label, _ := strings.Cut(s.Source, "@")
+	return label == keep.Label
+}
+
 // Resume is the command that reopens a session in the CLI that wrote it, on this machine,
 // with the cd it needs, or "" when there is none (NoResume says why).
 //
@@ -385,7 +407,7 @@ func Resume(s *index.Session) string {
 // it where that store is its CLI's own — on the machine it came from — or "" when there is
 // none. It is not a command for this machine, and is never given as one.
 func ResumeThere(s *index.Session) string {
-	if !readElsewhere(s) || cannotResume(s) != "" {
+	if !readElsewhere(s) || keptCopy(s) || cannotResume(s) != "" {
 		return ""
 	}
 	// That machine's shell is the one its paths are written for

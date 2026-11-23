@@ -96,18 +96,21 @@ asq ls         # 第一次运行会建索引：每 GB 历史大约一分钟
 
 ## 卸载
 
-asq 写下的任何东西都不是你的历史——各 CLI 的存储归它们自己，asq 从不改动。要删的只有
+asq 写下的任何东西都不是你的历史（让 `asq keep` 存下的副本除外）——各 CLI 的存储归它们自己，asq 从不改动。要删的只有
 这些，顺序随意（macOS 与 Linux）：
 
 ```sh
 rm ~/.local/bin/asq                          # 装到了 /usr/local/bin 的话：sudo rm /usr/local/bin/asq
 rm -rf ~/Library/Caches/asq ~/.cache/asq     # 索引，需要时会自动重建
-rm -rf "$HOME/Library/Application Support/asq" ~/.local/state/asq   # 状态：登录签名密钥、已发给 collector 的清单
+rm -rf "$HOME/Library/Application Support/asq" ~/.local/state/asq   # 状态：登录签名密钥、已发给 collector 的清单、asq keep 存下的副本
 ```
 
 Windows：删除 `%LOCALAPPDATA%\Programs\asq`、`%LocalAppData%\asq` 和 `%AppData%\asq`，并把
 用户 PATH 里的 `asq` 条目移除。若设过 `ASQ_INDEX` 或 `ASQ_STATE`，后两项在你说的地方，照那里
 删。为 PATH 加过的 shell rc 那一行也可以一并删掉。
+
+`asq keep` 存下的副本（如果让它存过）是 CLI 删掉的会话仅剩的一份。它们在状态目录里，或者在
+`asq keep --dir` 指定的目录里；`asq keep` 会说是哪个。想留着就先挪走。
 
 若 `asq serve` 是常驻运行的，先按[部署](docs/deploy.md)里写的那样停掉服务——launchd、
 systemd 或计划任务——再删二进制；容器则是 `docker rm` 加它的 `/data` 卷。
@@ -128,6 +131,7 @@ systemd 或计划任务——再删二进制；容器则是 `docker rm` 加它�
 | `asq files <路径>` | 碰过某个文件的轮次 —— `--changed` 只看修改 |
 | `asq projects` | 会话所在的工作目录 |
 | `asq resume <ref>` | 在原 CLI 里重新打开该会话的命令 —— `--run` 直接执行 |
+| `asq keep` | 为 CLI 会删除的会话留一份副本 —— `--all`，或用 `<ref>` 只留某一个会话 |
 | `asq serve` | 网页与 HTTP API |
 | `asq mcp` | stdio 上的 MCP server，让 agent 查询自己的历史 |
 | `asq otel` | 把会话导出为 OpenTelemetry trace |
@@ -207,7 +211,8 @@ home 目录、一份备份——按名字加进来：`asq ls --path claude@box2=
   一小部分）。此后每条命令只检查哪些 transcript 变了——每个文件一次 `stat`——只读变化的文件，且只重写其中变化的轮次；Claude Code 的会话只从最新一轮开始的地方读起。
   对几个 GB 的历史做搜索是毫秒级。索引只是缓存：`asq index rm` 之后会自动重建。它只装着各存储里现有的会话，CLI
   删掉的会话也会从索引里消失——而 Claude Code 和 Gemini CLI 会删除 30 天没有用过的会话，除非在它们的设置里改掉。
-  `asq doctor` 会指出是哪个设置，并说明每个存储最早到哪一天。
+  `asq doctor` 会指出是哪个设置，并说明每个存储最早到哪一天。`asq keep --all` 会在 asq 自己的目录里为每个会话
+  留一份副本，CLI 删掉之后就从副本读。
 - **只读。** `asq` 里没有任何东西会写入某个 CLI 的存储。
 - **本地。** 没有遥测，没有网络请求，没有账号。只有两样东西可能把内容发出去，而且都是你自己指定去向的：`asq otel`，
   以及你把 MCP server 交给的那个 agent。

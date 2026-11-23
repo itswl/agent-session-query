@@ -104,19 +104,24 @@ asq ls         # the first run indexes your history: about a minute per gigabyte
 
 ## Uninstall
 
-None of what asq wrote is your history — the stores belong to the CLIs and are never
-touched. What there is to remove, in any order, on macOS and Linux:
+None of what asq wrote is your history, but for the copies `asq keep` makes when asked — the
+stores belong to the CLIs and are never touched. What there is to remove, in any order, on
+macOS and Linux:
 
 ```sh
 rm ~/.local/bin/asq                          # sudo rm /usr/local/bin/asq, if that is where it went
 rm -rf ~/Library/Caches/asq ~/.cache/asq     # the index, rebuilt when needed
-rm -rf "$HOME/Library/Application Support/asq" ~/.local/state/asq   # the state: the sign-in key, what a collector was sent
+rm -rf "$HOME/Library/Application Support/asq" ~/.local/state/asq   # the state: the sign-in key, what a collector was sent, the copies asq keep made
 ```
 
 On Windows, delete `%LOCALAPPDATA%\Programs\asq`, `%LocalAppData%\asq` and `%AppData%\asq`,
 and remove the `asq` entry from your user PATH. `ASQ_INDEX` or `ASQ_STATE` moved the last
 two elsewhere — remove them where you put them. A line added to the shell's rc for the
 PATH can go too.
+
+The copies `asq keep` made, if it was asked to, are the only record of what a CLI has deleted
+since. They are in the state directory, or the folder `asq keep --dir` named; `asq keep` says
+which. Move them elsewhere first to keep them.
 
 If `asq serve` was kept running, take the service down before the binary — the launchd
 agent, the systemd unit or the scheduled task, each named in [Deploying](docs/deploy.md);
@@ -138,6 +143,7 @@ a container is `docker rm` and its `/data` volume.
 | `asq files <path>` | the turns that touched a file — `--changed` |
 | `asq projects` | the directories sessions ran in |
 | `asq resume <ref>` | the command that reopens a session in its own CLI — `--run` to run it |
+| `asq keep` | copies of the sessions a CLI deletes — `--all`, or `<ref>` for one session |
 | `asq serve` | the web page and the HTTP API |
 | `asq mcp` | an MCP server on stdio, for agents to ask their own history |
 | `asq otel` | export sessions as OpenTelemetry traces |
@@ -232,7 +238,8 @@ A store somewhere else — another machine's home directory, a backup — is add
   milliseconds. The index is a cache: `asq index rm` and it is rebuilt. It holds what the
   stores hold, so a session a CLI deletes leaves it too — and Claude Code and Gemini CLI
   delete the sessions not used for 30 days, unless a setting of theirs says otherwise.
-  `asq doctor` names the setting, and says how far back each store goes.
+  `asq doctor` names the setting, and says how far back each store goes. `asq keep --all`
+  keeps a copy of each session in asq's own folder, read once the CLI has deleted it.
 - **Read-only.** Nothing in `asq` can write to a CLI's store.
 - **Local.** No telemetry, no network calls, no account. The two things that can send anything
   anywhere are the ones you point at a destination yourself: `asq otel`, and an agent you gave

@@ -20,6 +20,7 @@ import (
 	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/catalog"
 	"github.com/itswl/agent-session-query/internal/index"
+	"github.com/itswl/agent-session-query/internal/keep"
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/render"
 	"github.com/itswl/agent-session-query/internal/sources"
@@ -43,6 +44,7 @@ const usage = `asq — the session history of every agent CLI on this machine, a
   asq projects                 the directories sessions ran in
 
   asq resume <ref>             the command that reopens a session in its own CLI (--run)
+  asq keep                     keep copies of what a CLI deletes (--all, or <ref> for one session)
   asq serve                    the web page and the HTTP API    (--port, --token)
   asq mcp                      an MCP server on stdio, for agents to ask their own history
   asq otel                     export sessions as OpenTelemetry traces
@@ -125,7 +127,7 @@ func init() {
 		"search": cmdSearch, "s": cmdSearch,
 		"show": cmdShow, "brief": cmdBrief, "pack": cmdPack, "export": cmdExport,
 		"usage": cmdUsage, "failures": cmdFailures, "digest": cmdDigest, "files": cmdFiles, "projects": cmdProjects,
-		"resume": cmdResume, "serve": cmdServe, "ping": cmdPing, "mcp": cmdMCP, "otel": cmdOTel, "doctor": cmdDoctor, "index": cmdIndex,
+		"resume": cmdResume, "keep": cmdKeep, "serve": cmdServe, "ping": cmdPing, "mcp": cmdMCP, "otel": cmdOTel, "doctor": cmdDoctor, "index": cmdIndex,
 	}
 }
 
@@ -812,12 +814,17 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return usageError{err}
 	}
-	return doctor(ctx, set.All(), c.json, c.style(io.out), io.out)
+	kept, err := keep.Load(cfg.State)
+	if err != nil {
+		return err
+	}
+	return doctor(ctx, set.All(), kept.All, c.json, c.style(io.out), io.out)
 }
 
 // doctor looks at each store and says what it found, in words or as JSON. It fails when a
 // store that is there cannot be read, and when it was stopped before it looked at them all.
-func doctor(ctx context.Context, stores []index.Store, asJSON bool, st render.Style, out io.Writer) error {
+// keptAll says asq keeps a copy of every session of the CLIs that delete theirs.
+func doctor(ctx context.Context, stores []index.Store, keptAll, asJSON bool, st render.Style, out io.Writer) error {
 	type check struct {
 		Source   string `json:"source"`
 		Location string `json:"location"`
@@ -839,11 +846,27 @@ func doctor(ctx context.Context, stores []index.Store, asJSON bool, st render.St
 		// Archived is how many of the transcripts read were moved in part where they are
 		// not read (OpenClaw's cold storage)
 		Archived int `json:"archived,omitempty"`
+		// Kept says asq keeps a copy of each of the store's sessions (asq keep), so that
+		// what the CLI deletes stays
+		Kept bool `json:"kept,omitempty"`
+		// Copies is, for a folder of copies asq keeps, how many it holds; Sessions are
+		// those of them the CLI's own store no longer does, which are read
+		Copies *int `json:"copies,omitempty"`
 	}
 	var checks []check
 	failed := false
 	for _, store := range stores {
 		ck := check{Source: store.Name, Location: store.Source.Location(), Found: store.Source.Exists()}
+		if keep.IsKept(store.Source) {
+			if !ck.Found {
+				continue // nothing of that CLI has been kept
+			}
+			n, _, err := keep.Held(ctx, store.Source)
+			if err != nil {
+				ck.Error, failed = err.Error(), true
+			}
+			ck.Copies = &n
+		}
 		if ck.Found {
 			lk, err := deepRead(ctx, store)
 			ck.Sessions, ck.Oldest, ck.Newest, ck.Turns, ck.Items, ck.Unread, ck.Archived = lk.sessions, lk.oldest, lk.newest, lk.turns, lk.items, lk.unread, lk.archived
@@ -851,6 +874,8 @@ func doctor(ctx context.Context, stores []index.Store, asJSON bool, st render.St
 			// which the CLI here does not sweep, and whose settings are not this one's
 			if ck.Sessions > 0 && store.Name == store.Spec.Name {
 				ck.Retention = store.Spec.Retention
+				_, keeps := store.Source.(sources.Keeper)
+				ck.Kept = keptAll && ck.Retention != "" && keeps
 			}
 			if err != nil {
 				ck.Error, failed = err.Error(), true
@@ -882,6 +907,10 @@ func doctor(ctx context.Context, stores []index.Store, asJSON bool, st render.St
 			switch {
 			case !ck.Found:
 				fmt.Fprintf(out, "· %-12s not found          %s\n", ck.Source, st.Path(ck.Location))
+			case ck.Copies != nil && ck.Error == "" && ck.Sessions == 0:
+				fmt.Fprintf(out, "✓ %-12s %4d kept, and the CLI still holds every one   %s\n", ck.Source, *ck.Copies, st.Path(ck.Location))
+			case ck.Copies != nil && ck.Error == "":
+				fmt.Fprintf(out, "✓ %-12s %4d kept, %d of them deleted by the CLI since   newest read whole: %s, %s   %s\n", ck.Source, *ck.Copies, ck.Sessions, plural(ck.Turns, "turn"), plural(ck.Items, "step"), st.Path(ck.Location))
 			case ck.Error != "":
 				fmt.Fprintf(out, "✗ %-12s FAILED             %s\n    %s\n", ck.Source, st.Path(ck.Location), ck.Error)
 			case ck.Newest == "" && ck.Archived > 0:
@@ -892,7 +921,10 @@ func doctor(ctx context.Context, stores []index.Store, asJSON bool, st render.St
 			if ck.Archived > 0 && ck.Newest != "" {
 				fmt.Fprintf(out, "  · %s of the newest read were moved in part to cold storage, where they are not read\n", plural(ck.Archived, "transcript"))
 			}
-			if ck.Retention != "" {
+			switch {
+			case ck.Kept:
+				fmt.Fprintf(out, "  · %s; asq keeps a copy of each (asq keep)\n", ck.Retention)
+			case ck.Retention != "":
 				fmt.Fprintf(out, "  · %s, and they leave asq too\n", ck.Retention)
 			}
 			if len(ck.Unread) > 0 {

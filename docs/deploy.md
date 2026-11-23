@@ -172,7 +172,7 @@ sudo loginctl enable-linger "$USER"     # without this the service stops when yo
 ```
 
 The home directory is mounted read-only for the service — it reads the stores and can write only
-its index and its state. Variables that move a CLI's store (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …)
+its index and its state. A folder named with `asq keep --dir` goes in `ReadWritePaths` too. Variables that move a CLI's store (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …)
 go in the environment file too: they are read from the service's environment, not from your
 shell's.
 
@@ -269,7 +269,8 @@ docker run -d --name asq -p 127.0.0.1:7717:7717 \
   mounted so that a missing one stops the container instead: `touch` it first if Codex has not
   named a thread yet. Hermes is the exception — its
   `state.db` needs its `-wal` and `-shm` beside it, so the whole of `~/.hermes` comes along.
-- **`/data` is the index, the export ledger and the secret sign-ins are signed with.** A volume
+- **`/data` is the index, the export ledger, the secret sign-ins are signed with, and what
+  `asq keep` keeps.** A volume
   there means a restart reads only what changed and nobody has to sign in again; without one the
   history is read again on every start, and every start signs everyone out.
 - **`TZ`** names the zone a report's days are counted in. The binary carries the zone database,

@@ -49,7 +49,8 @@ asq ls --path claude@box2=/mnt/box2/.claude/projects     # … or: this one as w
 - A session only a labeled store holds is not in its CLI's store on this machine, which is
   where the CLI's resume command looks: `asq resume` gives no command for it here, and says the
   one for the machine the store came from.
-- A label is lowercase letters, digits and dashes.
+- A label is lowercase letters, digits and dashes. `kept` is asq's own while it keeps copies of
+  what a CLI deletes ([`asq keep`](cli.md#maintaining)): `claude@kept` is those copies.
 - Repeat the flag for several, or set `ASQ_PATH` (comma-separated) so every `asq` process on
   the machine agrees.
 
@@ -112,7 +113,7 @@ Claude Code deletes the transcripts of sessions not used for 30 days by default
 (`cleanupPeriodDays` in its `settings.json`, under `~/.claude` or `CLAUDE_CONFIG_DIR`); from
 v2.1.248 it keeps those of sessions started or last continued in Claude Desktop or Cowork, unless
 `desktopSessionCleanupPeriodDays` or a managed `cleanupPeriodDays` limits them. A session it
-deletes leaves the index at the next sync.
+deletes leaves the index at the next sync, unless [`asq keep`](cli.md#maintaining) keeps a copy of it.
 
 **Codex** — one rollout file per session, `.zst` included. Token usage is recorded per response
 and read that way; cached tokens are taken out of the input they were counted in. A rollout
@@ -176,7 +177,8 @@ turn is over ("The previous response was interrupted…") is not the model's, an
 error that ended nothing does not move the turn's end. Resumed from the session's project
 directory, as Gemini CLI requires. Gemini CLI deletes a project's sessions not used for 30 days
 when it next starts in that project — `general.sessionRetention` in `~/.gemini/settings.json`
-sets the age, or turns it off — and a session it deletes leaves the index at the next sync.
+sets the age, or turns it off — and a session it deletes leaves the index at the next sync, unless
+[`asq keep`](cli.md#maintaining) keeps a copy of it.
 
 **Grok CLI** — the update stream, or, before a session's first line of it, the messages it keeps
 beside it. Input tokens include the cache reads, which are taken out; cache writes are read.

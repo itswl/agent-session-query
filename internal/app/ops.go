@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/itswl/agent-session-query/internal/index"
+	"github.com/itswl/agent-session-query/internal/keep"
 	"github.com/itswl/agent-session-query/internal/render"
 )
 
@@ -274,6 +275,9 @@ func (a *App) Health(ctx context.Context) (Health, error) {
 		return h, err
 	}
 	for _, st := range a.Set.All() {
+		if keep.IsKept(st.Source) && !st.Source.Exists() {
+			continue // nothing of that CLI has been kept
+		}
 		_, n, err := a.Index.Sessions(ctx, index.Filter{Stores: []string{st.Name}, Archived: true, Agents: true, Empty: true}, index.Page{Limit: 1})
 		if err != nil {
 			return h, err

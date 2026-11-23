@@ -89,6 +89,9 @@ on a turn with build logs that is far more than is wanted.
 - A note in `[brackets]` at the end of an answer is about the answer: the index is still reading
   a large history (the answer covers what has been read so far), or a store could not be read
   (an empty answer may not mean an empty history). Tell the user.
+- A session whose source carries a label is not in its CLI's store on this machine:
+  `claude@kept` is a copy asq kept of one the CLI has since deleted, `claude@box2` one read from
+  another machine's store or a backup. Its brief's resume line, if any, is for where it came from.
 - A mistake in a call comes back as an error that names the fix — the arguments the tool
   actually takes, the form a time must have. Read it and retry.
 

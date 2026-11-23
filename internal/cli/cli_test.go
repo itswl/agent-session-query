@@ -693,6 +693,7 @@ func TestIndexRmTakesWhatEarlierVersionsLeft(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
 	t.Setenv("LocalAppData", filepath.Join(home, "local"))
 	t.Setenv("ASQ_INDEX", "")
+	t.Setenv("ASQ_STATE", filepath.Join(home, "state")) // what is kept is looked up there
 	dir := filepath.Dir(index.DefaultPath())
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)

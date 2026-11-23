@@ -169,7 +169,10 @@ One package and one line.
    `Retention` is for a CLI that deletes its own old sessions by default: one clause saying what
    it deletes, after how long, and the setting and file that change it, as the CLI's own
    documentation gives them. What the CLI deletes leaves the index too, and `asq doctor` says so
-   under the store. A CLI that keeps its sessions leaves it empty.
+   under the store. A CLI that keeps its sessions leaves it empty. The adapter of a CLI that
+   deletes them also says which files a session is made of — `Files`, of `sources.Keeper` —
+   so that `asq keep` can copy them into a folder of its own, laid out as in the store, and read
+   them there with the same adapter.
 
 3. **Add it to `catalog.All`.** The list, search, briefs, usage, failures, traces, the page and
    the MCP tools now cover it.

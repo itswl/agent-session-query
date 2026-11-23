@@ -216,6 +216,26 @@ func (s *Source) filesOf(ctx context.Context, key string) ([]string, error) {
 	return []string{key}, nil
 }
 
+// Files is what a conversation is made of (sources.Keeper): its files, and the
+// .project_root of the project they are in, which says the directory it ran in.
+func (s *Source) Files(ref sources.Ref) []string {
+	conv, _ := s.filesOf(context.Background(), ref.Key)
+	files := append([]string(nil), conv...)
+	projects := map[string]bool{}
+	for _, f := range conv {
+		rel, err := filepath.Rel(s.root, f)
+		if err != nil {
+			continue
+		}
+		project, _, _ := strings.Cut(filepath.ToSlash(rel), "/")
+		if project != "" && project != ".." && !projects[project] {
+			projects[project] = true
+			files = append(files, filepath.Join(s.root, project, ".project_root"))
+		}
+	}
+	return files
+}
+
 func stemOf(path string) string {
 	return strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 }

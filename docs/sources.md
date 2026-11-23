@@ -220,10 +220,12 @@ Whether an agent is at work, waiting on a call, or done and waiting for the pers
 - **Codex** writes `task_complete` as each turn ends and `turn_aborted` as one is stopped,
   and a turn without either is in flight. A rollout old enough to write neither is read by
   its last rows, as Claude Code's are.
-- **Gemini CLI** marks no turn's end, and writes a model row once its response is whole and
-  a call once it has finished. A call running, or waiting for permission, therefore reads as
-  working; and words the model said before calls of the same response read as its answer
-  until the calls are written.
+- **Gemini CLI** marks no turn's end, and writes a model row once its response is whole and,
+  in the versions recorded, a call once it has finished. A call running, or waiting for
+  permission, therefore reads as working; and words the model said before calls of the same
+  response read as its answer until the calls are written. A file that holds a call before it
+  has finished — written with the status of one still running or awaiting approval, or
+  answered on a later row — reads as waiting on it until it is answered.
 - **OpenCode** 2.x writes a row as each turn ends, and a turn without it is in flight. 1.x
   writes none: the last response says where the turn stands, by how it finished and whether
   it has.

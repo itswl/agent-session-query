@@ -69,8 +69,9 @@ export function mount(main, route, ctx) {
         h('dt', null, label(w.key)),
         h('dd', { class: 'big', title: f.num(w.total) + ' tokens' }, f.tokens(w.total)),
         h('dd', { class: 'dots dim' }, h('span', { title: f.num(w.calls) + ' model calls' }, f.plural(w.calls, 'call')),
-          w.total > 0 && h('span', null, f.pct(w.cacheHit) + ' cached'),
-          w.agentMs > 0 && h('span', { title: AGENT_TIME(w) }, f.work(w.agentMs) + ' agent time'))))),
+          w.total > 0 && h('span', null, f.pct(w.cacheHit) + ' cached')),
+        // A line of its own: beside the other two it wraps, and a line would open on a dot
+        w.agentMs > 0 && h('dd', { class: 'agent dim', title: AGENT_TIME(w) }, f.work(w.agentMs) + ' agent time')))),
       chart(r.byDay),
       state.by.week && section('By week', span(since), table(state.by.week.rows, state.by.week.total, 'Week', (k) => 'Week of ' + WEEK.format(calendarDay(k)))),
       state.by.month && section('By month', span(since), table(state.by.month.rows, state.by.month.total, 'Month', (k) => MONTH.format(calendarDay(k + '-01')))),

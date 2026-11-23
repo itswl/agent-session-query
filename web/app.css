@@ -500,7 +500,7 @@ div.row-main { position: relative; }
 .window.on { background: var(--sunk); box-shadow: inset 0 -2px 0 var(--accent); }
 .window.on dt { color: var(--muted); }
 .window .big { font-size: 22px; font-weight: 600; letter-spacing: -.01em; }
-.window .dots { font-size: 12px; }
+.window .dots, .window .agent { font-size: 12px; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 4px; padding: 0; list-style: none; color: var(--muted); font-size: 12px; }
 .legend li { display: flex; align-items: center; gap: 6px; }
 .swatch { width: 10px; height: 10px; border-radius: 2px; }

@@ -241,6 +241,9 @@ data: {"sessions": [{"source": "claude", "id": "3f2a…"}]}
 
 event: sync
 data: {"running": true, "total": 1276, "done": 412, "stores": "5f0c1a9e2b"}
+
+event: health
+data: {"replaced": true}
 ```
 
 `changes` names the sessions a sync changed — a turn, or where the latest turn stands — with
@@ -257,7 +260,8 @@ with an agent at work that happens every few seconds, its result is the `changes
 status that said so each time would never hold still. A quiet stream still says when the stores
 were last read (`at`, `tookMs`), about every twenty seconds. `stores` is a few characters that
 change when the condition of the stores does — one appeared, one could not be read — which is
-when `/api/health` has something new to say.
+when `/api/health` has something new to say. So does `health`, said once, within a few seconds of
+an upgrade replacing the server's program file: `/api/health` then says `replaced`.
 
 How fresh the answers are. While someone is looking — an open stream, or a request in the last
 minute and a half — the stores are checked every two seconds, and a request is answered at once

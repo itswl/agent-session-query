@@ -88,6 +88,9 @@ function connect() {
   });
   es.addEventListener('changes', (e) => emit(JSON.parse(e.data)));
   es.addEventListener('sync', (e) => setSync(JSON.parse(e.data)));
+  // The server's program was replaced by an upgrade: the report says so, and the notice
+  // that it wants a restart is drawn from it
+  es.addEventListener('health', () => refreshHealth());
   es.addEventListener('error', () => {
     status.conn = 'reconnecting';
     notify();

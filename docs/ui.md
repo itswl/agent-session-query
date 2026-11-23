@@ -246,7 +246,8 @@ and that `asq doctor` on that machine says more.
 Which `asq` is running is at the foot of the help (`?`), with a link to what that release
 changed, and on the name in the bar. A page left open while the server was upgraded still runs
 the page it was loaded with; it says so, and offers to reload. A server whose binary an upgrade
-replaced goes on with the old one until it is restarted; the page says that too.
+replaced goes on with the old one until it is restarted; the page says that too, an open one
+within a few seconds of the upgrade.
 
 Opened when the server cannot be reached — the machine asleep, the tunnel to it down — the page,
 or the app installed from it, says so on a page of its own, with *Retry*, where it would show the

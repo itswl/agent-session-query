@@ -16,6 +16,7 @@ import (
 //	event: changes   {"sessions": [{"source","id","gone"}…]}   the sessions a sync wrote
 //	event: changes   {"all": true}                       more changed than is worth naming
 //	event: sync      {"running", "total", "done", …}     a long read of the stores, as it goes
+//	event: health    {"replaced": true}                  the health report has news: an upgrade replaced the program
 //
 // It carries no content: a client that hears a session changed asks for what it wants of
 // it. That keeps the stream cheap enough to leave open on every tab, and means a missed
@@ -59,6 +60,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	defer stop()
 
 	told := tell(s.app.Index.State(), false, time.Now())
+	// A page asks for the health report as it opens, and again when the stores move; that
+	// the program was replaced, which it shows a notice of, moves nothing else
+	toldReplaced := s.replaced.Load()
 	if !send("hello", map[string]any{"version": app.Version, "sync": told}) {
 		return
 	}
@@ -99,6 +103,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-progress.C:
+			if !toldReplaced && s.replaced.Load() {
+				toldReplaced = true
+				if !send("health", map[string]any{"replaced": true}) {
+					return
+				}
+			}
 			now := tell(s.app.Index.State(), told.Running, time.Now())
 			if now.Running != told.Running || now.Done != told.Done || now.Total != told.Total || now.Stores != told.Stores {
 				told = now

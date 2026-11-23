@@ -91,6 +91,9 @@ type Server struct {
 	door       door      // what the guards did, written down and counted
 
 	program func() (string, bool) // the file it was started from, and whether it was replaced since (app.Program)
+	// replaced says watch found the program file replaced: an open page is told (see
+	// handleEvents), which asks for the health report again and shows the notice
+	replaced atomic.Bool
 
 	mux     *http.ServeMux
 	assets  map[string]asset
@@ -514,6 +517,7 @@ func (s *Server) watch(ctx context.Context) {
 			if path, replaced := s.program(); replaced {
 				s.logf("asq: %s was replaced since this server started, by an upgrade: it goes on as %s until it is restarted", path, app.Version)
 				said = true
+				s.replaced.Store(true)
 			}
 		}
 		// A minute of the guards' lines that is over is summed up now, and not only when

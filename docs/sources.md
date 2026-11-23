@@ -165,7 +165,11 @@ tool call it was. So a command that failed inside a program that "succeeded" sti
 `asq failures`.
 
 **Pi** — one JSONL file per session; a forked session's rows up to the fork point are inherited.
-A file a tool names relative to the session's directory is named by its whole path.
+A file a tool names relative to the session's directory is named by its whole path. A failed
+command's exit code is the line pi's shell tool ends its result with (`Command exited with code
+1`). The calls a tool made of other tools — a code-mode script's — are kept beside its result,
+and each is read as the call it was, with how it ended and how long it ran: a command that
+failed inside a script is a failure. pi keeps no output of theirs, only a failed one's error.
 
 **DeepSeek Harness** — a session is a directory of rotating, zstd-framed generations; the
 newest is read, a half-written last frame and all. The session's title is the harness's own

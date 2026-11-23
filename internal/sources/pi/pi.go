@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -126,9 +127,10 @@ type message struct {
 	Usage      *usage  `json:"usage"`
 
 	// toolResult
-	ToolCallID string `json:"toolCallId"`
-	ToolName   string `json:"toolName"`
-	IsError    bool   `json:"isError"`
+	ToolCallID  string       `json:"toolCallId"`
+	ToolName    string       `json:"toolName"`
+	IsError     bool         `json:"isError"`
+	NestedCalls *nestedCalls `json:"nestedCalls"`
 
 	// bashExecution
 	Command        string `json:"command"`
@@ -137,6 +139,20 @@ type message struct {
 	Cancelled      bool   `json:"cancelled"`
 	Truncated      bool   `json:"truncated"`
 	FullOutputPath string `json:"fullOutputPath"`
+}
+
+// nestedCalls is what a tool that calls other tools — a code-mode script — kept of the
+// calls it made: each call, how it ended and how long it ran, and the error a failed one
+// gave. Their results are not kept (pi-ai types.ts, NestedToolCalls).
+type nestedCalls struct {
+	Calls []struct {
+		ID         string          `json:"id"`
+		Name       string          `json:"name"`
+		Arguments  json.RawMessage `json:"arguments"`
+		Status     string          `json:"status"`
+		DurationMs float64         `json:"durationMs"`
+		Error      string          `json:"error"`
+	} `json:"calls"`
 }
 
 // usage is the pi-ai shape. Its parts are already apart — input excludes what was read
@@ -305,9 +321,13 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				// whether it failed ride on the message, and the output is its content
 				// (measured over the newest 40 sessions: 554 results, 49 of them failures).
 				// Its time is when the tool finished, its duration how long the tool ran.
+				output := textOf(m.Content, w.Unread)
 				outcome := transcript.Outcome{Status: transcript.StatusOf(m.IsError), DurMs: millis(m.DurationMs)}
-				add(transcript.Message{Role: transcript.ToolRole, At: at, Blocks: []transcript.Block{
-					transcript.ResultOf(m.ToolCallID, m.ToolName, textOf(m.Content, w.Unread), outcome)}})
+				if m.IsError {
+					outcome.Exit = exitCode(output)
+				}
+				blocks := []transcript.Block{transcript.ResultOf(m.ToolCallID, m.ToolName, output, outcome)}
+				add(transcript.Message{Role: transcript.ToolRole, At: at, Dir: w.S.Cwd, Blocks: append(blocks, nested(m.NestedCalls, w.Unread)...)})
 				spend(at, m.Usage)
 			case "bashExecution":
 				// A command the person ran themselves ("!ls"): not a tool call of the
@@ -512,6 +532,62 @@ func assistantBlocks(m *message, unread func(kind string)) []transcript.Block {
 		out = append(out, transcript.EventOf(model.EventInterrupted, m.ErrorMessage))
 	case "error":
 		out = append(out, transcript.EventOf("error", m.ErrorMessage))
+	}
+	return out
+}
+
+// exitCode is the exit code a failed command's result ends with, or nil. pi's shell tool
+// writes what the command printed, a blank line, and the code it exited with, and marks the
+// result an error (coding-agent tools/bash.ts):
+//
+//	--- FAIL: TestOrder
+//
+//	Command exited with code 1
+//
+// A command that passed has no code written, and one that timed out, was aborted or ended
+// without a code says so in other words.
+func exitCode(output string) *int {
+	output = strings.TrimRight(output, " \t\r\n")
+	last := output[strings.LastIndexByte(output, '\n')+1:]
+	digits, ok := strings.CutPrefix(last, "Command exited with code ")
+	if !ok {
+		return nil
+	}
+	code, err := strconv.Atoi(digits)
+	if err != nil {
+		return nil
+	}
+	return transcript.ExitOf(code)
+}
+
+// nested reads the calls a tool made of other tools as calls of their own, each with how it
+// ended — a command that failed inside a script still failed. A call still running when the
+// tool that made it finished has no result, and nor has one whose status pi had not written
+// when this was made, which is counted for what it is.
+func nested(n *nestedCalls, unread func(kind string)) []transcript.Block {
+	if n == nil {
+		return nil
+	}
+	var out []transcript.Block
+	for _, c := range n.Calls {
+		var input any
+		if len(c.Arguments) > 0 && string(c.Arguments) != "null" {
+			input = c.Arguments // left out of a call over pi's size limits
+		}
+		out = append(out, transcript.CallOf(c.ID, c.Name, input))
+		outcome := transcript.Outcome{DurMs: millis(c.DurationMs)}
+		switch c.Status {
+		case "ok":
+			outcome.Status = model.StatusOK
+		case "error":
+			outcome.Status = model.StatusError
+		case "unfinished":
+			continue
+		default:
+			unread(unknown("nestedCall", c.Status))
+			continue
+		}
+		out = append(out, transcript.ResultOf(c.ID, c.Name, c.Error, outcome))
 	}
 	return out
 }

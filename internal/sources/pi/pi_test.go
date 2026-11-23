@@ -2,9 +2,11 @@ package pi
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -211,6 +213,74 @@ func TestRelativePathsAreNamedWhole(t *testing.T) {
 	want := []model.File{{Path: "/w/api/internal/handler.go", Changed: true}, {Path: "/etc/hosts"}}
 	if got := s.Turn(t, 1).Files; !reflect.DeepEqual(got, want) {
 		t.Errorf("files = %+v, want %+v", got, want)
+	}
+}
+
+// A failed command's exit code is the line pi's shell tool ends its result with; a command
+// that passed has none, and nor has one that timed out or was aborted, which pi says in
+// other words. The calls a code-mode script made are calls of their own, each with how it
+// ended: one that failed inside a script is a failure, one still running when the script
+// finished has no result, and a status pi had not written when this was made is counted.
+func TestExitCodesAndNestedCalls(t *testing.T) {
+	root := t.TempDir()
+	result := func(id, call, name string, isError bool, out string, extra ...M) M {
+		msg := M{"role": "toolResult", "toolCallId": call, "toolName": name, "isError": isError, "timestamp": ms(2 * time.Second), "content": text(out)}
+		for _, e := range extra {
+			for k, v := range e {
+				msg[k] = v
+			}
+		}
+		return msgRow(id, "2026-10-06T18:40:02Z", msg)
+	}
+	sourcetest.Write(t, filepath.Join(root, "proj", "2026-10-01T10-00-00_eeee.jsonl"),
+		header("eeee", "/w/api"),
+		msgRow("m1", "2026-10-06T18:40:00Z", M{"role": "user", "content": text("run the tests"), "timestamp": ms(0)}),
+		msgRow("m2", "2026-10-06T18:40:01Z", M{"role": "assistant", "stopReason": "toolUse", "timestamp": ms(time.Second),
+			"content": []M{
+				{"type": "toolCall", "id": "c1", "name": "bash", "arguments": M{"command": "go test ./..."}},
+				{"type": "toolCall", "id": "c2", "name": "bash", "arguments": M{"command": "sleep 99"}},
+				{"type": "toolCall", "id": "c3", "name": "bash", "arguments": M{"command": "go vet ./..."}},
+				{"type": "toolCall", "id": "c4", "name": "codemode", "arguments": M{"code": "await read('a.go'); await bash('make')"}},
+			}}),
+		result("r1", "c1", "bash", true, "--- FAIL: TestOrder\nFAIL\n\nCommand exited with code 1"),
+		result("r2", "c2", "bash", true, "Command timed out after 5 seconds"),
+		result("r3", "c3", "bash", false, "(no output)"),
+		result("r4", "c4", "codemode", false, "done", M{"nestedCalls": M{"complete": false, "calls": []M{
+			{"id": "n1", "name": "read", "arguments": M{"path": "a.go"}, "status": "ok", "durationMs": 3},
+			{"id": "n2", "name": "bash", "arguments": M{"command": "make"}, "status": "error", "durationMs": 1500, "error": "make: *** [build] Error 2"},
+			{"id": "n3", "name": "bash", "argumentsBytes": 90000, "status": "unfinished"},
+			{"id": "n4", "name": "read", "arguments": M{"path": "b.go"}, "status": "paused"},
+		}}}),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	if fmt.Sprint(s.Unread) != "map[nestedCall:paused:1]" {
+		t.Errorf("unread = %v", s.Unread)
+	}
+	turn := s.Turn(t, 1)
+	tools := sourcetest.Tools(turn)
+	if len(tools) != 8 || turn.Failures != 3 {
+		t.Fatalf("%d tools, %d failures: %+v", len(tools), turn.Failures, tools)
+	}
+	code := func(tool *model.Tool) string {
+		if tool.Exit == nil {
+			return "none"
+		}
+		return strconv.Itoa(*tool.Exit)
+	}
+	for i, want := range []string{"1", "none", "none", "none", "none", "none", "none", "none"} {
+		if got := code(tools[i]); got != want {
+			t.Errorf("%s %s: exit %s, want %s", tools[i].Name, tools[i].Command, got, want)
+		}
+	}
+	read, make, unfinished, unknown := tools[4], tools[5], tools[6], tools[7]
+	if read.Name != "read" || read.Status != model.StatusOK || read.DurMs != 3 || fmt.Sprint(read.Files) != "[/w/api/a.go]" {
+		t.Errorf("nested read = %+v", read)
+	}
+	if make.Command != "make" || make.Status != model.StatusError || make.Output != "make: *** [build] Error 2" || make.DurMs != 1500 {
+		t.Errorf("nested make = %+v", make)
+	}
+	if unfinished.Done || unfinished.Input != nil || unknown.Done {
+		t.Errorf("unfinished %+v, unknown %+v: no result", unfinished, unknown)
 	}
 }
 

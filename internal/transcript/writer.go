@@ -670,7 +670,9 @@ func (w *Writer) flush() {
 		return
 	}
 	// A turn whose last row is its own ask was never answered: the person asked again, or
-	// stopped it, before the agent wrote anything
+	// stopped it, before the agent wrote anything. The session's last may be one the agent
+	// is answering now; the index tells that one apart while the session is said to be at
+	// work (index.Session.UnderWay), as it is written and not as it was read
 	if t.Index > 0 && cur.lastWasAsk {
 		t.Interrupted = true
 	}

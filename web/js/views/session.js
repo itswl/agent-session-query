@@ -11,7 +11,7 @@ import * as f from '../format.js';
 import { standing } from '../standing.js';
 
 const titleOf = (s) => s.title || f.firstLine(s.lastAsk, 120) || 'Untitled session';
-const sigOf = (t) => [t.endedAt, t.lastAt, t.steps, t.tools, t.failures, t.passedLater, t.interrupted, t.ask?.length, t.answer?.length, f.totalTokens(t.usage)].join('|');
+const sigOf = (t, at) => [t.endedAt, t.lastAt, t.steps, t.tools, t.failures, t.passedLater, t.interrupted, at, t.ask?.length, t.answer?.length, f.totalTokens(t.usage)].join('|');
 const atBottom = () => innerHeight + scrollY >= document.documentElement.scrollHeight - 120;
 const behavior = () => (reducedMotion() ? 'auto' : 'smooth');
 // A phone: the bar scrolls away, and the session keeps a row of its own at the top
@@ -242,11 +242,15 @@ export function mount(main, route, ctx) {
     fill(crumbs, h('span', { class: 'dim' }, 'Subagent of '), links.flatMap((a, i) => (i ? [' › ', a] : [a])));
   }
 
+  // Where the turn the agent is at stands — working, or waiting on a call — while the session
+  // is said to; '' for any other turn. It is not over, and is not said to be fine
+  const atWork = (t) => (t.index > 0 && t.index === v.sess?.stats?.turns && ['working', 'waiting'].includes(v.sess?.live?.state) ? v.sess.live.state : '');
+
   function addTurn(t) {
     const prev = v.recs.at(-1);
     const at = f.when(t.startedAt);
     if (at && (!prev?.at || !f.sameDay(prev.at, at))) timeline.append(h('li', { class: 't-day' }, f.day(at)));
-    const rec = { t, sig: sigOf(t), at, open: false, full: null, el: h('li', { class: 'turn', id: 't' + t.index, tabIndex: -1 }) };
+    const rec = { t, sig: sigOf(t, atWork(t)), at, open: false, full: null, el: h('li', { class: 'turn', id: 't' + t.index, tabIndex: -1 }) };
     rec.stepsEl = h('div', { class: 'steps', id: 'steps-' + t.index, hidden: true });
     v.recs.push(rec);
     v.byIndex.set(t.index, rec);
@@ -261,7 +265,8 @@ export function mount(main, route, ctx) {
     const zero = t.index === 0;
     // A turn whose failures the same command each passed later is not marked failed: they
     // were steps of the work, and it is said, muted
-    const [status, said] = f.open(t) ? ['failed', f.failed(t, true)] : t.interrupted ? ['interrupted', 'interrupted'] : t.failures ? ['passed', f.failed(t, true)] : ['fine', 'fine'];
+    const working = atWork(t);
+    const [status, said] = f.open(t) ? ['failed', f.failed(t, true)] : working ? ['working', working] : t.interrupted ? ['interrupted', 'interrupted'] : t.failures ? ['passed', f.failed(t, true)] : ['fine', 'fine'];
     const took = f.when(t.endedAt) - f.when(t.startedAt);
     rec.toggle = h('button', { type: 'button', class: 't-toggle', 'aria-expanded': String(rec.open), 'aria-controls': rec.stepsEl.id },
       icon('chevron', 'chev'), h('span', null, toggleLabel(rec)));
@@ -693,7 +698,7 @@ export function mount(main, route, ctx) {
     for (const t of d.turns) {
       const rec = v.byIndex.get(t.index);
       if (!rec) { timeline.querySelector(':scope > .empty')?.remove(); addTurn(t); continue; }
-      const sig = sigOf(t);
+      const sig = sigOf(t, atWork(t));
       if (sig === rec.sig) continue;
       rec.t = t;
       rec.sig = sig;

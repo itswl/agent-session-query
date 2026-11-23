@@ -49,6 +49,21 @@ func liveFor(state string) time.Duration {
 	return WaitingFor
 }
 
+// UnderWay reports whether turn idx is the one a session's agent is at: its latest, while the
+// session is said to be working or waiting (Live). A turn whose ask is the last thing written
+// is read as one the person stopped before the agent wrote anything (see transcript.Writer),
+// and the turn the agent is answering now is that too until its first row comes. It is not
+// said to be interrupted while the session stands so, and is once it no longer does.
+func (s *Session) UnderWay(idx int) bool {
+	return idx > 0 && idx == s.Stats.Turns && s.Live != nil && (s.Live.State == model.LiveWorking || s.Live.State == model.LiveWaiting)
+}
+
+// underWay is UnderWay in SQL, of turn t of session s, as of now, and its arguments.
+func underWay(now time.Time) (string, []any) {
+	return `(t.idx = s.turns AND (s.live_state = ? AND s.updated_at > ? OR s.live_state = ? AND s.updated_at > ?))`,
+		[]any{model.LiveWorking, ms(now.Add(-WorkingFor)), model.LiveWaiting, ms(now.Add(-WaitingFor))}
+}
+
 // Session is a session as the index holds it: what its transcript said, what it adds
 // up to, and where it sits among the others.
 type Session struct {

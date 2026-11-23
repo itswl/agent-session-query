@@ -578,6 +578,93 @@ func TestDigestListsTheLatestFirstAndHowEachEnded(t *testing.T) {
 	}
 }
 
+// A turn whose ask is the last thing written was stopped before the agent wrote anything,
+// or is being answered now. While the session is said to be working it is the second: the
+// digest, a search and the session's turns do not call it interrupted. Once the working
+// state has run out it is the first.
+func TestATurnUnderWayIsNotInterrupted(t *testing.T) {
+	h := fixture.Write(t)
+	const fresh, stale = "dddd4444-0000-4000-8000-000000000004", "eeee5555-0000-4000-8000-000000000005"
+	ask := func(session string, ago time.Duration, text string) string {
+		return `{"type":"user","uuid":"` + session[:4] + `-u1","timestamp":"` + h.Now.Add(-ago).Format(time.RFC3339Nano) + `","sessionId":"` + session +
+			`","cwd":"/work/gamma","message":{"role":"user","content":"` + text + `"}}`
+	}
+	for session, line := range map[string]string{
+		fresh: ask(fresh, 20*time.Second, "untangle the zebrafish import"),
+		stale: ask(stale, index.WorkingFor+time.Minute, "untangle the okapi import"),
+	} {
+		path := filepath.Join(h.Dir, "-work-gamma", session+".jsonl")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(line+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// the transcript was last written when its ask was
+		at := h.Now.Add(-20 * time.Second)
+		if session == stale {
+			at = h.Now.Add(-index.WorkingFor - time.Minute)
+		}
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, err := app.Open(h.Config(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	ctx := context.Background()
+	if _, err := a.Sync(ctx, index.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	f := filter(a)
+	interrupted := map[string]map[string]bool{"digest": {}, "search": {}, "outline": {}, "turns": {}}
+	rep, err := a.Index.Digest(ctx, f, index.Window{Since: h.Now.Add(-24 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range rep.Projects {
+		for _, e := range d.List {
+			interrupted["digest"][e.Ref] = e.Interrupted
+		}
+	}
+	for _, word := range []string{"zebrafish", "okapi"} {
+		res, err := a.Index.Search(ctx, index.ParseQuery(word), f, index.SearchOptions{})
+		if err != nil || len(res.Hits) != 1 {
+			t.Fatalf("search %s = %+v, %v", word, res.Hits, err)
+		}
+		interrupted["search"][res.Hits[0].Session.Ref] = res.Hits[0].Interrupted
+	}
+	for _, session := range []string{fresh, stale} {
+		s, err := a.Index.Resolve(ctx, "claude/"+session, a.Stores())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if session == fresh && (s.Live == nil || s.Live.State != model.LiveWorking) {
+			t.Errorf("the session asked 20 s ago stands at %+v, want working", s.Live)
+		}
+		outline, err := a.Index.Outline(ctx, &s)
+		if err != nil || len(outline) != 1 {
+			t.Fatalf("outline of %s = %+v, %v", session, outline, err)
+		}
+		interrupted["outline"][s.Ref] = outline[0].Interrupted
+		turns, err := a.Index.Turns(ctx, &s, index.TurnRange{First: 1, Last: -1})
+		if err != nil || len(turns) != 1 {
+			t.Fatalf("turns of %s = %+v, %v", session, turns, err)
+		}
+		interrupted["turns"][s.Ref] = turns[0].Interrupted
+	}
+	for reader, by := range interrupted {
+		if got, ok := by["claude/"+fresh]; !ok || got {
+			t.Errorf("%s: the turn being answered is interrupted (%v, listed %v)", reader, got, ok)
+		}
+		if got, ok := by["claude/"+stale]; !ok || !got {
+			t.Errorf("%s: the turn no one answered in %s is not interrupted (%v, listed %v)", reader, index.WorkingFor+time.Minute, got, ok)
+		}
+	}
+}
+
 func TestSyncFollowsTheStore(t *testing.T) {
 	h := fixture.Write(t)
 	a, err := app.Open(h.Config(t))

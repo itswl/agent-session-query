@@ -93,8 +93,9 @@ changed, tokens), and the answer. *3 files changed* opens the list of them, name
 session's directory, each a link to [Files](#reports) at that path, for how it stands now. A turn
 with failed calls says how many, in red, unless the same command passed later for each of them —
 in that turn or the three after it, [as failures judges it](api.md#reports) — when it says so,
-muted: those were steps of the work, not where it stands. The head counts what *Passed later*
-beside what *Failed*. Only this outline is loaded up front — a long session is megabytes — and a
+muted: those were steps of the work, not where it stands. The turn the agent is at says
+*working* or *waiting* while the session does, rather than how it ended. The head counts what
+*Passed later* beside what *Failed*. Only this outline is loaded up front — a long session is megabytes — and a
 turn's steps are fetched when it is opened.
 
 ![A turn's steps](screenshots/session-steps.png)

@@ -40,7 +40,7 @@ output, a compaction summary) is not an ask and opens nothing.
 | `ask` | the person's words, without what a harness wrapped around them, then the mark of each file they sent with them |
 | `answer` | the last thing the agent said |
 | `startedAt`, `endedAt` | the ask, and the last thing the agent *did* — a notification dropped in hours later does not stretch the turn |
-| `interrupted` | it stopped before the agent was done: the person stopped it, or, in a Gemini CLI session, an error cut it off — an `error` event in the turn says which. Another CLI's error is an `error` event that marks nothing |
+| `interrupted` | it stopped before the agent was done: the person stopped it, or, in a Gemini CLI session, an error cut it off — an `error` event in the turn says which. Another CLI's error is an `error` event that marks nothing. A turn whose ask is the last thing written is interrupted too, except the session's latest while the session is said to be working or waiting: the agent is still answering it |
 | `tools`, `failures`, `toolKinds` | tool calls, how many failed, and what they were for (`exec` `write` `read` `search` `net` `agent` `other`) |
 | `passedLater` | of the failures, how many the same command passed later, in this turn or the three after it — what the index judges, which no transcript says |
 | `files` | every file a tool named, and whether it was changed — a write counts only if it did not fail |

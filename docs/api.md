@@ -133,7 +133,9 @@ to mark.
 
 How the turn ended: `failures` is its calls that failed or were interrupted, `passedLater` how
 many of those were followed — in that turn or the three after it — by the same command
-succeeding ([as failures judge it](#reports)), and `interrupted` says the person stopped it.
+succeeding ([as failures judge it](#reports)), and `interrupted` says the person stopped it —
+never of the turn an agent is still answering, the latest of a session said to be working or
+waiting.
 
 When no turn holds every word, the answer is the turns that hold the most of them, and says so:
 

@@ -602,7 +602,8 @@ type DigestSession struct {
 	PassedLater int   `json:"passedLater"` // as Digest.PassedLater
 	AgentMs     int64 `json:"agentMs"`
 	// Interrupted and Answer are of its last turn in the window: whether the person
-	// stopped it, and the last thing the agent said
+	// stopped it — not the turn the agent is at (see Session.UnderWay) — and the last thing
+	// the agent said
 	Interrupted bool      `json:"interrupted,omitempty"`
 	Answer      string    `json:"answer,omitempty"`
 	FirstAt     time.Time `json:"firstAt,omitzero"`
@@ -825,13 +826,16 @@ WHERE t.idx > 0 AND `+where+` AND `+when+` GROUP BY s.cwd, root ORDER BY 9 DESC,
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	// How each ended: its last turn in the window, read for its answer alone
+	// How each ended: its last turn in the window, read for its answer alone. The turn the
+	// agent is at is not over, and was not stopped (see Session.UnderWay)
+	under, underArgs := underWay(time.Now())
 	for _, l := range listed {
 		d := &l.d.List[l.i]
 		var answer *string
 		var stopped int
-		err := ix.ro.QueryRowContext(ctx, `SELECT json_extract(t.head, '$.answer'), t.interrupted FROM turns t WHERE t.sid = ? AND t.idx > 0 AND `+when+` ORDER BY t.idx DESC LIMIT 1`,
-			append([]any{d.sid}, whenArgs...)...).Scan(&answer, &stopped)
+		err := ix.ro.QueryRowContext(ctx, `SELECT json_extract(t.head, '$.answer'), t.interrupted AND NOT `+under+`
+FROM turns t JOIN sessions s ON s.sid = t.sid WHERE t.sid = ? AND t.idx > 0 AND `+when+` ORDER BY t.idx DESC LIMIT 1`,
+			append(append(append([]any{}, underArgs...), d.sid), whenArgs...)...).Scan(&answer, &stopped)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			continue // a session whose subagents alone worked in the window

@@ -908,12 +908,13 @@ func cmdResume(ctx context.Context, args []string, io *streams) error {
 
 func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 	c := newCommand("doctor", io.err)
-	port := c.fs.Int("port", DefaultPort, "the port a server on this machine listens on, to ask which asq it runs (ASQ_PORT; 0 asks none)")
+	port := c.fs.Int("port", DefaultPort, "the port a server on this machine listens on, to ask which asq it runs (ASQ_PORT; 0 asks none). With neither, the one the service asq service install set up listens on, or 7717")
 	if _, err := c.parse(args); err != nil {
 		return err
 	}
 	// The port named, by the flag or ASQ_PORT, where a 0 asks no server: serve takes a 0
-	// in ASQ_PORT for none set, and listens on its own
+	// in ASQ_PORT for none set, and listens on its own. With neither, the service's, which
+	// install may have given a port of its own in its definition
 	named := false
 	c.fs.Visit(func(f *flag.Flag) { named = named || f.Name == "port" })
 	if !named {
@@ -940,7 +941,9 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 	server := ""
 	switch {
 	case !named:
-		server = net.JoinHostPort("127.0.0.1", strconv.Itoa(DefaultPort))
+		if server = newMachine(DefaultPort).Listens(); server == "" {
+			server = net.JoinHostPort("127.0.0.1", strconv.Itoa(DefaultPort))
+		}
 	case *port > 0:
 		server = net.JoinHostPort("127.0.0.1", strconv.Itoa(*port))
 	}

@@ -398,7 +398,8 @@ was written. Those are a warning (see [Sources](sources.md#what-each-adapter-rea
 whose CLI moved them, whole or in part, where `asq` does not read them (OpenClaw's cold storage)
 are counted, and are not taken for a format that drifted. Then it reads the whole index file
 and says whether it holds together, and how much of it is free; and it asks the server on this
-machine (`127.0.0.1`, `--port` or `ASQ_PORT`, either `0` asking none, with `ASQ_TOKEN` if it takes
+machine (`127.0.0.1` on `--port` or `ASQ_PORT`, either `0` asking none, and with neither on the
+port the service `asq service install` set up listens on, or `7717`; with `ASQ_TOKEN` if it takes
 one) which `asq` it runs — one started before an upgrade, or from another install, is a
 warning that says so ([Upgrading](deploy.md#upgrading)). Exits 1 if a store that is there
 cannot be read, if the index is damaged, or if doctor was stopped before it looked at every

@@ -20,6 +20,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -351,21 +352,42 @@ func (m *Machine) Status(this string) (*Status, error) {
 	for _, v := range s.Env {
 		st.Env = append(st.Env, v.Name)
 	}
+	addr := m.address(mg, s)
+	st.Address, st.Answers = "http://"+addr, m.Answers(addr)
+	if !st.Ours {
+		st.Down = mg.unloadSteps()
+	}
+	return st, nil
+}
+
+// address is where a service of definition s listens, as host:port (see Address).
+func (m *Machine) address(mg manager, s Setup) string {
 	if _, task := mg.(*scheduler); task && m.Getenv != nil {
 		// Where it listens is in the user's environment as much as in its arguments, as
 		// install took it from this shell's
+		s.Env = slices.Clone(s.Env)
 		for _, name := range []string{"ASQ_HOST", "ASQ_PORT"} {
 			if v := m.Getenv(name); v != "" {
 				s.Env = append(s.Env, Var{name, v})
 			}
 		}
 	}
-	addr := Address(s, m.Port)
-	st.Address, st.Answers = "http://"+addr, m.Answers(addr)
-	if !st.Ours {
-		st.Down = mg.unloadSteps()
+	return Address(s, m.Port)
+}
+
+// Listens is where the service set up for asq on this machine listens, as host:port, read
+// from its definition: the manager is not asked how it runs, nor the server whether it
+// answers. "" when none is set up.
+func (m *Machine) Listens() string {
+	mg, err := m.manager()
+	if err != nil {
+		return ""
 	}
-	return st, nil
+	def, there := mg.current()
+	if !there {
+		return ""
+	}
+	return m.address(mg, mg.parse(def))
 }
 
 // Removed is what Uninstall did.

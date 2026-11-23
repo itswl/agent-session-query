@@ -2,16 +2,20 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/fixture"
 	"github.com/itswl/agent-session-query/internal/server"
+	"github.com/itswl/agent-session-query/internal/service"
 )
 
 func portOf(t *testing.T, srv *httptest.Server) string {
@@ -122,4 +126,31 @@ func TestDoctorAsksTheServerWhichAsqItRuns(t *testing.T) {
 		t.Errorf("doctor of a server of this asq:\n%s%s", out, errs)
 	}
 
+	// With neither --port nor ASQ_PORT, the server asked is the one the service asq service
+	// install set up, on the port its definition gives it, read with no manager asked
+	t.Setenv("ASQ_PORT", "")
+	config := t.TempDir()
+	old := newMachine
+	newMachine = func(port int) *service.Machine {
+		return &service.Machine{OS: "linux", Home: t.TempDir(), Config: config, UID: 1000, User: "me", Port: port,
+			Run: func(name string, args ...string) ([]byte, error) {
+				t.Errorf("doctor ran %s %v", name, args)
+				return nil, errors.New("not here")
+			},
+			Answers: func(string) bool { return false }, Lingers: func() bool { return true }}
+	}
+	t.Cleanup(func() { newMachine = old })
+	plan, err := newMachine(DefaultPort).Plan(service.Setup{Binary: self, Args: []string{"serve", "--port", portOf(t, real)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plan.Definition), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan.Definition, []byte(plan.Content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, errs, _ := asq(t, h, indexPath, "doctor"); !strings.Contains(out, "✓ server       asq "+app.Version+" on 127.0.0.1:"+portOf(t, real)) {
+		t.Errorf("doctor with a service set up on a port of its own:\n%s%s", out, errs)
+	}
 }

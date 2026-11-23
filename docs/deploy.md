@@ -383,7 +383,8 @@ page, and in `/api/health` (`replaced`, beside the `executable` it was started f
 asq: /home/you/.local/bin/asq was replaced since this server started, by an upgrade: it goes on as v1.4.0 until it is restarted
 ```
 
-`asq doctor` asks the server on `127.0.0.1:7717` (`--port`, or `ASQ_PORT`) which `asq` it runs,
+`asq doctor` asks the server on this machine which `asq` it runs — on `--port`, or `ASQ_PORT`,
+and with neither on the port the service `asq service install` set up listens on, or `7717` —
 and compares it with itself: one started before an upgrade, or from another install than the
 one doctor is, is a warning that says which and what to do. A server with a token tells it only
 with the token in `ASQ_TOKEN`. Nothing is asked of anywhere but this machine.

@@ -49,6 +49,9 @@ type SyncResult struct {
 	Read    int      // of which read, because new or changed
 	Removed int      // transcripts the stores no longer hold
 	Changes []Change // the sessions whose record changed
+	// Reopened says why the sync opened the index file anew before it read anything: it
+	// had been removed or replaced, or was found damaged and set aside (see follow)
+	Reopened string
 }
 
 // SyncOptions tune one sync.
@@ -129,11 +132,27 @@ type job struct {
 // fingerprint moved is read again, newest first, and every one a store no longer holds
 // is removed. Only one sync runs at a time; a second caller waits for the first and then
 // runs its own, which finds little left to do.
+//
+// It first makes sure the file it writes is the one at the index's path (see follow). A
+// sync that finds the file damaged sets it aside and reads the stores again into a new one,
+// at once: the index is a cache.
 func (ix *Index) Sync(ctx context.Context, stores []Store, opts SyncOptions) (SyncResult, error) {
 	ix.syncMu.Lock()
 	defer ix.syncMu.Unlock()
+	res, err := ix.sync(ctx, stores, opts)
+	if ix.Damage(err) && ctx.Err() == nil {
+		res, err = ix.sync(ctx, stores, opts)
+	}
+	return res, err
+}
+
+func (ix *Index) sync(ctx context.Context, stores []Store, opts SyncOptions) (SyncResult, error) {
 	start := time.Now()
 	var res SyncResult
+	var err error
+	if res.Reopened, err = ix.follow(); err != nil {
+		return res, err
+	}
 
 	// What the stores hold now, against what was read before
 	var jobs []job

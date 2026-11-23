@@ -81,7 +81,11 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		w.WriteHeader(499)
 	default:
 		s.logf("%s %s: %v", r.Method, r.URL.Path, err)
-		writeError(w, r, http.StatusInternalServerError, "the index could not answer: "+err.Error())
+		msg := "the index could not answer: " + err.Error()
+		if s.app.Index.Damage(err) {
+			msg += " — the index is damaged, and is set aside and made anew from the stores within seconds"
+		}
+		writeError(w, r, http.StatusInternalServerError, msg)
 	}
 }
 

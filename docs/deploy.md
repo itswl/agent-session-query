@@ -305,3 +305,7 @@ An idle server looks at the stores every thirty seconds — a `stat` per transcr
 nothing that did not change. While a page is open it looks every two seconds. Memory is the
 SQLite page cache, tens of megabytes. The index is a fraction of the size of the transcripts it
 caches, and `asq index rm` gets all of it back.
+
+Nothing about the index needs the server stopped: `asq index rebuild` and `asq index rm` make a
+new file, and the server goes on with that one at its next look at the stores. One it finds
+damaged it sets aside and reads anew, and says so in its log.

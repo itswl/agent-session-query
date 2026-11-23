@@ -33,7 +33,7 @@ type Config struct {
 	// CLI deletes is written down (see internal/keep). Empty: nothing is kept.
 	State string
 	// Log is told what the program does to the index file of its own accord: a damaged one
-	// set aside and made anew. Nil tells nobody.
+	// set aside and made anew, one another asq removed or replaced followed. Nil tells nobody.
 	Log io.Writer
 }
 
@@ -140,6 +140,9 @@ func (a *App) run(ctx context.Context, opts index.SyncOptions, done, caught chan
 		}
 	}
 	res, err := a.Index.Sync(ctx, a.Set.Present(), opts)
+	if res.Reopened != "" {
+		a.say(res.Reopened)
+	}
 	if err == nil {
 		a.keepUp(ctx)
 	}

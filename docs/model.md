@@ -165,9 +165,15 @@ and the next command rebuilds it from the stores.
 
 - **A damaged file is made anew.** A file that is not a database, or whose pages do not hold
   together, is set aside beside where it was, as `<name>.damaged` — the last one only — and a
-  new one is read from the stores by the process that opens it. Damage deeper in, which opening
-  the file does not read, ends the command that meets it, naming `asq index rebuild`; `asq
+  new one is read from the stores: by the process that opens it, by a sync that meets the
+  damage, and by the next sync of a server or an MCP server one of whose questions met it. A
+  command in a terminal whose question meets it says so, and names `asq index rebuild`; `asq
   doctor` reads the whole file, and fails when it is damaged.
+- **The file at the path is the one used.** A process that runs for long — a server, an MCP
+  server — looks before it reads the stores whether the file at the index's path is still the
+  one it opened. When `asq index rebuild` or `asq index rm` made another, or none, it lets go of
+  the old file and uses the new one, making it if need be: what it reads after is what every
+  other process reads, and the old file's space goes back to the disk.
 - **A store that cannot be read is not an empty store.** If a store, or one directory or
   database of it, cannot be listed, everything already known of it is kept and `asq` says which
   store and why — on stderr, in `/api/health`, in the page, at the end of an MCP answer.

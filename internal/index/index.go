@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -36,6 +37,12 @@ type Index struct {
 	sourcesMu sync.Mutex
 	sources   map[string]int
 	sourcesAt time.Time
+
+	// The file the connections are to, and the generation of it each pool's connections
+	// must be of (see follow); file is under syncMu once the index is open
+	file         os.FileInfo
+	rwGen, roGen atomic.Int64
+	damage       atomic.Pointer[string] // what was found wrong with the file, to be set aside at the next sync
 
 	// Repaired is the damaged file Open set aside, and made anew in place of; nil when it
 	// found none
@@ -232,11 +239,7 @@ func Open(path string) (*Index, error) {
 	// writes — a rebuild — would leave it at its largest for good. journal_size_limit
 	// cuts it back to a few megabytes whenever a checkpoint has emptied it.
 	writer := func() (*sql.DB, error) {
-		rw, err := sql.Open("sqlite", uri+"?_txlock=immediate&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=journal_size_limit(4194304)&_pragma=synchronous(NORMAL)&_pragma=temp_store(MEMORY)&_pragma=cache_size(-65536)")
-		if err == nil {
-			rw.SetMaxOpenConns(1)
-		}
-		return rw, err
+		return pool(uri+"?_txlock=immediate&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=journal_size_limit(4194304)&_pragma=synchronous(NORMAL)&_pragma=temp_store(MEMORY)&_pragma=cache_size(-65536)", &ix.rwGen, 1, rwIdle)
 	}
 	rw, err := writer()
 	if err != nil {
@@ -258,16 +261,18 @@ func Open(path string) (*Index, error) {
 		}
 		err = prepare(rw)
 	}
+	if err == nil {
+		ix.file, err = identify(path)
+	}
 	if err != nil {
 		rw.Close()
 		return nil, fmt.Errorf("index: %s: %w", path, err)
 	}
-	ro, err := sql.Open("sqlite", uri+"?mode=ro&_pragma=busy_timeout(10000)&_pragma=query_only(1)&_pragma=cache_size(-32768)")
+	ro, err := pool(uri+"?mode=ro&_pragma=busy_timeout(10000)&_pragma=query_only(1)&_pragma=cache_size(-32768)", &ix.roGen, 8, roIdle)
 	if err != nil {
 		rw.Close()
 		return nil, fmt.Errorf("index: %w", err)
 	}
-	ro.SetMaxOpenConns(8)
 	ix.rw, ix.ro = rw, ro
 	ix.enc, _ = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderConcurrency(1))
 	ix.dec, _ = zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))

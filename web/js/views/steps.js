@@ -84,7 +84,8 @@ export function pictures(it, ctx) {
     let link = drawn.get(url);
     if (!link) {
       const what = `${a.mime.split('/')[1]} · ${f.bytes(a.bytes)}`;
-      const img = h('img', { src: url, alt: `Picture: ${what}`, loading: 'lazy', decoding: 'async' });
+      // lazy before src: an image given its address first is fetched at once
+      const img = h('img', { loading: 'lazy', decoding: 'async', alt: `Picture: ${what}`, src: url });
       link = h('a', { class: 'thumb', href: url, target: '_blank', rel: 'noopener', title: `Open the picture (${what})` }, img);
       img.addEventListener('error', () => {
         drawn.delete(url);

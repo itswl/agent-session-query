@@ -190,4 +190,10 @@ func TestThePageAsksForThePicturesTheServerSends(t *testing.T) {
 	if n<<shift != app.MaxPicture {
 		t.Errorf("the page asks for pictures up to %d bytes, the server sends them up to %d", n<<shift, app.MaxPicture)
 	}
+	// A picture is asked for once it is near the screen: an image whose address is set
+	// before it is told to wait is fetched at once
+	img := regexp.MustCompile(`h\('img', \{(.*)\}\)`).FindStringSubmatch(body)
+	if img == nil || !strings.Contains(img[1], "loading: 'lazy'") || strings.Index(img[1], "loading:") > strings.Index(img[1], "src:") {
+		t.Errorf("a thumbnail is made with %v: loading 'lazy' before its src", img)
+	}
 }

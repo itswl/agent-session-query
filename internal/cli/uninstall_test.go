@@ -202,6 +202,24 @@ func TestUninstallTakesANamedIndexOnlyWhenItIsOne(t *testing.T) {
 	}
 }
 
+// keep.json says where the copies are: one that does not read leaves the state whole, the
+// copies wherever they are with it, and says why — in the state asq keeps by default too.
+func TestUninstallLeavesAStateWhoseKeepJSONDoesNotRead(t *testing.T) {
+	home, _ := uninstallHome(t, runtime.GOOS, nil)
+	state := defaultState(t, home)
+	put(t, filepath.Join(state, "keep.json"), `{"dir": `)
+	copies := keptHere(t, home, filepath.Join(state, "kept"))
+
+	got := uninstallJSON(t)
+	for _, p := range append(copies, filepath.Join(state, "session.key")) {
+		there(t, p)
+	}
+	if len(got.Removed) != 1 || len(got.Left) != 1 || got.Left[0].Path != state || got.Left[0].What != "state" ||
+		!strings.Contains(got.Left[0].Why, "keep.json") {
+		t.Errorf("removed %q, left %+v; want the index removed, and %s left for its keep.json", got.Removed, got.Left, state)
+	}
+}
+
 // keptHere puts copies asq keep made into a folder: two of Claude Code's transcripts, one
 // of which Claude Code still holds and one it has deleted, which is kept nowhere else.
 func keptHere(t *testing.T, home, folder string) []string {

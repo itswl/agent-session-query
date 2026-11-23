@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-// What git commit prints for the commit it made names it, however the line begins, and
-// as Gemini CLI hands it on, after "Output: "; a line of git log, or a commit of another
-// id, does not.
+// What git commit prints for the commit it made names it, however the line begins, as
+// Gemini CLI hands it on, after "Output: ", and in a shell tool's answer in JSON; a line
+// of git log, or a commit of another id, does not.
 func TestMade(t *testing.T) {
 	const id = "3f9c2ab4e5f60718293a4b5c6d7e8f9012345678"
 	for out, want := range map[string]bool{
@@ -18,9 +18,11 @@ func TestMade(t *testing.T) {
 		"pre-commit hook passed\n[feature/x 3f9c2ab] Trim titles": true,
 		"<untrusted_context>\nOutput: [main 3f9c2ab] Trim titles\n 1 file changed\nProcess Group PGID: 7\n</untrusted_context>": true,
 		"Command: git commit -am x\nDirectory: (root)\nOutput: [main 3f9c2ab] Trim titles\nError: (none)":                       true,
-		"Output: see [main 3f9c2ab] in the log":                         false,
-		"[main 3f9c2ac] Another commit":                                 false,
-		"commit 3f9c2ab4e5f60718293a4b5c6d7e8f9012345678\nAuthor: test": false,
+		"Output: see [main 3f9c2ab] in the log":                                     false,
+		`{"output": "[main 3f9c2ab] Trim titles\n 1 file changed", "exit_code": 0}`: true,
+		`{"output": "see [main 3f9c2ab] in the log", "exit_code": 0}`:               false,
+		"[main 3f9c2ac] Another commit":                                             false,
+		"commit 3f9c2ab4e5f60718293a4b5c6d7e8f9012345678\nAuthor: test":             false,
 		"3f9c2ab Trim titles":                                           false,
 		"see [main 3f9c2ab] in the log":                                 false,
 		"[main 3f9c2a] Six characters is no id git prints for a commit": false,

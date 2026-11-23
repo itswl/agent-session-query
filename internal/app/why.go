@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -49,6 +50,12 @@ func made(output, commit string) bool {
 		if strings.HasPrefix(commit, m[1]) {
 			return true
 		}
+	}
+	// A shell tool that answers in JSON — Hermes's: {"output": "…", "exit_code": 0} — holds
+	// what the command printed in a field, its lines one line of JSON
+	var doc struct{ Output, Stdout string }
+	if strings.HasPrefix(output, "{") && json.Unmarshal([]byte(output), &doc) == nil {
+		return made(doc.Output, commit) || made(doc.Stdout, commit)
 	}
 	return false
 }

@@ -20,7 +20,8 @@ import (
 	"github.com/itswl/agent-session-query/internal/txt"
 )
 
-// Version is the release this binary is, set at build time.
+// Version is the release this binary is, set at build time; failing that, the module's
+// version as Go recorded it (see moduleVersion).
 var Version = "dev"
 
 // Config says where the index is and which stores to read.

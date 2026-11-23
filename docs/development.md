@@ -234,6 +234,10 @@ Tag `vX.Y.Z` with an annotated tag whose message is the release notes (`git tag 
 workflow tests on three platforms, cross-compiles six, publishes the container image from the
 same linux binaries, writes `SHA256SUMS`, attaches the installers, and creates the release. Both
 images are also built and run on every push, so a tag is not where a broken one is found. The version is set at link time: `-X github.com/itswl/agent-session-query/internal/app.Version=…`.
+A binary built without it reports the version Go recorded of the module: the release
+`go install …@latest` fetched, or for a build in a checkout a pseudo-version naming the commit
+(`v1.5.1-0.20261122134833-b66c73f1d4cf`, `+dirty` with changes not committed). A build that
+recorded neither — a container built from a copy of the source, which has no `.git` — is `dev`.
 
 ### Signing for macOS
 

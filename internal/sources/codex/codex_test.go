@@ -358,6 +358,36 @@ func TestSubagentThread(t *testing.T) {
 	}
 }
 
+// A message between agents can be a row of its own, inter_agent_communication, whose
+// content is a string: Codex reads it back as the agent_message it would be, and so does
+// the adapter. One that holds only encrypted content has no words to read.
+func TestInterAgentCommunicationRows(t *testing.T) {
+	root := t.TempDir()
+	day := filepath.Join(root, "2026", "11", "02")
+	sourcetest.Write(t, filepath.Join(day, "rollout-2026-11-02T10-00-00-root-2.jsonl"),
+		`{"type":"session_meta","payload":{"session_id":"root-2","id":"root-2","thread_source":"user","cwd":"/w"}}`,
+		`{"timestamp":"2026-11-02T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"review this PR"}]}}`,
+		`{"timestamp":"2026-11-02T10:05:00Z","type":"inter_agent_communication","payload":{"author":"/root/pr_review","recipient":"/root","other_recipients":[],"content":"two findings","trigger_turn":false}}`,
+		`{"timestamp":"2026-11-02T10:05:01Z","type":"inter_agent_communication","payload":{"author":"/root/pr_review","recipient":"/root","other_recipients":[],"content":"","encrypted_content":"gAAA","trigger_turn":false}}`,
+	)
+	sourcetest.Write(t, filepath.Join(day, "rollout-2026-11-02T10-00-02-sub-2.jsonl"),
+		`{"type":"session_meta","payload":{"session_id":"root-2","id":"sub-2","parent_thread_id":"root-2","thread_source":"subagent","agent_path":"/root/pr_review","cwd":"/w"}}`,
+		`{"timestamp":"2026-11-02T10:00:02Z","type":"inter_agent_communication_metadata","payload":{"trigger_turn":true}}`,
+		`{"timestamp":"2026-11-02T10:00:02Z","type":"inter_agent_communication","payload":{"author":"/root","recipient":"/root/pr_review","other_recipients":[],"content":"read the diff and report","trigger_turn":true}}`,
+		`{"timestamp":"2026-11-02T10:04:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"two findings"}]}}`,
+	)
+	all := sourcetest.All(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, all...)
+	sub, main := sourcetest.ByID(t, all, "sub-2"), sourcetest.ByID(t, all, "root-2")
+	if sub.Stats.Turns != 1 || sub.Turn(t, 1).Ask != "read the diff and report" || sub.Turn(t, 1).Answer != "two findings" {
+		t.Errorf("subagent turns = %+v", sub.Turns)
+	}
+	turn := main.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt context" || turn.Items[1].Text != "[/root/pr_review → /root]\ntwo findings" {
+		t.Errorf("main turn = %s %+v", got, turn.Items)
+	}
+}
+
 func TestLocate(t *testing.T) {
 	if got := Spec.Locate(sourcetest.Env("/home/u")); got != filepath.Join("/home/u", ".codex", "sessions") {
 		t.Errorf("default = %s", got)
@@ -538,6 +568,16 @@ func TestRowsCodexWritesAndPassesOver(t *testing.T) {
 		`{"timestamp":"2026-11-05T10:00:05Z","type":"response_item","payload":{"type":"function_call","name":"view_image","arguments":"{\"path\":\"cat.png\"}","call_id":"call_view"}}`,
 		`{"timestamp":"2026-11-05T10:00:05Z","type":"token_usage_record","payload":{"response_id":"resp_1","usage":{"input_tokens":100,"output_tokens":10}}}`,
 		`{"timestamp":"2026-11-05T10:00:06Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_view","output":[{"type":"input_text","text":"cat.png"},{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}}`,
+		// The events a rollout of the default, legacy history keeps beside the calls' own rows
+		// (codex-rs 0.171.0 rollout/src/policy.rs), and what a paginated one keeps for showing
+		// a realtime conversation again
+		`{"timestamp":"2026-11-05T10:00:06Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"call_patch","turn_id":"t1","stdout":"Success. Updated the following files:\nM cat.md\n","stderr":"","success":true,"changes":{"/p/cat.md":{"update":{"unified_diff":"@@\n-dog\n+cat\n","move_path":null}}},"status":"completed"}}`,
+		`{"timestamp":"2026-11-05T10:00:06Z","type":"event_msg","payload":{"type":"mcp_tool_call_end","call_id":"call_mcp","invocation":{"server":"docs","tool":"lookup","arguments":{"q":"cats"}},"duration":{"secs":0,"nanos":5000000},"result":{"Ok":{"content":[{"type":"text","text":"felines"}]}}}}`,
+		`{"timestamp":"2026-11-05T10:00:06Z","type":"event_msg","payload":{"type":"web_search_end","call_id":"ws_1","query":"cat breeds","action":{"type":"search","query":"cat breeds"}}}`,
+		`{"timestamp":"2026-11-05T10:00:06Z","type":"event_msg","payload":{"type":"image_generation_end","call_id":"ig_1","status":"completed","revised_prompt":"a cat"}}`,
+		`{"timestamp":"2026-11-05T10:00:06Z","type":"event_msg","payload":{"type":"sub_agent_activity","model":"gpt-6.1","event_id":"e1","occurred_at_ms":1793872806000,"agent_thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a60","agent_path":"/root/helper","kind":"started"}}`,
+		`{"timestamp":"2026-11-05T10:00:06Z","type":"event_msg","payload":{"type":"thread_goal_updated","threadId":"codex-quiet","turnId":"t1","goal":{"threadId":"codex-quiet","objective":"name the animal","status":"active","tokensUsed":100,"timeUsedSeconds":4,"createdAt":1793872800,"updatedAt":1793872806}}}`,
+		`{"timestamp":"2026-11-05T10:00:06Z","type":"realtime_item","payload":{"observed_at_ms":1793872806000,"item":{"type":"transcript","text":"meow"}}}`,
 		`{"timestamp":"2026-11-05T10:00:07Z","type":"event_msg","payload":{"type":"entered_review_mode","target":{"type":"uncommittedChanges"}}}`,
 		`{"timestamp":"2026-11-05T10:00:08Z","type":"event_msg","payload":{"type":"exited_review_mode","review_output":null}}`,
 		`{"timestamp":"2026-11-05T10:00:09Z","type":"response_item","payload":{"type":"agent_message","author":"/root/helper","recipient":"/root","content":[{"type":"encrypted_content","encrypted_content":"gAAB"},{"type":"input_text","text":"the picture is a cat"}]}}`,

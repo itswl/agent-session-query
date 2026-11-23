@@ -19,6 +19,7 @@
 //	response_item/image_generation_call     an image made, which has none either
 //	response_item/*_call_output             a result, by call_id
 //	response_item/agent_message             one agent of a team speaking to another
+//	inter_agent_communication               … or as a row of its own
 //	response_item/context_compaction        a compaction the API made inside a response
 //	token_usage_record                      what the model response just written cost
 //	event_msg/turn_aborted, compacted       what happened between the words
@@ -432,6 +433,20 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		}
 		end(rec.Payload.ResponseID, rec.Payload.Usage, kit.Time(rec.Timestamp))
 	}
+	// agentMessage adds what one agent of a team said to another. Addressed to a subagent
+	// by the agent above it, it is that subagent's ask; anything else is news that arrived.
+	agentMessage := func(id, author, recipient, text string, at time.Time, inherited bool) {
+		if text == "" {
+			return
+		}
+		if subagent && recipient == agentPath && author != agentPath {
+			w.Add(transcript.Message{ID: id, Role: transcript.User, At: at, Inherited: inherited,
+				Blocks: []transcript.Block{transcript.TextOf(text)}})
+			return
+		}
+		w.Add(transcript.Message{ID: id, Role: transcript.System, At: at, Inherited: inherited,
+			Blocks: []transcript.Block{transcript.TextOf("[" + author + " → " + recipient + "]\n" + text)}})
+	}
 
 	n := 0
 	err := kit.Lines(path, func(line []byte) bool {
@@ -558,6 +573,17 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			case "entered_review_mode", "exited_review_mode":
 				// /review starting and ending: what the review found is written as
 				// messages too
+			case "patch_apply_end", "mcp_tool_call_end", "web_search_end", "image_generation_end":
+				// The event stream's copy of how a patch, an MCP tool's call, a web search or
+				// an image ended, which the call's own rows hold. Codex keeps these in a
+				// rollout of its default, legacy history (codex-rs rollout/src/policy.rs)
+			case "sub_agent_activity":
+				// A subagent started, spoken to or stopped: the calls that did it, and the
+				// subagent's own rollout, say so
+			case "thread_goal_updated":
+				// A goal's state as Codex accounts for it, written again each time its tokens
+				// and time are counted. What the goal is reaches the model as rows of its own,
+				// and so do the calls of the tools that set it
 			default:
 				if p.Type != "" {
 					w.Unread("event:" + p.Type)
@@ -573,6 +599,17 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			return true
 		case "inter_agent_communication_metadata":
 			// Whether a message between agents starts a turn; the message is a row of its own
+			return true
+		case "inter_agent_communication":
+			// A message between agents written as a row of its own, rather than as the
+			// response item agent_message: Codex reads it back as that item, its content a
+			// string (codex-rs core/src/session/rollout_reconstruction.rs), and so is it here
+			flush(nil)
+			agentMessage(p.ID, p.Author, p.Recipient, contentString(p.Content), at, inherited)
+			return true
+		case "realtime_item":
+			// What a realtime conversation needs to be shown again, which the model is never
+			// given; Codex writes it only in a rollout of its paginated history
 			return true
 		case "security_risk_score":
 			// Risk scores sampled for what the session did: the CLI's bookkeeping
@@ -611,20 +648,8 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				}
 			}
 		case "agent_message":
-			// One agent of a team speaking to another. Addressed to a subagent by the agent
-			// above it, it is that subagent's ask; anything else is news that arrived
 			flush(nil)
-			text := messageText(p.Content, w.Unread)
-			if text == "" {
-				return true
-			}
-			if subagent && p.Recipient == agentPath && p.Author != agentPath {
-				w.Add(transcript.Message{ID: p.ID, Role: transcript.User, At: at, Inherited: inherited,
-					Blocks: []transcript.Block{transcript.TextOf(text)}})
-			} else {
-				w.Add(transcript.Message{ID: p.ID, Role: transcript.System, At: at, Inherited: inherited,
-					Blocks: []transcript.Block{transcript.TextOf("[" + p.Author + " → " + p.Recipient + "]\n" + text)}})
-			}
+			agentMessage(p.ID, p.Author, p.Recipient, messageText(p.Content, w.Unread), at, inherited)
 		case "reasoning":
 			// The summary entries, then the content when it is not encrypted; a row with
 			// only encrypted content shows a reader nothing

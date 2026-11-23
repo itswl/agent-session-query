@@ -726,6 +726,9 @@ func plural(n int, word string) string {
 type PackEntry struct {
 	Session index.Session
 	Turns   []model.Turn // the outline, when the pack spells the turns out
+	// First is the session's first turn, when it has more than one: what the session was
+	// opened for, which its last ask — what it ended on — is often not.
+	First *model.Turn
 }
 
 // packNotice says what a pack is and is not.
@@ -794,7 +797,13 @@ func Pack(entries []PackEntry, matching int, withTurns bool) string {
 			}
 			continue
 		}
-		if s.LastAsk != "" {
+		switch first := e.First; {
+		case first != nil && first.Ask != "" && s.Stats.Turns > 1:
+			fmt.Fprintf(&b, "- Asked: %s\n", txt.OneLine(first.Ask, 300))
+			if s.LastAsk != "" {
+				fmt.Fprintf(&b, "- Last asked: %s\n", txt.OneLine(s.LastAsk, 300))
+			}
+		case s.LastAsk != "":
 			fmt.Fprintf(&b, "- Asked: %s\n", txt.OneLine(s.LastAsk, 300))
 		}
 		if s.Answer != "" {

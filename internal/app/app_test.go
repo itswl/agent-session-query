@@ -175,6 +175,15 @@ func TestFreshAndHealth(t *testing.T) {
 	if err != nil || n != 1 || !strings.Contains(text, "Fix flaky test") || strings.Contains(text, "rotate") {
 		t.Errorf("a pack of one is the most recent session: %d, %v", n, err)
 	}
+	// A session of two turns was opened for its first ask and ended on another: the pack
+	// says both, and of a session of one turn its one ask
+	text, _, _ = a.Pack(ctx, app.Query{}, 2, false)
+	for _, want := range []string{"- Asked: fix the flaky test\n- Last asked: 现在给数据库加索引\n- Concluded: 索引已加上",
+		"- Asked: rotate the deploy key\n- Concluded:"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the pack does not say %q:\n%s", want, text)
+		}
+	}
 }
 
 // A CLI that keeps sessions per project finds one only from the directory it was worked

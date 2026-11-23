@@ -54,7 +54,7 @@ Two ways to ask, the same answers either way:
 | "Pick this up" / "Hand this to another agent" | `brief(ref="…")` — the whole session: what it added up to, then its latest turns, each with what was asked, files changed and how each stands now, what failed and whether it passed later, how it ended; and the command that resumes it |
 | "Hand *this* session over" | `brief(ref="this")` — your own session; the answer's first line says which it took. Over stdio only |
 | "What has happened since I handed it over?" | `brief(ref="…", since="2h")`; `from=7` from a turn on, `turn=4` (or `ref="…#4"`) one turn alone |
-| "Catch me up on this project" | `pack(project="…", since="7d")` — each session's ask and conclusion, oldest first |
+| "Catch me up on this project" | `pack(project="…", since="7d")` — each session's first ask, its last and its conclusion, oldest first |
 | "Who changed this file, and why?" | `files(path="auth.go", changed=true)` — then `read` the turn |
 | "Which session wrote this line?" | `asq why auth.go:42` in a shell — git blame's commit, the turn that made it, the turns that name it. The MCP server does not have it |
 | "What keeps failing?" | `failures(by="command", since="7d")` — each command that failed, how often, in how many sessions, how many still open; `open=true` for only the ones whose command never passed later ("what is still broken?"); `tool="Bash"` or `query="ECONNREFUSED"` (words of the command or its output) to narrow. It looks at 7 days unless told; an answer of none says how many match before then — widen `since` before concluding it never failed |

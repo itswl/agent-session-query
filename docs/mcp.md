@@ -75,7 +75,7 @@ All ten only read. Each takes the selection arguments that make sense for it —
 | `sessions` | What was worked on, and which agents wait on the person? Recent sessions, one line of where and when — and where the transcript tells, whether the agent is working, waiting on a call, or idle — one of what | `text`, `state`, `archived`, `agents` |
 | `read` | A session at the depth asked for: its outline; some turns step by step; one step whole | `ref`, `turns`, `seq`, `full` |
 | `brief` | A handoff brief of a session, whole unless a part of it is named: what it added up to, then its latest turns — asked, changed and how each file stands now, failed and whether it passed later, concluded | `ref`, and one of `turn`, `from`, `since` |
-| `pack` | Several sessions as one document, oldest first | `turns` |
+| `pack` | Several sessions as one document, oldest first: each one's first ask, its last and what it concluded | `turns` |
 | `usage` | Tokens in and out, how many were reasoning, the cache hit rate, and how long agents worked | `by` |
 | `failures` | The tool calls that failed, with the command and the end of the output — and where the same command passed later in the session; or by command, what keeps failing and what of it is still open. The last 7 days unless `since` says otherwise; an answer of none says how many match before then | `tool` (exact, or `prefix*`), `query` (words the command or output holds), `open` (only those whose command did not pass later), `by` (`command`) |
 | `digest` | What a stretch of work added up to, per project — how long agents worked and when, by weekday and hour, too — and the sessions behind it: each one's ref, title, how it ended and the last thing its agent said | |

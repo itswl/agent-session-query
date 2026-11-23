@@ -235,9 +235,21 @@ func (a *App) Pack(ctx context.Context, q Query, limit int, withTurns bool) (str
 	entries := make([]render.PackEntry, 0, len(list))
 	for i := len(list) - 1; i >= 0; i-- { // the list is newest first; a pack reads oldest first
 		e := render.PackEntry{Session: list[i]}
-		if withTurns {
-			if e.Turns, err = a.Index.Outline(ctx, &list[i]); err != nil {
+		// A session of more turns than one was opened for its first ask, and ended on
+		// another: the pack says both
+		if withTurns || list[i].Stats.Turns > 1 {
+			turns, err := a.Index.Outline(ctx, &list[i])
+			if err != nil {
 				return "", 0, err
+			}
+			if withTurns {
+				e.Turns = turns
+			}
+			for j := range turns {
+				if turns[j].Index > 0 {
+					e.First = &turns[j]
+					break
+				}
 			}
 		}
 		entries = append(entries, e)

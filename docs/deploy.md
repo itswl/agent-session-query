@@ -223,9 +223,10 @@ launchctl bootout "gui/$(id -u)/io.github.itswl.asq"          # stop and unload
 - macOS keeps the answer across upgrades: the released binaries are all signed with one
   certificate, as `io.github.itswl.asq` (`codesign -d -r- ~/.local/bin/asq` shows it), and it
   remembers the answer against that and against the binary's path — so install upgrades where
-  the first one went. A binary built from source is not signed so, and is asked again after each
-  build. macOS asks about `asq` itself only when launchd runs it, as here; run from a terminal or
-  by an agent's app, it asks about that app, and remembers it for that app.
+  the first one went, as the installers do when run again. A binary built from source is not
+  signed so, and is asked again after each build. macOS asks about `asq` itself only when
+  launchd runs it, as here; run from a terminal or by an agent's app, it asks about that app,
+  and remembers it for that app.
 
 **Windows — a scheduled task at logon**
 

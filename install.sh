@@ -2,17 +2,32 @@
 # Installs asq: downloads the release for this machine, checks it against the release's
 # published checksums, and puts the binary in ~/.local/bin — the user's own directory,
 # no sudo. What asq reads is the installing user's sessions, so a system-wide install
-# is a place to name, not the default.
+# is a place to name, not the default. Run again, it upgrades the asq on the PATH where
+# it is.
 #
 #   curl -fsSL https://raw.githubusercontent.com/itswl/agent-session-query/main/install.sh | sh
 #
 #   VERSION=v1.2.0 sh install.sh                        a particular release instead of the latest
-#   INSTALL_DIR=~/bin sh install.sh                     somewhere else than ~/.local/bin
+#   INSTALL_DIR=~/bin sh install.sh                     somewhere else than ~/.local/bin, or than
+#                                                       where the asq on the PATH is
 #   INSTALL_DIR=/usr/local/bin sh install.sh            the system-wide place, which needs sudo
 #   ASQ_REPO=you/fork sh install.sh                     releases of a fork
 set -eu
 
 REPO="${ASQ_REPO:-itswl/agent-session-query}"
+
+# An upgrade goes where the asq already installed is: a second one elsewhere would leave
+# whichever comes first on the PATH running, and macOS keeps what a folder allowed asq
+# for the binary at the path it was allowed for. A program of that name that is not asq
+# is left alone.
+current="$(command -v asq 2>/dev/null || true)"
+was=""
+case "$current" in
+  /*) was="$("$current" --version 2>/dev/null | sed -n 's/^asq \([^ ]*\)$/\1/p' | head -n 1 || true)" ;;
+esac
+if [ -z "${INSTALL_DIR:-}" ] && [ -n "$was" ]; then
+  INSTALL_DIR="$(dirname "$current")"
+fi
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
 case "$(uname -s)" in
@@ -46,6 +61,9 @@ tmp="$(mktemp -d 2>/dev/null || mktemp -d -t asq)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 echo "asq $version for $os/$arch"
+if [ -n "$was" ] && [ "$current" = "$INSTALL_DIR/asq" ]; then
+  echo "replacing asq $was at $current"
+fi
 if ! curl -fsSL "$base/$archive" -o "$tmp/$archive"; then
   echo "install.sh: release $version of $REPO has no $archive — name another with VERSION=…" >&2
   exit 1
@@ -100,9 +118,11 @@ case ":$PATH:" in
     esac
     ;;
 esac
-other="$(command -v asq 2>/dev/null || true)"
-if [ -n "$other" ] && [ "$other" != "$INSTALL_DIR/asq" ]; then
-  echo "another asq is on your PATH at $other — remove it, or it stays the one that runs"
+if [ -n "$current" ] && [ "$current" != "$INSTALL_DIR/asq" ]; then
+  echo "another asq is on your PATH at $current — remove it, or it stays the one that runs"
+fi
+if [ -n "$was" ] && [ "$current" = "$INSTALL_DIR/asq" ]; then
+  echo "an asq serve kept running goes on as $was until it is restarted; asq doctor says which it runs"
 fi
 echo
 echo "  asq ls          recent sessions"

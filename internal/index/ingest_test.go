@@ -517,9 +517,10 @@ func TestATurnMarkedOverIsAChange(t *testing.T) {
 }
 
 // claudeRows is a Claude Code transcript of a few turns, as the CLI writes it: long
-// outputs, a failure, an edit, a prompt queued mid-turn, a skill set off by a slash
-// command, the title given and given again, another model taking over, the rows Code Mode
-// and a plugin add, and the cost the session closes with.
+// outputs, a failure, an edit, a prompt queued mid-turn, a turn a screenshot pasted alone
+// began and a screenshot a tool returned, a skill set off by a slash command, the title
+// given and given again, another model taking over, the rows Code Mode and a plugin add,
+// and the cost the session closes with.
 func claudeRows() []any {
 	type M = map[string]any
 	ts := func(sec int) string { return time.Date(2026, 11, 1, 9, 0, sec, 0, time.UTC).Format(time.RFC3339Nano) }
@@ -554,6 +555,8 @@ func claudeRows() []any {
 		return row("system", uuid, sec, M{"subtype": "turn_duration", "durationMs": 9000})
 	}
 	long := strings.Repeat("compiling package migration\n", 200)
+	png := M{"type": "image", "source": M{"type": "base64", "media_type": "image/png",
+		"data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}}
 	return []any{
 		M{"type": "file-history-snapshot", "messageId": "x"},
 		ask("u1", 0, "run the migration"),
@@ -573,6 +576,11 @@ func claudeRows() []any {
 		result("u5", 31, "t3", long+"done", false),
 		answer("a5", 33, "msg_5", "end_turn", M{"type": "text", "text": "The migration is done, with a backup kept."}),
 		lasted("d2", 34),
+		row("user", "s1", 36, M{"message": M{"role": "user", "content": []M{png}}}),
+		answer("s2", 37, "msg_s1", "tool_use", M{"type": "tool_use", "id": "t5", "name": "mcp__playwright__browser_take_screenshot", "input": M{}}),
+		row("user", "s3", 38, M{"message": M{"role": "user", "content": []M{{"type": "tool_result", "tool_use_id": "t5",
+			"content": []M{{"type": "text", "text": "Took the screenshot"}, png}}}}}),
+		answer("s4", 39, "msg_s2", "end_turn", M{"type": "text", "text": "The two match."}),
 		ask("u6", 40, "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>the migration</command-args>"),
 		ask("u7", 41, "You are reviewing a change. Follow these steps…", M{"isMeta": true}),
 		answer("a6", 45, "msg_6", "end_turn", M{"type": "text", "text": "The migration looks right."}),

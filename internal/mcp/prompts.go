@@ -168,11 +168,14 @@ func (s *Server) handedOver(ctx context.Context, who asker, named string) (index
 	q := app.Query{Source: source}
 	dir, how, err := s.workDir(ctx, who)
 	where := "in any directory: asq is not told which directory you work in over HTTP"
-	if err == nil {
+	switch {
+	case err == nil:
 		if q.Dirs, err = s.App.Paths(ctx, []string{dir}, true); err != nil {
 			return index.Session{}, 0, "", err
 		}
 		where = fmt.Sprintf("in %s or below it — %s", dir, how)
+	case !errors.Is(err, errNoWorkDir):
+		return index.Session{}, 0, "", err
 	}
 	f, err := s.App.Filter(q)
 	if err != nil {
@@ -182,26 +185,29 @@ func (s *Server) handedOver(ctx context.Context, who asker, named string) (index
 	if err != nil {
 		return index.Session{}, 0, "", err
 	}
+	of := "session"
+	if source != "" {
+		of = source + " session"
+	}
+	// This conversation is not handed to itself, when the client says which it is. When it
+	// does not, the newest session may be this one — one the person has typed in before
+	// asking — and the answer says so rather than that it is another
 	own := s.own(who)
+	other, unsure := ", other than this conversation", ""
+	if len(own) == 0 {
+		other, unsure = "", " The client did not say which session this conversation is: if it is this one, name the session meant — by its ref, or a CLI's name."
+	}
 	for _, l := range list {
 		if own[l.Agent+"/"+l.ID] {
-			continue // this conversation is not handed to itself
+			continue
 		}
 		sess, _, err := s.App.Resolve(ctx, l.Ref)
 		if err != nil {
 			return sess, 0, "", err
 		}
-		of := "session"
-		if source != "" {
-			of = source + " session"
-		}
-		return sess, -1, fmt.Sprintf("[%s: the newest %s %s, other than this conversation.]", sess.Ref, of, where), nil
+		return sess, -1, fmt.Sprintf("[%s: the newest %s %s%s.%s]", sess.Ref, of, where, other, unsure), nil
 	}
-	of := "session"
-	if source != "" {
-		of = source + " session"
-	}
-	return index.Session{}, 0, "", fmt.Errorf("no %s other than this conversation ran %s: name one by its ref", of, where)
+	return index.Session{}, 0, "", fmt.Errorf("no %s%s ran %s: name one by its ref", of, strings.Replace(other, ",", "", 1), where)
 }
 
 // own is the sessions the conversation asking is known to be: the Codex thread its request

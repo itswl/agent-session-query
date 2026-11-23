@@ -150,8 +150,11 @@ func (s *Server) workDir(ctx context.Context, who asker) (dir, how string, err e
 			return c.Dirs[0], "the directory this server was started in", nil
 		}
 	}
-	return "", "", errors.New(`"." is the directory you work in, and a request over HTTP does not say which that is unless it names its Codex thread: name the directory, or a part of its path — projects lists them`)
+	return "", "", errNoWorkDir
 }
+
+// errNoWorkDir is workDir's answer when nothing says where the agent asking works.
+var errNoWorkDir = errors.New(`"." is the directory you work in, and a request over HTTP does not say which that is unless it names its Codex thread: name the directory, or a part of its path — projects lists them`)
 
 // thisRef reads a ref that names the session asking: "this", or "this#4" for one of its
 // turns (-1 for none).

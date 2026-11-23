@@ -707,12 +707,15 @@ func TestPrompts(t *testing.T) {
 		want   []string
 		not    []string
 	}{
+		// A client that does not say which session is this conversation is told that the
+		// newest session may be it, rather than that it is another
 		{&Caller{Dirs: []string{"/work/alpha"}}, "handoff", nil, []string{handoffAsk, evidence,
-			"[claude/" + fixture.Alpha + ": the newest session in /work/alpha or below it — the directory this server was started in, other than this conversation.]",
-			"## The whole session", "## Turn 1\n", "## Turn 2\n", "## State at the end"}, nil},
+			"[claude/" + fixture.Alpha + ": the newest session in /work/alpha or below it — the directory this server was started in. The client did not say which session this conversation is: if it is this one, name the session meant — by its ref, or a CLI's name.]",
+			"## The whole session", "## Turn 1\n", "## Turn 2\n", "## State at the end"}, []string{"other than this conversation"}},
 		// The conversation asking is not handed to itself: the newest other one, of any CLI
 		{&Caller{Session: fixture.Beta, Dirs: []string{"/work/beta"}, name: "claude-code"}, "handoff", nil,
-			[]string{"[" + codex + ": the newest session in /work/beta or below it", "pin the provider versions"}, []string{"rotate the deploy key"}},
+			[]string{"[" + codex + ": the newest session in /work/beta or below it — the directory this server was started in, other than this conversation.]", "pin the provider versions"},
+			[]string{"rotate the deploy key", "did not say which"}},
 		{&Caller{Session: codexThread, Dirs: []string{"/work/beta"}, name: "claude-code"}, "handoff", nil,
 			[]string{"[" + codex + ": the newest session in /work/beta"}, nil},
 		{&Caller{Dirs: []string{"/work/beta"}}, "handoff", map[string]any{"session": "claude"},
@@ -721,7 +724,7 @@ func TestPrompts(t *testing.T) {
 			[]string{"[claude/" + fixture.Beta + ", as it was named.]", "rotate the deploy key", "[redacted]"}, []string{fixture.Secret}},
 		{&Caller{Dirs: []string{"/nowhere"}}, "handoff", map[string]any{"session": "aaaa1111#1"},
 			[]string{"## Turn 1\n", "fix the flaky test"}, []string{"## Turn 2\n", "## The whole session"}},
-		{nil, "handoff", nil, []string{"[claude/" + fixture.Alpha + ": the newest session in any directory: asq is not told which directory you work in over HTTP"}, nil},
+		{nil, "handoff", nil, []string{"[claude/" + fixture.Alpha + ": the newest session in any directory: asq is not told which directory you work in over HTTP. The client did not say which session"}, nil},
 		{&Caller{Dirs: []string{"/work/alpha"}}, "catchup", nil, []string{catchupAsk, evidence,
 			"[The sessions in /work/alpha or below it — the directory this server was started in, since 7d.]", "# Session pack", "Fix flaky test", "- Asked: fix the flaky test"}, []string{"rotate"}},
 		{nil, "catchup", map[string]any{"project": "beta", "since": "30d"}, []string{`[The sessions in a directory whose path holds "beta", since 30d.]`, "rotate the deploy key", "pin the provider versions"}, []string{"Fix flaky test"}},
@@ -752,6 +755,7 @@ func TestPrompts(t *testing.T) {
 	}{
 		{&Caller{Session: fixture.Alpha, Dirs: []string{"/work/alpha"}, name: "claude-code"}, "handoff", nil, "no session other than this conversation ran in /work/alpha or below it"},
 		{&Caller{Dirs: []string{"/work/alpha"}}, "handoff", map[string]any{"session": "zzzz"}, "no such session"},
+		{&Caller{Dirs: []string{"/nowhere"}}, "handoff", nil, "no session ran in /nowhere or below it"},
 		{&Caller{Dirs: []string{"/work/beta"}}, "catchup", map[string]any{"since": "1h"}, "no session ran in /work/beta or below it"},
 		{nil, "catchup", nil, `project ".": "." is the directory you work in`},
 		{&Caller{Dirs: []string{"/work/alpha"}}, "catchup", map[string]any{"since": "soon"}, "since: unreadable time"},

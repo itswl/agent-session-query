@@ -37,7 +37,7 @@ const usage = `asq — the session history of every agent CLI on this machine, a
   asq export <ref>             a session whole                  (--format md|json|jsonl|html)
 
   asq usage                    what the model calls consumed    (--by model|day|source|project)
-  asq failures [words]         the tool calls that failed       (--tool, --since)
+  asq failures [words]         the tool calls that failed       (--open, --by command, --tool, --since)
   asq digest                   what a stretch of work added up to, per project
   asq files <path>             the turns that touched a file    (--changed)
   asq projects                 the directories sessions ran in
@@ -613,6 +613,8 @@ func cmdUsage(ctx context.Context, args []string, io *streams) error {
 func cmdFailures(ctx context.Context, args []string, io *streams) error {
 	c := newCommand("failures", io.err).selection(20)
 	tool := c.fs.String("tool", "", "only this tool's calls, named exactly (Bash) or by how the name begins (mcp__playwright*)")
+	openOnly := c.fs.Bool("open", false, "only the failures whose command did not pass later")
+	by := c.fs.String("by", "", "command: one line per command that failed, those still open first")
 	rest, err := c.parse(args)
 	if err != nil {
 		return err
@@ -630,7 +632,29 @@ func cmdFailures(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return usageError{err}
 	}
-	rep, err := a.Index.Failures(ctx, f, w, *tool, strings.Join(rest, " "), index.Page{Limit: c.limit, Offset: c.offset})
+	q := index.FailureQuery{Tool: *tool, Text: strings.Join(rest, " "), Open: *openOnly}
+	since := c.q.Since
+	if since == "" {
+		since = "7d"
+	}
+	within := render.Within(since, c.q.Until)
+	switch *by {
+	case "":
+	case "command":
+		rep, err := a.Index.FailuresByCommand(ctx, f, w, q, index.Page{Limit: c.limit, Offset: c.offset})
+		if err != nil {
+			return err
+		}
+		defer c.lookedIn(io.err, rep.Total == 0)
+		if c.json {
+			return printJSON(io.out, rep)
+		}
+		render.FailureGroups(io.out, rep, within, c.style(io.out))
+		return nil
+	default:
+		return usageError{fmt.Errorf("failures are grouped by command, not by %q", *by)}
+	}
+	rep, err := a.Index.Failures(ctx, f, w, q, index.Page{Limit: c.limit, Offset: c.offset})
 	if err != nil {
 		return err
 	}
@@ -638,11 +662,7 @@ func cmdFailures(ctx context.Context, args []string, io *streams) error {
 	if c.json {
 		return printJSON(io.out, rep)
 	}
-	since := c.q.Since
-	if since == "" {
-		since = "7d"
-	}
-	render.Failures(io.out, rep, render.Within(since, c.q.Until), c.style(io.out))
+	render.Failures(io.out, rep, within, c.style(io.out))
 	return nil
 }
 

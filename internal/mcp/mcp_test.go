@@ -198,6 +198,8 @@ func TestEveryToolAnswers(t *testing.T) {
 		{"failures", map[string]any{"query": "econnrefused -5432"}, []string{"No failed calls hold those words in the last 7 days.\nFailed in the last 7 days: Bash 1"}},
 		{"failures", map[string]any{"query": "econnrefused", "since": "90m", "until": "45m"}, []string{"1 failure · in the last 90 minutes, until 45 minutes ago: Bash 1"}},
 		{"failures", map[string]any{"since": "5m"}, []string{"No failed tool calls in the last 5 minutes; 1 from before then: since all."}},
+		{"failures", map[string]any{"open": true}, []string{"1 of 1 failure still open", "go test ./..."}},
+		{"failures", map[string]any{"by": "command"}, []string{"1 command · 1 failure", "✗ go test  1 failed · 1 session", "latest "}},
 		{"read", map[string]any{"ref": "aaaa1111"}, []string{"Fix flaky test", "#1", "#2", "fix the flaky test", "Subagents", "Explore"}},
 		{"read", map[string]any{"ref": "aaaa1111#1"}, []string{"go test ./...", "[2]", "The test depended on map order"}},
 		{"read", map[string]any{"ref": "aaaa1111", "turns": "1-2", "full": true}, []string{"go test ./...", "schema.sql", "索引已加上"}},
@@ -254,6 +256,7 @@ func TestWhatGoesWrongIsToldToTheModel(t *testing.T) {
 		{"brief", map[string]any{"ref": "aaaa1111", "since": "soon"}, "since: unreadable time"},
 		{"brief", map[string]any{"ref": "this"}, "over HTTP"},
 		{"usage", map[string]any{"by": "colour"}, "grouped by model, day, source, project or session"},
+		{"failures", map[string]any{"by": "tool"}, "grouped by command"},
 	} {
 		text, isErr := call(t, s, tc.tool, tc.args)
 		if !isErr || !strings.Contains(text, tc.want) {

@@ -244,3 +244,61 @@ func TestAnIndexFromBeforeJudgementsGainsThem(t *testing.T) {
 		t.Errorf("passed later at %d, %v", seq, err)
 	}
 }
+
+// What keeps failing, and what of it is still open: the failures by the command that failed,
+// the commands with failures still open first, and a list of the open ones alone, counted
+// with what it leaves out.
+func TestFailuresByCommandAndStillOpen(t *testing.T) {
+	ix, err := Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ix.Close()
+	ctx := context.Background()
+	a := commands{[][]ran{{{"go test ./a", true}, {"make lint", true}}, {{"go test ./a -run X", true}}}}
+	b := commands{[][]ran{{{"go test ./b", true}}, {{"go test ./b", false}}, {{"python3 -c 'raise SystemExit(1)'", true}}}} // the latest
+	stores := []Store{{Name: "claude", Spec: sources.Spec{Name: "claude"}, Source: a}, {Name: "codex", Spec: sources.Spec{Name: "codex"}, Source: b}}
+	if _, err := ix.Sync(ctx, stores, SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	groups, err := ix.FailuresByCommand(ctx, Filter{}, Window{}, FailureQuery{}, Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := []string{}
+	for _, g := range groups.Commands {
+		got = append(got, g.Command+"|"+g.Tool+"|"+strconv.Itoa(g.Count)+"|"+strconv.Itoa(g.Open)+"|"+strconv.Itoa(g.Sessions)+"|"+g.Last.Command)
+	}
+	want := []string{
+		"go test||3|2|2|go test ./a -run X",            // still open twice, in one of its two sessions; the latest
+		"|Bash|1|1|1|python3 -c 'raise SystemExit(1)'", // code given inline: no command, so the tool's
+		"make lint||1|1|1|make lint",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") || groups.Total != 3 || groups.Open != 4 || groups.PassedLater != 1 {
+		t.Errorf("by command: total %d, open %d, passed later %d:\n%s\nwant 3, 4, 1:\n%s", groups.Total, groups.Open, groups.PassedLater, strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	// The open ones alone: go test's two in the one session, counted with the one left out
+	groups, err = ix.FailuresByCommand(ctx, Filter{}, Window{}, FailureQuery{Open: true, Text: "go test"}, Page{})
+	if err != nil || len(groups.Commands) != 1 || groups.Commands[0].Count != 2 || groups.Commands[0].Sessions != 1 || groups.Open != 2 || groups.PassedLater != 1 {
+		t.Errorf("by command, open, go test = %+v, %v", groups, err)
+	}
+	list, err := ix.Failures(ctx, Filter{}, Window{}, FailureQuery{Open: true}, Page{})
+	if err != nil || list.Total != 4 || len(list.Failures) != 4 || list.Open != 4 || list.PassedLater != 1 {
+		t.Errorf("open = %+v, %v; want the 4 open of 5", list, err)
+	}
+	for _, f := range list.Failures {
+		if f.Later != nil {
+			t.Errorf("an open-only list holds %q, which passed later", f.Command)
+		}
+	}
+	if all, err := ix.Failures(ctx, Filter{}, Window{}, FailureQuery{}, Page{}); err != nil || all.Total != 5 {
+		t.Errorf("every failure = %d, %v; want 5", all.Total, err)
+	}
+	// Nothing open in a window, but before it: said, the open filter kept
+	none, err := ix.Failures(ctx, Filter{}, Window{Since: time.Unix(1790000000, 0).Add(time.Hour)}, FailureQuery{Open: true}, Page{})
+	if err != nil || none.Total != 0 || none.Outside != 4 {
+		t.Errorf("open after the sessions = %+v, %v; want none, and 4 outside", none, err)
+	}
+}

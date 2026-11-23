@@ -53,7 +53,7 @@ Two ways to ask, the same answers either way:
 | "What has happened since I handed it over?" | `brief(ref="…", since="2h")`; `from=7` from a turn on, `since="all"` the whole session |
 | "Catch me up on this project" | `pack(project="…", since="7d")` — each session's ask and conclusion, oldest first |
 | "Who changed this file, and why?" | `files(path="auth.go", changed=true)` — then `read` the turn |
-| "What keeps failing?" | `failures(since="7d")`, with `tool="Bash"` or `query="ECONNREFUSED"` (words of the command or its output) to narrow. It looks at 7 days unless told; an answer of none says how many match before then — widen `since` before concluding it never failed |
+| "What keeps failing?" | `failures(by="command", since="7d")` — each command that failed, how often, in how many sessions, how many still open; `open=true` for only the ones whose command never passed later ("what is still broken?"); `tool="Bash"` or `query="ECONNREFUSED"` (words of the command or its output) to narrow. It looks at 7 days unless told; an answer of none says how many match before then — widen `since` before concluding it never failed |
 | "What did this week add up to?" | `digest(since="7d")` — per project: sessions, turns, failures, tokens, files changed |
 | "Where did the tokens go?" / "Which model is eating them?" | `usage()`, or `usage(by="model"\|"day"\|"project"\|"session")` |
 | "Which repos have I used agents on?" | `projects()` |

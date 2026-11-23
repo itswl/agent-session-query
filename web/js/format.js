@@ -41,11 +41,14 @@ export const cost = (usd) => (!usd ? '' : usd < 0.01 ? '<$0.01' : '$' + usd.toFi
 // those the same command passed later: "2 failed, 1 passed later"; with calls, "2 failed
 // calls, 1 passed later".
 export function failed(x, calls = false) {
-  const n = x.failures || 0, p = x.passedLater || 0;
+  const n = x.failures || 0;
   if (!n) return '';
-  const later = !p ? '' : p < n ? `, ${num(p)} passed later` : n === 1 ? ', passed later' : ', all passed later';
-  return `${calls ? plural(n, 'failed call') : `${num(n)} failed`}${later}`;
+  return `${calls ? plural(n, 'failed call') : `${num(n)} failed`}${later(n, x.passedLater)}`;
 }
+
+// later is how many of n failures the same command passed later, as it follows them:
+// ", 1 passed later", ", all passed later"; '' for none.
+export const later = (n, p = 0) => (!p ? '' : p < n ? `, ${num(p)} passed later` : n === 1 ? ', passed later' : ', all passed later');
 
 // open is how many of those the same command did not pass later: what is still to see to.
 export const open = (x) => Math.max((x.failures || 0) - (x.passedLater || 0), 0);

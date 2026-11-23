@@ -151,66 +151,53 @@ type FailureCount struct {
 	Count int    `json:"count"`
 }
 
-// FailureReport is the failed calls of a window, newest first, and what failed most.
-type FailureReport struct {
-	Failures []Failure      `json:"failures"`
-	Total    int            `json:"total"`
-	ByTool   []FailureCount `json:"byTool"`
+// FailureQuery narrows a report of failures.
+type FailureQuery struct {
+	// Tool keeps one tool's calls — named exactly, or with a trailing * by how its name
+	// begins
+	Tool string
+	// Text keeps the calls whose command or output holds its words — each word, or "a
+	// phrase", anywhere in either, without regard to case; -word keeps those that do not.
+	// The output is the end of it the table keeps, where a command says why it failed.
+	Text string
+	// Open keeps the calls whose command did not pass later (see Failure.Later)
+	Open bool
+}
+
+// FailureCounts is what a report of failures counts, however it lists them.
+type FailureCounts struct {
+	Total int `json:"total"` // what the list holds, across every page
+	// Open and PassedLater are the calls that match, but for Open, by whether the same
+	// command passed later: what a list of the open ones leaves out is counted too
+	Open        int            `json:"open"`
+	PassedLater int            `json:"passedLater"`
+	ByTool      []FailureCount `json:"byTool"`
 	// Outside is, when none in the window match, how many do outside it: what the window
 	// alone hid, which an answer of none would otherwise say does not exist
 	Outside int `json:"outside,omitempty"`
 	// What the failures were narrowed to, for a reader to be told why there are none
-	Tool  string `json:"-"`
-	Query string `json:"-"`
+	Asked FailureQuery `json:"-"`
 }
 
-// Failures lists the tool calls that failed in a window. tool, when set, keeps one
-// tool's calls — named exactly, or with a trailing * by how its name begins. text, when
-// set, keeps the calls whose command or output holds its words — each word, or "a
-// phrase", anywhere in either, without regard to case; -word keeps those that do not. The
-// output is the end of it the table keeps, where a command says why it failed. ByTool
-// counts every tool of the window regardless. When none in the window match, Outside says
-// how many do outside it.
-func (ix *Index) Failures(ctx context.Context, f Filter, w Window, tool, text string, p Page) (FailureReport, error) {
-	rep := FailureReport{Failures: []Failure{}, ByTool: []FailureCount{}, Tool: tool, Query: text}
-	where, args := ix.widen(ctx, reportFilter(f), !w.Since.IsZero()).where()
-	when, whenArgs := w.where("x.at")
-	args = append(args, whenArgs...)
-	// The count per tool covers the whole window, whichever tool is asked for: it is what
-	// there is to choose from, and it must not shrink to the choice just made
-	every := ` FROM failures x JOIN sessions s ON s.sid = x.sid WHERE ` + where + ` AND ` + when
-	rows, err := ix.ro.QueryContext(ctx, `SELECT x.tool, count(*)`+every+` GROUP BY x.tool ORDER BY 2 DESC, 1 LIMIT 30`, args...)
-	if err != nil {
+// FailureReport is the failed calls of a window, newest first, and what failed most.
+type FailureReport struct {
+	Failures []Failure `json:"failures"`
+	FailureCounts
+}
+
+// Failures lists the tool calls that failed in a window, as q narrows them. ByTool counts
+// every tool of the window regardless. When none in the window match, Outside says how
+// many do outside it.
+func (ix *Index) Failures(ctx context.Context, f Filter, w Window, q FailureQuery, p Page) (FailureReport, error) {
+	rep := FailureReport{Failures: []Failure{}}
+	from, args, err := ix.failureCounts(ctx, f, w, q, &rep.FailureCounts)
+	if err != nil || rep.Total == 0 {
 		return rep, err
-	}
-	for rows.Next() {
-		var c FailureCount
-		if err := rows.Scan(&c.Tool, &c.Count); err != nil {
-			rows.Close()
-			return rep, err
-		}
-		rep.ByTool = append(rep.ByTool, c)
-	}
-	rows.Close()
-	narrow, narrowArgs := failuresNarrowed(tool, text)
-	from := every + narrow
-	args = append(args, narrowArgs...)
-	if err := ix.ro.QueryRowContext(ctx, `SELECT count(*)`+from, args...).Scan(&rep.Total); err != nil {
-		return rep, err
-	}
-	if rep.Total == 0 && (!w.Since.IsZero() || !w.Until.IsZero()) {
-		// None in the window: whether the window is all that hid them
-		where, args := ix.widen(ctx, reportFilter(f), false).where()
-		err := ix.ro.QueryRowContext(ctx, `SELECT count(*) FROM failures x JOIN sessions s ON s.sid = x.sid WHERE `+where+narrow,
-			append(args, narrowArgs...)...).Scan(&rep.Outside)
-		if err != nil {
-			return rep, err
-		}
 	}
 	if p.Limit <= 0 {
 		p.Limit = 50
 	}
-	rows, err = ix.ro.QueryContext(ctx, `
+	rows, err := ix.ro.QueryContext(ctx, `
 SELECT s.source, s.id, s.title, s.cwd, `+failureColumns+from+`
 ORDER BY x.at DESC, x.sid DESC, x.seq DESC LIMIT ? OFFSET ?`, append(args, p.Limit, p.Offset)...)
 	if err != nil {
@@ -225,6 +212,116 @@ ORDER BY x.at DESC, x.sid DESC, x.seq DESC LIMIT ? OFFSET ?`, append(args, p.Lim
 		}
 		x.Session = source + "/" + id
 		rep.Failures = append(rep.Failures, x)
+	}
+	return rep, rows.Err()
+}
+
+// failureCounts counts the failures of a window as q narrows them, into c — Total, the
+// calls that match — and gives what selects them: a FROM clause over the failures table,
+// aliased x, and the sessions table, aliased s, with its arguments.
+func (ix *Index) failureCounts(ctx context.Context, f Filter, w Window, q FailureQuery, c *FailureCounts) (string, []any, error) {
+	c.ByTool, c.Asked = []FailureCount{}, q
+	where, args := ix.widen(ctx, reportFilter(f), !w.Since.IsZero()).where()
+	when, whenArgs := w.where("x.at")
+	args = append(args, whenArgs...)
+	// The count per tool covers the whole window, whichever tool is asked for: it is what
+	// there is to choose from, and it must not shrink to the choice just made
+	every := ` FROM failures x JOIN sessions s ON s.sid = x.sid WHERE ` + where + ` AND ` + when
+	rows, err := ix.ro.QueryContext(ctx, `SELECT x.tool, count(*)`+every+` GROUP BY x.tool ORDER BY 2 DESC, 1 LIMIT 30`, args...)
+	if err != nil {
+		return "", nil, err
+	}
+	for rows.Next() {
+		var n FailureCount
+		if err := rows.Scan(&n.Tool, &n.Count); err != nil {
+			rows.Close()
+			return "", nil, err
+		}
+		c.ByTool = append(c.ByTool, n)
+	}
+	rows.Close()
+	narrow, narrowArgs := failuresNarrowed(q.Tool, q.Text)
+	args = append(args, narrowArgs...)
+	if err := ix.ro.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE x.later_seq = 0), count(*) FILTER (WHERE x.later_seq > 0)`+every+narrow,
+		args...).Scan(&c.Open, &c.PassedLater); err != nil {
+		return "", nil, err
+	}
+	c.Total = c.Open + c.PassedLater
+	if q.Open {
+		narrow += ` AND x.later_seq = 0`
+		c.Total = c.Open
+	}
+	if c.Total == 0 && (!w.Since.IsZero() || !w.Until.IsZero()) {
+		// None in the window: whether the window is all that hid them
+		where, args := ix.widen(ctx, reportFilter(f), false).where()
+		err := ix.ro.QueryRowContext(ctx, `SELECT count(*) FROM failures x JOIN sessions s ON s.sid = x.sid WHERE `+where+narrow,
+			append(args, narrowArgs...)...).Scan(&c.Outside)
+		if err != nil {
+			return "", nil, err
+		}
+	}
+	return every + narrow, args, nil
+}
+
+// FailureGroup is the failed calls of one command — the program and what it was asked, as
+// whether the same command passed later is judged: go test, terraform plan — or of one
+// tool that runs none.
+type FailureGroup struct {
+	Command  string  `json:"command,omitempty"` // the program and its subcommand: go test
+	Tool     string  `json:"tool,omitempty"`    // for the calls that ran no such command, the tool
+	Count    int     `json:"count"`
+	Open     int     `json:"open"`     // of which the same command did not pass later
+	Sessions int     `json:"sessions"` // they failed in; a subagent's count as the session it ran in
+	Last     Failure `json:"last"`     // the latest of them
+}
+
+// FailureGroups is the failed calls of a window by the command that failed, the commands
+// with failures still open first, then those that failed most.
+type FailureGroups struct {
+	Commands []FailureGroup `json:"commands"`
+	// Total counts the commands
+	FailureCounts
+}
+
+// FailuresByCommand groups the failures of a window, as q narrows them, by the command
+// that failed: what keeps failing, and what of it is still open.
+func (ix *Index) FailuresByCommand(ctx context.Context, f Filter, w Window, q FailureQuery, p Page) (FailureGroups, error) {
+	rep := FailureGroups{Commands: []FailureGroup{}}
+	from, args, err := ix.failureCounts(ctx, f, w, q, &rep.FailureCounts)
+	if err != nil || rep.Total == 0 {
+		return rep, err
+	}
+	const group = `x.command_key, CASE WHEN x.command_key = '' THEN x.tool ELSE '' END` // a command, or a tool that runs none
+	in := `WITH m AS (SELECT x.command_key AS g_command, CASE WHEN x.command_key = '' THEN x.tool ELSE '' END AS g_tool,
+  CASE WHEN s.root_sid > 0 THEN s.root_sid ELSE s.sid END AS root,
+  row_number() OVER (PARTITION BY ` + group + ` ORDER BY x.at DESC, x.sid DESC, x.seq DESC) AS rn,
+  s.source, s.id, s.title, s.cwd, ` + failureColumns + from + `) `
+	// The failures table's columns, as m names them
+	last := strings.ReplaceAll(failureColumns, "x.", "m.")
+	if err := ix.ro.QueryRowContext(ctx, in+`SELECT count(*) FROM (SELECT 1 FROM m GROUP BY g_command, g_tool)`, args...).Scan(&rep.Total); err != nil {
+		return rep, err
+	}
+	if p.Limit <= 0 {
+		p.Limit = 50
+	}
+	rows, err := ix.ro.QueryContext(ctx, in+`
+SELECT g.g_command, g.g_tool, g.n, g.open, g.sessions, m.source, m.id, m.title, m.cwd, `+last+`
+FROM (SELECT g_command, g_tool, count(*) AS n, count(*) FILTER (WHERE later_seq = 0) AS open, count(DISTINCT root) AS sessions
+      FROM m GROUP BY g_command, g_tool) g
+JOIN m ON m.g_command = g.g_command AND m.g_tool = g.g_tool AND m.rn = 1
+ORDER BY g.open > 0 DESC, g.open DESC, g.n DESC, m.at DESC LIMIT ? OFFSET ?`, append(args, p.Limit, p.Offset)...)
+	if err != nil {
+		return rep, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var g FailureGroup
+		var source, id string
+		if err := scanFailure(rows, &g.Last, &g.Command, &g.Tool, &g.Count, &g.Open, &g.Sessions, &source, &id, &g.Last.Title, &g.Last.Cwd); err != nil {
+			return rep, err
+		}
+		g.Last.Session = source + "/" + id
+		rep.Commands = append(rep.Commands, g)
 	}
 	return rep, rows.Err()
 }

@@ -158,6 +158,8 @@ var tools = []tool{
 		props: []prop{
 			{"tool", "string", "Only this tool's calls, named exactly as the answer prints it (Bash is not bash); a trailing * matches by prefix: mcp__playwright*."},
 			{"query", "string", "Only the calls whose command or the end of whose output holds these words, anywhere, in any case: ECONNREFUSED · \"go test\" · migrate -dry. Each word must be there; -word must not; \"a phrase\" as written."},
+			{"open", "boolean", "Only the failures whose command did not pass later: what is still broken."},
+			{"by", "string", "command: one entry per command that failed (go test, terraform plan) — how often, in how many sessions, how many still open, and the latest — the ones still open first. For \"what keeps failing\"."},
 			pSource, pProject, pBranch, pSince, pUntil, pLimit, pOffset, pChars,
 		},
 		run: runFailures,
@@ -643,16 +645,29 @@ func runFailures(ctx context.Context, s *Server, a *args) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	rep, err := s.App.Index.Failures(ctx, f, w, a.str("tool"), a.str("query"), index.Page{Limit: a.limit(10), Offset: a.offset()})
-	if err != nil {
-		return "", err
-	}
-	var b bytes.Buffer
+	fq := index.FailureQuery{Tool: a.str("tool"), Text: a.str("query"), Open: a.flag("open")}
 	since := q.Since
 	if since == "" {
 		since = "7d"
 	}
-	render.Failures(&b, rep, render.Within(since, q.Until), style())
+	within := render.Within(since, q.Until)
+	var b bytes.Buffer
+	switch by := strings.ToLower(strings.TrimSpace(a.str("by"))); by {
+	case "":
+		rep, err := s.App.Index.Failures(ctx, f, w, fq, index.Page{Limit: a.limit(10), Offset: a.offset()})
+		if err != nil {
+			return "", err
+		}
+		render.Failures(&b, rep, within, style())
+	case "command":
+		rep, err := s.App.Index.FailuresByCommand(ctx, f, w, fq, index.Page{Limit: a.limit(10), Offset: a.offset()})
+		if err != nil {
+			return "", err
+		}
+		render.FailureGroups(&b, rep, within, style())
+	default:
+		return "", fmt.Errorf("failures are grouped by command, not by %q", by)
+	}
 	return b.String(), nil
 }
 

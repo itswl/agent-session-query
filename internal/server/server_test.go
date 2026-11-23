@@ -235,6 +235,12 @@ func TestRoutes(t *testing.T) {
 	if fails.Total != 0 || len(fails.ByTool) != 1 || fails.Outside != 0 {
 		t.Errorf("failures holding a word none holds = %+v", fails)
 	}
+	// By command, and the open ones alone
+	var groups index.FailureGroups
+	get(t, s, "/api/failures?by=command&open=1", &groups)
+	if groups.Total != 1 || len(groups.Commands) != 1 || groups.Commands[0].Command != "go test" || groups.Commands[0].Open != 1 || groups.Open != 1 || groups.PassedLater != 0 {
+		t.Errorf("failures by command = %+v", groups)
+	}
 	// The window alone hid one: how many there are outside it
 	fails = index.FailureReport{}
 	get(t, s, "/api/failures?q=econnrefused&since=10m", &fails)
@@ -265,6 +271,7 @@ func TestRoutes(t *testing.T) {
 		"/api/sessions?since=whenever":          http.StatusBadRequest,
 		"/api/sessions?source=emacs":            http.StatusBadRequest,
 		"/api/usage?by=colour":                  http.StatusBadRequest,
+		"/api/failures?by=tool":                 http.StatusBadRequest,
 		"/api/nothing":                          http.StatusNotFound,
 		"/healthz":                              http.StatusOK,
 		"/api/sessions?source=codex":            http.StatusOK, // a CLI with no store here: an empty list, not an error

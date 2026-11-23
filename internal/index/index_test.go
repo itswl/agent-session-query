@@ -367,7 +367,7 @@ func TestReports(t *testing.T) {
 		t.Errorf("the last 24 hours: by project %+v, %d days against %d for all time, %v", day1.ByProject, len(day1.ByDay), len(rep.ByDay), err)
 	}
 
-	fails, err := a.Index.Failures(ctx, f, index.Window{}, "", "", index.Page{})
+	fails, err := a.Index.Failures(ctx, f, index.Window{}, index.FailureQuery{}, index.Page{})
 	if err != nil || fails.Total != 1 || len(fails.Failures) != 1 {
 		t.Fatalf("failures = %+v, %v", fails, err)
 	}
@@ -377,7 +377,7 @@ func TestReports(t *testing.T) {
 	// A tool is named exactly, or by how its name begins; what failed per tool covers the
 	// window whichever is asked for
 	for tool, want := range map[string]int{"Bash": 1, "bash": 0, "Ba": 0, "Ba*": 1, "B*": 1, "Edit": 0, "*": 1} {
-		got, err := a.Index.Failures(ctx, f, index.Window{}, tool, "", index.Page{})
+		got, err := a.Index.Failures(ctx, f, index.Window{}, index.FailureQuery{Tool: tool}, index.Page{})
 		if err != nil || got.Total != want || len(got.Failures) != want {
 			t.Errorf("failures of %q = %d, %v; want %d", tool, got.Total, err, want)
 		}
@@ -390,7 +390,7 @@ func TestReports(t *testing.T) {
 		"econnrefused": 1, "go test": 1, `"go test"`: 1, `"test go"`: 0, "-ECONNREFUSED": 0, "ECONNREFUSED -postgres": 1,
 		"exit status 1": 1, "TestOrder 5432": 1, "5433": 0, "": 1,
 	} {
-		got, err := a.Index.Failures(ctx, f, index.Window{}, "", query, index.Page{})
+		got, err := a.Index.Failures(ctx, f, index.Window{}, index.FailureQuery{Text: query}, index.Page{})
 		if err != nil || got.Total != want || len(got.Failures) != want || len(got.ByTool) != 1 {
 			t.Errorf("failures holding %q = %d, %v; want %d", query, got.Total, err, want)
 		}

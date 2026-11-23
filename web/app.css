@@ -520,9 +520,12 @@ th.n, td.n { text-align: right; }
 .chip[aria-current="true"] { background: var(--text); border-color: var(--text); color: var(--bg); }
 .chip .mono { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .chip .n { opacity: .7; }
+.chip-gap { width: 10px; }
 .fails { margin: 0; padding: 0; list-style: none; }
 .fail { display: grid; gap: 6px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 .f-head { color: var(--muted); font-size: 13px; }
+.f-name { font-size: 14px; }
+.f-name .mono { font-weight: 600; }
 .f-cmd { max-height: 4.5em; overflow: hidden; font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .f-out { max-height: 16em; }
 .f-later { display: grid; gap: 4px; font-size: 13px; color: var(--ok); }

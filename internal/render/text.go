@@ -755,74 +755,154 @@ func spanWords(s string) string {
 // Failures prints the tool calls that failed, newest first, and what failed most. within
 // names the stretch of time they were looked for in (see Within).
 func Failures(w io.Writer, rep index.FailureReport, within string, st Style) {
+	if noFailures(w, rep.FailureCounts, within, st) {
+		return
+	}
 	by := make([]string, 0, len(rep.ByTool))
 	for _, c := range rep.ByTool {
 		by = append(by, fmt.Sprintf("%s %d", c.Tool, c.Count))
+	}
+	fmt.Fprintln(w, st.dim(failuresCounted(rep.FailureCounts, rep.Total, "failure")+" · "+orAllTime(within)+": "+strings.Join(by, " · ")))
+	for _, f := range rep.Failures {
+		fmt.Fprintln(w)
+		failure(w, f, "", "", 4, st)
+	}
+	if len(rep.Failures) < rep.Total {
+		fmt.Fprintln(w, st.dim(fmt.Sprintf("\n… %d more: %s, or narrow with %s / %s / %s / %s", rep.Total-len(rep.Failures), st.opt("limit"), st.opt("open"), st.opt("tool"), st.opt("project"), st.opt("since"))))
+	}
+}
+
+// FailureGroups prints the failed calls by the command that failed, those with failures
+// still open first: how often each failed, in how many sessions, and the latest.
+func FailureGroups(w io.Writer, rep index.FailureGroups, within string, st Style) {
+	if noFailures(w, rep.FailureCounts, within, st) {
+		return
+	}
+	fmt.Fprintln(w, st.dim(plural(rep.Total, "command")+" · "+failuresCounted(rep.FailureCounts, rep.Open+rep.PassedLater, "failure")+" · "+orAllTime(within)))
+	for _, g := range rep.Commands {
+		name := g.Command
+		if name == "" {
+			name = g.Tool + st.dim(" (no command)")
+		}
+		mark := st.red("✗")
+		if g.Open == 0 {
+			mark = st.green("✓")
+		}
+		fmt.Fprintf(w, "\n%s %s  %s %s\n", mark, st.bold(name), failedNote(st, g.Count, g.Count-g.Open), st.dim("· "+plural(g.Sessions, "session")))
+		failure(w, g.Last, "  ", "latest ", 2, st)
+	}
+	if shown := len(rep.Commands); shown < rep.Total {
+		fmt.Fprintln(w, st.dim(fmt.Sprintf("\n… %d more commands: %s, %s, or narrow with %s / %s / %s", rep.Total-shown, st.opt("limit"), st.opt("offset"), st.opt("open"), st.opt("project"), st.opt("since"))))
+	}
+}
+
+// failuresCounted says how many failures match: "7 failures, 5 passed later", or of a list
+// of the open ones, "2 of 7 failures still open". n is how many of what is listed.
+func failuresCounted(c index.FailureCounts, n int, what string) string {
+	if c.Asked.Open {
+		return fmt.Sprintf("%d of %s still open", c.Open, plural(c.Open+c.PassedLater, what))
+	}
+	return plural(n, what) + laterWords(n, c.PassedLater)
+}
+
+func orAllTime(within string) string {
+	if within == "" {
+		return "of all time"
+	}
+	return within
+}
+
+// noFailures says, when no failure matches, that none does in the window, and what there
+// is: the tools that failed in it, the failures an open-only list leaves out, the ones
+// outside the window. It reports whether it said so.
+func noFailures(w io.Writer, c index.FailureCounts, within string, st Style) bool {
+	if c.Total > 0 {
+		return false
+	}
+	by := make([]string, 0, len(c.ByTool))
+	for _, n := range c.ByTool {
+		by = append(by, fmt.Sprintf("%s %d", n.Tool, n.Count))
 	}
 	in := ""
 	if within != "" {
 		in = " " + within
 	}
-	if rep.Total == 0 {
-		// A tool is named exactly, and the same tool has another name in another CLI: say
-		// what there is rather than "nothing" — and what the window alone left out
-		none := "No failed tool calls"
+	// A tool is named exactly, and the same tool has another name in another CLI: say what
+	// there is rather than "nothing" — and what the window alone left out
+	tool, words := c.Asked.Tool != "", strings.TrimSpace(c.Asked.Text) != ""
+	var line string
+	switch {
+	case c.Asked.Open && c.PassedLater > 0:
+		of := ""
 		switch {
-		case len(by) == 0:
-		case rep.Tool != "" && strings.TrimSpace(rep.Query) != "":
-			none = "No failed calls of that tool hold those words"
-		case rep.Tool != "":
-			none = "No failed calls of that tool"
-		default:
-			none = "No failed calls hold those words"
+		case tool && words:
+			of = " of that tool holding those words"
+		case tool:
+			of = " of that tool"
+		case words:
+			of = " holding those words"
 		}
-		line := none + in
-		if rep.Outside > 0 {
-			outside, all := "before then", st.opt("since")+" all"
-			if strings.Contains(within, "until") {
-				outside, all = "outside it", all+" and no "+st.opt("until")
-			}
-			line += fmt.Sprintf("; %d from %s: %s", rep.Outside, outside, all)
+		each := "it"
+		switch {
+		case c.PassedLater == 2:
+			each = "both"
+		case c.PassedLater > 2:
+			each = "all " + strconv.Itoa(c.PassedLater)
 		}
-		fmt.Fprintln(w, line+".")
-		if len(by) > 0 {
-			fmt.Fprintln(w, "Failed"+in+": "+strings.Join(by, " · "))
-		}
-		return
+		line = "No failed call" + of + in + " is still open: the same command passed later for " + each
+	case len(by) == 0 || !tool && !words:
+		line = "No failed tool calls" + in
+	case tool && words:
+		line = "No failed calls of that tool hold those words" + in
+	case tool:
+		line = "No failed calls of that tool" + in
+	default:
+		line = "No failed calls hold those words" + in
 	}
-	of := "of all time"
-	if within != "" {
-		of = within
+	if c.Outside > 0 {
+		outside, all := "before then", st.opt("since")+" all"
+		if strings.Contains(within, "until") {
+			outside, all = "outside it", all+" and no "+st.opt("until")
+		}
+		open := ""
+		if c.Asked.Open {
+			open = "still open "
+		}
+		line += fmt.Sprintf("; %d %sfrom %s: %s", c.Outside, open, outside, all)
 	}
-	fmt.Fprintln(w, st.dim(plural(rep.Total, "failure")+" · "+of+": "+strings.Join(by, " · ")))
-	for _, f := range rep.Failures {
-		head := []string{f.At.Local().Format("01-02 15:04"), f.Session + "#" + strconv.Itoa(f.Turn)}
-		how := f.Status
-		if f.Exit != nil {
-			how += " · exit " + strconv.Itoa(*f.Exit)
+	fmt.Fprintln(w, line+".")
+	if len(by) > 0 {
+		fmt.Fprintln(w, "Failed"+in+": "+strings.Join(by, " · "))
+	}
+	return true
+}
+
+// failure prints one failed call, indented: when, where, how it ended, its command, the
+// last lines of its output, and where the same command passed later.
+func failure(w io.Writer, f index.Failure, indent, label string, lines int, st Style) {
+	how := f.Status
+	if f.Exit != nil {
+		how += " · exit " + strconv.Itoa(*f.Exit)
+	}
+	in := len(indent)
+	fmt.Fprintf(w, "%s%s%s  %s  %s\n", indent, st.dim(label), st.dim(f.At.Local().Format("01-02 15:04")), st.cyan(f.Session+"#"+strconv.Itoa(f.Turn)), st.red(f.Tool+" "+how))
+	if f.Command != "" {
+		fmt.Fprintf(w, "%s  $ %s\n", indent, st.fit(txt.OneLine(f.Command, 0), in+4))
+	}
+	if f.Output != "" {
+		out := strings.Split(strings.TrimSpace(f.Output), "\n")
+		if len(out) > lines {
+			out = out[len(out)-lines:]
 		}
-		fmt.Fprintf(w, "\n%s  %s  %s\n", st.dim(head[0]), st.cyan(head[1]), st.red(f.Tool+" "+how))
-		if f.Command != "" {
-			fmt.Fprintf(w, "  $ %s\n", st.fit(txt.OneLine(f.Command, 0), 4))
-		}
-		if f.Output != "" {
-			lines := strings.Split(strings.TrimSpace(f.Output), "\n")
-			if len(lines) > 4 {
-				lines = lines[len(lines)-4:]
-			}
-			for _, line := range lines {
-				fmt.Fprintf(w, "  %s\n", st.dim(st.fit(line, 2)))
-			}
-		}
-		if l := f.Later; l != nil {
-			fmt.Fprintf(w, "  %s %s\n", st.green("↳ passed "+laterBy(f.At, l.At)), st.cyan(fmt.Sprintf("%s#%d step %d", f.Session, l.Turn, l.Seq)))
-			if l.Command != txt.OneLine(f.Command, 0) {
-				fmt.Fprintf(w, "    %s\n", st.dim("as $ "+st.fit(l.Command, 9)))
-			}
+		for _, line := range out {
+			fmt.Fprintf(w, "%s  %s\n", indent, st.dim(st.fit(line, in+2)))
 		}
 	}
-	if len(rep.Failures) < rep.Total {
-		fmt.Fprintln(w, st.dim(fmt.Sprintf("\n… %d more: %s, or narrow with %s / %s / %s", rep.Total-len(rep.Failures), st.opt("limit"), st.opt("tool"), st.opt("project"), st.opt("since"))))
+	if l := f.Later; l != nil {
+		fmt.Fprintf(w, "%s  %s %s\n", indent, st.green("↳ passed "+laterBy(f.At, l.At)), st.cyan(fmt.Sprintf("%s#%d step %d", f.Session, l.Turn, l.Seq)))
+		if l.Command != txt.OneLine(f.Command, 0) {
+			fmt.Fprintf(w, "%s    %s\n", indent, st.dim("as $ "+st.fit(l.Command, in+9)))
+		}
 	}
 }
 

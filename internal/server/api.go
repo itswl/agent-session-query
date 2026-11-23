@@ -439,7 +439,16 @@ func (s *Server) handleFailures(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	rep, err := s.app.Index.Failures(r.Context(), f, win, r.URL.Query().Get("tool"), r.URL.Query().Get("q"), page)
+	q := index.FailureQuery{Tool: r.URL.Query().Get("tool"), Text: r.URL.Query().Get("q"), Open: flagOf(r, "open")}
+	var rep any
+	switch by := r.URL.Query().Get("by"); by {
+	case "":
+		rep, err = s.app.Index.Failures(r.Context(), f, win, q, page)
+	case "command":
+		rep, err = s.app.Index.FailuresByCommand(r.Context(), f, win, q, page)
+	default:
+		err = badRequest{fmt.Errorf("failures are grouped by command, not by %q", by)}
+	}
 	if err != nil {
 		s.fail(w, r, err)
 		return

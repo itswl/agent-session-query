@@ -218,7 +218,8 @@ what moves a bill most, is the last column — how much of the prompt was served
 session's own cost, where its CLI recorded one, is shown with the session (`asq show`).
 
 **`asq failures [words]`** — tool calls that failed or were interrupted in the last 7 days
-(`--since`), newest first, with the count per tool on top. `--tool Bash` narrows to one tool,
+(`--since`), newest first, with how many of them the same command passed later and the count
+per tool on top. `--tool Bash` narrows to one tool,
 named exactly — Claude Code's `Bash` is not Pi's `bash` — and `--tool 'mcp__playwright*'` to
 every tool whose name begins that way. Words narrow to the calls whose command or the end of
 whose output (the part shown) holds each of them, anywhere and in any case: `asq failures
@@ -232,6 +233,14 @@ When the same program and subcommand succeeded later in the session — `go test
 between are how it was got past. Succeeded means it said so: exit 0, with nothing on the line
 after it that could hide a failure (`| tail`, `|| true`), and not merely started in the
 background ([the rules](api.md#reports)).
+
+A failure that did not pass later is *open*: `--open` keeps those alone, and says how many of the
+rest it left out (`2 of 7 failures still open`). `--by command` prints one entry per command
+that failed instead — the program and subcommand, as passing later is judged: `go test`,
+`terraform plan`, or for a tool that runs none, the tool — with how often it failed, how many of
+those are still open, in how many sessions, and the latest of them; the commands with failures
+still open first, then those that failed most. `asq failures --by command --open` is what is
+still broken, and how often it broke.
 
 **`asq digest`** — the last 7 days (`--since`) per project: sessions, turns, tool calls,
 failures and how many of them passed later, tokens, files changed by kind (code / test / docs /

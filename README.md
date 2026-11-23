@@ -13,7 +13,8 @@ questions you actually have:
 - *What was that agent doing?* — read any session as a list of turns, then step by step
 - *Pick this up from where it stopped* — a handoff brief another agent can start from
 - *Where did the tokens go?* — input, output, reasoning and cache hit rate, by model, day and project
-- *What keeps failing?* — every failed tool call, with the command and the end of its output
+- *What keeps failing?* — every failed tool call, with the command and the end of its output, whether
+  the same command passed later, and by command, what is still open
 
 It is one static binary. It only ever reads. Nothing leaves your machine unless you tell it to.
 
@@ -132,7 +133,7 @@ a container is `docker rm` and its `/data` volume.
 | `asq pack` | several sessions as one document, oldest first — `--project`, `--since` |
 | `asq export <ref>` | a session whole — `--format md \| json \| jsonl \| html` |
 | `asq usage` | what the model calls consumed — `--by model \| day \| source \| project \| session` |
-| `asq failures [words]` | the tool calls that failed — `--tool Bash`, `--since`, or words their command or output holds |
+| `asq failures [words]` | the tool calls that failed — `--open` for those whose command never passed later, `--by command`, `--tool Bash`, `--since`, or words their command or output holds |
 | `asq digest` | what a stretch of work added up to, per project |
 | `asq files <path>` | the turns that touched a file — `--changed` |
 | `asq projects` | the directories sessions ran in |

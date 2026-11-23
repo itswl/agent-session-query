@@ -241,7 +241,7 @@ func TestFilesSayHowTheyStandNow(t *testing.T) {
 
 	// Where the same command next succeeded: not the failure's own retry, which failed
 	// too; not a different command; the run of the next turn that passed
-	rep, err := a.Index.Failures(ctx, f, index.Window{}, "", "", index.Page{Limit: 50})
+	rep, err := a.Index.Failures(ctx, f, index.Window{}, index.FailureQuery{}, index.Page{Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}

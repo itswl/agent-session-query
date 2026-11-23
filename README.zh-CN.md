@@ -158,7 +158,8 @@ systemd 或计划任务——再删二进制；容器则是 `docker rm` 加它�
 | `asq doctor` · `asq index` | 检查各存储、索引和本机运行的 server · 查看、重建或删除索引 |
 
 **ref** 就是 `ls` 和 `search` 打印的东西：`claude/3f2a9c1e`，或者只写会话 id 的开头，像引用一个 commit
-那样。`#4` 指第 4 轮。所有命令都支持 `--json`。
+那样。`#4` 指第 4 轮。所有命令都支持 `--json`；`show`、`search`、`brief` 和 `pack` 支持
+`--max-chars`，像 MCP 工具那样把文本回答限制在预算之内。
 
 **搜索**支持 `"短语"`、`-排除词`，以及 `ask:` `reply:` `thinking:` `tool:` `output:` `title:` 把某个词限定在一轮的某个部分或会话标题。
 裸词按前缀匹配（`rebind` 能找到 `rebinding`），英文词也匹配它的其他词形（`retries` 能找到 `retried`），完整的 commit id 能找到 `git commit` 打印过它开头几位的那一轮。中文、日文、韩文、泰文按子串匹配：`asq search 数据库` 可以直接用。

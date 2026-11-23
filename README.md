@@ -171,7 +171,9 @@ a container is `docker rm` and its `/data` volume.
 | `asq doctor` · `asq index` | check the stores, the index and the server running here · inspect, rebuild or remove the index |
 
 A **ref** is what `ls` and `search` print: `claude/3f2a9c1e`, or just the start of a session's
-id, the way a commit is named. `#4` names a turn. Every command takes `--json`.
+id, the way a commit is named. `#4` names a turn. Every command takes `--json`; `show`,
+`search`, `brief` and `pack` take `--max-chars` to hold a text answer to a budget, as the MCP
+tools are held.
 
 **Search** understands `"a phrase"`, `-not`, and `ask:` `reply:` `thinking:` `tool:` `output:`
 `title:` to confine a word to one part of a turn or to the session's title. Bare words match as

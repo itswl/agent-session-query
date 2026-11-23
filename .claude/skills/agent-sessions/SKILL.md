@@ -17,7 +17,9 @@ Two ways to ask, the same answers either way:
   `failures`, `digest`, `files`, `projects`.
 - **The command**, when the server is not configured but a shell is: `asq search …`, `asq ls`,
   `asq show <ref>`, `asq brief <ref>`, … — same names, `--flags` instead of arguments. `asq -h`
-  lists them.
+  lists them. Add `--max-chars 16000` to `show`, `search`, `brief` and `pack`, and read text,
+  not `--json`: the answer is then held to a budget as the tools' are, where without it a long
+  session prints whole.
 
 ## Ground rules
 

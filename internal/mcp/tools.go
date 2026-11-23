@@ -13,11 +13,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/index"
-	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/render"
 	"github.com/itswl/agent-session-query/internal/txt"
 )
@@ -350,17 +348,7 @@ func cut(text string, budget int) string {
 
 // cutFor is cut, with what to do about it said for what was asked.
 func cutFor(text string, budget int, advice string) string {
-	if len(text) <= budget {
-		return text
-	}
-	at := budget
-	for at > 0 && !utf8.RuneStart(text[at]) {
-		at--
-	}
-	if nl := strings.LastIndexByte(text[:at], '\n'); nl > budget/2 {
-		at = nl
-	}
-	return text[:at] + fmt.Sprintf("\n\n[Cut here: %d more characters. %s]", len(text)-at, advice)
+	return render.Cut(text, max(budget, 1), advice)
 }
 
 // style is how text is dressed for a model: plain, lines cut where a quote stops paying,
@@ -585,19 +573,7 @@ func runRead(ctx context.Context, s *Server, a *args) (string, error) {
 	}
 	// The budget is spent turn by turn, so what is left out is whole turns that can be
 	// asked for by number, not the tail of one
-	left := room
-	for i := range turns {
-		if i > 0 {
-			if left <= 0 {
-				fmt.Fprintf(&b, "\n[Turns #%d–#%d left out: read them with turns=\"%d-%d\".]\n", turns[i].Index, turns[len(turns)-1].Index, turns[i].Index, turns[len(turns)-1].Index)
-				break
-			}
-			b.WriteByte('\n')
-		}
-		before := b.Len()
-		render.Turn(&b, &sess, &turns[i], render.TurnOptions{Full: r.Full, MaxChars: max(left, 1)}, st)
-		left -= b.Len() - before
-	}
+	render.FitTurns(&b, &sess, turns, r.Full, room, st)
 	// Each turn already said what it left out; the cut that follows is only for a single
 	// step printed whole that is larger than everything asked for
 	a.budget = max(a.budget, min(b.Len(), a.budget+a.budget/2))
@@ -615,23 +591,10 @@ func outline(ctx context.Context, s *Server, sess *index.Session, budget int, st
 	if err != nil {
 		return "", err
 	}
-	draw := func(turns []model.Turn) string {
-		var b bytes.Buffer
-		render.Outline(&b, sess, turns, app.Decorate(children), st)
-		return b.String()
-	}
-	text := draw(turns)
-	kept := turns
-	for len(text) > budget && len(kept) > 4 {
-		kept = kept[len(kept)-max(len(kept)*budget/len(text)*9/10, 4):]
-		text = draw(kept)
-	}
-	if len(kept) < len(turns) && len(kept) > 0 {
-		first := kept[0].Index
-		text += fmt.Sprintf("\n[Turns before #%d left out: read with turns=\"1-%d\" to see them step by step, or raise max_chars for the whole outline.]\n", first, first-1)
-	}
-	text += "\nread with ref=\"" + sess.Ref + "#N\" opens turn N step by step.\n"
-	return text, nil
+	var b bytes.Buffer
+	render.FitOutline(&b, sess, turns, app.Decorate(children), budget, st)
+	b.WriteString("\nread with ref=\"" + sess.Ref + "#N\" opens turn N step by step.\n")
+	return b.String(), nil
 }
 
 func runBrief(ctx context.Context, s *Server, a *args) (string, error) {

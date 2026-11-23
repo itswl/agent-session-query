@@ -220,6 +220,9 @@ func TestWhatGoesWrong(t *testing.T) {
 		{[]string{"brief", "aaaa1111", "--from", "3"}, 1, "from must be 1..2"},
 		{[]string{"brief", "aaaa1111", "--since", "whenever"}, 2, "since: unreadable time"},
 		{[]string{"brief", "aaaa1111", "--turn", "1", "--since", "all"}, 2, "turn 1 and since all each say which turns the brief covers"},
+		{[]string{"show", "aaaa1111", "--json", "--max-chars", "2000"}, 2, "--max-chars holds text to a budget: it goes without --json"},
+		{[]string{"show", "aaaa1111", "-f", "--max-chars", "2000"}, 2, "neither --json, --seq nor --max-chars"},
+		{[]string{"search", "flaky", "--max-chars", "-5"}, 2, "--max-chars wants a number of characters"},
 		{[]string{"resume", "claude/x1"}, 1, "resume the session it ran in"},
 		{[]string{"files"}, 2, "which file?"},
 		{[]string{"why", "notes.go"}, 2, "asq why <file>:<line>"},
@@ -430,6 +433,47 @@ func TestHereIsTheCurrentDirectory(t *testing.T) {
 	// A part of a path is still a part of a path
 	if out, errs, code := asq(t, h, indexPath, "ls", "--project", "proj"); code != 0 || !strings.Contains(out, "written last") || errs != "" {
 		t.Errorf("ls --project proj: exit %d, %s%s", code, out, errs)
+	}
+}
+
+// An agent with a shell and no MCP reads asq from the command line, and pays for what it
+// reads by the token: --max-chars holds show, search, brief and pack to a budget, as the
+// MCP tools are held, saying what was left out and how to ask for it — in flags.
+func TestMaxChars(t *testing.T) {
+	h, index := setup(t)
+	whole, _, _ := asq(t, h, index, "show", "bbbb2222#1", "--full")
+	if strings.Count(whole, fixture.LongLine) != 400 {
+		t.Fatalf("one turn printed whole has %d of its 400 lines", strings.Count(whole, fixture.LongLine))
+	}
+	for _, tc := range []struct {
+		args []string
+		max  int
+		want []string
+	}{
+		{[]string{"show", "bbbb2222#1", "--full", "--max-chars", "1000"}, 1700, []string{"bbbb2222-0000-4000-8000-000000000002#1 · ", "[Cut here: ", "raise --max-chars"}},
+		{[]string{"show", "aaaa1111", "--turns", "all", "--max-chars", "500"}, 900, []string{"#1 · ", "#2 · ", "4 more steps left out"}},
+		{[]string{"show", "bbbb2222", "--seq", "1", "--max-chars", "1000"}, 1300, []string{"[Cut here: ", "raise --max-chars"}},
+		{[]string{"brief", "aaaa1111", "--max-chars", "1000"}, 1000, []string{"## State at the end", "Dig deeper"}},
+		{[]string{"pack", "--turns", "--max-chars", "500"}, 800, []string{"# Session pack", "[Cut here: ", "a smaller --limit"}},
+		// Below 500 it is 500, as an MCP tool's budget is
+		{[]string{"search", "the", "--max-chars", "10"}, 800, []string{"claude/"}},
+	} {
+		out, errs, code := asq(t, h, index, tc.args...)
+		if code != 0 || len(out) > tc.max || strings.Contains(out, "\x1b[") {
+			t.Errorf("asq %s: exit %d, %d characters, want at most %d: %s%s", strings.Join(tc.args, " "), code, len(out), tc.max, out, errs)
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(out, want) {
+				t.Errorf("asq %s: no %q in\n%s", strings.Join(tc.args, " "), want, out)
+			}
+		}
+		if strings.Contains(out, "max_chars") {
+			t.Errorf("asq %s names the MCP argument to a terminal:\n%s", strings.Join(tc.args, " "), out)
+		}
+	}
+	// With room to spare, the answer is the answer
+	if out, _, _ := asq(t, h, index, "show", "bbbb2222#1", "--full", "--max-chars", "400000"); out != whole {
+		t.Error("a turn that fits its budget is not printed as it is without one")
 	}
 }
 

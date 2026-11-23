@@ -269,7 +269,7 @@ func cmdList(ctx context.Context, args []string, io *streams) error {
 }
 
 func cmdSearch(ctx context.Context, args []string, io *streams) error {
-	c := newCommand("search", io.err).selection(10)
+	c := newCommand("search", io.err).selection(10).budgeted()
 	recent := c.fs.Bool("recent", false, "newest first, instead of best match first")
 	per := c.fs.Int("per-session", 3, "at most this many turns of one session (0: no bound)")
 	rest, err := c.parse(args)
@@ -301,7 +301,9 @@ func cmdSearch(ctx context.Context, args []string, io *streams) error {
 	if c.json {
 		return printJSON(io.out, app.ListedHits(res))
 	}
-	render.Hits(io.out, res, c.offset, c.style(io.out))
+	var b strings.Builder
+	render.Hits(&b, res, c.offset, c.style(io.out))
+	c.held(io.out, b.String())
 	return nil
 }
 
@@ -345,7 +347,7 @@ func sessionOf(ctx context.Context, a *app.App, args []string, io *streams) (ind
 }
 
 func cmdShow(ctx context.Context, args []string, io *streams) error {
-	c := newCommand("show", io.err)
+	c := newCommand("show", io.err).budgeted()
 	full := c.fs.Bool("full", false, "every output and all reasoning whole")
 	seq := c.fs.Int("seq", -1, "one step whole, by the number in [brackets] beside it")
 	turns := c.fs.String("turns", "", "these turns step by step: 3, 3-5, or last (default: the outline)")
@@ -359,8 +361,8 @@ func cmdShow(ctx context.Context, args []string, io *streams) error {
 		return usagef("which session?  asq show <ref>   (asq ls prints refs)")
 	}
 	if *follow {
-		if c.json || *seq >= 0 {
-			return usagef("--follow prints steps as text, as they come: it goes with neither --json nor --seq")
+		if c.json || *seq >= 0 || c.maxChars > 0 {
+			return usagef("--follow prints steps as text, as they come: it goes with neither --json, --seq nor --max-chars")
 		}
 		if *turns == "" {
 			*turns = "last"
@@ -385,7 +387,9 @@ func cmdShow(ctx context.Context, args []string, io *streams) error {
 		if c.json {
 			return printJSON(io.out, map[string]any{"session": s.Ref, "turn": idx, "item": it})
 		}
-		render.Item(io.out, &s, idx, &it, st)
+		var b strings.Builder
+		render.Item(&b, &s, idx, &it, st)
+		c.held(io.out, b.String())
 		return nil
 	}
 
@@ -405,7 +409,8 @@ func cmdShow(ctx context.Context, args []string, io *streams) error {
 		if c.json {
 			return printJSON(io.out, map[string]any{"session": s, "turns": outline, "agents": app.Listed(children)})
 		}
-		render.Outline(io.out, &s, outline, children, st)
+		// One too long for a budget keeps its latest turns, where the work stands
+		render.FitOutline(io.out, &s, outline, children, c.maxChars, st)
 		return nil
 	}
 	r.Full = *full
@@ -419,12 +424,12 @@ func cmdShow(ctx context.Context, args []string, io *streams) error {
 	if c.json {
 		return printJSON(io.out, map[string]any{"session": s, "turns": list})
 	}
-	for i := range list {
-		if i > 0 {
-			fmt.Fprintln(io.out)
-		}
-		render.Turn(io.out, &s, &list[i], render.TurnOptions{Full: *full}, st)
-	}
+	// A budget is spent turn by turn: what is left out is whole turns, asked for by number.
+	// Each turn says what it left out; what is cut after is only one step printed whole that
+	// is larger than everything asked for, as the MCP read tool cuts it
+	var b strings.Builder
+	render.FitTurns(&b, &s, list, *full, c.maxChars, st)
+	c.heldTo(io.out, b.String(), c.maxChars+c.maxChars/2)
 	if *follow {
 		return followSession(ctx, a, &s, list[len(list)-1], *full, st, io)
 	}
@@ -500,7 +505,7 @@ func followSession(ctx context.Context, a *app.App, s *index.Session, last model
 }
 
 func cmdBrief(ctx context.Context, args []string, io *streams) error {
-	c := newCommand("brief", io.err)
+	c := newCommand("brief", io.err).budgeted()
 	turn := c.fs.Int("turn", 0, "brief this turn alone (default: the whole session)")
 	from := c.fs.Int("from", 0, "brief this turn and every turn after it")
 	since := c.fs.String("since", "", "brief every turn that ran after this: 2h, 2026-10-05T08:00")
@@ -527,6 +532,8 @@ func cmdBrief(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return usageError{err}
 	}
+	// Written to fit, as the MCP brief is: cut, it would lose where things stand at the end
+	opts.MaxChars = c.maxChars
 	text, err := a.Brief(ctx, &s, opts)
 	if err != nil {
 		return err
@@ -539,7 +546,7 @@ func cmdBrief(ctx context.Context, args []string, io *streams) error {
 }
 
 func cmdPack(ctx context.Context, args []string, io *streams) error {
-	c := newCommand("pack", io.err).selection(20)
+	c := newCommand("pack", io.err).selection(20).budgeted()
 	withTurns := c.fs.Bool("turns", false, "spell out every turn of every session, not only how each ended")
 	if _, err := c.parse(args); err != nil {
 		return err
@@ -557,7 +564,7 @@ func cmdPack(ctx context.Context, args []string, io *streams) error {
 	if c.json {
 		return printJSON(io.out, map[string]any{"pack": text, "sessions": n})
 	}
-	fmt.Fprint(io.out, text)
+	c.held(io.out, text)
 	return nil
 }
 

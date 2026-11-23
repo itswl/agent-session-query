@@ -841,3 +841,47 @@ func TestWhenAgentsWorked(t *testing.T) {
 		t.Errorf("digest:\n%s", out.String())
 	}
 }
+
+// Held to a budget, an outline keeps its latest turns and a run of turns leaves out whole
+// turns, each saying how to ask for what it left out — in arguments to an agent's tool, in
+// flags to a terminal.
+func TestFitting(t *testing.T) {
+	s, turns := long(40)
+	var whole bytes.Buffer
+	FitOutline(&whole, s, turns, nil, 0, Style{})
+	for _, tc := range []struct {
+		st         Style
+		hint, more string
+	}{
+		{Style{}, "--turns 1-", "[Turns #2–#5 left out: --turns 2-5 shows them.]"},
+		{Style{Args: true}, `read with turns="1-`, `[Turns #2–#5 left out: read them with turns="2-5".]`},
+	} {
+		var b bytes.Buffer
+		FitOutline(&b, s, turns, nil, 12000, tc.st)
+		text := b.String()
+		if len(text) > 12000 || !strings.Contains(text, "#40 ") || strings.Contains(text, "#1 ") || !strings.Contains(text, "[Turns before #") || !strings.Contains(text, tc.hint) {
+			t.Errorf("an outline held to 12000 characters (%d whole) is %d:\n%s", whole.Len(), len(text), text)
+		}
+		b.Reset()
+		FitTurns(&b, s, turns[:5], false, 1, tc.st)
+		if text := b.String(); !strings.Contains(text, s.Ref+"#1 ·") || strings.Contains(text, s.Ref+"#2 ·") || !strings.Contains(text, tc.more) {
+			t.Errorf("five turns held to less than one:\n%s", text)
+		}
+		b.Reset()
+		FitTurns(&b, s, turns[:5], false, 0, tc.st)
+		if text := b.String(); !strings.Contains(text, s.Ref+"#5 ·") || strings.Contains(text, "left out") {
+			t.Errorf("five turns with no budget:\n%s", text)
+		}
+	}
+	var b bytes.Buffer
+	FitOutline(&b, s, turns, nil, 0, Style{})
+	if b.String() != whole.String() || strings.Contains(whole.String(), "left out") {
+		t.Error("an outline with no budget is the outline")
+	}
+	if got := Cut("one\ntwo\nthree\n", 0, "x"); got != "one\ntwo\nthree\n" {
+		t.Errorf("no budget cuts nothing: %q", got)
+	}
+	if got := Cut(strings.Repeat("a line of text\n", 100), 300, "Ask for less."); len(got) > 400 || !strings.HasSuffix(got, "more characters. Ask for less.]") {
+		t.Errorf("cut = %q", got)
+	}
+}

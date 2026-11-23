@@ -50,6 +50,16 @@ When no store holds a session at all, every command says so on stderr beside its
 where it looked — each store's place, and whether it is there and could be read — and that
 `asq doctor` says more.
 
+## Held to a budget
+
+`show`, `search`, `brief` and `pack` take `--max-chars N`: the answer is held to about N
+characters (at least 500), as an [MCP tool's](mcp.md#how-the-answers-are-shaped) is — for an
+agent that reads `asq` from a shell, and pays for what it reads by the token. An outline keeps
+its latest turns; turns read step by step leave out whole turns; a brief is written to fit,
+and keeps where things stood at the end; anything else is cut on a line boundary. Each says
+what it left out and the flag that asks for it. It is for text: not with `--json`, which is
+several times the size, nor `show -f`. Without it, an answer is as long as it is.
+
 ## Finding
 
 **`asq ls [word]`** — recent sessions, newest first. A word narrows to sessions whose title, id

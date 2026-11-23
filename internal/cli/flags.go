@@ -35,6 +35,9 @@ type command struct {
 	offset int
 	// here is the directory a --project of "." or "../api" was taken to be, absolute
 	here string
+
+	// maxChars holds a text answer to about that many characters (--max-chars); 0, no bound
+	maxChars int
 }
 
 type multi []string
@@ -70,6 +73,27 @@ func (c *command) selection(defaultLimit int) *command {
 	return c
 }
 
+// budgeted adds --max-chars, which holds an answer to about that many characters, as an MCP
+// tool's answer is held: for an agent that reads asq from a shell, and pays for what it
+// reads by the token.
+func (c *command) budgeted() *command {
+	c.fs.IntVar(&c.maxChars, "max-chars", 0, "hold the answer to about this many characters (at least 500), as the MCP tools do; text only")
+	return c
+}
+
+// held writes text held to the command's budget: cut on a line boundary, saying how much
+// more there was and what to ask for instead.
+func (c *command) held(w io.Writer, text string) { c.heldTo(w, text, c.maxChars) }
+
+// heldTo is held, to a budget of its own.
+func (c *command) heldTo(w io.Writer, text string, budget int) {
+	cut := render.Cut(text, budget, "Ask for less — fewer --turns, a smaller --limit, a narrower query — or raise --max-chars.")
+	if len(cut) != len(text) {
+		cut += "\n"
+	}
+	io.WriteString(w, cut)
+}
+
 // parse reads flags wherever they stand among the arguments — `asq search retry --since
 // 7d` and `asq search --since 7d retry` are the same command — and returns the rest.
 func (c *command) parse(args []string) ([]string, error) {
@@ -88,6 +112,14 @@ func (c *command) parse(args []string) ([]string, error) {
 		}
 		rest = append(rest, args[0])
 		args = args[1:]
+	}
+	switch {
+	case c.maxChars < 0:
+		return nil, usagef("--max-chars wants a number of characters, got %d", c.maxChars)
+	case c.maxChars > 0 && c.json:
+		return nil, usagef("--max-chars holds text to a budget: it goes without --json")
+	case c.maxChars > 0:
+		c.maxChars = max(c.maxChars, 500)
 	}
 	// A project written as a path from the current directory is that directory, and
 	// not a part of a path to look for: "." is in every path
@@ -175,7 +207,8 @@ func (c *command) config() (app.Config, error) {
 // style is how text is dressed for where it is going.
 func (c *command) style(out io.Writer) render.Style {
 	st := render.Style{Home: os.Getenv("HOME")}
-	if f, ok := out.(*os.File); ok && !c.noColor && os.Getenv("NO_COLOR") == "" {
+	// What is held to a budget is counted in characters, and colour is characters too
+	if f, ok := out.(*os.File); ok && !c.noColor && c.maxChars == 0 && os.Getenv("NO_COLOR") == "" {
 		if info, err := f.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
 			st.Color = true
 			st.Width = terminalWidth()

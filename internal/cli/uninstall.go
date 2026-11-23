@@ -51,15 +51,22 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 	if path == "" {
 		path = index.DefaultPath()
 	}
-	take := func(p, note string) error {
+	// What could not be removed is said as left, and the rest goes on: on Windows a file an
+	// asq serve still running holds open is not removed until it is down, and what takes it
+	// down is among what is said to run
+	couldNot := func(p, what string, err error) {
+		done.Left = append(done.Left, leftBehind{Path: p, What: what,
+			Why: "could not be removed (" + err.Error() + "): an asq serve still running may hold it; asq uninstall again, once that is down, takes it"})
+	}
+	take := func(p, note string) {
 		if _, err := os.Stat(p); err != nil {
-			return nil // not here: nothing to take, nothing to say
+			return // not here: nothing to take, nothing to say
 		}
 		if err := index.Remove(p); err != nil {
-			return err
+			couldNot(p, "index", err)
+			return
 		}
 		removed(p, note)
-		return nil
 	}
 	why := ""
 	if cfg.IndexPath != "" || os.Getenv("ASQ_INDEX") != "" {
@@ -68,14 +75,12 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 	}
 	if why != "" {
 		done.Left = append(done.Left, leftBehind{Path: path, What: "index", Why: why})
-	} else if err := take(path, "the index, rebuilt from the stores on the next run"); err != nil {
-		return err
+	} else {
+		take(path, "the index, rebuilt from the stores on the next run")
 	}
 	if cfg.IndexPath == "" {
 		for _, old := range index.Older() {
-			if err := take(old, "the index an earlier asq left"); err != nil {
-				return err
-			}
+			take(old, "the index an earlier asq left")
 		}
 	}
 	if cfg.IndexPath == "" && os.Getenv("ASQ_INDEX") == "" {
@@ -128,10 +133,12 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 			if os.Getenv("ASQ_STATE") != "" {
 				// A folder a person named may hold more than asq's: only what asq writes goes
 				took, others, whole, err := removeOurs(state, spares)
-				if err != nil {
-					return err
-				}
 				switch {
+				case err != nil:
+					for _, p := range took {
+						removed(p, "asq's, in the folder ASQ_STATE names")
+					}
+					couldNot(state, "state", err)
 				case whole:
 					removed(state, "the state"+held)
 				case len(others) == 0 && len(took) > 0:
@@ -146,10 +153,9 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 				break
 			}
 			took, whole, err := removeBut(state, spares)
-			if err != nil {
-				return err
-			}
 			switch {
+			case err != nil:
+				couldNot(state, "state", err)
 			case whole:
 				removed(state, "the state"+held)
 			case took:

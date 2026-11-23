@@ -130,6 +130,34 @@ func TestUninstallTakesWhatAsqWrote(t *testing.T) {
 	}
 }
 
+// What cannot be removed — on Windows a file an asq serve still running holds open — is said
+// as left, and uninstall goes on to say what to run, which takes that server down. A folder
+// this account may not write in stands for such a file here.
+func TestUninstallSaysWhatCouldNotBeRemovedAndGoesOn(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("a folder this account may not write in is had on unix, and not as root")
+	}
+	home, _ := uninstallHome(t, runtime.GOOS, nil)
+	state := defaultState(t, home)
+	locked := []string{filepath.Dir(index.DefaultPath()), filepath.Dir(put(t, filepath.Join(state, "sub", "f"), "f"))}
+	for _, dir := range locked {
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	}
+
+	got := uninstallJSON(t)
+	there(t, index.DefaultPath())
+	if len(got.Left) != 2 || got.Left[0].Path != index.DefaultPath() || got.Left[1].Path != state ||
+		!strings.HasPrefix(got.Left[0].Why, "could not be removed") || !strings.HasPrefix(got.Left[1].Why, "could not be removed") {
+		t.Errorf("left %+v, want the index and %s, which could not be removed", got.Left, state)
+	}
+	if len(got.Run) == 0 {
+		t.Error("nothing to run was said")
+	}
+}
+
 // --json answers what was removed, what was left and what to run, for a script or an agent
 // to finish.
 func TestUninstallJSON(t *testing.T) {

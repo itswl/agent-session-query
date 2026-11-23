@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -118,6 +119,13 @@ func (f Filter) where() (string, []any) {
 	conds := []string{"s.copy_of = 0"}
 	var args []any
 	if len(f.Stores) > 0 {
+		// A copy is folded into the session it is a copy of where that one is seen. A
+		// process that does not read its store — an index another configuration filled —
+		// has the copy stand for it instead, rather than neither
+		conds[0] = "(s.copy_of = 0 OR NOT EXISTS (SELECT 1 FROM sessions o WHERE o.sid = s.copy_of AND o.source IN (" + placeholders(len(f.Stores)) + ")))"
+		for _, name := range f.Stores {
+			args = append(args, name)
+		}
 		// The term names the stores this process reads. When that is every store in the
 		// index it filters nothing, and if it chose the plan a report would start from
 		// the sessions and walk all their turns to find a week's: the + keeps it out of
@@ -395,7 +403,7 @@ func (ix *Index) Resolve(ctx context.Context, ref string, stores []string) (Sess
 				return nil, err
 			}
 			if copyOf != 0 {
-				if orig, err := ix.bySID(ctx, copyOf); err == nil {
+				if orig, err := ix.bySID(ctx, copyOf); err == nil && (len(stores) == 0 || slices.Contains(stores, orig.Source)) {
 					s = orig
 				}
 			}

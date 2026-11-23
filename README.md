@@ -220,7 +220,7 @@ conversation is sent** — `--content asks` or `all` opts in. → [Telemetry](do
 Each CLI's own variable for moving its store is honoured (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …).
 A store somewhere else — another machine's home directory, a backup — is added by name:
 `asq ls --path claude@box2=/mnt/box2/.claude/projects`, and its sessions appear as
-`claude@box2/…`. → [Sources](docs/sources.md)
+`claude@box2/…`. A session two stores hold is listed and counted once. → [Sources](docs/sources.md)
 
 ## How it stays fast, and private
 

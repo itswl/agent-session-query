@@ -162,6 +162,10 @@ One package and one line.
    judged, or none, is judged again at the next sync from the turns the index holds, without
    reading a transcript. One a newer `asq` judged is left to it.
 
+   A change to how sessions are tied together once read — which transcript a subagent ran in,
+   which one is a copy of another (`link`, in `internal/index/link.go`) — raises `linkVersion`
+   beside them: the next sync links every session again, whether or not it reads a transcript.
+
    `Retention` is for a CLI that deletes its own old sessions by default: one clause saying what
    it deletes, after how long, and the setting and file that change it, as the CLI's own
    documentation gives them. What the CLI deletes leaves the index too, and `asq doctor` says so

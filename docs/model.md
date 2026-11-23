@@ -20,7 +20,7 @@ Session ─┬─ Turn 0   what came before the first ask: injected context, a f
 
 | field | |
 |---|---|
-| `source` | the store it was read from: `claude`, or a labeled one such as `claude@box2` |
+| `source` | the store it was read from: `claude`, or a labeled one such as `claude@box2`. A session two stores of one CLI hold is one session, from the store that counts it ([Sources](sources.md#stores-somewhere-else---path)) |
 | `agent` | the CLI that wrote it (`claude`) — what decides how it resumes |
 | `id` | the CLI's own id; `source/id` is the session's **ref** |
 | `title`, `cwd`, `branch`, `model`, `version` | as the CLI recorded them; `branch` is the one the session *opened* on |

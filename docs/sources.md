@@ -41,6 +41,11 @@ asq ls --path claude@box2=/mnt/box2/.claude/projects     # … or: this one as w
   `claude@box2`: that is what refs begin with (`claude@box2/3f2a9c1e`), what `--source` takes,
   and what the page's filter lists. `--source claude` selects every Claude Code store, labeled
   or not. A labeled store is read whatever `--only` says: it was asked for by name.
+- **A session two stores of one CLI both hold is one session** — a backup beside the store it
+  was copied from, two copies of another machine's. It is listed, found and counted once: as
+  the CLI's own store holds it, while it does; once the CLI has deleted it, as the store that
+  holds the most of it, under that store's name. A ref to either copy names it. A subagent's
+  transcript is the same one when it ran in the same session and has the same id.
 - A label is lowercase letters, digits and dashes.
 - Repeat the flag for several, or set `ASQ_PATH` (comma-separated) so every `asq` process on
   the machine agrees.

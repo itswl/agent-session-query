@@ -199,7 +199,7 @@ LANGFUSE_PUBLIC_KEY=… LANGFUSE_SECRET_KEY=… asq otel --content asks --every 
 
 各 CLI 自己用来挪动存储位置的环境变量都会被遵守（`CLAUDE_CONFIG_DIR`、`CODEX_HOME` 等）。别处的存储——另一台机器的
 home 目录、一份备份——按名字加进来：`asq ls --path claude@box2=/mnt/box2/.claude/projects`，其中的会话显示为
-`claude@box2/…`。→ [数据来源](docs/sources.md)
+`claude@box2/…`。两个存储里都有的同一个会话只列一次、只算一次。→ [数据来源](docs/sources.md)
 
 ## 为什么快，为什么可以放心
 

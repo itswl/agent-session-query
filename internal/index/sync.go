@@ -265,13 +265,25 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 		firstErr = ix.judge(ctx, func() { ix.setState(func(s *SyncState) { s.Done++ }) })
 	}
 	published := 0
+	// Sessions linked by older rules than these are linked again, once, read or not
+	relink := false
+	if v, err := linkedBy(ctx, ix.rw); err != nil {
+		return res, err
+	} else if v < linkVersion {
+		relink = true
+	}
 	// settle makes what has been written so far whole: the sessions linked to one another
 	// and the counts let go of
 	settle := func() {
-		if res.Read > 0 || res.Removed > 0 {
+		if res.Read > 0 || res.Removed > 0 || relink {
 			ix.recount()
 			if ctx.Err() == nil {
-				if err := ix.link(ctx); err != nil && firstErr == nil {
+				err := ix.link(ctx)
+				if err == nil && relink {
+					err = ix.linked(ctx)
+					relink = err != nil
+				}
+				if err != nil && firstErr == nil {
 					firstErr = err
 				}
 			}

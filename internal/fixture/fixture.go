@@ -14,6 +14,7 @@ package fixture
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,6 +162,40 @@ func write(t testing.TB, path string, rows ...any) {
 		if err := os.Chtimes(path, last, last); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// Copy copies the history's store to dir, as a backup of it would be: every file, with its
+// modification time.
+func (h History) Copy(t testing.TB, dir string) {
+	t.Helper()
+	err := filepath.WalkDir(h.Dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(h.Dir, path)
+		if err != nil {
+			return err
+		}
+		to := filepath.Join(dir, rel)
+		if d.IsDir() {
+			return os.MkdirAll(to, 0o755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(to, data, 0o644); err != nil {
+			return err
+		}
+		return os.Chtimes(to, info.ModTime(), info.ModTime())
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

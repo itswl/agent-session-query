@@ -4,9 +4,37 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"sort"
+	"strconv"
 )
+
+// linkVersion numbers the rules link follows, in the meta table under "link". An index
+// whose sessions an older asq linked — a lower number, or none — is linked again at the
+// next sync, whether or not that reads a transcript: what the rules decide was decided
+// the older way, and nothing else would have it decided again until a session changed.
+//
+// 1: a session two stores of one CLI hold is counted once.
+const linkVersion = 1
+
+// linkedBy is the linkVersion of the asq that last linked the index's sessions: 0 when the
+// index does not say.
+func linkedBy(ctx context.Context, q querier) (int, error) {
+	var v string
+	err := q.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'link'`).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	n, _ := strconv.Atoi(v)
+	return n, err
+}
+
+// linked notes that the index's sessions are linked by this asq's rules.
+func (ix *Index) linked(ctx context.Context) error {
+	_, err := ix.rw.ExecContext(ctx, `INSERT OR REPLACE INTO meta (key, value) VALUES ('link', ?)`, strconv.Itoa(linkVersion))
+	return err
+}
 
 // link resolves what no single transcript knows: which transcript a subagent ran in and
 // how deep it sits, how many ran beneath each session, and which transcripts are copies
@@ -14,7 +42,7 @@ import (
 func (ix *Index) link(ctx context.Context) error {
 	type node struct {
 		sid                         int64
-		source, id, key             string
+		source, agent, id, key      string
 		parentSession, parentAgent  string
 		firstID, lastID             string
 		parentSid, rootSid, copyOf  int64
@@ -25,7 +53,7 @@ func (ix *Index) link(ctx context.Context) error {
 		updatedAt                   int64
 	}
 	rows, err := ix.rw.QueryContext(ctx, `
-SELECT sid, source, id, key, parent_session, parent_agent, first_id, last_id,
+SELECT sid, source, agent, id, key, parent_session, parent_agent, first_id, last_id,
        parent_sid, root_sid, copy_of, depth, agents, items, updated_at
 FROM sessions`)
 	if err != nil {
@@ -34,7 +62,7 @@ FROM sessions`)
 	var nodes []*node
 	for rows.Next() {
 		n := &node{}
-		if err := rows.Scan(&n.sid, &n.source, &n.id, &n.key, &n.parentSession, &n.parentAgent, &n.firstID, &n.lastID,
+		if err := rows.Scan(&n.sid, &n.source, &n.agent, &n.id, &n.key, &n.parentSession, &n.parentAgent, &n.firstID, &n.lastID,
 			&n.wasParent, &n.wasRoot, &n.wasCopy, &n.wasDepth, &n.wasAgents, &n.items, &n.updatedAt); err != nil {
 			rows.Close()
 			return err
@@ -102,12 +130,58 @@ FROM sessions`)
 			}
 		}
 	}
-	// A copy of a copy is a copy of the original
-	resolve := func(n *node) *node {
-		bySid := map[int64]*node{}
-		for _, m := range nodes {
-			bySid[m.sid] = m
+	// A session two stores of one CLI both hold — the CLI's own and a backup of it beside
+	// it, two copies of another machine's, the CLI's own and what asq keeps of it (see
+	// internal/keep) — is one session, counted once: as the CLI's own store holds it while
+	// it does, and once the CLI deleted it, as the store that holds the most of it. The
+	// others are copies of that one. A subagent's transcript is the same one when it ran
+	// in the same session and has the same id.
+	//
+	// counts says whether a is the one of two that counts: the one in the CLI's own store,
+	// then the one that holds more of the session, then the one written later, then the
+	// one read first.
+	counts := func(a, b *node) bool {
+		switch aOwn, bOwn := a.source == a.agent, b.source == b.agent; {
+		case aOwn != bOwn:
+			return aOwn
+		case a.items != b.items:
+			return a.items > b.items
+		case a.updatedAt != b.updatedAt:
+			return a.updatedAt > b.updatedAt
 		}
+		return a.sid < b.sid
+	}
+	held := map[string]*node{} // agent \x00 id → the session a person started, as the store that counts it holds it
+	twins := map[string][]*node{}
+	for _, n := range nodes {
+		if n.id != "" {
+			k := n.agent + "\x00" + n.parentSession + "\x00" + n.id
+			twins[k] = append(twins[k], n)
+		}
+	}
+	for _, group := range twins {
+		best := group[0]
+		for _, n := range group[1:] {
+			if counts(n, best) {
+				best = n
+			}
+		}
+		for _, n := range group {
+			if n.source != best.source {
+				n.copyOf = best.sid
+			}
+		}
+		if best.parentSession == "" {
+			held[best.agent+"\x00"+best.id] = best
+		}
+	}
+
+	// A copy of a copy is a copy of the original
+	bySid := map[int64]*node{}
+	for _, n := range nodes {
+		bySid[n.sid] = n
+	}
+	resolve := func(n *node) *node {
 		for hops := 0; n.copyOf != 0 && hops < len(nodes); hops++ {
 			next, ok := bySid[n.copyOf]
 			if !ok {
@@ -131,6 +205,11 @@ FROM sessions`)
 			continue
 		}
 		root := sessions[n.source+"\x00"+n.parentSession]
+		if root == nil {
+			// The session it ran in, in another store of the CLI: what is kept of a session
+			// whose CLI deleted its transcript and left its subagents'
+			root = held[n.agent+"\x00"+n.parentSession]
+		}
 		if root != nil && root.copyOf != 0 {
 			root = resolve(root) // the agents of a copy stay with the session that survives
 		}
@@ -153,13 +232,9 @@ FROM sessions`)
 			at = up
 		}
 	}
-	bySid := map[int64]*node{}
 	for _, n := range nodes {
-		bySid[n.sid] = n
-	}
-	for _, n := range nodes {
-		if n.parentSid == 0 {
-			continue
+		if n.parentSid == 0 || n.copyOf != 0 {
+			continue // a copy of an agent's transcript is counted as the transcript it is a copy of
 		}
 		if p := bySid[n.parentSid]; p != nil {
 			p.agents++

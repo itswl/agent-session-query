@@ -873,10 +873,12 @@ func resultText(raw json.RawMessage, unread func(kind string)) (string, []transc
 			switch kind := kit.Str(b["type"]); kind {
 			case "text":
 			case "image", "document":
-				var p part
-				if raw, err := json.Marshal(b); err == nil && json.Unmarshal(raw, &p) == nil {
-					files = append(files, fileOf(kind, p.Source))
+				var src *fileSource
+				if m, ok := b["source"].(map[string]any); ok {
+					src = &fileSource{Type: kit.Str(m["type"]), MediaType: kit.Str(m["media_type"]), Data: kit.Str(m["data"]),
+						URL: kit.Str(m["url"]), FileID: kit.Str(m["file_id"])}
 				}
+				files = append(files, fileOf(kind, src))
 			case "tool_reference":
 				// A tool a search loaded, named for the model: the call says what was sought
 			case "":

@@ -6,15 +6,19 @@ import (
 	"time"
 )
 
-// What git commit prints for the commit it made names it, however the line begins; a
-// line of git log, or a commit of another id, does not.
+// What git commit prints for the commit it made names it, however the line begins, and
+// as Gemini CLI hands it on, after "Output: "; a line of git log, or a commit of another
+// id, does not.
 func TestMade(t *testing.T) {
 	const id = "3f9c2ab4e5f60718293a4b5c6d7e8f9012345678"
 	for out, want := range map[string]bool{
-		"[main 3f9c2ab] Trim titles\n 1 file changed":                   true,
-		"[main (root-commit) 3f9c2ab4e5f6] First":                       true,
-		"[detached HEAD 3f9c2ab] Try it":                                true,
-		"pre-commit hook passed\n[feature/x 3f9c2ab] Trim titles":       true,
+		"[main 3f9c2ab] Trim titles\n 1 file changed":             true,
+		"[main (root-commit) 3f9c2ab4e5f6] First":                 true,
+		"[detached HEAD 3f9c2ab] Try it":                          true,
+		"pre-commit hook passed\n[feature/x 3f9c2ab] Trim titles": true,
+		"<untrusted_context>\nOutput: [main 3f9c2ab] Trim titles\n 1 file changed\nProcess Group PGID: 7\n</untrusted_context>": true,
+		"Command: git commit -am x\nDirectory: (root)\nOutput: [main 3f9c2ab] Trim titles\nError: (none)":                       true,
+		"Output: see [main 3f9c2ab] in the log":                         false,
 		"[main 3f9c2ac] Another commit":                                 false,
 		"commit 3f9c2ab4e5f60718293a4b5c6d7e8f9012345678\nAuthor: test": false,
 		"3f9c2ab Trim titles":                                           false,

@@ -39,8 +39,9 @@ type Why struct {
 
 // commitLine is the line git commit — and git merge, cherry-pick, revert, which commit
 // too — prints for the commit it made: "[main 3f9c2ab] Subject", with "(root-commit)" or a
-// detached HEAD's words before the id.
-var commitLine = regexp.MustCompile(`(?m)^\[[^\]\n]* ([0-9a-f]{7,64})\] `)
+// detached HEAD's words before the id. Gemini CLI's shell tool hands on what a command
+// printed after "Output: ", so its first line opens with that.
+var commitLine = regexp.MustCompile(`(?m)^(?:Output: )?\[[^\]\n]* ([0-9a-f]{7,64})\] `)
 
 // made reports whether a command's output is git's word that it made commit.
 func made(output, commit string) bool {

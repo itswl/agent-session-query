@@ -255,6 +255,7 @@ docker run -d --name asq -p 127.0.0.1:7717:7717 \
   -v asq-index:/data \
   -v ~/.claude/projects:/root/.claude/projects:ro \
   -v ~/.codex/sessions:/root/.codex/sessions:ro \
+  --mount type=bind,src="$HOME/.codex/session_index.jsonl",dst=/root/.codex/session_index.jsonl,readonly \
   ghcr.io/itswl/agent-session-query:latest
 ```
 
@@ -262,7 +263,11 @@ docker run -d --name asq -p 127.0.0.1:7717:7717 \
   that without one: the container exits at once with the reason in `docker logs`.
 - **Mount stores read-only, and only the sessions.** Inside, the home directory is `/root`, so
   each store mounts where its CLI keeps it under the home directory. Mount `~/.codex/sessions`,
-  not `~/.codex`: beside the sessions sit the CLI's credentials. Hermes is the exception — its
+  not `~/.codex`: beside the sessions sit the CLI's credentials. Codex keeps the names threads
+  were given beside them too, in `session_index.jsonl`, which comes as a file of its own; Docker
+  makes a directory of a file that is missing — one Codex could then not write — so it is
+  mounted so that a missing one stops the container instead: `touch` it first if Codex has not
+  named a thread yet. Hermes is the exception — its
   `state.db` needs its `-wal` and `-shm` beside it, so the whole of `~/.hermes` comes along.
 - **`/data` is the index, the export ledger and the secret sign-ins are signed with.** A volume
   there means a restart reads only what changed and nobody has to sign in again; without one the
@@ -277,7 +282,7 @@ docker run -d --name asq -p 127.0.0.1:7717:7717 \
   collector), nothing else. Its health check is the binary asking itself: `asq ping`.
 
 Stores outside the default home — another machine's, a fleet's bind mount — are mounted anywhere
-and named with `ASQ_PATH`:
+and named with `ASQ_PATH` ([how to copy another machine's](sources.md#another-machines-sessions)):
 
 ```yaml
     environment:

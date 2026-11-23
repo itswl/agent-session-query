@@ -40,6 +40,16 @@ services:
       # CLI's credentials, which this has no business being able to read.
       - ~/.codex/sessions:/root/.codex/sessions:ro
       - ~/.codex/archived_sessions:/root/.codex/archived_sessions:ro
+      # The names Codex's threads were given: a file, which Codex writes the first time a
+      # thread is named. Docker would make a missing one a directory, root's, that Codex
+      # could then not write, so this stops the container instead: `touch` it first if
+      # it is not there yet.
+      - type: bind
+        source: ~/.codex/session_index.jsonl
+        target: /root/.codex/session_index.jsonl
+        read_only: true
+        bind:
+          create_host_path: false
       - ~/.gemini/tmp:/root/.gemini/tmp:ro
       # Antigravity: the agy CLI and the IDE each keep a brain of their own
       - ~/.gemini/antigravity-cli:/root/.gemini/antigravity-cli:ro

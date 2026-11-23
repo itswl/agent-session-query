@@ -61,6 +61,31 @@ under `~/.pi/agent/sessions`; `pi --session-dir <dir>`, which is how a host embe
 its files flat in the directory it was given. A hosted directory is added as a store of its own:
 `--path pi@host=/path/to/that/dir`.
 
+### Another machine's sessions
+
+Copy its stores here, each as its CLI lays it out, and add each copy by name. `rsync -a`
+without `--delete` copies what changed since it last ran and keeps what the other machine has
+deleted since:
+
+```sh
+c=$HOME/asq-copies/box2
+rsync -a box2:.claude/projects/ "$c/claude/"
+rsync -a box2:.codex/sessions "$c/codex/"
+rsync -a box2:.codex/session_index.jsonl "$c/codex/"      # the names Codex's threads were given
+export ASQ_PATH="claude@box2=$c/claude,codex@box2=$c/codex/sessions"
+```
+
+- Copy the sessions and nothing beside them: next to them sit the CLI's credentials
+  (`~/.codex/auth.json`, `~/.gemini/oauth_creds.json`). Another store is its directory as the
+  table above names it.
+- Codex keeps a thread's name in `session_index.jsonl` beside `sessions`, and it is read from
+  there when the copy is named by its `sessions` directory, as above; `archived_sessions` beside
+  it is read too.
+- Run the copy again — by hand, from cron — to bring it up to date: what changed is read again,
+  and only that.
+- A session from there is resumed there. `asq resume` names the command for that machine, and
+  gives none for this one.
+
 An `agy` started with a private `--gemini_dir` writes the same `antigravity-cli/brain` shape
 inside that directory: `--path antigravity=/path/to/the/gemini_dir`.
 

@@ -257,7 +257,10 @@ func TestFailuresByCommandAndStillOpen(t *testing.T) {
 	ctx := context.Background()
 	a := commands{[][]ran{{{"go test ./a", true}, {"make lint", true}}, {{"go test ./a -run X", true}}}}
 	b := commands{[][]ran{{{"go test ./b", true}}, {{"go test ./b", false}}, {{"python3 -c 'raise SystemExit(1)'", true}}}} // the latest
-	stores := []Store{{Name: "claude", Spec: sources.Spec{Name: "claude"}, Source: a}, {Name: "codex", Spec: sources.Spec{Name: "codex"}, Source: b}}
+	// What failed most, and passed later each time: after every command still open
+	c := commands{[][]ran{{{"cargo build", true}, {"cargo build --release", true}, {"cargo build", true}, {"cargo build -q", true}, {"cargo build", false}}}}
+	stores := []Store{{Name: "claude", Spec: sources.Spec{Name: "claude"}, Source: a}, {Name: "codex", Spec: sources.Spec{Name: "codex"}, Source: b},
+		{Name: "gemini", Spec: sources.Spec{Name: "gemini"}, Source: c}}
 	if _, err := ix.Sync(ctx, stores, SyncOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -274,9 +277,10 @@ func TestFailuresByCommandAndStillOpen(t *testing.T) {
 		"go test||3|2|2|go test ./a -run X",            // still open twice, in one of its two sessions; the latest
 		"|Bash|1|1|1|python3 -c 'raise SystemExit(1)'", // code given inline: no command, so the tool's
 		"make lint||1|1|1|make lint",
+		"cargo build||4|0|1|cargo build -q",
 	}
-	if strings.Join(got, "\n") != strings.Join(want, "\n") || groups.Total != 3 || groups.Open != 4 || groups.PassedLater != 1 {
-		t.Errorf("by command: total %d, open %d, passed later %d:\n%s\nwant 3, 4, 1:\n%s", groups.Total, groups.Open, groups.PassedLater, strings.Join(got, "\n"), strings.Join(want, "\n"))
+	if strings.Join(got, "\n") != strings.Join(want, "\n") || groups.Total != 4 || groups.Open != 4 || groups.PassedLater != 5 {
+		t.Errorf("by command: total %d, open %d, passed later %d:\n%s\nwant 4, 4, 5:\n%s", groups.Total, groups.Open, groups.PassedLater, strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 
 	// The open ones alone: go test's two in the one session, counted with the one left out
@@ -285,16 +289,16 @@ func TestFailuresByCommandAndStillOpen(t *testing.T) {
 		t.Errorf("by command, open, go test = %+v, %v", groups, err)
 	}
 	list, err := ix.Failures(ctx, Filter{}, Window{}, FailureQuery{Open: true}, Page{})
-	if err != nil || list.Total != 4 || len(list.Failures) != 4 || list.Open != 4 || list.PassedLater != 1 {
-		t.Errorf("open = %+v, %v; want the 4 open of 5", list, err)
+	if err != nil || list.Total != 4 || len(list.Failures) != 4 || list.Open != 4 || list.PassedLater != 5 {
+		t.Errorf("open = %+v, %v; want the 4 open of 9", list, err)
 	}
 	for _, f := range list.Failures {
 		if f.Later != nil {
 			t.Errorf("an open-only list holds %q, which passed later", f.Command)
 		}
 	}
-	if all, err := ix.Failures(ctx, Filter{}, Window{}, FailureQuery{}, Page{}); err != nil || all.Total != 5 {
-		t.Errorf("every failure = %d, %v; want 5", all.Total, err)
+	if all, err := ix.Failures(ctx, Filter{}, Window{}, FailureQuery{}, Page{}); err != nil || all.Total != 9 {
+		t.Errorf("every failure = %d, %v; want 9", all.Total, err)
 	}
 	// Nothing open in a window, but before it: said, the open filter kept
 	none, err := ix.Failures(ctx, Filter{}, Window{Since: time.Unix(1790000000, 0).Add(time.Hour)}, FailureQuery{Open: true}, Page{})

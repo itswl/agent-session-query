@@ -24,8 +24,8 @@ does not tell apart; or *your turn*, the agent done and waiting for you. Pointin
 since when. Working is said for ten minutes after the transcript was last written — an agent at
 work writes as it goes — and the other two for a day. A session none of this is said of is
 marked *live* when it was written to in the last two minutes. *Agents* at the top of the filters
-narrows the list to the sessions *Working*, or to those that *Needs you*: waiting on a call, or
-your turn.
+narrows the list to *Working*, or to *Needs you*: the sessions waiting on a call, and those
+where it is your turn.
 
 What changed since you last looked is marked too: a session begun since is *new*, one begun
 before and written to since is *updated*, and a line — *Changed since your last visit · Today

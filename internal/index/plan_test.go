@@ -216,3 +216,37 @@ func (many) Read(_ context.Context, ref sources.Ref, w *transcript.Writer) error
 	w.Add(transcript.Message{Role: transcript.User, At: time.Now(), Blocks: []transcript.Block{{Type: transcript.Text, Text: "hello"}}})
 	return nil
 }
+
+// turns_at holds ended_at, for usage over all time: an index a build before that made it
+// without the column is given it when it is opened, as CREATE INDEX IF NOT EXISTS would not.
+func TestTurnsAtIsMadeAnewWithoutEndedAt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	ix, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ix.rw.Exec(`DROP INDEX turns_at; CREATE INDEX turns_at ON turns (sid, idx, started_at, last_at)`); err != nil {
+		t.Fatal(err)
+	}
+	ix.Close()
+	if ix, err = Open(path); err != nil {
+		t.Fatal(err)
+	}
+	defer ix.Close()
+	var cols []string
+	rows, err := ix.rw.Query(`SELECT name FROM pragma_index_info('turns_at') ORDER BY seqno`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			t.Fatal(err)
+		}
+		cols = append(cols, c)
+	}
+	if strings.Join(cols, " ") != "sid idx started_at last_at ended_at" {
+		t.Errorf("turns_at, opened = %v", cols)
+	}
+}

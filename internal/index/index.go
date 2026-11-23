@@ -308,6 +308,7 @@ func prepare(rw *sql.DB) error {
 		func(db *sql.DB) error { _, err := db.Exec(readsTrigger); return err },
 		func(db *sql.DB) error { _, err := db.Exec(wordsStale); return err },
 		func(db *sql.DB) error { _, err := db.Exec(failuresJudged); return err },
+		turnsAt,
 		newWords,
 	} {
 		if err := step(rw); err != nil {
@@ -315,6 +316,18 @@ func prepare(rw *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+// turnsAt makes turns_at anew where a build before this one made it without ended_at,
+// which usage reads of every turn when no window bounds it (see usageTurns): CREATE INDEX
+// IF NOT EXISTS keeps an index of the name as it was made.
+func turnsAt(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_index_info('turns_at') WHERE name = 'ended_at'`).Scan(&n); err != nil || n > 0 {
+		return err
+	}
+	_, err := db.Exec(`DROP INDEX IF EXISTS turns_at; CREATE INDEX IF NOT EXISTS turns_at ON turns (sid, idx, started_at, last_at, ended_at)`)
+	return err
 }
 
 // Path is the index file.

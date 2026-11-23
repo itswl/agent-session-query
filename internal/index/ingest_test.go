@@ -518,7 +518,8 @@ func TestATurnMarkedOverIsAChange(t *testing.T) {
 
 // claudeRows is a Claude Code transcript of a few turns, as the CLI writes it: long
 // outputs, a failure, an edit, a prompt queued mid-turn, a skill set off by a slash
-// command, the title given and given again, and the cost the session closes with.
+// command, the title given and given again, another model taking over, the rows Code Mode
+// and a plugin add, and the cost the session closes with.
 func claudeRows() []any {
 	type M = map[string]any
 	ts := func(sec int) string { return time.Date(2026, 11, 1, 9, 0, sec, 0, time.UTC).Format(time.RFC3339Nano) }
@@ -562,6 +563,8 @@ func claudeRows() []any {
 		lasted("d1", 8),
 		M{"type": "ai-title", "aiTitle": "Run the migration", "sessionId": "c1aa0000-0000-4000-8000-000000000001"},
 		ask("u3", 20, "fix the schema and run it again"),
+		row("system", "f1", 21, M{"subtype": "model_refusal_fallback", "content": "Opus's safeguards flagged this request. Switched to Sonnet.",
+			"level": "warning", "originalModel": "claude-opus-5-5", "fallbackModel": "claude-sonnet-5"}),
 		answer("a3", 22, "msg_3", "tool_use", M{"type": "tool_use", "id": "t2", "name": "Edit",
 			"input": M{"file_path": "/work/grown/db/schema.sql", "old_string": "INT", "new_string": "BIGINT"}}),
 		result("u4", 23, "t2", "The file has been updated.", false),
@@ -575,7 +578,11 @@ func claudeRows() []any {
 		answer("a6", 45, "msg_6", "end_turn", M{"type": "text", "text": "The migration looks right."}),
 		M{"type": "custom-title", "customTitle": "Schema migration and review", "sessionId": "c1aa0000-0000-4000-8000-000000000001"},
 		ask("u8", 60, "deploy it"),
+		M{"type": "api-request-resumed", "sessionId": "c1aa0000-0000-4000-8000-000000000001"},
+		row("attachment", "p1", 60, M{"attachment": M{"type": "plugin_note", "plugin": "notes", "content": []string{"deploys go through staging"}}}),
+		row("system", "f2", 61, M{"subtype": "model_fallback", "level": "warning", "originalModel": "claude-opus-5-5", "fallbackModel": "claude-sonnet-5"}),
 		answer("a7", 62, "msg_7", "tool_use", bash("t4", "make deploy")),
+		M{"type": "host-row", "sessionId": "c1aa0000-0000-4000-8000-000000000001", "ranByToolUseId": "t4", "rowUuid": "a7", "block": M{"type": "text", "text": "shown"}},
 		M{"type": "cost-state", "totalCostUSD": 0.37},
 	}
 }

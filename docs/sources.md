@@ -126,9 +126,10 @@ snapshot written twice is one call; one that only repeats the total after a comp
 and the compaction's own request, which no snapshot includes, is the one thing this path cannot
 see. A forked thread's copied turns are inherited. A thread that is a subagent hangs beneath
 its parent. A thread's title is the name it was given (`/rename`), which Codex keeps in
-`session_index.jsonl` beside `sessions`; a thread with none is titled by its first ask. The files
-a patch names, relative to the turn's directory, are named by their whole path, as the other
-CLIs name them, so a file asked for by its whole path finds Codex's edits too. A tool
+`session_index.jsonl` beside `sessions`; a thread with none is titled by its first ask. A file a
+call names relative to the turn's directory — as a patch always names them — is named by its
+whole path, as the other CLIs name them, so a file asked for by its whole path finds Codex's
+edits too. A tool
 search is a call to `tool_search`, its result the tools it loaded; an image the API generated is
 a call to `image_generation`, its prompt the input; a compaction the API made inside a response
 is a compaction event. A rollback (`thread_rolled_back`) took the thread's last turns out of what

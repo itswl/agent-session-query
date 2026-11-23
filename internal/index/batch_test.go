@@ -110,7 +110,7 @@ func TestASessionThatCannotBeWrittenLeavesTheOthersWritten(t *testing.T) {
 	refs, _ := st.Source.Scan(ctx)
 	var rds []*reading
 	for _, ref := range refs {
-		rds = append(rds, ix.read(ctx, st, ref))
+		rds = append(rds, ix.read(ctx, st, ref, 0))
 	}
 	// Two turns of one number cannot both be stored
 	rds[1].turns = append(rds[1].turns, rds[1].turns[0])

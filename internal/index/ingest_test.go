@@ -167,7 +167,7 @@ func TestAGrownSessionMakesOnlyWhatChanged(t *testing.T) {
 	if rd.lastAsk != "step 9 of the migration" || rd.answer != "step 9 is done" {
 		t.Errorf("the session's last ask %q and answer %q", rd.lastAsk, rd.answer)
 	}
-	if _, _, err := ix.write(context.Background(), rd); err != nil {
+	if err := ix.writeAll(context.Background(), []*reading{rd})[0].err; err != nil {
 		t.Fatal(err)
 	}
 
@@ -288,7 +288,7 @@ func TestRowsMadeBeforeSrcAreNamed(t *testing.T) {
 			t.Fatalf("turn %d was kept, though nothing said what its rows were made from", row.idx)
 		}
 	}
-	if _, _, err := ix.write(context.Background(), rd); err != nil {
+	if err := ix.writeAll(context.Background(), []*reading{rd})[0].err; err != nil {
 		t.Fatal(err)
 	}
 	var unnamed int
@@ -324,7 +324,7 @@ func TestATurnChangedUnderAReadIsReadAgain(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, _, err := ix.write(context.Background(), rd); err != nil {
+	if err := ix.writeAll(context.Background(), []*reading{rd})[0].err; err != nil {
 		t.Fatal(err)
 	}
 	var stamp string

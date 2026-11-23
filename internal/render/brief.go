@@ -377,6 +377,7 @@ func (p *BriefPlan) write(o BriefOptions, d detail) string {
 			t := p.byIndex[i]
 			sum.Tools += t.Tools
 			sum.Failures += t.Failures
+			sum.PassedLater += t.PassedLater
 			sum.Usage.Add(t.Usage)
 		}
 		first, last := p.byIndex[p.Covered[0]], p.byIndex[p.Covered[len(p.Covered)-1]]
@@ -402,7 +403,7 @@ func (p *BriefPlan) write(o BriefOptions, d detail) string {
 		if len(p.read) > 0 {
 			fmt.Fprintf(&b, "- Read: %s\n", joinFiles(s.Cwd, p.read, d.files))
 		}
-		fmt.Fprintf(&b, "- Tools: %d calls · failed %d\n", sum.Tools, sum.Failures)
+		fmt.Fprintf(&b, "- Tools: %d calls · failed %d%s\n", sum.Tools, sum.Failures, laterWords(sum.Failures, sum.PassedLater))
 		if line := TokenLine(sum.Usage); line != "" {
 			fmt.Fprintf(&b, "- Tokens: %s\n", line)
 		}
@@ -776,7 +777,7 @@ func Pack(entries []PackEntry, matching int, withTurns bool) string {
 		fmt.Fprintf(&b, "- %s · %s · %s\n", s.UpdatedAt.Local().Format("2006-01-02 15:04"), s.Source, orDash(s.Cwd))
 		fmt.Fprintf(&b, "- ref: %s · %s", s.Ref, plural(s.Stats.Turns, "turn"))
 		if s.Stats.Failures > 0 {
-			fmt.Fprintf(&b, " · %d failed", s.Stats.Failures)
+			fmt.Fprintf(&b, " · %s", failedWords(s.Stats.Failures, s.Stats.PassedLater))
 		}
 		b.WriteString("\n")
 		if withTurns && len(e.Turns) > 0 {

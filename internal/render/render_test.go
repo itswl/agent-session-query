@@ -500,7 +500,8 @@ func TestASearchSaysWhatWouldShowWhatItLeftOut(t *testing.T) {
 }
 
 // A failure the same command passed later is a step of the work: the list, the outline and a
-// search's hit say it, muted, and keep the red ✗ for a failure that is still open.
+// search's hit say it, muted, and keep the red ✗ for a failure that is still open; a pack, an
+// export and a brief of a stretch count it the same way.
 func TestAFailureThatPassedLaterIsNotAnOpenOne(t *testing.T) {
 	s, turns := hostile()
 	colour := Style{Color: true}
@@ -536,6 +537,16 @@ func TestAFailureThatPassedLaterIsNotAnOpenOne(t *testing.T) {
 		}
 		if !tc.open && !strings.Contains(painted.String(), dim+tc.words) {
 			t.Errorf("%d failed, %d passed later: not muted:\n%q", tc.failed, tc.passed, painted.String())
+		}
+		if pack := Pack([]PackEntry{{Session: *s}}, 1, false); !strings.Contains(pack, " · "+tc.words+"\n") {
+			t.Errorf("%d failed, %d passed later: the pack says\n%s", tc.failed, tc.passed, pack)
+		}
+		if md, err := Export(s, turns, FormatMarkdown); err != nil || !strings.Contains(md, " · "+tc.words+" · ") {
+			t.Errorf("%d failed, %d passed later: the export says %v\n%s", tc.failed, tc.passed, err, md)
+		}
+		want := "- Tools: 1 calls · failed " + strconv.Itoa(tc.failed) + strings.TrimPrefix(tc.words, strconv.Itoa(tc.failed)+" failed") + "\n"
+		if brief, err := Brief(s, turns, BriefOptions{All: true}); err != nil || !strings.Contains(brief, want) {
+			t.Errorf("%d failed, %d passed later: no %q in the brief of the whole session %v\n%s", tc.failed, tc.passed, want, err, brief)
 		}
 	}
 }

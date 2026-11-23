@@ -103,7 +103,7 @@ func header(s *index.Session, turns []model.Turn) []string {
 	}
 	sums := []string{plural(s.Stats.Turns, "turn"), plural(s.Stats.Tools, "tool call")}
 	if s.Stats.Failures > 0 {
-		sums = append(sums, strconv.Itoa(s.Stats.Failures)+" failed")
+		sums = append(sums, failedWords(s.Stats.Failures, s.Stats.PassedLater))
 	}
 	if t := TokenLine(s.Stats.Usage); t != "" {
 		sums = append(sums, t)

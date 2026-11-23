@@ -517,7 +517,7 @@ export function mount(main, route, ctx) {
             h('span', { class: 't-num' }, '#' + hit.turn),
             h('span', { class: 'find-ask' }, hit.ask ? highlight(hit.ask, words) : h('span', { class: 'dim' }, 'Before the first ask')),
             hit.lacks?.length > 0 && h('span', { class: 'lacks find-failed' }, 'lacks ' + hit.lacks.join(' ')),
-            hit.failures > 0 && h('span', { class: 'bad find-failed' }, f.failed(hit))),
+            hit.failures > 0 && h('span', { class: ['find-failed', f.open(hit) > 0 ? 'bad' : 'dim'], title: f.passedTitle }, f.failed(hit))),
           matches.length > 0 && h('ul', { class: 'matches' }, matches.map((m) =>
             h('li', null, h('a', { href: sessionHref(ref, `${hit.turn}.${m.seq}`) },
               h('span', { class: 'kind' }, kindOf(m)), h('span', { class: 'snippet' }, highlight(m.snippet, words)))))));

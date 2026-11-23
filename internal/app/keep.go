@@ -144,6 +144,16 @@ func (a *App) KeepIn(dir string) error {
 		}
 	}
 	was, next := st.Folder(state), keep.Settings{Dir: dir}.Folder(state)
+	for _, store := range a.Set.All() {
+		if keep.IsKept(store.Source) {
+			continue
+		}
+		// Copies are never written into a store: a CLI's own would be written in, and any
+		// store would list them as sessions of its own
+		if rel, err := filepath.Rel(store.Source.Location(), next); err == nil && filepath.IsLocal(rel) {
+			return fmt.Errorf("%s is in the store %s, %s: asq writes nothing in a store; name a folder outside it", next, store.Name, store.Source.Location())
+		}
+	}
 	if filepath.Clean(was) != filepath.Clean(next) {
 		if files, _ := keep.Size(was); files > 0 {
 			return fmt.Errorf("the copies kept so far are in %s: move what is in it to %s first, and then name it again", was, next)

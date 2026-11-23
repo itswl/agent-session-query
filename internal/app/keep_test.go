@@ -248,10 +248,18 @@ func TestKeepOneSession(t *testing.T) {
 }
 
 // The folder the copies go in can be named, but not while the one before holds copies:
-// they would no longer be read.
+// they would no longer be read. Nor can a folder in a store: asq writes nothing there.
 func TestKeepInAFolderOfOnesOwn(t *testing.T) {
-	a, _, kept := keeping(t)
+	a, h, kept := keeping(t)
 	ctx := t.Context()
+	for _, dir := range []string{h.Dir, filepath.Join(h.Dir, "-work-alpha", "kept")} {
+		if err := a.KeepIn(dir); err == nil || !strings.Contains(err.Error(), "asq writes nothing in a store") {
+			t.Errorf("keep in %s = %v; want it refused", dir, err)
+		}
+	}
+	if st, _ := keep.Load(filepath.Dir(filepath.Dir(kept))); st.Dir != "" {
+		t.Errorf("a refused folder was written down: %+v", st)
+	}
 	elsewhere := filepath.Join(t.TempDir(), "asq-kept")
 	if err := a.KeepIn(elsewhere); err != nil {
 		t.Fatal(err)

@@ -58,7 +58,7 @@ func adds(t *testing.T, a *app.App) what {
 	for _, r := range rows {
 		w.tokens += r.Total
 	}
-	fails, err := a.Index.Failures(ctx, f, index.Window{}, "", "", index.Page{})
+	fails, err := a.Index.Failures(ctx, f, index.Window{}, index.FailureQuery{}, index.Page{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -106,8 +106,8 @@ asq ls         # the first run indexes your history: about a minute per gigabyte
 
 Run the installer again. It puts the new release where the `asq` on your PATH already is, over
 it — with sudo, if that directory takes it: what runs is then the new one, and macOS keeps what
-it allowed the old. With Go it is the
-same `go install …@latest`; a container is pulled and started again ([Deploying](docs/deploy.md#upgrading)).
+it allowed the old. With Go it is the same `go install …@latest`; a container is pulled and
+started again ([Deploying](docs/deploy.md#upgrading)).
 
 An `asq serve` kept running goes on with the old one until it is restarted. The page says so,
 and so does `asq doctor`, which asks a server on this machine which `asq` it runs:

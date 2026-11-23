@@ -305,10 +305,10 @@ launchctl kickstart -k "gui/$(id -u)/io.github.itswl.asq"     # macOS
 ```
 
 On Windows a running `asq.exe` cannot be replaced: `schtasks /end /tn asq`, the installer, then
-`schtasks /run /tn asq`. A container built from this checkout is `git pull` and
-`docker compose up -d --build`; one from the published image is `docker pull` of it, then
-`docker rm -f asq` and the same `docker run` as before. The volume at `/data` keeps the index
-and the sign-ins either way.
+`schtasks /run /tn asq`. A container built from this checkout is `git pull`, then
+`docker compose up -d --build` with the same `ASQ_TOKEN`; one from the published image is
+`docker pull` of it, then `docker rm -f asq` and the same `docker run` as before. The volume at
+`/data` keeps the index and the sign-ins either way.
 
 Until it is restarted, a server whose binary was replaced says so: once in its log, on the
 page, and in `/api/health` (`replaced`, beside the `executable` it was started from).

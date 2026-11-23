@@ -619,9 +619,11 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		case "inter_agent_communication":
 			// A message between agents written as a row of its own, rather than as the
 			// response item agent_message: Codex reads it back as that item, its content a
-			// string (codex-rs core/src/session/rollout_reconstruction.rs), and so is it here
+			// string (codex-rs core/src/session/rollout_reconstruction.rs), and so is it here.
+			// Content in the item's own shape, a list of parts, is read as the item's is, and
+			// a part of a kind never heard of is counted, rather than the message lost unsaid
 			flush(nil)
-			agentMessage(p.ID, p.Author, p.Recipient, contentString(p.Content), at, inherited)
+			agentMessage(p.ID, p.Author, p.Recipient, messageText(p.Content, w.Unread), at, inherited)
 			return true
 		case "realtime_item":
 			// What a realtime conversation needs to be shown again, which the model is never

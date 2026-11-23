@@ -483,7 +483,8 @@ func TestSubagentThread(t *testing.T) {
 
 // A message between agents can be a row of its own, inter_agent_communication, whose
 // content is a string: Codex reads it back as the agent_message it would be, and so does
-// the adapter. One that holds only encrypted content has no words to read.
+// the adapter — content in the item's list of parts too. One that holds only encrypted
+// content has no words to read.
 func TestInterAgentCommunicationRows(t *testing.T) {
 	root := t.TempDir()
 	day := filepath.Join(root, "2026", "11", "02")
@@ -492,6 +493,7 @@ func TestInterAgentCommunicationRows(t *testing.T) {
 		`{"timestamp":"2026-11-02T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"review this PR"}]}}`,
 		`{"timestamp":"2026-11-02T10:05:00Z","type":"inter_agent_communication","payload":{"author":"/root/pr_review","recipient":"/root","other_recipients":[],"content":"two findings","trigger_turn":false}}`,
 		`{"timestamp":"2026-11-02T10:05:01Z","type":"inter_agent_communication","payload":{"author":"/root/pr_review","recipient":"/root","other_recipients":[],"content":"","encrypted_content":"gAAA","trigger_turn":false}}`,
+		`{"timestamp":"2026-11-02T10:05:02Z","type":"inter_agent_communication","payload":{"author":"/root/pr_review","recipient":"/root","content":[{"type":"input_text","text":"one more: a test is missing"}]}}`,
 	)
 	sourcetest.Write(t, filepath.Join(day, "rollout-2026-11-02T10-00-02-sub-2.jsonl"),
 		`{"type":"session_meta","payload":{"session_id":"root-2","id":"sub-2","parent_thread_id":"root-2","thread_source":"subagent","agent_path":"/root/pr_review","cwd":"/w"}}`,
@@ -506,7 +508,8 @@ func TestInterAgentCommunicationRows(t *testing.T) {
 		t.Errorf("subagent turns = %+v", sub.Turns)
 	}
 	turn := main.Turn(t, 1)
-	if got := sourcetest.Kinds(turn); got != "prompt context" || turn.Items[1].Text != "[/root/pr_review → /root]\ntwo findings" {
+	if got := sourcetest.Kinds(turn); got != "prompt context context" || turn.Items[1].Text != "[/root/pr_review → /root]\ntwo findings" ||
+		turn.Items[2].Text != "[/root/pr_review → /root]\none more: a test is missing" {
 		t.Errorf("main turn = %s %+v", got, turn.Items)
 	}
 }

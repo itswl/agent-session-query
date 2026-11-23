@@ -101,6 +101,12 @@ and tail; *Show all* fetches the rest. Reasoning and injected context are folded
 an interruption is a labelled divider; rows a forked agent copied from its parent are grouped
 and dimmed. A call that started a subagent links to it.
 
+A picture pasted into the ask, or returned by a tool — a screenshot — is shown beneath it once
+the turn is opened, read from the transcript then, and opens whole in a tab of its own; the row
+of a call that returned one says *1 picture*. The page shows PNG, JPEG, GIF and WebP the
+transcript holds, up to 8 MB. Any other file — a PDF, an SVG, a picture the transcript only
+names — is its mark in the text alone: `[image · svg · 2 KB]`.
+
 How a call ended is said by its mark and, when it is anything but fine, in words: *error*,
 *interrupted*, *no result yet* — and **outcome not recorded** when the CLI wrote down no outcome
 at all, which is not the same as success and is not shown as one.
@@ -244,8 +250,9 @@ filter taken off again show it at once from its top, and its first page then bec
 server says now: what was kept below it may no longer match — the last 24 hours have moved on —
 or be gone. A search comes back whole on Back too, but is asked for afresh any other
 way, since what it found is ranked rather than dated and cannot be brought up to date row by row.
-Pointing at a view's link asks for it before the click lands. Nothing of this outlives the page,
-and all of it is dropped when the sign-in is lost. What the browser keeps longer is the theme;
+Pointing at a view's link asks for it before the click lands. A picture drawn is drawn again from
+what the page has, so a turn refreshed as it is written does not fetch its pictures again. Nothing
+of this outlives the page, and all of it is dropped when the sign-in is lost. What the browser keeps longer is the theme;
 for the marks of what changed since you last looked, times; and for the tab's life, which notices
 were dismissed in it, as a hash of what they said: no answer, no text, no id.
 
@@ -277,6 +284,8 @@ By hand, and that is a decision rather than an economy.
 - **A policy that enforces it.** The page is served with a Content-Security-Policy that allows
   scripts and styles from its own files only — no inline script, no inline style, no other
   origin, no framing. If the rule above were ever broken, the injected text still could not run.
+  Pictures come from its own origin too: a transcript's are sent by the API, as the picture
+  their bytes are and nothing else.
 - **Replies that are not pages.** What the API sends is JSON with no `<`, `>` or `&` in it —
   they travel as `\u003c`-style escapes — so a reply opened where a page was expected is text.
 - **Named for what they are.** The page asks for its script, its style and its fonts under

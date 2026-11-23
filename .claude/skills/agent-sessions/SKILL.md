@@ -88,6 +88,9 @@ on a turn with build logs that is far more than is wanted.
 - A failed call the same command passed later — in that turn or the three after — is a step
   of the work: a session counts it (`2 failed, 1 passed later`), and a turn whose failures all
   passed later is `✓ 1 failed, passed later`. `✗` is what did not.
+- A picture pasted into an ask or returned by a tool reads as `[image · png · 48 KB]` where it
+  came: the tools return text, and the picture is not in it. Say a screenshot was there, not
+  what it showed; the user can see it on the page, beneath that step.
 - A note in `[brackets]` at the end of an answer is about the answer: the index is still reading
   a large history (the answer covers what has been read so far), a store could not be read
   (an empty answer may not mean an empty history), or no CLI's sessions were found at all, with

@@ -3,7 +3,7 @@
 // can be read whole on request.
 
 import { h, icon, disclosure, copyButton, time } from '../dom.js';
-import { api, sessionHref, isAbort } from '../api.js';
+import { api, sessionHref, isAbort, onForget } from '../api.js';
 import { md } from '../md.js';
 import * as f from '../format.js';
 
@@ -39,9 +39,9 @@ function step(it, ctx) {
   const seq = h('a', { class: 'seq', href: `#${ctx.turn}.${it.seq}`, title: 'Link to this step' }, `[${it.seq}]`);
   switch (it.kind) {
     case 'reply':
-      return h('div', props, text(it, ctx, true), seq);
+      return h('div', props, text(it, ctx, true), pictures(it, ctx), seq);
     case 'prompt':
-      return h('div', props, h('div', { class: 'tag' }, it.queued ? 'queued while the agent worked' : 'prompt'), text(it, ctx, true), seq);
+      return h('div', props, h('div', { class: 'tag' }, it.queued ? 'queued while the agent worked' : 'prompt'), text(it, ctx, true), pictures(it, ctx), seq);
     case 'tool':
       return tool(it, ctx, props, seq);
     case 'event': {
@@ -53,7 +53,7 @@ function step(it, ctx) {
     default: // thinking, context, and whatever a CLI adds: folded until asked for
       return h('div', props, disclosure({
         label: [h('span', { class: 'tag' }, it.kind), h('span', { class: 'gist' }, f.firstLine(it.text))],
-        body: () => text(it, ctx, it.kind === 'thinking'),
+        body: () => [text(it, ctx, it.kind === 'thinking'), pictures(it, ctx)],
       }), seq);
   }
 }
@@ -64,6 +64,44 @@ export function text(it, ctx, markdown) {
   const box = h('div', { class: 'text' }, render(it.text));
   if (it.bytes) box.append(showAll(it.bytes, ctx, it.seq, (whole) => box.replaceChildren(render(whole.text))));
   return box;
+}
+
+// The pictures a step carried, as the server sends them: PNG, JPEG, GIF and WebP the
+// transcript holds, read from it only when the step is drawn. Each opens whole in a tab of
+// its own. One that was drawn is drawn again from what the page has, for as long as it is
+// open: a step drawn anew as its session is written does not fetch its pictures again.
+const SHOWN = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+const MAX_PICTURE = 8 << 20;
+const KEPT_PICTURES = 64;
+const drawn = new Map();
+onForget(() => drawn.clear());
+
+export function pictures(it, ctx) {
+  const shown = (it.attachments || []).map((a, i) => [a, i]).filter(([a]) => a.inline && SHOWN.has(a.mime) && a.bytes <= MAX_PICTURE);
+  if (!shown.length) return null;
+  return h('div', { class: 'thumbs' }, shown.map(([a, i]) => {
+    const url = `${ctx.base}/items/${it.seq}/attachments/${i}`;
+    let link = drawn.get(url);
+    if (!link) {
+      const what = `${a.mime.split('/')[1]} · ${f.bytes(a.bytes)}`;
+      const img = h('img', { src: url, alt: `Picture: ${what}`, loading: 'lazy', decoding: 'async' });
+      link = h('a', { class: 'thumb', href: url, target: '_blank', rel: 'noopener', title: `Open the picture (${what})` }, img);
+      img.addEventListener('error', () => {
+        drawn.delete(url);
+        link.replaceWith(h('span', { class: 'thumb-gone dim' }, `The picture (${what}) could not be shown.`));
+      });
+      drawn.set(url, link);
+      if (drawn.size > KEPT_PICTURES) drawn.delete(drawn.keys().next().value);
+    }
+    return link;
+  }));
+}
+
+// pictureCount says, on a tool call's line, how many pictures its result carried: a
+// screenshot is otherwise a call that seems to have returned nothing.
+function pictureCount(it) {
+  const n = (it.attachments || []).filter((a) => a.mime?.startsWith('image/')).length;
+  return n ? f.plural(n, 'picture') : '';
 }
 
 function showAll(size, ctx, seq, apply) {
@@ -104,6 +142,7 @@ function tool(it, ctx, props, seq) {
         h('span', { class: 'tool-meta dots' },
           status !== 'ok' && h('span', { class: 'st' }, STATUS[status] || status),
           t.exit != null && h('span', { class: t.exit ? 'bad' : null }, `exit ${t.exit}`),
+          pictureCount(it) && h('span', null, pictureCount(it)),
           took > 0 && h('span', null, f.dur(took))),
       ],
       body: () => toolBody(it, ctx),
@@ -125,6 +164,7 @@ function toolBody(it, ctx) {
     input,
     h('div', { class: 'io-head' }, h('span', null, 'Output'), t.endAt && time(t.endAt, 'stamp'), t.done && copyButton(() => output.textContent, 'Copy output')),
     t.done ? (t.output ? output : h('p', { class: 'dim' }, 'The call returned nothing.')) : h('p', { class: 'dim' }, 'No result was recorded for this call.'),
+    pictures(it, ctx),
     cut > 0 && showAll(cut, ctx, it.seq, (whole) => {
       input.textContent = pretty(whole.tool?.input);
       output.textContent = whole.tool?.output || '';

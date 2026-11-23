@@ -2,10 +2,14 @@ package web
 
 import (
 	"io/fs"
+	"maps"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/itswl/agent-session-query/internal/app"
 )
 
 // The page has no build step, so nothing compiles it: these are the checks a bundler
@@ -158,5 +162,29 @@ func TestTheBrowserKeepsOnlyTheThemeAndTimes(t *testing.T) {
 		if got[name] != n {
 			t.Errorf("%s writes to localStorage in %d places, want %d", name, got[name], n)
 		}
+	}
+}
+
+// The page asks for a step's pictures only where the server sends them: the same types,
+// the same largest size. One the server would refuse is a broken picture on screen, and
+// one the page left out a screenshot not shown.
+func TestThePageAsksForThePicturesTheServerSends(t *testing.T) {
+	body := files(t)["js/views/steps.js"]
+	set := regexp.MustCompile(`const SHOWN = new Set\(\[([^\]]*)\]\)`).FindStringSubmatch(body)
+	max := regexp.MustCompile(`const MAX_PICTURE = (\d+) << (\d+);`).FindStringSubmatch(body)
+	if set == nil || max == nil {
+		t.Fatal("steps.js says nowhere which pictures it shows")
+	}
+	shown := map[string]bool{}
+	for _, m := range regexp.MustCompile(`'([^']+)'`).FindAllStringSubmatch(set[1], -1) {
+		shown[m[1]] = true
+	}
+	if !maps.Equal(shown, app.Shown) {
+		t.Errorf("the page shows %v, the server sends %v", shown, app.Shown)
+	}
+	n, _ := strconv.Atoi(max[1])
+	shift, _ := strconv.Atoi(max[2])
+	if n<<shift != app.MaxPicture {
+		t.Errorf("the page asks for pictures up to %d bytes, the server sends them up to %d", n<<shift, app.MaxPicture)
 	}
 }

@@ -6,7 +6,7 @@ import { api, qs, sessionApi, sessionHref, isAbort } from '../api.js';
 import { go, savedY, back } from '../router.js';
 import { coalesce } from '../live.js';
 import { md, needles, highlight, formsIn } from '../md.js';
-import { steps, text } from './steps.js';
+import { steps, text, pictures } from './steps.js';
 import * as f from '../format.js';
 import { standing } from '../standing.js';
 
@@ -321,10 +321,14 @@ export function mount(main, route, ctx) {
     const { nodes, ask } = steps(rec.full, { base, turn: rec.t.index, agents: v.agents, signal: ctx.signal });
     rec.stepsEl.replaceChildren(...(nodes.length ? nodes : [h('p', { class: 'dim' }, 'No steps were recorded in this turn.')]));
     for (const seq of opened) rec.stepsEl.querySelector(`#q${seq} > .disclosure > .disc[aria-expanded=false]`)?.click();
-    // The outline carries the start of a long ask; the opened turn has all of it
+    // The outline carries the start of a long ask; the opened turn has all of it, and the
+    // pictures pasted into it
     if (ask && rec.askEl && (ask.bytes || (ask.text || '').length > (rec.t.ask || '').length)) {
       rec.askEl.replaceChildren(clamp(text(ask, { base, signal: ctx.signal }, true), ask.text || '', 12));
     }
+    rec.askEl?.querySelector(':scope > .thumbs')?.remove();
+    const pasted = ask && rec.askEl && pictures(ask, { base });
+    if (pasted) rec.askEl.append(pasted);
   }
 
   function flash(el) {

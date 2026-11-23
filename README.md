@@ -191,11 +191,11 @@ asq serve --open        # http://127.0.0.1:7717
 ![A session in the page: its turns, and one turn opened to its steps](docs/screenshots/session-steps.png)
 
 The same record in a browser: the list with filters, search with highlighted hits, a session as
-a timeline of turns that opens down to a single tool call's full output, usage charts, failures
-and a digest — updating live while agents work, and saying which of them are working, which wait
-on a command or a permission prompt, and which have finished and wait for you. It listens on
-loopback only and refuses to listen anywhere else without a token. → [The page](docs/ui.md) ·
-[HTTP API](docs/api.md) · [Deploying](docs/deploy.md)
+a timeline of turns that opens down to a single tool call's full output and the pictures pasted
+or returned in it, usage charts, failures and a digest — updating live while agents work, and
+saying which of them are working, which wait on a command or a permission prompt, and which have
+finished and wait for you. It listens on loopback only and refuses to listen anywhere else
+without a token. → [The page](docs/ui.md) · [HTTP API](docs/api.md) · [Deploying](docs/deploy.md)
 
 ## For agents: MCP
 

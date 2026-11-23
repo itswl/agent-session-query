@@ -176,6 +176,9 @@ spells out and what the stretch adds up to, so that where things stood at the en
 last section. Only a budget smaller than the brief's head and that section together — under
 about a thousand characters — cuts it.
 
+**Text only.** A picture pasted into an ask or returned by a tool is its mark where it came,
+`[image · png · 48 KB]`, and not the picture: the page shows it, beneath that step.
+
 **Masked.** Whatever is handed to a model leaves the machine with it, so secret-shaped strings
 are replaced with `[redacted]` in every answer (see [what is cleaned](model.md#what-is-cleaned-and-what-is-not)).
 

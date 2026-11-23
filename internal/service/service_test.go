@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/itswl/agent-session-query/internal/app"
 )
 
 // fake is a service manager that keeps what it is told in memory: launchctl, systemctl,
@@ -189,7 +191,7 @@ func TestInstallStatusUninstall(t *testing.T) {
 			mg, _ := f.m.manager()
 			want := slices.Clone(tc.install)
 			for i := range want {
-				want[i] = strings.ReplaceAll(want[i], "{where}", said(mg.where()))
+				want[i] = strings.ReplaceAll(want[i], "{where}", app.ShellArg(mg.where())) // an argument, quoted as one
 			}
 			if !done.Answers || done.Address != "http://127.0.0.1:7920" || !reflect.DeepEqual(done.Ran, want) {
 				t.Errorf("install: %+v, want it to have run %q and to answer at 7920", done, want)

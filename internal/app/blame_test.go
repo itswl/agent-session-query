@@ -11,24 +11,32 @@ import (
 // of git log, or a commit of another id, does not.
 func TestMade(t *testing.T) {
 	const id = "3f9c2ab4e5f60718293a4b5c6d7e8f9012345678"
-	for out, want := range map[string]bool{
-		"[main 3f9c2ab] Trim titles\n 1 file changed":             true,
-		"[main (root-commit) 3f9c2ab4e5f6] First":                 true,
-		"[detached HEAD 3f9c2ab] Try it":                          true,
-		"pre-commit hook passed\n[feature/x 3f9c2ab] Trim titles": true,
-		"<untrusted_context>\nOutput: [main 3f9c2ab] Trim titles\n 1 file changed\nProcess Group PGID: 7\n</untrusted_context>": true,
-		"Command: git commit -am x\nDirectory: (root)\nOutput: [main 3f9c2ab] Trim titles\nError: (none)":                       true,
-		"Output: see [main 3f9c2ab] in the log":                                     false,
-		`{"output": "[main 3f9c2ab] Trim titles\n 1 file changed", "exit_code": 0}`: true,
-		`{"output": "see [main 3f9c2ab] in the log", "exit_code": 0}`:               false,
-		"[main 3f9c2ac] Another commit":                                             false,
-		"commit 3f9c2ab4e5f60718293a4b5c6d7e8f9012345678\nAuthor: test":             false,
-		"3f9c2ab Trim titles":                                           false,
-		"see [main 3f9c2ab] in the log":                                 false,
-		"[main 3f9c2a] Six characters is no id git prints for a commit": false,
+	// Two lists rather than one map: gofmt's releases align a map of keys this uneven
+	// differently, and the file must be clean for each of them
+	for want, outs := range map[bool][]string{
+		true: {
+			"[main 3f9c2ab] Trim titles\n 1 file changed",
+			"[main (root-commit) 3f9c2ab4e5f6] First",
+			"[detached HEAD 3f9c2ab] Try it",
+			"pre-commit hook passed\n[feature/x 3f9c2ab] Trim titles",
+			"<untrusted_context>\nOutput: [main 3f9c2ab] Trim titles\n 1 file changed\nProcess Group PGID: 7\n</untrusted_context>",
+			"Command: git commit -am x\nDirectory: (root)\nOutput: [main 3f9c2ab] Trim titles\nError: (none)",
+			`{"output": "[main 3f9c2ab] Trim titles\n 1 file changed", "exit_code": 0}`,
+		},
+		false: {
+			"Output: see [main 3f9c2ab] in the log",
+			`{"output": "see [main 3f9c2ab] in the log", "exit_code": 0}`,
+			"[main 3f9c2ac] Another commit",
+			"commit 3f9c2ab4e5f60718293a4b5c6d7e8f9012345678\nAuthor: test",
+			"3f9c2ab Trim titles",
+			"see [main 3f9c2ab] in the log",
+			"[main 3f9c2a] Six characters is no id git prints for a commit",
+		},
 	} {
-		if got := made(out, id); got != want {
-			t.Errorf("made(%q) = %v, want %v", out, got, want)
+		for _, out := range outs {
+			if got := made(out, id); got != want {
+				t.Errorf("made(%q) = %v, want %v", out, got, want)
+			}
 		}
 	}
 	// A repository that names its objects by SHA-256 prints them as long as it must

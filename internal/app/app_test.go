@@ -35,9 +35,39 @@ func TestWhen(t *testing.T) {
 			t.Errorf("When(%q) = %v, %v; want %v", in, got, err, want)
 		}
 	}
-	for _, bad := range []string{"yesterday", "7", "d", "-3d", "7x", "2026-13-01"} {
+	for _, bad := range []string{"tomorrow", "mondays", "tod", "7", "d", "-3d", "7x", "2026-13-01"} {
 		if _, err := app.When(bad, now); err == nil {
 			t.Errorf("When(%q) is accepted", bad)
+		}
+	}
+}
+
+// A day's name is the midnight it began with, on this machine's clock: today's, yesterday's,
+// and a weekday's — the latest of that name, today included.
+func TestWhenADayIsNamed(t *testing.T) {
+	friday := time.Date(2026, 11, 13, 12, 0, 0, 0, time.Local)
+	tuesday := time.Date(2026, 12, 1, 0, 30, 0, 0, time.Local)
+	day := func(m time.Month, d int) time.Time { return time.Date(2026, m, d, 0, 0, 0, 0, time.Local) }
+	for _, tc := range []struct {
+		now  time.Time
+		in   string
+		want time.Time
+	}{
+		{friday, "today", day(11, 13)},
+		{friday, " Yesterday ", day(11, 12)},
+		{friday, "friday", day(11, 13)},
+		{friday, "fri", day(11, 13)},
+		{friday, "Thursday", day(11, 12)},
+		{friday, "mon", day(11, 9)},
+		{friday, "saturday", day(11, 7)},
+		{friday, "sun", day(11, 8)},
+		{tuesday, "yesterday", day(11, 30)},
+		{tuesday, "wednesday", day(11, 25)},
+		{tuesday, "today", day(12, 1)},
+	} {
+		got, err := app.When(tc.in, tc.now)
+		if err != nil || !got.Equal(tc.want) {
+			t.Errorf("When(%q) on %s = %v, %v; want %v", tc.in, tc.now.Format("Mon 01-02 15:04"), got, err, tc.want)
 		}
 	}
 }

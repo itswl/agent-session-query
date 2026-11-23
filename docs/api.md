@@ -5,7 +5,8 @@ signing in, keeping a session, and the MCP endpoint. The page is a client of thi
 
 - Field names are those of [the record](model.md).
 - Times are RFC 3339. `since` and `until` take a span back from now (`90m`, `12h`, `7d`, `2w`),
-  a date, or a date and time.
+  a date, or a date and time; `today`, `yesterday` or a weekday (`monday`, `mon`) is the
+  midnight that day began with on the server's clock, a weekday's the latest, today included.
 - An error is `{"error": "…"}` with a status that means it: `400` the request does not parse,
   `401` no token, `403` refused by a guard, `404` no such session, `409` a session that cannot be
   kept, `429` too many wrong tokens.

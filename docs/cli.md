@@ -30,10 +30,13 @@ Taken by `ls`, `search`, `pack`, `usage`, `failures`, `digest`, `files`, `projec
 | `--source claude` | one CLI's sessions, or one labeled store (`claude@box2`) |
 | `--project api` | sessions whose working directory contains this. `.`, `..` or a path that begins with one (`./web`) is that directory instead: the sessions that ran in it or below it |
 | `--branch main` | sessions that opened on a branch containing this |
-| `--since 7d` · `--until 2026-09-01` | a span back from now — `90m`, `12h`, `7d`, `2w` — or a date, or a date and time; `all` for no bound |
+| `--since 7d` · `--until 2026-09-01` | a span back from now — `90m`, `12h`, `7d`, `2w` — or a date, or a date and time; `today`, `yesterday` or a weekday (`monday`, `mon`) for the midnight that day began with, a weekday's the latest, today included; `all` for no bound |
 | `--archived` | include sessions their CLI has archived |
 | `--agents` | include subagents' transcripts as sessions of their own |
 | `--limit N` / `-n N` · `--offset N` | paging |
+
+A day is the one on the clock of the machine `asq` runs on: `--since yesterday --until today`
+is yesterday there, midnight to midnight.
 
 `asq ls --project .` is the sessions of the directory you are in. The directory is resolved to
 an absolute path where `asq` runs, and a session is in it whether its CLI recorded the path the

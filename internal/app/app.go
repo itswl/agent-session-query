@@ -338,12 +338,18 @@ func (a *App) checkSource(name string) error {
 	return fmt.Errorf("unknown source %q (one of: %s)", name, strings.Join(a.Stores(), ", "))
 }
 
-// When reads a moment as people write one: "7d", "36h", "90m" or "2w" ago; a date; a
-// date and time; "all" or nothing for no bound.
+// When reads a moment as people write one: "7d", "36h", "90m" or "2w" ago; "today",
+// "yesterday" or a weekday's name, for the midnight that day began with; a date; a date
+// and time; "all" or nothing for no bound. A day is this machine's: what an agent asking
+// from elsewhere calls today may not be.
 func When(s string, now time.Time) (time.Time, error) {
 	s = strings.TrimSpace(s)
 	if s == "" || s == "all" {
 		return time.Time{}, nil
+	}
+	if back, ok := daysBack(strings.ToLower(s), now.In(time.Local).Weekday()); ok {
+		y, m, d := now.In(time.Local).Date()
+		return time.Date(y, m, d-back, 0, 0, 0, 0, time.Local), nil
 	}
 	if n := len(s); n > 1 {
 		if amount, err := strconv.ParseFloat(s[:n-1], 64); err == nil && amount >= 0 {
@@ -358,7 +364,26 @@ func When(s string, now time.Time) (time.Time, error) {
 			return t, nil
 		}
 	}
-	return time.Time{}, fmt.Errorf("unreadable time %q (want 7d, 12h, 2026-09-01 or 2026-09-01T08:00:00Z)", s)
+	return time.Time{}, fmt.Errorf("unreadable time %q (want 7d, 12h, today, yesterday, monday, 2026-09-01 or 2026-09-01T08:00:00Z)", s)
+}
+
+// daysBack is how many days before today a day's name means: today 0, yesterday 1, and a
+// weekday the latest of its name, today included — monday on a Monday is this morning,
+// on a Sunday six days ago.
+func daysBack(word string, today time.Weekday) (int, bool) {
+	switch word {
+	case "today":
+		return 0, true
+	case "yesterday":
+		return 1, true
+	}
+	for day := time.Sunday; day <= time.Saturday; day++ {
+		name := strings.ToLower(day.String())
+		if word == name || word == name[:3] {
+			return (int(today) - int(day) + 7) % 7, true
+		}
+	}
+	return 0, false
 }
 
 // NoResume says why there is no command that reopens a session on this machine, or "" when

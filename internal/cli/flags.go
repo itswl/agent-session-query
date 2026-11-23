@@ -60,7 +60,7 @@ func (c *command) selection(defaultLimit int) *command {
 	c.fs.StringVar(&c.q.Source, "source", "", "one store, or one CLI's stores: "+strings.Join(catalog.Names(), ", "))
 	c.fs.StringVar(&c.q.Project, "project", "", "sessions whose working directory contains this; ., .. or ./web: in that directory or below it")
 	c.fs.StringVar(&c.q.Branch, "branch", "", "sessions that opened on a branch containing this")
-	c.fs.StringVar(&c.q.Since, "since", "", "after this: 7d, 12h, 2026-09-01")
+	c.fs.StringVar(&c.q.Since, "since", "", "after this: 7d, 12h, today, monday, 2026-09-01")
 	c.fs.StringVar(&c.q.Until, "until", "", "before this")
 	c.fs.BoolVar(&c.q.Archived, "archived", false, "include the sessions their CLI has put away")
 	c.fs.BoolVar(&c.q.Agents, "agents", false, "include subagents' transcripts as sessions of their own")

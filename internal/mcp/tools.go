@@ -48,7 +48,7 @@ var (
 	pSource  = prop{"source", "string", "Only one CLI's sessions (claude, codex, gemini, opencode, grok, antigravity, pi, dsh, hermes, openclaw, copilot) or one labeled store (claude@box2)."}
 	pProject = prop{"project", "string", "Only sessions whose working directory contains this, e.g. a repository's name."}
 	pBranch  = prop{"branch", "string", "Only sessions that opened on a git branch containing this."}
-	pSince   = prop{"since", "string", "Only after this: a span back from now (90m, 12h, 7d, 2w) or a date (2026-09-01)."}
+	pSince   = prop{"since", "string", "Only after this: a span back from now (90m, 12h, 7d, 2w), a date (2026-09-01), or today, yesterday or a weekday (monday) — the midnight that day began with on the clock of the machine asq runs on, which may not be yours."}
 	pUntil   = prop{"until", "string", "Only before this; same forms as since."}
 	pLimit   = prop{"limit", "integer", "How many to return."}
 	pOffset  = prop{"offset", "integer", "Skip this many first: the next page."}

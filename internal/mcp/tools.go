@@ -252,7 +252,7 @@ func (s *Server) call(ctx context.Context, params json.RawMessage) (any, *rpcErr
 		if ctx.Err() != nil {
 			err = errors.New("cancelled")
 		} else if s.App.Index.Damage(err) {
-			err = fmt.Errorf("%w — the index is damaged, and is set aside and made anew from the stores before the next question is answered", err)
+			err = fmt.Errorf("%w — the index is damaged, and is set aside and made anew from the stores at their next look: ask again in a few seconds", err)
 		}
 		return map[string]any{"content": []any{map[string]any{"type": "text", "text": err.Error()}}, "isError": true}, nil
 	}

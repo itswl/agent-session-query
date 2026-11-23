@@ -322,6 +322,12 @@ func TestHandoff(t *testing.T) {
 	if _, err := app.NamedTurn(1, 2); err == nil || !strings.Contains(err.Error(), "the ref's #1 and turn 2 each say") {
 		t.Errorf("#1 with turn 2 = %v", err)
 	}
+	// and #0 is no turn, not no # at all: the brief would cover the whole session
+	for _, turn := range []int{0, 1} {
+		if _, err := app.NamedTurn(0, turn); err == nil || !strings.Contains(err.Error(), "the ref's #0 names no turn") {
+			t.Errorf("#0 with turn %d = %v", turn, err)
+		}
+	}
 }
 
 // A directory is found by every path a CLI may have recorded it as — through a link to

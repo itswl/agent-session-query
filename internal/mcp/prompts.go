@@ -140,8 +140,8 @@ func getHandoff(ctx context.Context, s *Server, who asker, given map[string]stri
 	if err != nil {
 		return "", err
 	}
-	if turn < 0 {
-		turn = 0
+	if turn, err = app.NamedTurn(turn, 0); err != nil {
+		return "", err
 	}
 	opts, err := app.Handoff(turn, 0, "")
 	if err != nil {

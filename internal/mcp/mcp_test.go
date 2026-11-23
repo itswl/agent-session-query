@@ -300,6 +300,7 @@ func TestWhatGoesWrongIsToldToTheModel(t *testing.T) {
 		{"brief", map[string]any{"ref": "aaaa1111", "turn": 1, "since": "all"}, "turn 1 and since all each say which turns the brief covers: give one of them"},
 		{"brief", map[string]any{"ref": "aaaa1111#1", "from": 2}, "turn 1 and from 2 each say"},
 		{"brief", map[string]any{"ref": "aaaa1111#1", "turn": 2}, "the ref's #1 and turn 2 each say which turn the brief covers"},
+		{"brief", map[string]any{"ref": "aaaa1111#0"}, "the ref's #0 names no turn"},
 		{"brief", map[string]any{"ref": "this"}, "over HTTP"},
 		{"usage", map[string]any{"by": "colour"}, "grouped by model, day, week, month, source, project or session"},
 		{"failures", map[string]any{"by": "tool"}, "grouped by command"},

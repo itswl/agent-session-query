@@ -312,12 +312,16 @@ func Handoff(turn, from int, since string) (render.BriefOptions, error) {
 	return BriefOf(turn, from, since)
 }
 
-// NamedTurn is the turn a brief is asked for when its ref may end #N — named, -1 or 0 for
-// none — and turn may name one too: they are one turn, or the brief is not told which.
+// NamedTurn is the turn a brief is asked for when its ref may end #N — named, -1 for none
+// — and turn may name one too: they are one turn, or the brief is not told which. A #0
+// names none, and is not taken for no # at all: the brief would cover the whole session
+// where read and show refuse the ref.
 func NamedTurn(named, turn int) (int, error) {
 	switch {
-	case named <= 0:
+	case named < 0:
 		return turn, nil
+	case named == 0:
+		return 0, errors.New("the ref's #0 names no turn: turns are numbered from 1")
 	case turn != 0 && turn != named:
 		return 0, fmt.Errorf("the ref's #%d and turn %d each say which turn the brief covers: give one of them", named, turn)
 	}

@@ -338,16 +338,17 @@ runs.
 service manager: a LaunchAgent under launchd, a user unit under systemd, a task at logon in Task
 Scheduler. `install` writes its definition — this binary by its full path, then `serve` with
 the `--host`, `--port`, `--proxy-header`, `--cors-origin`, `--index`, `--only` and `--path` given,
-and the variables `asq` reads as this shell has them — has the manager start it, and waits for it
-to answer; it exits 1 when it does not, under launchd quoting what the server logged. Installed again, the
-definition is written anew and the server started again. `--dry-run` prints what would be
-written and run, with `ASQ_TOKEN`'s value left out. `status`, or `asq service` alone, says which
-definition there is and whose, what it runs, whether the manager holds it and it answers, and
-where its log is; `uninstall` stops it and removes the definition. One `asq` did not write is
-neither replaced nor removed without `--force`, and status gives the commands that take it down
-by hand. Install refuses a port something else answers on, a second service beside the one
-`brew services` set up, and to run as root. `--json` answers
-what was planned, done or found. See [Deploying](deploy.md#keeping-it-running).
+and the variables `asq` reads as this shell has them (a task has the user's environment instead,
+and install names those it gets only from there) — has the manager start it, and waits for it
+to answer; it exits 1 when it does not, under launchd quoting what the server logged. Installed
+again, the definition is written anew and the server started again. `--dry-run` prints what
+would be written and run, with `ASQ_TOKEN`'s value left out. `status`, or `asq service` alone,
+says which definition there is and whose, what it runs, whether the manager holds it and it
+answers, and where its log is; `uninstall` stops it and removes the definition. One `asq` did
+not write is neither replaced nor removed without `--force`, and status gives the commands that
+take it down by hand. Install refuses a port something else answers on, a second service beside
+the one `brew services` set up, and to run as root. `--json` answers what was planned, done or
+found. See [Deploying](deploy.md#keeping-it-running).
 
 **`asq mcp`** — an MCP server on stdio. See [MCP](mcp.md).
 

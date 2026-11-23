@@ -389,7 +389,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		turn      string
 		turnModel string
 		turnDir   string                // where the turn's calls run, and its patches' paths start from
-		names     = map[string]string{} // call id → tool, for the one output that needs it
+		names     = map[string]string{} // call id → tool, for the outputs that need it
 		pending   []transcript.Message  // a response's rows, held until its usage arrives
 		responses int
 		anyRecord bool
@@ -398,6 +398,10 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		// highest each cumulative counter has stood
 		snapshots = map[[2]usage]bool{}
 		high      usage
+
+		// A view_image call's output was the latest the model's side wrote: an older Codex
+		// hands the picture the call looked at to the model next, as a message of its own
+		viewed bool
 	)
 	// A model response is written as several rows — reasoning, words, each call — and
 	// closed by a token_usage_record saying what the response cost: one record per
@@ -515,7 +519,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			return true
 		case "turn_context":
 			flush(nil)
-			turn = p.TurnID
+			turn, viewed = p.TurnID, false
 			turnModel = kit.First(p.Model, turnModel)
 			turnDir = kit.First(p.Cwd, turnDir)
 			if w.S.Cwd == "" {
@@ -651,6 +655,8 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				Model: turnModel, Inherited: inherited, Dir: kit.First(turnDir, w.S.Cwd), Blocks: blocks})
 		}
 		callID := kit.First(p.CallID, p.ID)
+		afterView := viewed
+		viewed = false
 		switch p.Type {
 		case "message":
 			switch p.Role {
@@ -661,8 +667,12 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			case "user":
 				flush(nil)
 				if blocks := messageBlocks(p.Content, w.Unread); len(blocks) > 0 {
+					// Pictures with no words, right after view_image answered "attached local
+					// image path": the picture that call looked at, which an older Codex sent
+					// the model in the person's seat. It is the call's, and asks nothing
+					injected := afterView && len(blocks[0].Attachments) > 0
 					w.Add(transcript.Message{ID: p.ID, Role: transcript.User, At: at, Inherited: inherited,
-						Blocks: blocks})
+						Injected: injected, Blocks: blocks})
 				}
 			case "developer":
 				// instructions the CLI assembled: not conversation
@@ -745,6 +755,9 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			}
 			w.Add(transcript.Message{ID: p.ID, Role: transcript.ToolRole, At: at, Inherited: inherited,
 				Blocks: []transcript.Block{transcript.ResultOf(p.CallID, names[p.CallID], text, outcome).With(files...)}})
+			// The outputs of the calls a response made in parallel come together, and the
+			// picture after them all
+			viewed = afterView || names[p.CallID] == "view_image" && len(files) == 0
 		case "additional_tools", "configuration_update":
 			// Tools put before the model mid-session, and its settings changed: the CLI's
 			// setup, not conversation

@@ -740,6 +740,56 @@ func TestRowsCodexWritesAndPassesOver(t *testing.T) {
 	}
 }
 
+// An older Codex's view_image answered "attached local image path" and handed the picture
+// to the model as a message of its own, in the person's seat: that picture is the call's,
+// in the turn the call was made in, and asks nothing — also after the outputs of calls made
+// beside it. A picture the person sends alone, in a turn of its own, still asks.
+func TestAPictureViewImageAttachedIsNoAsk(t *testing.T) {
+	root := t.TempDir()
+	const pic = `{"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgo="}`
+	sourcetest.Write(t, filepath.Join(root, "2025", "09", "20", "rollout-2025-09-20T10-00-00-viewed.jsonl"),
+		`{"timestamp":"2025-09-20T10:00:00Z","type":"session_meta","payload":{"id":"codex-viewed","cwd":"/p","cli_version":"0.40.0"}}`,
+		`{"timestamp":"2025-09-20T10:00:01Z","type":"turn_context","payload":{"cwd":"/p","model":"gpt-5-codex"}}`,
+		`{"timestamp":"2025-09-20T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"what is wrong in shot.png"}]}}`,
+		`{"timestamp":"2025-09-20T10:00:02Z","type":"response_item","payload":{"type":"function_call","name":"view_image","arguments":"{\"path\":\"shot.png\"}","call_id":"call_v1"}}`,
+		`{"timestamp":"2025-09-20T10:00:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_v1","output":"attached local image path"}}`,
+		`{"timestamp":"2025-09-20T10:00:02Z","type":"event_msg","payload":{"type":"token_count","info":null}}`,
+		`{"timestamp":"2025-09-20T10:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[`+pic+`]}}`,
+		`{"timestamp":"2025-09-20T10:00:03Z","type":"response_item","payload":{"type":"function_call","name":"view_image","arguments":"{\"path\":\"two.png\"}","call_id":"call_v2"}}`,
+		`{"timestamp":"2025-09-20T10:00:03Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"ls\"]}","call_id":"call_s1"}}`,
+		`{"timestamp":"2025-09-20T10:00:04Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_v2","output":"attached local image path"}}`,
+		`{"timestamp":"2025-09-20T10:00:04Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_s1","output":"shot.png\ntwo.png"}}`,
+		`{"timestamp":"2025-09-20T10:00:04Z","type":"response_item","payload":{"type":"message","role":"user","content":[`+pic+`]}}`,
+		`{"timestamp":"2025-09-20T10:00:05Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The button overlaps the field."}]}}`,
+		// a last look, stopped before its picture went to the model
+		`{"timestamp":"2025-09-20T10:00:06Z","type":"response_item","payload":{"type":"function_call","name":"view_image","arguments":"{\"path\":\"three.png\"}","call_id":"call_v3"}}`,
+		`{"timestamp":"2025-09-20T10:00:06Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_v3","output":"attached local image path"}}`,
+		`{"timestamp":"2025-09-20T10:01:00Z","type":"turn_context","payload":{"cwd":"/p","model":"gpt-5-codex"}}`,
+		`{"timestamp":"2025-09-20T10:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[`+pic+`]}}`,
+		`{"timestamp":"2025-09-20T10:01:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"A login form."}]}}`,
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	if s.Stats.Turns != 2 {
+		t.Fatalf("%d turns, want 2: %+v", s.Stats.Turns, s.Turns)
+	}
+	one := s.Turn(t, 1)
+	if one.Ask != "what is wrong in shot.png" || one.Answer != "The button overlaps the field." {
+		t.Errorf("ask %q, answer %q", one.Ask, one.Answer)
+	}
+	if got := sourcetest.Kinds(one); got != "prompt tool context tool tool context reply tool" {
+		t.Errorf("items = %s: each picture the call's, beside it", got)
+	}
+	for _, i := range []int{2, 5} {
+		if it := one.Items[i]; it.Text != "[image · png · 8 bytes]" || len(it.Attachments) != 1 {
+			t.Errorf("item %d = %q, %+v", i, it.Text, it.Attachments)
+		}
+	}
+	if two := s.Turn(t, 2); two.Ask != "[image · png · 8 bytes]" || two.Answer != "A login form." {
+		t.Errorf("a picture sent alone asks %q, answered %q", two.Ask, two.Answer)
+	}
+}
+
 // What the adapter has never heard of — a row, a response item, an event, a role, an
 // entry of a content list — is counted under its kind, and so is a record that will not
 // decode, known or not; everything around them reads as it would without them.

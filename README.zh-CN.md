@@ -120,20 +120,23 @@ gh attestation verify oci://ghcr.io/itswl/agent-session-query:latest --repo itsw
 ## 升级
 
 再运行一次安装脚本即可。它会把新版本装到 PATH 上现有 `asq` 所在的位置、直接覆盖（那个目录需要
-sudo 的话就用 sudo）：之后运行的就是新版本，macOS 对旧版本授予的权限也会保留。用 Go 装的，还是
+sudo 的话就用 sudo）：之后运行的就是新版本，macOS 对旧版本授予的权限也会保留。用 Homebrew 或
+Scoop 装的，安装脚本不动它，交给它们：`brew upgrade asq`、`scoop update asq`。用 Go 装的，还是
 同一条 `go install …@latest`；容器则重新拉取镜像再启动（见[部署](docs/deploy.md#upgrading)）。
 
 常驻运行的 `asq serve` 在重启之前，跑的仍是旧版本。页面上会提示，`asq doctor` 也会说——它会
-问本机上的 server 跑的是哪个 `asq`：
+问本机上的 server 跑的是哪个 `asq`。由 `asq service install` 配置的，再运行一次它就会重启；
+也可以用下面几条：
 
 ```sh
 launchctl kickstart -k "gui/$(id -u)/io.github.itswl.asq"     # macOS，LaunchAgent
 systemctl --user restart asq                                    # Linux，systemd 单元
+brew services restart asq                                       # Homebrew 自己的服务
 ```
 
-Windows 上正在运行的 `asq.exe` 无法被替换：先 `schtasks /end /tn asq`，再运行安装脚本，然后
-`schtasks /run /tn asq`。索引不需要任何处理：读取某个 CLI 文件的方式有变化的版本，会在第一次
-查看存储时自己重新读一遍。
+Windows 上正在运行的 `asq.exe` 无法被替换：先 `schtasks /end /tn asq`，再运行安装脚本或
+`scoop update asq`，然后 `schtasks /run /tn asq`。索引不需要任何处理：读取某个 CLI 文件的方式有
+变化的版本，会在第一次查看存储时自己重新读一遍。
 
 ## 卸载
 

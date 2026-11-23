@@ -131,3 +131,57 @@ func TestTheInstallerUpgradesWhereAsqIs(t *testing.T) {
 		}
 	}
 }
+
+// An asq Homebrew installed is left to Homebrew: written over, its link into the Cellar would
+// be lost to Homebrew, and a service run by Homebrew's opt path would go on with the old one.
+func TestTheInstallerLeavesHomebrewsAsqToHomebrew(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh is for macOS and Linux; Windows has install.ps1")
+	}
+	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
+		t.Skip("no release for this machine")
+	}
+	script, err := filepath.Abs(filepath.Join("..", "..", "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, named := range []bool{false, true} {
+		home := t.TempDir()
+		fake, rel := filepath.Join(home, "fake"), filepath.Join(home, "release")
+		os.MkdirAll(rel, 0o755)
+		os.MkdirAll(fake, 0o755)
+		if err := os.WriteFile(filepath.Join(fake, "curl"), []byte(fakeCurl), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		release(t, rel)
+		brew := filepath.Join(home, "homebrew")
+		program(t, filepath.Join(brew, "Cellar", "asq", "1.4.0", "bin", "asq"), "asq v1.4.0")
+		os.MkdirAll(filepath.Join(brew, "bin"), 0o755)
+		link := filepath.Join(brew, "bin", "asq")
+		if err := os.Symlink(filepath.Join("..", "Cellar", "asq", "1.4.0", "bin", "asq"), link); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("sh", script)
+		cmd.Env = []string{"PATH=" + fake + ":" + filepath.Join(brew, "bin") + ":/usr/bin:/bin", "HOME=" + home, "RELEASE=" + rel, "SHELL=/bin/sh", "NO_SUDO=1"}
+		if named {
+			cmd.Env = append(cmd.Env, "INSTALL_DIR="+filepath.Join(home, "named"))
+		}
+		out, err := cmd.CombinedOutput()
+		if target, lerr := os.Readlink(link); lerr != nil || !strings.Contains(target, "Cellar") {
+			t.Errorf("named %v: Homebrew's link is now %q, %v\n%s", named, target, lerr, out)
+		}
+		if !named {
+			if err == nil || !strings.Contains(string(out), "brew upgrade asq") {
+				t.Errorf("the installer went on over Homebrew's asq: %v\n%s", err, out)
+			}
+			continue
+		}
+		// A directory named is installed in, beside Homebrew's
+		if err != nil {
+			t.Fatalf("named: %v\n%s", err, out)
+		}
+		if got, err := exec.Command(filepath.Join(home, "named", "asq"), "--version").Output(); err != nil || strings.TrimSpace(string(got)) != "asq v9.9.9" {
+			t.Errorf("named: says %q, %v\n%s", got, err, out)
+		}
+	}
+}

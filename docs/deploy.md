@@ -360,18 +360,21 @@ and named with `ASQ_PATH` ([how to copy another machine's](sources.md#another-ma
 
 A server goes on with the binary it was started from until it is restarted, whatever was
 installed since. Replace the binary where it is — the installers do, run again, which is also
-what keeps the answer macOS gave about a guarded folder — and restart the service:
+what keeps the answer macOS gave about a guarded folder; one Homebrew or Scoop installed they
+leave to `brew upgrade asq` or `scoop update asq` — and restart the service: `asq service
+install` again for the one it set up, or
 
 ```sh
 systemctl --user restart asq                                    # Linux
 launchctl kickstart -k "gui/$(id -u)/io.github.itswl.asq"     # macOS
+brew services restart asq                                       # Homebrew's own service
 ```
 
-On Windows a running `asq.exe` cannot be replaced: `schtasks /end /tn asq`, the installer, then
-`schtasks /run /tn asq`. A container built from this checkout is `git pull`, then
-`docker compose up -d --build` with the same `ASQ_TOKEN`; one from the published image is
-`docker pull` of it, then `docker rm -f asq` and the same `docker run` as before. The volume at
-`/data` keeps the index and the sign-ins either way.
+On Windows a running `asq.exe` cannot be replaced: `schtasks /end /tn asq`, the installer or
+`scoop update asq`, then `schtasks /run /tn asq`. A container built from this checkout is
+`git pull`, then `docker compose up -d --build` with the same `ASQ_TOKEN`; one from the
+published image is `docker pull` of it, then `docker rm -f asq` and the same `docker run` as
+before. The volume at `/data` keeps the index and the sign-ins either way.
 
 Until it is restarted, a server whose binary was replaced says so: once in its log, on the
 page, and in `/api/health` (`replaced`, beside the `executable` it was started from).

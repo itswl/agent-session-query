@@ -3,7 +3,7 @@
 # published checksums, and puts the binary in ~/.local/bin — the user's own directory,
 # no sudo. What asq reads is the installing user's sessions, so a system-wide install
 # is a place to name, not the default. Run again, it upgrades the asq on the PATH where
-# it is.
+# it is — but for one Homebrew installed, which brew upgrade does.
 #
 #   curl -fsSL https://raw.githubusercontent.com/itswl/agent-session-query/main/install.sh | sh
 #
@@ -26,6 +26,15 @@ case "$current" in
   /*) was="$("$current" --version 2>/dev/null | sed -n 's/^asq \([^ ]*\)$/\1/p' | head -n 1 || true)" ;;
 esac
 if [ -z "${INSTALL_DIR:-}" ] && [ -n "$was" ]; then
+  # One Homebrew installed is Homebrew's to upgrade: its bin/asq is a link into the
+  # Cellar, which a file written over it would take from Homebrew, and a service runs
+  # Homebrew's opt path, which only brew upgrade moves on
+  case "$current $(readlink "$current" 2>/dev/null || true)" in
+    */Cellar/asq/*)
+      echo "install.sh: the asq on your PATH, $current, is Homebrew's: brew upgrade asq upgrades it" >&2
+      echo "  (INSTALL_DIR=~/bin sh install.sh installs another, elsewhere)" >&2
+      exit 1 ;;
+  esac
   INSTALL_DIR="$(dirname "$current")"
 fi
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"

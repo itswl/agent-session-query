@@ -130,20 +130,23 @@ gh attestation verify oci://ghcr.io/itswl/agent-session-query:latest --repo itsw
 
 Run the installer again. It puts the new release where the `asq` on your PATH already is, over
 it — with sudo, if that directory takes it: what runs is then the new one, and macOS keeps what
-it allowed the old. With Go it is the same `go install …@latest`; a container is pulled and
+it allowed the old. One Homebrew or Scoop installed it leaves to them: `brew upgrade asq`,
+`scoop update asq`. With Go it is the same `go install …@latest`; a container is pulled and
 started again ([Deploying](docs/deploy.md#upgrading)).
 
 An `asq serve` kept running goes on with the old one until it is restarted. The page says so,
-and so does `asq doctor`, which asks a server on this machine which `asq` it runs:
+and so does `asq doctor`, which asks a server on this machine which `asq` it runs. Run
+`asq service install` again to restart the one it set up, or:
 
 ```sh
 launchctl kickstart -k "gui/$(id -u)/io.github.itswl.asq"     # macOS, the LaunchAgent
 systemctl --user restart asq                                    # Linux, the systemd unit
+brew services restart asq                                       # Homebrew's own service
 ```
 
-On Windows a running `asq.exe` cannot be replaced: `schtasks /end /tn asq`, then the installer,
-then `schtasks /run /tn asq`. The index needs nothing: a release that reads a CLI's files
-differently reads them again by itself, at its first look at the stores.
+On Windows a running `asq.exe` cannot be replaced: `schtasks /end /tn asq`, then the installer
+or `scoop update asq`, then `schtasks /run /tn asq`. The index needs nothing: a release that
+reads a CLI's files differently reads them again by itself, at its first look at the stores.
 
 ## Uninstall
 

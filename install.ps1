@@ -1,6 +1,7 @@
 # Installs asq on Windows: downloads the release for this machine, checks it against the
 # release's published checksums, and puts the binary on the user's PATH. Run again, it
-# upgrades the asq on the PATH where it is.
+# upgrades the asq on the PATH where it is — but for one Scoop installed, which scoop update
+# does.
 #
 #   irm https://raw.githubusercontent.com/itswl/agent-session-query/main/install.ps1 | iex
 #
@@ -19,6 +20,11 @@ $was = $null
 if ($current) {
     try { $said = (& $current.Source --version 2>$null | Select-Object -First 1) } catch { $said = $null }
     if ($said -match '^asq (\S+)$') { $was = $Matches[1] }
+}
+# One Scoop installed is Scoop's to upgrade: what is on the PATH is its shim, and a service
+# runs the asq in apps\asq\current, which only scoop update moves on
+if (-not $env:INSTALL_DIR -and $was -and ($current.Source -match '\\apps\\asq\\' -or (Test-Path ([IO.Path]::ChangeExtension($current.Source, '.shim'))))) {
+    throw "the asq on your PATH, $($current.Source), is Scoop's: scoop update asq upgrades it (`$env:INSTALL_DIR = 'D:\bin' installs another, elsewhere)"
 }
 $installDir = if ($env:INSTALL_DIR) { $env:INSTALL_DIR } elseif ($was) { Split-Path -Parent $current.Source } else { Join-Path $env:LOCALAPPDATA 'Programs\asq' }
 $target = Join-Path $installDir 'asq.exe'

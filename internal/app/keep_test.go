@@ -390,22 +390,33 @@ func TestWhatIsKeptIsCopiedAgainWhereItsCopyIsGone(t *testing.T) {
 	}
 }
 
-// A folder of copies named by hand in the settings, and so never refused, has nothing of a
-// store deleted as a copy, though it is the store itself.
-func TestNothingOfAStoreIsDeletedAsACopy(t *testing.T) {
+// A folder of copies named by hand in the settings, and so never refused, has nothing
+// copied into a store, nor anything of one deleted as a copy, though it is the store or in
+// it.
+func TestNothingIsCopiedIntoAStoreNorDeletedFromOne(t *testing.T) {
 	a, h, kept := keeping(t)
 	ctx := t.Context()
-	if err := keep.Save(filepath.Dir(filepath.Dir(kept)), keep.Settings{Dir: filepath.Dir(h.Dir)}); err != nil {
+	state := filepath.Dir(filepath.Dir(kept))
+	alpha, _, _ := a.Resolve(ctx, fixture.Alpha)
+	transcript := filepath.Join(h.Dir, "-work-alpha", fixture.Alpha+".jsonl")
+
+	if err := keep.Save(state, keep.Settings{Dir: filepath.Join(h.Dir, "-work-alpha")}); err != nil {
 		t.Fatal(err)
 	}
-	alpha, _, _ := a.Resolve(ctx, fixture.Alpha)
-	if _, err := a.KeepSession(ctx, &alpha, true); err != nil {
+	if _, err := a.KeepSession(ctx, &alpha, true); err == nil || !strings.Contains(err.Error(), "is the store claude or in it: nothing is copied there") {
+		t.Errorf("keep into the store = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(h.Dir, "-work-alpha", "claude")); !os.IsNotExist(err) {
+		t.Errorf("copied into the store: %v", err)
+	}
+
+	if err := keep.Save(state, keep.Settings{Dir: filepath.Dir(h.Dir)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.KeepSession(ctx, &alpha, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(h.Dir, "-work-alpha", fixture.Alpha+".jsonl")); err != nil {
+	if _, err := os.Stat(transcript); err != nil {
 		t.Errorf("the CLI's own transcript was deleted as its copy: %v", err)
 	}
 }

@@ -84,6 +84,11 @@ func (a *App) copyKept(ctx context.Context, st keep.Settings, only *index.Sessio
 			all, ids = false, []string{only.ID}
 		}
 		to := filepath.Join(folder, store.Spec.Name)
+		if why := a.inStore(to); why != "" {
+			// A folder named in keep.json by hand, which nothing refused
+			errs = errors.Join(errs, fmt.Errorf("%s, where the copies of %s go, %s: nothing is copied there", to, store.Spec.Title, why))
+			continue
+		}
 		list := a.Index.Unkept
 		if _, err := os.Stat(to); look || err != nil {
 			// What the index says was copied was copied to a folder that is not there —
@@ -152,23 +157,13 @@ func (a *App) KeepIn(dir string) error {
 		}
 	}
 	was, next := st.Folder(state), keep.Settings{Dir: dir}.Folder(state)
-	// Copies are never written into a store, nor deleted from one: no CLI's folder of copies
-	// is in a store asq reads, or the store itself, or holds one
 	for _, spec := range catalog.All {
 		if _, ok := spec.Open("").(sources.Keeper); !ok {
 			continue
 		}
 		to := filepath.Join(next, spec.Name)
-		for _, store := range a.Set.All() {
-			if keep.IsKept(store.Source) {
-				continue
-			}
-			switch loc := store.Source.Location(); {
-			case beneath(to, loc):
-				return fmt.Errorf("%s, where the copies of %s would go, is the store %s or in it: asq writes nothing in a store; name a folder outside it", to, spec.Title, store.Name)
-			case beneath(loc, to):
-				return fmt.Errorf("%s, where the copies of %s would go, holds the store %s: asq writes nothing in a store; name another folder", to, spec.Title, store.Name)
-			}
+		if why := a.inStore(to); why != "" {
+			return fmt.Errorf("%s, where the copies of %s would go, %s: asq writes nothing in a store; name another folder", to, spec.Title, why)
 		}
 	}
 	if filepath.Clean(was) != filepath.Clean(next) {
@@ -181,6 +176,24 @@ func (a *App) KeepIn(dir string) error {
 		st.Dir = ""
 	}
 	return keep.Save(state, st)
+}
+
+// inStore says how a CLI's folder of copies would be in a store asq reads — it is the
+// store, or in it, or holds it — or "" when it would not. Copies are never written into a
+// store, nor deleted from one.
+func (a *App) inStore(to string) string {
+	for _, store := range a.Set.All() {
+		if keep.IsKept(store.Source) {
+			continue
+		}
+		switch loc := store.Source.Location(); {
+		case beneath(to, loc):
+			return "is the store " + store.Name + " or in it"
+		case beneath(loc, to):
+			return "holds the store " + store.Name
+		}
+	}
+	return ""
 }
 
 // beneath reports whether path is dir or a path beneath it.

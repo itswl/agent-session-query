@@ -342,4 +342,5 @@ cleanup after 30 days, say — is given back to the disk as it goes.
 
 Nothing about the index needs the server stopped: `asq index rebuild` and `asq index rm` make a
 new file, and the server goes on with that one at its next look at the stores. One it finds
-damaged it sets aside and reads anew, and says so in its log.
+damaged it sets aside and reads anew, and says so in its log. Windows is the exception: it does
+not remove a file a program holds open, so there the server is stopped for either command.

@@ -134,15 +134,14 @@ its parent. A thread's title is the name it was given (`/rename`), which Codex k
 `session_index.jsonl` beside `sessions`; a thread with none is titled by its first ask. A file a
 call names relative to the turn's directory — as a patch always names them — is named by its
 whole path, as the other CLIs name them, so a file asked for by its whole path finds Codex's
-edits too. A tool
-search is a call to `tool_search`, its result the tools it loaded; an image the API generated is
-a call to `image_generation`, its prompt the input and the image its result; a compaction the
-API made inside a response is a compaction event. The picture an older Codex's `view_image` sent
-the model as a message of its own, after the call's output, is context beside the call, not an
-ask. A rollback (`thread_rolled_back`) took the thread's last turns out of what
-the model is given, and the turns after it go on from before them: it is a `rollback` event at the
-end of the last turn it took back, and the turns it took back are read and counted, since they
-ran and were paid for. A thread reverted (`thread/revert`, which the clients that keep a
+edits too. A tool search is a call to `tool_search`, its result the tools it loaded; an image the
+API generated is a call to `image_generation`, its prompt the input and the image its result; a
+compaction the API made inside a response is a compaction event. The picture an older Codex's
+`view_image` sent the model as a message of its own, after the call's output, is context beside
+the call, not an ask. A rollback (`thread_rolled_back`) took the thread's last turns out of what
+the model is given, and the turns after it go on from before them: it is a `rollback` event at
+the end of the last turn it took back, and the turns it took back are read and counted, since
+they ran and were paid for. A thread reverted (`thread/revert`, which the clients that keep a
 paginated history offer) goes on in a new rollout under the same id, and the earlier one is kept
 as it was. The new one is a session of its own, holding what came after the revert, and is named
 for the thread and the rollout as its file is — `codex/<thread>_<rollout>` — so that a ref tells

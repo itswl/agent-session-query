@@ -345,6 +345,9 @@ jobs:
   # the release nothing, and the job fails saying what to run by hand.
   package-managers:
     needs: publish
+    # Whenever there is a release: a failed image or a skipped macOS check, which publish
+    # goes on past, would otherwise skip this job too, as it skips whatever comes after
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

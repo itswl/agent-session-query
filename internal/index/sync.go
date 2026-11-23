@@ -121,7 +121,8 @@ type known struct {
 type job struct {
 	store Store
 	ref   sources.Ref
-	again bool // read only because the adapter's reading is newer than the index's
+	sid   int64 // the session's row, when the index holds it and may keep what it holds
+	again bool  // read only because the adapter's reading is newer than the index's
 }
 
 // Sync brings the index in step with the stores: every transcript that is new or whose
@@ -189,14 +190,14 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 			case k.stamp != ref.Stamp && k.reads >= st.Spec.Reads:
 				wait := min(time.Duration(k.readMs*patience)*time.Millisecond, maxPatience)
 				if opts.Force || now.Sub(time.UnixMilli(k.readAt)) >= wait {
-					jobs = append(jobs, job{store: st, ref: ref})
+					jobs = append(jobs, job{store: st, ref: ref, sid: k.sid})
 				}
 			case k.reads < st.Spec.Reads:
 				// Read with an older reading of the CLI's files (sources.Spec.Reads), or by an
 				// asq that keeps none (see readsTrigger): read again, once, after what is new. A
 				// session a newer reading stored is left to it, so that an older asq sharing
 				// the index does not undo a newer one's reading
-				jobs = append(jobs, job{store: st, ref: ref, again: k.stamp == ref.Stamp})
+				jobs = append(jobs, job{store: st, ref: ref, sid: k.sid, again: k.stamp == ref.Stamp})
 			}
 		}
 		for key, k := range have {
@@ -305,7 +306,7 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 			go func() {
 				defer readers.Done()
 				for j := range queue {
-					rd := ix.read(ctx, j.store, j.ref)
+					rd := ix.read(ctx, j.store, j.ref, j.sid)
 					rd.again = j.again
 					readings <- rd
 				}

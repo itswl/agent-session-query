@@ -236,8 +236,12 @@ func Open(path string) (*Index, error) {
 		rw.Close()
 		return nil, fmt.Errorf("index: %s: %w", path, err)
 	}
-	for _, col := range [][2]string{{"reads", "INTEGER NOT NULL DEFAULT 0"}, {"reads_seq", "INTEGER NOT NULL DEFAULT 0"}} {
-		if err := addColumn(rw, "sessions", col[0], col[1]); err != nil {
+	for _, col := range [][3]string{
+		{"sessions", "reads", "INTEGER NOT NULL DEFAULT 0"},
+		{"sessions", "reads_seq", "INTEGER NOT NULL DEFAULT 0"},
+		{"turns", "src", "BLOB NOT NULL DEFAULT x''"},
+	} {
+		if err := addColumn(rw, col[0], col[1], col[2]); err != nil {
 			rw.Close()
 			return nil, fmt.Errorf("index: %s: %w", path, err)
 		}

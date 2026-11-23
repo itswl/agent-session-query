@@ -6,7 +6,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
+	"hash"
 	"slices"
 	"sort"
 	"strconv"
@@ -64,6 +66,8 @@ type turnRow struct {
 	tools, failures            int
 	interrupted                bool
 	hash                       []byte
+	src                        []byte // names what the rows are made from: see turnRow
+	same                       bool   // the index holds these rows already, and none was made
 	head                       string
 	body                       []byte
 	bodies                     []bodyRow
@@ -72,6 +76,62 @@ type turnRow struct {
 	failed                     []failureRow
 	runs                       []run     // the calls that ran a command, until the reading is judged
 	words                      [5]string // ask, reply, thinking, tool, output
+}
+
+// rowsVersion is part of every turn's src: a change to the rows made of a turn — a
+// preview cut elsewhere, a failure's output kept longer — raises it, and the turns an
+// older asq made are made again as they are read, rather than kept for having the same
+// content.
+const rowsVersion = 1
+
+// heldTurn is what the index holds of one turn of a session being read again.
+type heldTurn struct {
+	src, hash []byte
+	stale     bool // its words are to be written again (see wordsStale)
+}
+
+// heldTurns is what the index holds of a session's turns, by index: for a read to know
+// which of them it need not make again.
+type heldTurns map[int]heldTurn
+
+// heldTurns is what the index holds of a session's turns. Nil for a session the index does
+// not hold, and when it cannot be had: every turn is then made whole.
+func (ix *Index) heldTurns(ctx context.Context, sid int64) heldTurns {
+	if sid == 0 {
+		return nil
+	}
+	rows, err := ix.ro.QueryContext(ctx, `
+SELECT t.idx, t.src, t.hash, EXISTS (SELECT 1 FROM words_stale w WHERE w.sid = t.sid AND w.idx = t.idx)
+FROM turns t WHERE t.sid = ?`, sid)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := heldTurns{}
+	for rows.Next() {
+		var idx int
+		var h heldTurn
+		if rows.Scan(&idx, &h.src, &h.hash, &h.stale) != nil {
+			return nil
+		}
+		out[idx] = h
+	}
+	if rows.Err() != nil {
+		return nil
+	}
+	return out
+}
+
+// of is the turn idx as the index holds it, when a read may leave it as it is: one whose
+// rows are made from what they were made from before. Not the turn that holds the
+// session's title (see titleTurn), whose words change with the title, nor one whose words
+// are to be written again: the words of a turn left as it is are not made.
+func (held heldTurns) of(idx int) *heldTurn {
+	h, ok := held[idx]
+	if !ok || idx == titleTurn || h.stale || len(h.src) == 0 {
+		return nil
+	}
+	return &h
 }
 
 type bodyRow struct {
@@ -106,21 +166,37 @@ type turnBody struct {
 	Calls []model.ModelCall `json:"calls,omitempty"`
 }
 
-// read parses one transcript into a reading. It does everything that needs no database —
-// the parse, the previews, the compression — so that many can run at once and the one
-// writer only has rows to insert.
-func (ix *Index) read(ctx context.Context, st Store, ref sources.Ref) *reading {
+// read parses one transcript into a reading. It does everything that needs no database
+// write — the parse, the previews, the compression — so that many can run at once and the
+// one writer only has rows to insert.
+//
+// sid is the session's row when the index holds it already, and 0 when it does not. A
+// transcript that is being written is read again, whole, every time it changes; the turns
+// it held before are most of it, and making their rows again — their words, above all —
+// was most of what a read of a long session cost. A turn whose rows would be made from
+// what the index's were made from is left as the index holds it. The last turn is always
+// made whole: it is the one being written, and the one what the CLI recorded for the
+// session as a whole is entered against.
+func (ix *Index) read(ctx context.Context, st Store, ref sources.Ref, sid int64) *reading {
 	start := time.Now()
 	rd := &reading{source: st.Name, agent: st.Spec.Name, reads: st.Spec.Reads, ref: ref}
+	held := ix.heldTurns(ctx, sid)
+	var last *model.Turn // held back until the next turn says it is not the last
 	w := transcript.New(transcript.SinkFunc(func(t *model.Turn) error {
 		if t.Index > maxTurnIndex {
 			return nil
 		}
-		rd.turns = append(rd.turns, ix.turnRow(rd, t))
+		if last != nil {
+			rd.turns = append(rd.turns, ix.turnRow(rd, last, held.of(last.Index)))
+		}
+		last = t
 		return ctx.Err()
 	}))
 	err := st.Source.Read(ctx, ref, w)
 	stats, werr := w.Finish()
+	if last != nil && ctx.Err() == nil {
+		rd.turns = append(rd.turns, ix.turnRow(rd, last, nil))
+	}
 	if err == nil {
 		err = werr
 	}
@@ -145,7 +221,7 @@ func (ix *Index) read(ctx context.Context, st Store, ref sources.Ref) *reading {
 	if r := rd.sess.Recorded; r != nil && r.Usage != nil {
 		if rest := r.Usage.Minus(sumUsage(rd.turns)); r.Usage.Covers(sumUsage(rd.turns)) && !rest.IsZero() {
 			if len(rd.turns) == 0 {
-				rd.turns = append(rd.turns, ix.turnRow(rd, &model.Turn{Index: 0}))
+				rd.turns = append(rd.turns, ix.turnRow(rd, &model.Turn{Index: 0}, nil))
 			}
 			last := &rd.turns[len(rd.turns)-1]
 			merged := false
@@ -160,8 +236,10 @@ func (ix *Index) read(ctx context.Context, st Store, ref sources.Ref) *reading {
 				last.usage = append(last.usage, usageRow{model: rd.sess.Model, at: ms(rd.sess.UpdatedAt), u: rest})
 			}
 			// The turn's rows changed, though its content did not: the totals are part
-			// of what names it
-			last.hash = append(last.hash, []byte(strconv.FormatInt(r.Usage.Total(), 36))...)
+			// of what names it, and of what its rows are made from
+			total := []byte(strconv.FormatInt(r.Usage.Total(), 36))
+			last.hash = append(last.hash, total...)
+			last.src = append(last.src, total...)
 		}
 	}
 	rd.judge()
@@ -190,7 +268,13 @@ func sumUsage(rows []turnRow) model.Usage {
 }
 
 // turnRow renders a turn as the rows it is stored in.
-func (ix *Index) turnRow(rd *reading, t *model.Turn) turnRow {
+//
+// It is made in two steps. The first makes what the rows are made from — the turn with its
+// long text cut to previews, as JSON, and the whole of that text — and names it, in src.
+// A turn the index holds made from the same (held) is left there: the second step, which
+// gives the words and the compressed body and is most of what a turn costs, is not taken,
+// and the row is marked same. Otherwise it is taken, and hash names the rows as before.
+func (ix *Index) turnRow(rd *reading, t *model.Turn, held *heldTurn) turnRow {
 	row := turnRow{
 		idx: t.Index, startedAt: ms(t.StartedAt), endedAt: ms(t.EndedAt), lastAt: ms(t.LastAt),
 		items: len(t.Items), tools: t.Tools, failures: t.Failures, interrupted: t.Interrupted,
@@ -199,10 +283,19 @@ func (ix *Index) turnRow(rd *reading, t *model.Turn) turnRow {
 	if len(t.Items) > 0 {
 		row.firstSeq = t.Items[0].Seq
 	}
-	row.words = turnWords(t.Items)
 	row.runs = runsOf(t.Index, t.Items)
-	h := sha256.New()
+	src := sha256.New()
+	src.Write([]byte{rowsVersion})
 
+	// The items as the turn's row keeps them: what is too long to keep in line is cut to a
+	// preview, and goes to the bodies table whole. t.Items stays whole, for the words
+	items, copied := t.Items, false
+	item := func(i int) *model.Item {
+		if !copied {
+			items, copied = slices.Clone(t.Items), true
+		}
+		return &items[i]
+	}
 	for i := range t.Items {
 		it := &t.Items[i]
 		if it.ID != "" && !it.Inherited && (it.Kind == model.Prompt || it.Kind == model.Reply || it.Kind == model.ToolUse) {
@@ -219,27 +312,27 @@ func (ix *Index) turnRow(rd *reading, t *model.Turn) turnRow {
 			})
 		}
 
-		// What is too long to keep in line goes to the bodies table whole
 		if len(it.Text) > textInline {
-			row.bodies = append(row.bodies, bodyRow{it.Seq, "text", ix.enc.EncodeAll([]byte(it.Text), nil)})
-			it.Bytes = len(it.Text)
-			it.Text, _ = txt.Preview(it.Text, textInline)
+			row.bodies = append(row.bodies, bodyRow{it.Seq, "text", []byte(it.Text)})
+			c := item(i)
+			c.Bytes = len(it.Text)
+			c.Text, _ = txt.Preview(it.Text, textInline)
 		}
-		if tool := it.Tool; tool != nil {
+		if tool := it.Tool; tool != nil && (len(tool.Output) > outputInline || len(tool.Input) > inputInline) {
+			c := item(i)
+			cut := *tool
+			c.Tool = &cut
 			if len(tool.Output) > outputInline {
-				row.bodies = append(row.bodies, bodyRow{it.Seq, "output", ix.enc.EncodeAll([]byte(tool.Output), nil)})
-				tool.OutBytes = len(tool.Output)
-				tool.Output, _ = txt.Preview(tool.Output, outputInline)
+				row.bodies = append(row.bodies, bodyRow{it.Seq, "output", []byte(tool.Output)})
+				cut.OutBytes = len(tool.Output)
+				cut.Output, _ = txt.Preview(tool.Output, outputInline)
 			}
 			if len(tool.Input) > inputInline {
-				row.bodies = append(row.bodies, bodyRow{it.Seq, "input", ix.enc.EncodeAll(tool.Input, nil)})
-				tool.InBytes = len(tool.Input)
-				tool.Input = clipJSON(tool.Input, inputString)
+				row.bodies = append(row.bodies, bodyRow{it.Seq, "input", tool.Input})
+				cut.InBytes = len(tool.Input)
+				cut.Input = clipJSON(tool.Input, inputString)
 			}
 		}
-	}
-	for i := range row.bodies {
-		h.Write(row.bodies[i].data)
 	}
 
 	// What the turn's calls consumed, by model
@@ -258,26 +351,50 @@ func (ix *Index) turnRow(rd *reading, t *model.Turn) turnRow {
 		}
 	}
 
-	body, _ := json.Marshal(turnBody{Items: t.Items, Calls: t.Calls})
-	h.Write(body)
-	row.body = ix.enc.EncodeAll(body, nil)
-
+	body, _ := json.Marshal(turnBody{Items: items, Calls: t.Calls})
 	head := *t
 	head.Items, head.Calls = nil, nil
 	head.Ask = txt.Truncate(head.Ask, askInHead, "…")
 	head.Answer = txt.Truncate(head.Answer, answerInHead, "…")
 	headJSON, _ := json.Marshal(head)
-	h.Write(headJSON)
-	row.head = string(headJSON)
-	row.hash = h.Sum(nil)
-
 	if t.Index > 0 {
 		rd.lastAsk = head.Ask
 	}
 	if head.Answer != "" {
 		rd.answer = head.Answer
 	}
+
+	for i := range row.bodies {
+		writeSized(src, row.bodies[i].data)
+	}
+	writeSized(src, body)
+	writeSized(src, headJSON)
+	row.src = src.Sum(nil)
+	if held != nil && bytes.Equal(held.src, row.src) {
+		row.same, row.hash, row.bodies = true, held.hash, nil
+		return row
+	}
+
+	row.words = turnWords(t.Items)
+	h := sha256.New()
+	for i := range row.bodies {
+		row.bodies[i].data = ix.enc.EncodeAll(row.bodies[i].data, nil)
+		h.Write(row.bodies[i].data)
+	}
+	h.Write(body)
+	row.body = ix.enc.EncodeAll(body, nil)
+	h.Write(headJSON)
+	row.head = string(headJSON)
+	row.hash = h.Sum(nil)
 	return row
+}
+
+// writeSized writes b to h after its length, so that where one part ends and the next
+// begins is part of what is named.
+func writeSized(h hash.Hash, b []byte) {
+	var n [binary.MaxVarintLen64]byte
+	h.Write(n[:binary.PutUvarint(n[:], uint64(len(b)))])
+	h.Write(b)
 }
 
 func firstTime(a, b time.Time) time.Time {
@@ -528,19 +645,19 @@ RETURNING sid`,
 			return err
 		}
 
-		have := map[int][]byte{}
-		rows, err := tx.QueryContext(ctx, `SELECT idx, hash FROM turns WHERE sid = ?`, sid)
+		have := map[int]heldTurn{}
+		rows, err := tx.QueryContext(ctx, `SELECT idx, hash, src FROM turns WHERE sid = ?`, sid)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
 			var idx int
-			var hash []byte
-			if err := rows.Scan(&idx, &hash); err != nil {
+			var h heldTurn
+			if err := rows.Scan(&idx, &h.hash, &h.src); err != nil {
 				rows.Close()
 				return err
 			}
-			have[idx] = hash
+			have[idx] = h
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
@@ -569,13 +686,35 @@ RETURNING sid`,
 			words = append(words, op)
 		}
 
+		var unwritten []int // stale turns whose words this read did not make: see below
 		for i := range rd.turns {
 			t := &rd.turns[i]
 			old, known := have[t.idx]
 			delete(have, t.idx)
-			if known && bytes.Equal(old, t.hash) {
+			if known && bytes.Equal(old.hash, t.hash) {
+				if !bytes.Equal(old.src, t.src) {
+					// Rows another asq made, or this one before it named them: named now
+					if _, err := tx.ExecContext(ctx, `UPDATE turns SET src = ? WHERE sid = ? AND idx = ?`, t.src, sid, t.idx); err != nil {
+						return err
+					}
+				}
 				if stale[t.idx] {
+					if t.same {
+						// Its words became stale after this read looked (see heldTurns), and
+						// were not made: they are left for the next sync to write
+						unwritten = append(unwritten, t.idx)
+						continue
+					}
 					put(t, true)
+				}
+				continue
+			}
+			if t.same {
+				// Another asq wrote the turn after this read looked, and the read holds no
+				// rows to put in its place. The turn stays as that one wrote it, and the
+				// session is read again, whole, at the next sync
+				if _, err := tx.ExecContext(ctx, `UPDATE sessions SET stamp = '' WHERE sid = ?`, sid); err != nil {
+					return err
 				}
 				continue
 			}
@@ -606,8 +745,15 @@ RETURNING sid`,
 		if ahead {
 			return nil
 		}
-		_, err = tx.ExecContext(ctx, `DELETE FROM words_stale WHERE sid = ?`, sid)
-		return err
+		if _, err := tx.ExecContext(ctx, `DELETE FROM words_stale WHERE sid = ?`, sid); err != nil {
+			return err
+		}
+		for _, idx := range unwritten {
+			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO words_stale (sid, idx) VALUES (?, ?)`, sid, idx); err != nil {
+				return err
+			}
+		}
+		return nil
 	}()
 	return sid, changed, words, err
 }
@@ -680,10 +826,10 @@ func putTurnWords(ctx context.Context, tx *sql.Tx, id int64, t *turnRow, title s
 
 func insertTurn(ctx context.Context, tx *sql.Tx, sid int64, t *turnRow) error {
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO turns (sid, idx, started_at, ended_at, last_at, first_seq, items, tools, failures, interrupted, hash, head, body)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+INSERT INTO turns (sid, idx, started_at, ended_at, last_at, first_seq, items, tools, failures, interrupted, hash, head, body, src)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		sid, t.idx, t.startedAt, t.endedAt, t.lastAt, t.firstSeq, t.items, t.tools, t.failures, b2i(t.interrupted),
-		t.hash, t.head, t.body); err != nil {
+		t.hash, t.head, t.body, t.src); err != nil {
 		return err
 	}
 	for _, b := range t.bodies {

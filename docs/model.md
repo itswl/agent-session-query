@@ -154,7 +154,9 @@ and the next command rebuilds it from the stores.
   database). A session whose stamp has not moved is not read. Checking a store of a thousand
   transcripts that did not change costs a thousand `stat` calls.
 - **Only changed turns are rewritten.** Each turn has a hash of its content; a transcript that
-  grew by one turn writes one turn.
+  grew by one turn writes one turn. Nor are the others made again: their words and their
+  compressed text, most of what reading a turn costs, are kept as the index holds them, so
+  reading a long session again costs about what parsing its file does.
 - **A transcript being written is not chased.** One that keeps changing is read again no sooner
   than eight times what its last read cost (at most 45 seconds apart): a small session is
   followed as it is written, a hundred-megabyte one is not re-read on every append.

@@ -112,7 +112,8 @@ CREATE INDEX IF NOT EXISTS sessions_root    ON sessions (root_sid);
 
 -- One row per turn. head is the turn without its items, as JSON; body is the items and
 -- the model calls, compressed. hash names the content, so a transcript read again
--- rewrites only the turns that changed.
+-- rewrites only the turns that changed; src names what the rows were made from, so that
+-- such a read need not make the rows of those that did not again.
 CREATE TABLE IF NOT EXISTS turns (
   sid        INTEGER NOT NULL,
   idx        INTEGER NOT NULL,
@@ -127,6 +128,7 @@ CREATE TABLE IF NOT EXISTS turns (
   hash       BLOB NOT NULL,
   head       TEXT NOT NULL,
   body       BLOB NOT NULL,
+  src        BLOB NOT NULL DEFAULT x'',
   PRIMARY KEY (sid, idx)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS turns_started ON turns (started_at);

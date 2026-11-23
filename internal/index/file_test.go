@@ -206,6 +206,39 @@ func TestAProcessFollowsTheFileAtItsPath(t *testing.T) {
 	}
 }
 
+// A reader busy with the old file while the process follows the new one is let go of once
+// it is done, rather than kept to answer the next question from the old file.
+func TestAReaderBusyWhileTheFileIsFollowedIsLetGo(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not remove a file another program holds open")
+	}
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "index.db")
+	server := open(t, path)
+	syncMany(t, server, 3)
+	busy, err := server.ro.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := busy.QueryRowContext(ctx, `SELECT count(*) FROM sessions`).Scan(&n); err != nil || n != 3 {
+		t.Fatalf("the busy reader reads %d sessions, %v", n, err)
+	}
+
+	// asq index rebuild, and a session more
+	if err := Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	syncMany(t, open(t, path), 4)
+	if res := syncMany(t, server, 4); !strings.Contains(res.Reopened, "replaced") {
+		t.Errorf("reopened = %q", res.Reopened)
+	}
+	busy.Close() // done, and back to the pool
+	if n := sessions(t, server); n != 4 {
+		t.Errorf("the server reads %d sessions after following the file; want 4", n)
+	}
+}
+
 // Damage a process met in its file, when another asq has set that file aside and made a new
 // one already, was the old file's: the process follows the new one, and does not set it
 // aside in turn.

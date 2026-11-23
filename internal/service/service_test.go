@@ -511,6 +511,20 @@ func TestTheUnitIsNotExpandedBySystemd(t *testing.T) {
 	}
 }
 
+// A home with a space in it is common on Windows: the program is quoted, as Task
+// Scheduler's own window writes it, and read back without the quotes.
+func TestTheTaskQuotesAProgramWithASpace(t *testing.T) {
+	tk := &scheduler{m: &Machine{User: `PC\a b`}}
+	s := Setup{Binary: `C:\Users\a b\AppData\Local\Programs\asq\asq.exe`, Args: []string{"serve"}}
+	def := string(tk.render(s))
+	if !strings.Contains(def, `<Command>&#34;C:\Users\a b\AppData\Local\Programs\asq\asq.exe&#34;</Command>`) {
+		t.Errorf("the program is not quoted:\n%s", def)
+	}
+	if got := tk.parse([]byte(def)); got.Binary != s.Binary {
+		t.Errorf("read back as %q", got.Binary)
+	}
+}
+
 func TestTheTaskIsGivenToSchtasksInUTF16(t *testing.T) {
 	f := newFake(t, "windows")
 	if _, err := f.m.Install(f.setup(), false); err != nil {

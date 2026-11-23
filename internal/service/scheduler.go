@@ -29,7 +29,8 @@ func (t *scheduler) log() string   { return "" }
 const taskNS = "http://schemas.microsoft.com/windows/2004/02/mit/task"
 
 // render writes the task as Task Scheduler's XML. It says it is UTF-16, which is what
-// write gives schtasks; the text here is UTF-8, as Go holds it.
+// write gives schtasks; the text here is UTF-8, as Go holds it. The program is quoted
+// when its path has a space, as Task Scheduler's own window writes it.
 func (t *scheduler) render(s Setup) []byte {
 	user := esc(t.m.User)
 	var args []string
@@ -80,7 +81,7 @@ func (t *scheduler) render(s Setup) []byte {
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>` + esc(s.Binary) + `</Command>
+      <Command>` + esc(winQuote(s.Binary)) + `</Command>
       <Arguments>` + esc(strings.Join(args, " ")) + `</Arguments>
     </Exec>
   </Actions>

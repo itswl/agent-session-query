@@ -712,3 +712,99 @@ func TestAGrowingTranscriptIsTakenUpAtItsLatestTurn(t *testing.T) {
 		}
 	}
 }
+
+// A read taken up at a mark that changed the title has the title's words made from what the
+// index holds, and written with the words of everything else its batch read: after the
+// rest, as one segment of the words table (see wordsOp), and not between one session's
+// rows and the next's.
+func TestTitleWordsOfAReadTakenUpAreWrittenWithTheRest(t *testing.T) {
+	rows := claudeRows()
+	titled := slices.IndexFunc(rows, func(r any) bool { return r.(map[string]any)["type"] == "custom-title" })
+	encode := func(rows []any, id string) []byte {
+		var b bytes.Buffer
+		enc := json.NewEncoder(&b)
+		enc.SetEscapeHTML(false)
+		for _, r := range rows {
+			enc.Encode(r)
+		}
+		// Rows of their own, or the second would be taken for a copy of the first
+		out := bytes.ReplaceAll(b.Bytes(), []byte("c1aa0000-0000-4000-8000-000000000001"), []byte(id))
+		out = bytes.ReplaceAll(out, []byte(`"uuid":"`), []byte(`"uuid":"`+id[len(id)-1:]))
+		return bytes.ReplaceAll(out, []byte(`"msg_`), []byte(`"msg_`+id[len(id)-1:]))
+	}
+	ids := []string{"c1aa0000-0000-4000-8000-00000000000a", "c1aa0000-0000-4000-8000-00000000000b"}
+	root := t.TempDir()
+	dir := filepath.Join(root, "-work-grown")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(id string, rows []any) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), encode(rows, id), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range ids {
+		write(id, rows[:titled])
+	}
+	ix := openTemp(t)
+	st := Store{Name: "claude", Spec: claude.Spec, Source: claude.Spec.Open(root)}
+	ctx := context.Background()
+	if _, err := ix.Sync(ctx, []Store{st}, SyncOptions{Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	// Segments are left as they are written, to be counted (see the test of a sync's words)
+	if _, err := ix.rw.Exec(`INSERT INTO words (words, rank) VALUES ('automerge', 0)`); err != nil {
+		t.Fatal(err)
+	}
+	segments := func() int {
+		t.Helper()
+		var n int
+		if err := ix.rw.QueryRow(`SELECT count(*) FROM words_data`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := segments()
+
+	// The first is given a new title and a turn, the second a turn
+	write(ids[0], rows)
+	write(ids[1], slices.Delete(slices.Clone(rows), titled, titled+1))
+	refs, err := st.Source.Scan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.SortFunc(refs, func(a, b sources.Ref) int { return strings.Compare(a.Key, b.Key) })
+	var rds []*reading
+	for _, ref := range refs {
+		var sid int64
+		if err := ix.rw.QueryRow(`SELECT sid FROM sessions WHERE key = ?`, ref.Key).Scan(&sid); err != nil {
+			t.Fatal(err)
+		}
+		rd := ix.read(ctx, st, ref, sid)
+		if rd.from <= titleTurn {
+			t.Fatalf("%s: read taken up at turn %d, not after the title's", ref.Key, rd.from)
+		}
+		rds = append(rds, rd)
+	}
+	if !strings.Contains(rds[0].sess.ID, ids[0]) {
+		t.Fatalf("the first read is of %s", rds[0].sess.ID)
+	}
+	for _, w := range ix.writeAll(ctx, rds) {
+		if w.err != nil {
+			t.Fatal(w.err)
+		}
+	}
+	// One segment, and the page of what was deleted from the one before
+	if n := segments() - before; n > 2 {
+		t.Errorf("two reads taken up, one with a new title, were written as %d pages of the words table, not a segment and its deletions", n)
+	}
+	res, err := ix.Search(ctx, ParseQuery("title:review"), Filter{}, SearchOptions{Limit: 10, PerSession: -1})
+	if err != nil || res.Total != 1 {
+		t.Errorf("the new title is found in %d turns (%v), want 1", res.Total, err)
+	}
+	var stale int
+	if err := ix.rw.QueryRow(`SELECT count(*) FROM words_stale`).Scan(&stale); err != nil || stale != 0 {
+		t.Errorf("%d turns' words are left to write (%v)", stale, err)
+	}
+}

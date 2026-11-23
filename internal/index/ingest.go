@@ -877,10 +877,14 @@ RETURNING sid`,
 			}
 		}
 		// A turn before the mark whose words are to be written again — the one that holds
-		// the title, when the title changed — is written from what the index holds
+		// the title, when the title changed — has them made from what the index holds, and
+		// written with the rest of the words
 		for idx := range stale {
 			if idx < rd.from {
-				_, err := ix.refillSession(ctx, tx, sid)
+				_, err := ix.refillSession(ctx, tx, sid, func(op wordsOp) error {
+					words = append(words, op)
+					return nil
+				})
 				return err
 			}
 		}

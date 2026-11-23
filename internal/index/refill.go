@@ -50,7 +50,9 @@ func (ix *Index) refill(ctx context.Context, done func()) error {
 				return err
 			}
 			for turns := 0; written < len(sids) && turns < refillTurns; written++ {
-				n, err := ix.refillSession(ctx, tx, sids[written])
+				n, err := ix.refillSession(ctx, tx, sids[written], func(op wordsOp) error {
+					return putTurnWords(ctx, tx, op.id, op.row, op.title, op.again)
+				})
 				if err != nil {
 					return err
 				}
@@ -78,9 +80,10 @@ const (
 	refillBatch    = 64
 )
 
-// refillSession writes the words of a session's stale turns, clears them from the table,
-// and says how many it wrote.
-func (ix *Index) refillSession(ctx context.Context, tx *sql.Tx, sid int64) (int, error) {
+// refillSession makes the words of a session's stale turns from what the index holds, gives
+// each turn's row of the words table to put, clears them from the table, and says how many
+// it made.
+func (ix *Index) refillSession(ctx context.Context, tx *sql.Tx, sid int64, put func(wordsOp) error) (int, error) {
 	var title string
 	err := tx.QueryRowContext(ctx, `SELECT title FROM sessions WHERE sid = ?`, sid).Scan(&title)
 	if errors.Is(err, sql.ErrNoRows) { // the session is gone, and its turns with it
@@ -119,7 +122,7 @@ WHERE w.sid = ? AND w.idx > ? ORDER BY w.idx LIMIT ?`, sid, after, refillBatch)
 			break
 		}
 		for _, s := range batch {
-			row := turnRow{idx: s.idx}
+			row := &turnRow{idx: s.idx}
 			if s.body != nil {
 				// A turn that cannot be decoded has no words, rather than holding up every
 				// other: it is written whole again when its transcript next changes
@@ -127,11 +130,11 @@ WHERE w.sid = ? AND w.idx > ? ORDER BY w.idx LIMIT ?`, sid, after, refillBatch)
 					row.words = turnWords(items)
 				}
 			}
-			tw := ""
+			op := wordsOp{id: turnRowID(sid, s.idx), again: true, row: row}
 			if s.idx == titleTurn {
-				tw = titleWords(title)
+				op.title = titleWords(title)
 			}
-			if err := putTurnWords(ctx, tx, turnRowID(sid, s.idx), &row, tw, true); err != nil {
+			if err := put(op); err != nil {
 				return 0, err
 			}
 			after = s.idx

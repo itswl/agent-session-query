@@ -176,8 +176,9 @@ func TestToolRows(t *testing.T) {
 	if read := tools["call_read"]; read.Name != "exec" || read.Output != "# demo\n" || read.DurMs != 100 || read.Status != model.StatusOK || !strings.Contains(read.Command, "sed -n") {
 		t.Errorf("exec = %+v", read)
 	}
-	// apply_patch: the files come off the patch; a rejected patch is an error with no exit code
-	if patch := tools["call_patch"]; exit(patch) != 0 || patch.DurMs != 64 || !strings.HasPrefix(patch.Output, "Success.") || len(patch.Files) != 1 || patch.Files[0] != "README.md" {
+	// apply_patch: the files come off the patch, named from the turn's directory; a rejected
+	// patch is an error with no exit code
+	if patch := tools["call_patch"]; exit(patch) != 0 || patch.DurMs != 64 || !strings.HasPrefix(patch.Output, "Success.") || len(patch.Files) != 1 || patch.Files[0] != "/p/README.md" {
 		t.Errorf("apply_patch = %+v", patch)
 	}
 	if bad := tools["call_bad"]; bad.Status != model.StatusError {
@@ -194,7 +195,7 @@ func TestToolRows(t *testing.T) {
 		t.Errorf("failures = %d files = %+v", one.Failures, one.Files)
 	}
 	for _, f := range one.Files {
-		if f.Changed != (f.Path == "README.md") {
+		if f.Changed != (f.Path == "/p/README.md") {
 			t.Errorf("%s changed = %v: only the patch that landed is a change", f.Path, f.Changed)
 		}
 	}
@@ -205,6 +206,58 @@ func TestToolRows(t *testing.T) {
 	// No token_usage_record: the snapshot written after the response says what it cost
 	if want := (model.Usage{Input: 60, Output: 9, CacheRead: 40}); s.Stats.Usage != want || one.Usage != want {
 		t.Errorf("usage = %+v, turn 1's %+v, want %+v on the turn the response was made in", s.Stats.Usage, one.Usage, want)
+	}
+}
+
+// Codex names the files it patches relative to the turn's directory, and a question asked
+// by a file's whole path must find them: each is named from the directory of the turn the
+// patch was made in — the session's until a turn says otherwise — and a path already whole
+// is as it was. A Windows session's paths are a Windows path's, whatever reads them.
+func TestPatchedFilesAreNamedWhole(t *testing.T) {
+	patch := func(call, file string) []any {
+		return []any{
+			`{"timestamp":"2026-11-08T10:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"` + call + `","name":"apply_patch","input":"*** Begin Patch\n*** Update File: ` + file + `\n@@\n-a\n+b\n*** End Patch"}}`,
+			`{"timestamp":"2026-11-08T10:00:02Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"` + call + `","output":"Exit code: 0\nOutput:\nSuccess.\n"}}`,
+		}
+	}
+	ask := func(text string) string {
+		return `{"timestamp":"2026-11-08T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"` + text + `"}]}}`
+	}
+	changed := func(turn model.Turn) []string {
+		var out []string
+		for _, f := range turn.Files {
+			if f.Changed {
+				out = append(out, f.Path)
+			}
+		}
+		return out
+	}
+	root := t.TempDir()
+	lines := []any{`{"type":"session_meta","payload":{"id":"codex-paths","cwd":"/work/billing-api"}}`, ask("one")}
+	lines = append(lines, patch("p1", "internal/invoices/handler.go")...)
+	lines = append(lines, patch("p2", "/etc/hosts")...)
+	lines = append(lines, patch("p3", "./docs/../README.md")...)
+	lines = append(lines, `{"type":"turn_context","payload":{"turn_id":"t2","cwd":"/work/billing-api/web"}}`, ask("two"))
+	lines = append(lines, patch("p4", "src/app.ts")...)
+	sourcetest.Write(t, filepath.Join(root, "2026", "11", "08", "rollout-2026-11-08T10-00-00-paths.jsonl"), lines...)
+	sourcetest.Write(t, filepath.Join(root, "2026", "11", "08", "rollout-2026-11-08T11-00-00-windows.jsonl"),
+		`{"type":"session_meta","payload":{"id":"codex-windows","cwd":"C:\\work\\billing-api"}}`, ask("three"),
+		patch("w1", "internal/invoices/handler.go")[0], patch("w1", "")[1])
+	all := sourcetest.All(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, all...)
+	s := sourcetest.ByID(t, all, "codex-paths")
+	if got := fmt.Sprint(changed(s.Turn(t, 1))); got != "[/work/billing-api/internal/invoices/handler.go /etc/hosts /work/billing-api/README.md]" {
+		t.Errorf("turn 1 changed %s", got)
+	}
+	if got := fmt.Sprint(changed(s.Turn(t, 2))); got != "[/work/billing-api/web/src/app.ts]" {
+		t.Errorf("turn 2 changed %s: from the directory the turn ran in", got)
+	}
+	if tool := sourcetest.Tools(s.Turn(t, 1))[0]; fmt.Sprint(tool.Files) != "[/work/billing-api/internal/invoices/handler.go]" {
+		t.Errorf("the call names %v", tool.Files)
+	}
+	w := sourcetest.ByID(t, all, "codex-windows")
+	if got := fmt.Sprint(changed(w.Turn(t, 1))); got != `[C:\work\billing-api\internal\invoices\handler.go]` {
+		t.Errorf("windows turn changed %s", got)
 	}
 }
 

@@ -374,6 +374,42 @@ func TestCallFactsReadsPatches(t *testing.T) {
 	}
 }
 
+// A file a call names relative to the directory its message ran in is named by its whole
+// path, written the way that directory is; a whole path, one from home, and any path of a
+// message that names no whole directory are as the call named them.
+func TestFilesRelativeToTheDirectory(t *testing.T) {
+	for _, c := range []struct{ dir, file, want string }{
+		{"/work/api", "internal/x.go", "/work/api/internal/x.go"},
+		{"/work/api/", "./docs/../README.md", "/work/api/README.md"},
+		{"/work/api", "/etc/hosts", "/etc/hosts"},
+		{"/work/api", "~/notes.md", "~/notes.md"},
+		{"/work/api", `C:\other\x.go`, `C:\other\x.go`},
+		{`C:\work\api`, "internal/x.go", `C:\work\api\internal\x.go`},
+		{`C:\work\api`, `internal\y.go`, `C:\work\api\internal\y.go`},
+		{"C:/work/api", "x.go", `C:\work\api\x.go`},
+		{`\\server\share\api`, "x.go", `\\server\share\api\x.go`},
+		{`C:\work\api`, "/rooted.go", "/rooted.go"},
+		{"work/api", "x.go", "x.go"},
+		{"", "x.go", "x.go"},
+	} {
+		if got := within(c.dir, c.file); got != c.want {
+			t.Errorf("within(%q, %q) = %q, want %q", c.dir, c.file, got, c.want)
+		}
+	}
+	got := collect(t, user(0, "fix it"),
+		Message{Role: Assistant, At: at(1), Dir: "/work/api", Blocks: []Block{CallOf("c1", "apply_patch", map[string]any{"input": "*** Begin Patch\n*** Update File: a.go\n*** End Patch"})}},
+		Message{Role: ToolRole, At: at(2), Blocks: []Block{ResultOf("c1", "", "Success.", Outcome{Status: model.StatusOK})}},
+		Message{Role: Assistant, At: at(3), Blocks: []Block{CallOf("c2", "Read", map[string]any{"path": "b.go"})}},
+	)
+	turn := got.Turns[0]
+	if len(turn.Files) != 2 || turn.Files[0] != (model.File{Path: "/work/api/a.go", Changed: true}) || turn.Files[1].Path != "b.go" {
+		t.Errorf("files = %+v", turn.Files)
+	}
+	if f := turn.Items[1].Tool.Files; len(f) != 1 || f[0] != "/work/api/a.go" {
+		t.Errorf("the call names %v", f)
+	}
+}
+
 // Passing over a record costs a map lookup, however many there are of it: a store that
 // drifted holds thousands.
 func BenchmarkUnread(b *testing.B) {

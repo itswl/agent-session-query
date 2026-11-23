@@ -373,6 +373,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		copied    map[string]bool // the parent's turn ids, once a fork is known
 		turn      string
 		turnModel string
+		turnDir   string                // where the turn's calls run, and its patches' paths start from
 		names     = map[string]string{} // call id → tool, for the one output that needs it
 		pending   []transcript.Message  // a response's rows, held until its usage arrives
 		responses int
@@ -499,6 +500,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			flush(nil)
 			turn = p.TurnID
 			turnModel = kit.First(p.Model, turnModel)
+			turnDir = kit.First(p.Cwd, turnDir)
 			if w.S.Cwd == "" {
 				w.S.Cwd = p.Cwd
 			}
@@ -622,9 +624,12 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			return true
 		}
 
+		// A call's paths are relative to the directory of the turn it is made in — a patch's
+		// always are (codex-rs core/prompt_with_apply_patch_instructions.md) — and they are
+		// named by their whole path, the way the other CLIs name them
 		assistant := func(blocks ...transcript.Block) {
 			pending = append(pending, transcript.Message{ID: p.ID, Role: transcript.Assistant, At: at,
-				Model: turnModel, Inherited: inherited, Blocks: blocks})
+				Model: turnModel, Inherited: inherited, Dir: kit.First(turnDir, w.S.Cwd), Blocks: blocks})
 		}
 		callID := kit.First(p.CallID, p.ID)
 		switch p.Type {

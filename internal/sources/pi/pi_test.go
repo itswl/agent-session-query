@@ -191,6 +191,29 @@ func TestToolResultPairing(t *testing.T) {
 	}
 }
 
+// pi's tools take a path relative to the session's directory as well as a whole one: a
+// file named either way is named by its whole path.
+func TestRelativePathsAreNamedWhole(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "proj", "2026-10-01T10-00-00_rrrr.jsonl"),
+		header("rrrr", "/w/api"),
+		msgRow("m1", "2026-10-06T18:40:00Z", M{"role": "user", "content": text("fix the handler"), "timestamp": ms(0)}),
+		msgRow("m2", "2026-10-06T18:40:01Z", M{"role": "assistant", "stopReason": "toolUse", "timestamp": ms(time.Second),
+			"content": []M{
+				{"type": "toolCall", "id": "c1", "name": "edit", "arguments": M{"path": "internal/handler.go", "oldText": "a", "newText": "b"}},
+				{"type": "toolCall", "id": "c2", "name": "read", "arguments": M{"path": "/etc/hosts"}},
+			}}),
+		msgRow("m3", "2026-10-06T18:40:02Z", M{"role": "toolResult", "toolCallId": "c1", "toolName": "edit", "isError": false, "timestamp": ms(2 * time.Second), "content": text("Edited")}),
+		msgRow("m4", "2026-10-06T18:40:02Z", M{"role": "toolResult", "toolCallId": "c2", "toolName": "read", "isError": false, "timestamp": ms(2 * time.Second), "content": text("127.0.0.1")}),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	want := []model.File{{Path: "/w/api/internal/handler.go", Changed: true}, {Path: "/etc/hosts"}}
+	if got := s.Turn(t, 1).Files; !reflect.DeepEqual(got, want) {
+		t.Errorf("files = %+v, want %+v", got, want)
+	}
+}
+
 // TestResultWithoutItsCall: a result names its tool itself, so one whose call is not in the
 // transcript is still a tool item with the right name
 func TestResultWithoutItsCall(t *testing.T) {

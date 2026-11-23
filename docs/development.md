@@ -96,7 +96,10 @@ One package and one line.
 
    Convert token counts to [the one shape](model.md#usage-one-shape): input without cached
    tokens, output with reasoning. Mark what was not typed by a person (`Injected`), what a fork
-   copied (`Inherited`), what was typed mid-turn (`Queued`). Leave everything else to the Writer.
+   copied (`Inherited`), what was typed mid-turn (`Queued`). For a CLI whose tools take a path
+   relative to where they run, give the message that directory (`Dir`): a file named that way is
+   then named by its whole path, as a question about it will name it. Leave everything else to
+   the Writer.
 
    Where the CLI records [where a turn stands](sources.md#where-a-turn-stands), say how in
    `w.Tells` — by its last rows, or by a row it writes as every turn ends — and mark that row

@@ -224,6 +224,38 @@ func diffFiles(text string) []string {
 	return files
 }
 
+// within names a file a call named relative to dir, the directory the call ran in, by its
+// whole path. A file named whole, or from the home directory (~/notes), is named as it
+// was; so is any file when dir is not a whole path itself. The path is written the way
+// dir is — a Unix one with /, a Windows one with \ — whichever system reads it: dir is
+// the CLI's record of where it ran, which may be another machine's.
+func within(dir, file string) string {
+	if dir == "" || file == "" || rooted(file) || strings.HasPrefix(file, "~") {
+		return file
+	}
+	switch {
+	case strings.HasPrefix(dir, "/"):
+		return path.Join(dir, file)
+	case rooted(dir):
+		slashed := path.Join(strings.ReplaceAll(dir, "\\", "/"), strings.ReplaceAll(file, "\\", "/"))
+		if strings.HasPrefix(dir, `\\`) {
+			slashed = "/" + slashed // \\server\share: Join keeps one of its two slashes
+		}
+		return strings.ReplaceAll(slashed, "/", "\\")
+	}
+	return file
+}
+
+// rooted reports whether p is a whole path on some system: /work/api, C:\work\api, C:/work,
+// \\server\share.
+func rooted(p string) bool {
+	if strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\\`) {
+		return true
+	}
+	return len(p) >= 3 && p[1] == ':' && (p[2] == '\\' || p[2] == '/') &&
+		('a' <= p[0]|0x20 && p[0]|0x20 <= 'z')
+}
+
 func appendUnique(list []string, s string) []string {
 	for _, item := range list {
 		if item == s {

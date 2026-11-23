@@ -57,7 +57,7 @@ var Spec = sources.Spec{
 	Movable: true,
 	// --session takes an id; pi's own --resume is an interactive picker
 	Resume: "pi --session",
-	Reads:  1,
+	Reads:  2,
 	Store:  "~/.pi/agent/sessions/<project>/<time>_<id>.jsonl",
 }
 
@@ -291,9 +291,11 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 				}
 			case "assistant":
 				// One message is one response, timed from its creation to its last token:
-				// the call ends that long after the message's time.
+				// the call ends that long after the message's time. pi's tools take a path
+				// relative to the session's directory as well as a whole one, and resolve it
+				// from there (coding-agent tools/path-utils.ts, resolveToCwd)
 				out := transcript.Message{Role: transcript.Assistant, At: at, Model: m.Model, Stop: m.StopReason,
-					DurMs: millis(m.DurationMs), Blocks: assistantBlocks(m, w.Unread)}
+					DurMs: millis(m.DurationMs), Dir: w.S.Cwd, Blocks: assistantBlocks(m, w.Unread)}
 				if m.Usage != nil && !inherited {
 					out.Usage, out.CostUSD = m.Usage.canonical(), m.Usage.costUSD()
 				}

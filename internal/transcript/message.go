@@ -53,6 +53,11 @@ type Message struct {
 	Ends       bool
 	Unfinished bool
 
+	// Dir is the directory the message's calls ran in, for a CLI whose tools take a path
+	// relative to it: a file a call names that way is named by its whole path. Empty, a
+	// file is named as the call named it.
+	Dir string
+
 	Blocks []Block
 }
 

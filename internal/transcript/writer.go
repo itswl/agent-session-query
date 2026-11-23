@@ -418,6 +418,9 @@ func (w *Writer) pushCall(cur *turn, m Message, b Block, call int) {
 	}
 	tool := &model.Tool{CallID: b.CallID, Name: name, Kind: ToolKind(name), Input: inputJSON(b.Input)}
 	tool.Files, tool.Command = callFacts(tool.Kind, tool.Input)
+	for i, f := range tool.Files {
+		tool.Files[i] = within(m.Dir, f)
+	}
 	idx := w.push(cur, model.Item{Kind: model.ToolUse, At: m.At, ID: m.ID, Call: call, Tool: tool, Inherited: m.Inherited})
 	if b.CallID != "" {
 		cur.open[b.CallID] = idx

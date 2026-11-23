@@ -578,6 +578,29 @@ func TestTheRequestSaysWhoIsAsking(t *testing.T) {
 	if json.Unmarshal(rec.Body.Bytes(), &r) != nil || r.Result.IsError || !strings.Contains(r.Result.Content[0].Text, "pin the provider versions") {
 		t.Errorf("this, over HTTP, in a Codex thread = %s", rec.Body)
 	}
+
+	// A thread reverted goes on in a rollout of its own, which the adapter names for the
+	// thread and the rollout: the thread Codex names is that one, where the agent writes
+	const rollout = "019a7c00-0000-7000-8000-0000000000b2"
+	later := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339)
+	var root string
+	for _, st := range s.App.Set.All() {
+		if st.Name == "codex" {
+			root = st.Source.Location()
+		}
+	}
+	sourcetest.Write(t, filepath.Join(root, "2026", "11", "20", "rollout-2026-11-20T11-00-00-"+codexThread+"_"+rollout+".jsonl"),
+		`{"timestamp":"`+later+`","type":"session_meta","payload":{"id":"`+codexThread+`","cwd":"/work/beta","cli_version":"0.162.0","history_base":{"thread_id":"`+codexThread+`","end_ordinal_exclusive":0}}}`,
+		`{"timestamp":"`+later+`","type":"turn_context","payload":{"turn_id":"t2","model":"gpt-6.1","cwd":"/work/beta"}}`,
+		`{"timestamp":"`+later+`","type":"response_item","payload":{"type":"message","id":"msg_u2","role":"user","content":[{"type":"input_text","text":"pin them to a range instead"}]}}`,
+		`{"timestamp":"`+later+`","type":"response_item","payload":{"type":"message","id":"msg_a2","role":"assistant","content":[{"type":"output_text","text":"Ranged."}]}}`)
+	if _, err := s.App.Sync(t.Context(), index.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	s.Caller = &Caller{Dirs: []string{"/nowhere"}}
+	if text, isErr := callAs("read", map[string]any{"ref": "this"}, thread); isErr || !strings.Contains(text, `[ref "this" is `+codex+"_"+rollout+":") || !strings.Contains(text, "pin them to a range instead") {
+		t.Errorf("this, in a reverted thread:\n%s", text)
+	}
 }
 
 func TestOverHTTP(t *testing.T) {

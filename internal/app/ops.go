@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/itswl/agent-session-query/internal/catalog"
 	"github.com/itswl/agent-session-query/internal/index"
 	"github.com/itswl/agent-session-query/internal/keep"
 	"github.com/itswl/agent-session-query/internal/render"
@@ -69,6 +70,9 @@ func (a *App) Self(ctx context.Context, source, id string, dirs []string) (Self,
 		var amb *index.AmbiguousError
 		switch {
 		case err == nil && s.ID == id:
+			if s, err = a.latestOf(ctx, s); err != nil {
+				return Self{}, err
+			}
 			self := Self{Session: s, ByID: true}
 			if s.Cwd != "" {
 				later, _, err := a.Index.Sessions(ctx, index.Filter{Stores: stores, In: []string{s.Cwd}, Since: s.UpdatedAt}, index.Page{Limit: 2})
@@ -111,6 +115,27 @@ func (a *App) Self(ctx context.Context, source, id string, dirs []string) (Self,
 		return Self{}, fmt.Errorf("%w: none has run in %s", index.ErrNotFound, strings.Join(named, " or "))
 	}
 	return Self{Session: Listed(list)[0]}, nil
+}
+
+// latestOf is the session its CLI goes on writing under the id s has: s itself, or where
+// the CLI goes on with a session in a file of its own under that id, the latest of those.
+// A Codex thread reverted goes on in a rollout its adapter names <thread>_<rollout>, and
+// the thread Codex names is that one, not the rollout the revert took turns back from.
+func (a *App) latestOf(ctx context.Context, s index.Session) (index.Session, error) {
+	spec, ok := catalog.Spec(s.Source)
+	if !ok || spec.ResumeID == nil {
+		return s, nil
+	}
+	list, _, err := a.Index.Sessions(ctx, index.Filter{Stores: []string{s.Source}, Text: s.ID, Archived: true}, index.Page{Limit: 12})
+	if err != nil {
+		return s, err
+	}
+	for _, l := range list { // the most recently written first
+		if l.ID != s.ID && spec.ResumeID(l.ID) == s.ID && l.UpdatedAt.After(s.UpdatedAt) {
+			return l, nil
+		}
+	}
+	return s, nil
 }
 
 // Paths is a directory by every path a CLI may have recorded as a session's working

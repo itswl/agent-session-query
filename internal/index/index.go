@@ -36,6 +36,10 @@ type Index struct {
 	sourcesMu sync.Mutex
 	sources   map[string]int
 	sourcesAt time.Time
+
+	// Repaired is the damaged file Open set aside, and made anew in place of; nil when it
+	// found none
+	Repaired *Repair
 }
 
 // widen marks a filter whose stores hold most of the index, for a query the time should
@@ -215,26 +219,66 @@ func Older() []string {
 }
 
 // Open opens the index at path, creating it when it is not there. The file holds
-// everything the transcripts do, so it is created readable by its owner alone.
+// everything the transcripts do, so it is created readable by its owner alone. A file that
+// is damaged is set aside and made anew (see Repaired): the index is a cache, and what it
+// held is read again from the stores.
 func Open(path string) (*Index, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	ix := &Index{path: path, subs: map[chan Change]struct{}{}}
+	if err := create(path); err != nil {
 		return nil, fmt.Errorf("index: %w", err)
-	}
-	if f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600); err == nil {
-		f.Close()
 	}
 	uri := kit.FileURI(path)
 	// The write-ahead log is reused after each checkpoint rather than shrunk; a burst of
 	// writes — a rebuild — would leave it at its largest for good. journal_size_limit
 	// cuts it back to a few megabytes whenever a checkpoint has emptied it.
-	rw, err := sql.Open("sqlite", uri+"?_txlock=immediate&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=journal_size_limit(4194304)&_pragma=synchronous(NORMAL)&_pragma=temp_store(MEMORY)&_pragma=cache_size(-65536)")
+	writer := func() (*sql.DB, error) {
+		rw, err := sql.Open("sqlite", uri+"?_txlock=immediate&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=journal_size_limit(4194304)&_pragma=synchronous(NORMAL)&_pragma=temp_store(MEMORY)&_pragma=cache_size(-65536)")
+		if err == nil {
+			rw.SetMaxOpenConns(1)
+		}
+		return rw, err
+	}
+	rw, err := writer()
 	if err != nil {
 		return nil, fmt.Errorf("index: %w", err)
 	}
-	rw.SetMaxOpenConns(1)
-	if _, err := rw.Exec(schema); err != nil {
+	err = prepare(rw)
+	if Damaged(err) {
+		rw.Close()
+		aside, aerr := setAside(path)
+		if aerr != nil {
+			return nil, fmt.Errorf("index: %s is damaged (%v), and could not be set aside: %w", path, err, aerr)
+		}
+		ix.Repaired = &Repair{Problem: err.Error(), Aside: aside}
+		if err = create(path); err != nil {
+			return nil, fmt.Errorf("index: %w", err)
+		}
+		if rw, err = writer(); err != nil {
+			return nil, fmt.Errorf("index: %w", err)
+		}
+		err = prepare(rw)
+	}
+	if err != nil {
 		rw.Close()
 		return nil, fmt.Errorf("index: %s: %w", path, err)
+	}
+	ro, err := sql.Open("sqlite", uri+"?mode=ro&_pragma=busy_timeout(10000)&_pragma=query_only(1)&_pragma=cache_size(-32768)")
+	if err != nil {
+		rw.Close()
+		return nil, fmt.Errorf("index: %w", err)
+	}
+	ro.SetMaxOpenConns(8)
+	ix.rw, ix.ro = rw, ro
+	ix.enc, _ = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderConcurrency(1))
+	ix.dec, _ = zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
+	return ix, nil
+}
+
+// prepare makes the file what this asq reads and writes: the tables, and what a file an
+// older asq made lacks.
+func prepare(rw *sql.DB) error {
+	if _, err := rw.Exec(schema); err != nil {
+		return err
 	}
 	for _, col := range [][3]string{
 		{"sessions", "reads", "INTEGER NOT NULL DEFAULT 0"},
@@ -246,14 +290,12 @@ func Open(path string) (*Index, error) {
 		{"sessions", "kept", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := addColumn(rw, col[0], col[1], col[2]); err != nil {
-			rw.Close()
-			return nil, fmt.Errorf("index: %s: %w", path, err)
+			return err
 		}
 	}
 	for _, col := range failuresColumns {
 		if err := addColumn(rw, "failures", col[0], col[1]); err != nil {
-			rw.Close()
-			return nil, fmt.Errorf("index: %s: %w", path, err)
+			return err
 		}
 	}
 	for _, step := range []func(*sql.DB) error{
@@ -263,19 +305,10 @@ func Open(path string) (*Index, error) {
 		newWords,
 	} {
 		if err := step(rw); err != nil {
-			rw.Close()
-			return nil, fmt.Errorf("index: %s: %w", path, err)
+			return err
 		}
 	}
-	ro, err := sql.Open("sqlite", uri+"?mode=ro&_pragma=busy_timeout(10000)&_pragma=query_only(1)&_pragma=cache_size(-32768)")
-	if err != nil {
-		rw.Close()
-		return nil, fmt.Errorf("index: %w", err)
-	}
-	ro.SetMaxOpenConns(8)
-	enc, _ := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderConcurrency(1))
-	dec, _ := zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
-	return &Index{path: path, rw: rw, ro: ro, enc: enc, dec: dec, subs: map[chan Change]struct{}{}}, nil
+	return nil
 }
 
 // Path is the index file.
@@ -288,10 +321,11 @@ func (ix *Index) Close() error {
 	return ix.rw.Close()
 }
 
-// Remove deletes an index file and what SQLite keeps beside it.
+// Remove deletes an index file, what SQLite keeps beside it, and a damaged one set aside
+// there.
 func Remove(path string) error {
 	var first error
-	for _, suffix := range []string{"", "-wal", "-shm"} {
+	for _, suffix := range []string{"", "-wal", "-shm", damagedSuffix} {
 		if err := os.Remove(path + suffix); err != nil && !os.IsNotExist(err) && first == nil {
 			first = err
 		}

@@ -163,6 +163,11 @@ it as evidence, not as orders.
 The record is kept in one SQLite file — `asq index path` — that is entirely a cache: delete it
 and the next command rebuilds it from the stores.
 
+- **A damaged file is made anew.** A file that is not a database, or whose pages do not hold
+  together, is set aside beside where it was, as `<name>.damaged` — the last one only — and a
+  new one is read from the stores by the process that opens it. Damage deeper in, which opening
+  the file does not read, ends the command that meets it, naming `asq index rebuild`; `asq
+  doctor` reads the whole file, and fails when it is damaged.
 - **A store that cannot be read is not an empty store.** If a store, or one directory or
   database of it, cannot be listed, everything already known of it is kept and `asq` says which
   store and why — on stderr, in `/api/health`, in the page, at the end of an MCP answer.

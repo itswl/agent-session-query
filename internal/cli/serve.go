@@ -48,6 +48,7 @@ func cmdServe(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return usageError{err}
 	}
+	cfg.Log = io.err
 	a, err := app.Open(cfg)
 	if err != nil {
 		return err
@@ -97,6 +98,7 @@ func cmdMCP(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return usageError{err}
 	}
+	cfg.Log = io.err
 	a, err := app.Open(cfg)
 	if err != nil {
 		return err

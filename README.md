@@ -235,11 +235,12 @@ A store somewhere else — another machine's home directory, a backup — is add
   After that a command checks which transcripts changed — a `stat` each — and reads only those:
   a Claude Code session from where its latest turn began, any other whole, making only the
   turns that changed. A search over gigabytes of history answers in
-  milliseconds. The index is a cache: `asq index rm` and it is rebuilt. It holds what the
-  stores hold, so a session a CLI deletes leaves it too — and Claude Code and Gemini CLI
-  delete the sessions not used for 30 days, unless a setting of theirs says otherwise.
-  `asq doctor` names the setting, and says how far back each store goes. `asq keep --all`
-  keeps a copy of each session in asq's own folder, read once the CLI has deleted it.
+  milliseconds. The index is a cache: `asq index rm` and it is rebuilt, and a damaged one is
+  set aside and rebuilt without being asked. It holds what the stores hold, so a session a
+  CLI deletes leaves it too — and Claude Code and Gemini CLI delete the sessions not used for
+  30 days, unless a setting of theirs says otherwise. `asq doctor` names the setting, and says
+  how far back each store goes. `asq keep --all` keeps a copy of each session in asq's own
+  folder, read once the CLI has deleted it.
 - **Read-only.** Nothing in `asq` can write to a CLI's store.
 - **Local.** No telemetry, no network calls, no account. The two things that can send anything
   anywhere are the ones you point at a destination yourself: `asq otel`, and an agent you gave

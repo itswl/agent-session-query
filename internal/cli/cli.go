@@ -104,6 +104,11 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if _, usage := err.(usageError); usage {
 		return 2
 	}
+	if index.Damaged(err) {
+		// Met by a question, past what opening the index and bringing it up to date read:
+		// this process is ending, and the next one would not know
+		fmt.Fprintln(stderr, "asq: the index is damaged: asq index rebuild makes it anew from the stores")
+	}
 	return 1
 }
 
@@ -138,6 +143,7 @@ func open(ctx context.Context, c *command, io *streams) (*app.App, error) {
 	if err != nil {
 		return nil, usageError{err}
 	}
+	cfg.Log = io.err
 	a, err := app.Open(cfg)
 	if err != nil {
 		return nil, err
@@ -818,13 +824,32 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return err
 	}
-	return doctor(ctx, set.All(), kept.All, c.json, c.style(io.out), io.out)
+	path := cfg.IndexPath
+	if path == "" {
+		path = index.DefaultPath()
+	}
+	return checkUp(ctx, checkup{stores: set.All(), keptAll: kept.All, index: path}, c.json, c.style(io.out), io.out)
+}
+
+// checkup is what doctor looks at.
+type checkup struct {
+	stores  []index.Store
+	keptAll bool   // asq keeps a copy of every session of the CLIs that delete theirs
+	index   string // the index file; "" for none
 }
 
 // doctor looks at each store and says what it found, in words or as JSON. It fails when a
 // store that is there cannot be read, and when it was stopped before it looked at them all.
 // keptAll says asq keeps a copy of every session of the CLIs that delete theirs.
 func doctor(ctx context.Context, stores []index.Store, keptAll, asJSON bool, st render.Style, out io.Writer) error {
+	return checkUp(ctx, checkup{stores: stores, keptAll: keptAll}, asJSON, st, out)
+}
+
+// checkUp looks at the stores, and at the index file — that it holds together — and says
+// what it found. It fails as doctor does, and when the index is
+// damaged.
+func checkUp(ctx context.Context, up checkup, asJSON bool, st render.Style, out io.Writer) error {
+	stores := up.stores
 	type check struct {
 		Source   string `json:"source"`
 		Location string `json:"location"`
@@ -875,13 +900,30 @@ func doctor(ctx context.Context, stores []index.Store, keptAll, asJSON bool, st 
 			if ck.Sessions > 0 && store.Name == store.Spec.Name {
 				ck.Retention = store.Spec.Retention
 				_, keeps := store.Source.(sources.Keeper)
-				ck.Kept = keptAll && ck.Retention != "" && keeps
+				ck.Kept = up.keptAll && ck.Retention != "" && keeps
 			}
 			if err != nil {
 				ck.Error, failed = err.Error(), true
 			}
 		}
 		checks = append(checks, ck)
+	}
+	// The index is a cache, and a damaged one is set aside and made anew by the asq that
+	// finds it — which one opening it does not always, so the whole of it is read here
+	type indexCheck struct {
+		index.Checked
+		Error string `json:"error,omitempty"`
+	}
+	var ix *indexCheck
+	if up.index != "" && ctx.Err() == nil {
+		ck, err := index.Check(ctx, up.index)
+		ix = &indexCheck{Checked: ck}
+		if err != nil {
+			ix.Error = err.Error()
+		}
+		if ix.Error != "" || ix.Problem != "" {
+			failed = true
+		}
 	}
 	// A look that was stopped is not a pass, whatever it got through, and says so
 	stopped := ctx.Err() != nil
@@ -890,6 +932,9 @@ func doctor(ctx context.Context, stores []index.Store, keptAll, asJSON bool, st 
 	}
 	if asJSON {
 		report := map[string]any{"version": app.Version, "stores": checks, "ok": !failed}
+		if ix != nil {
+			report["index"] = ix
+		}
 		if stopped {
 			report["stopped"] = true
 		}
@@ -929,6 +974,18 @@ func doctor(ctx context.Context, stores []index.Store, keptAll, asJSON bool, st 
 			}
 			if len(ck.Unread) > 0 {
 				fmt.Fprintf(out, "  %s %s\n", st.Warn("!"), unreadLine(ck.Unread))
+			}
+		}
+		if ix != nil {
+			switch {
+			case ix.Error != "":
+				fmt.Fprintf(out, "✗ %-12s FAILED             %s\n    %s\n", "index", st.Path(ix.Path), ix.Error)
+			case !ix.Found:
+				fmt.Fprintf(out, "· %-12s not made yet       %s\n", "index", st.Path(ix.Path))
+			case ix.Problem != "":
+				fmt.Fprintf(out, "✗ %-12s DAMAGED            %s\n    %s — asq index rebuild makes it anew from the stores\n", "index", st.Path(ix.Path), ix.Problem)
+			default:
+				fmt.Fprintf(out, "✓ %-12s %s, holds together   %s\n", "index", mb(ix.Bytes), st.Path(ix.Path))
 			}
 		}
 		if stopped {
@@ -1169,7 +1226,7 @@ func cmdIndex(ctx context.Context, args []string, io *streams) error {
 	}
 	fmt.Fprintf(io.out, "%s\n  %s · %s · %s · %s · last brought up to date in %s\n", path,
 		sessions, plural(h.Totals.Agents, "subagent transcript"), plural(h.Totals.Turns, "turn"),
-		strconv.FormatFloat(float64(h.Totals.Bytes)/(1<<20), 'f', 1, 64)+" MB", txt.Duration(time.Duration(h.Sync.Took)*time.Millisecond))
+		mb(h.Totals.Bytes), txt.Duration(time.Duration(h.Sync.Took)*time.Millisecond))
 	if cfg.IndexPath == "" {
 		for _, old := range index.Older() {
 			fmt.Fprintf(io.out, "  · an earlier asq's index is still here, and not read: %s (once no earlier asq runs, asq index rm removes it)\n", old)
@@ -1184,6 +1241,9 @@ func cmdIndex(ctx context.Context, args []string, io *streams) error {
 	}
 	return nil
 }
+
+// mb is a size in megabytes, to a tenth.
+func mb(n int64) string { return strconv.FormatFloat(float64(n)/(1<<20), 'f', 1, 64) + " MB" }
 
 func plural(n int, word string) string {
 	if n == 1 {

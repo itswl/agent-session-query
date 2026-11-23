@@ -6,6 +6,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"io"
 	"runtime"
 	"slices"
 	"strconv"
@@ -31,6 +32,9 @@ type Config struct {
 	// State is the state directory (see StateDir), where what asq keeps of the sessions a
 	// CLI deletes is written down (see internal/keep). Empty: nothing is kept.
 	State string
+	// Log is told what the program does to the index file of its own accord: a damaged one
+	// set aside and made anew. Nil tells nobody.
+	Log io.Writer
 }
 
 // App is the open program.
@@ -53,6 +57,8 @@ type App struct {
 	copyMu  sync.Mutex // one round of copying what is kept at a time (see keepUp)
 	keepMu  sync.Mutex
 	keepErr error // what went wrong the last time copies were made
+
+	log io.Writer
 }
 
 // Open opens the index and resolves the stores.
@@ -69,7 +75,18 @@ func Open(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &App{Index: ix, Set: set, state: cfg.State}, nil
+	a := &App{Index: ix, Set: set, state: cfg.State, log: cfg.Log}
+	if ix.Repaired != nil {
+		a.say(ix.Repaired.String())
+	}
+	return a, nil
+}
+
+// say tells the log what the program did of its own accord.
+func (a *App) say(what string) {
+	if a.log != nil {
+		fmt.Fprintf(a.log, "asq: %s\n", what)
+	}
 }
 
 // Close releases the index.

@@ -14,7 +14,8 @@ uses nothing else, so anything it shows can be had from the API too.
 
 The list is grouped by day, newest first, fifty at a time. A row is the session's title, its last
 ask and how it was answered, and the facts worth scanning for: which CLI, how many turns and tool
-calls, how many of those failed, subagents, project, branch. A session written in the last two
+calls, how many of those failed and how many of those the same command passed later — in red
+while one has not, muted once each has — subagents, project, branch. A session written in the last two
 minutes is marked *live*.
 
 What changed since you last looked is marked too: a session begun since is *new*, one begun
@@ -72,7 +73,10 @@ session lists its subagents.
 ![The handoff brief](screenshots/brief.png)
 
 Below it, the turns: for each, the ask in full, a line of facts (what kinds of tool calls, files
-changed, tokens), and the answer. Only this outline is loaded up front — a long session is
+changed, tokens), and the answer. A turn with failed calls says how many, in red, unless the same
+command passed later for each of them — in that turn or the three after it, [as failures judges
+it](api.md#reports) — when it says so, muted: those were steps of the work, not where it stands.
+The head counts what *Passed later* beside what *Failed*. Only this outline is loaded up front — a long session is
 megabytes — and a turn's steps are fetched when it is opened.
 
 ![A turn's steps](screenshots/session-steps.png)
@@ -103,8 +107,8 @@ their own, and are found on their own pages. It is `f`, or *Find* in the session
 the head is the title and the first line of facts, and *Details* opens the rest: when, the
 totals, the command that reopens it, the subagents. A row stays at the top while the session is
 read: back to the list or report it was opened from (or to the sessions list), the turn in
-view — type another number to go to that turn — the next failed turn, find, the top, and the
-newest turn.
+view — type another number to go to that turn — the next failed turn (one with a failure the
+same command did not pass later), find, the top, and the newest turn.
 
 ## Reports
 
@@ -141,8 +145,8 @@ narrows to paths that contain what is typed; *Read or changed* adds the turns th
 
 ![Files](screenshots/files.png)
 
-**Digest** — the same window per project: sessions, turns, tool calls and failures, tokens, files
-changed by kind, which models and CLIs did the work.
+**Digest** — the same window per project: sessions, turns, tool calls and failures — how many of
+them passed later — tokens, files changed by kind, which models and CLIs did the work.
 
 ![Digest](screenshots/digest.png)
 
@@ -177,7 +181,7 @@ say for themselves which stores did it — narrowed to one, they would have noth
 | `e` | expand every step of the opened turns |
 | `g g` · `G` | top · bottom |
 | `12 G` | turn 12 of a session |
-| `x` `X` | next, previous failed turn — after the one in view, and round from the end |
+| `x` `X` | next, previous failed turn — after the one in view, and round from the end; a turn whose failures all passed later is passed over |
 | `f` | find in this session |
 | `Esc` | back to the list or report a session was opened from — or, with the find open, closes it |
 | `?` | search syntax and keys |

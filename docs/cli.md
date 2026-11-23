@@ -45,11 +45,14 @@ the command happened to run.
 ## Finding
 
 **`asq ls [word]`** — recent sessions, newest first. A word narrows to sessions whose title, id
-or directory contains it.
+or directory contains it. A session's failed calls are counted with how many of them the same
+command passed later, as `failures` [judges it](#measuring): `2 failed, 1 passed later`, in red
+while one has not, muted once each has.
 
 **`asq search <query>`** — the turns that match, best first. Each hit shows the turn's ref and
 how the turn ended — `✓`, `✗2 failed` (with how many of those calls the same command passed
-later, in that turn or the three after it: `✗2 failed, 1 passed later`), `⚠ interrupted` —
+later, in that turn or the three after it: `✗2 failed, 1 passed later`; once each has,
+`✓ 1 failed, passed later`), `⚠ interrupted` —
 then the ask, the lines the words were found in, labelled with where (`reply`, `thinking`, a
 tool's `input`, `command` or `output`, the session's `title`), and the turn's `answer`: enough
 to tell which turn to open without opening each.
@@ -134,7 +137,7 @@ between a history that still holds and one that has moved on
 
 | | |
 |---|---|
-| `asq show claude/3f2a` | the outline: every turn's ask and how it ended, and the session's subagents |
+| `asq show claude/3f2a` | the outline: every turn's ask and how it ended — `✗2` for failed calls, `✓` with `1 failed, passed later` once the same command passed later for each — and the session's subagents |
 | `asq show claude/3f2a#4` · `--turns 3-5` · `--turns last` · `--turns all` | those turns step by step, each step numbered `[seq]` |
 | `asq show claude/3f2a --seq 12` | one step whole: a tool call's full input and output |
 
@@ -229,7 +232,8 @@ after it that could hide a failure (`| tail`, `|| true`), and not merely started
 background ([the rules](api.md#reports)).
 
 **`asq digest`** — the last 7 days (`--since`) per project: sessions, turns, tool calls,
-failures, tokens, files changed by kind (code / test / docs / config), models and CLIs used.
+failures and how many of them passed later, tokens, files changed by kind (code / test / docs /
+config), models and CLIs used.
 
 ## Serving
 

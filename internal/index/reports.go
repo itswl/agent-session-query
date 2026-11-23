@@ -377,6 +377,10 @@ type Digest struct {
 	Changed  map[string]int `json:"changed"` // files changed, counted as code / test / docs / config
 	Models   map[string]int `json:"models"`  // model calls by model
 	Sources  map[string]int `json:"sources"` // sessions by store
+
+	// PassedLater is how many of the failures the same command passed later (see
+	// Failure.Later)
+	PassedLater int `json:"passedLater"`
 }
 
 // DigestReport is a window's work, per project and in total.
@@ -433,6 +437,30 @@ func (ix *Index) Digest(ctx context.Context, f Filter, w Window) (DigestReport, 
 				d.LastAt = t
 			}
 		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return rep, err
+	}
+
+	// Of the failures of those turns, the ones whose command passed later
+	when, whenArgs = w.where("t.started_at")
+	rows, err = ix.ro.QueryContext(ctx, `
+SELECT s.cwd, count(*) FROM turns t JOIN failures x ON x.sid = t.sid AND x.idx = t.idx JOIN sessions s ON s.sid = t.sid
+WHERE t.idx > 0 AND x.later_seq > 0 AND `+where+` AND `+when+` GROUP BY s.cwd`,
+		append(append([]any{}, args...), whenArgs...)...)
+	if err != nil {
+		return rep, err
+	}
+	for rows.Next() {
+		var cwd string
+		var n int
+		if err := rows.Scan(&cwd, &n); err != nil {
+			rows.Close()
+			return rep, err
+		}
+		get(cwd).PassedLater += n
+		rep.Total.PassedLater += n
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {

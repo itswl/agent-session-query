@@ -288,9 +288,11 @@ const laterVersion = 1
 // one that does not judge failures writes turns without judging those before them: this one
 // judges them all at its next sync (see Index.judge). It writes them again itself, from the
 // reading, as it writes a session (see judged). The triggers are in the file, and fire
-// whichever asq writes. A change of laterTurns would have them made anew.
+// whichever asq writes. A change of laterTurns would have them made anew. The indexes here,
+// on what is judged and on each turn's failures, need the columns an older table gains.
 const failuresJudged = `
 CREATE INDEX IF NOT EXISTS failures_judged ON failures (judged);
+CREATE INDEX IF NOT EXISTS failures_turn ON failures (sid, idx, later_seq);
 CREATE TRIGGER IF NOT EXISTS failures_judged_turn AFTER INSERT ON turns
 BEGIN
   UPDATE failures SET judged = 0 WHERE sid = NEW.sid AND idx >= NEW.idx - 3 AND idx <= NEW.idx AND judged != 0;

@@ -184,7 +184,8 @@ const sessionColumns = `s.sid, s.source, s.agent, s.id, s.path, s.title, s.cwd, 
   s.parent_session, s.parent_agent, s.parent_call, s.parent_run, s.agent_type, s.fork,
   s.root_sid, s.depth, s.agents,
   s.turns, s.items, s.tools, s.failures, s.calls, s.tok_in, s.tok_out, s.tok_cr, s.tok_cw, s.tok_think, s.cost,
-  s.last_ask, s.answer, s.error`
+  s.last_ask, s.answer, s.error,
+  (SELECT count(*) FROM failures x WHERE x.sid = s.sid AND x.later_seq > 0)`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -199,7 +200,7 @@ func scanSession(row scanner, now time.Time) (Session, error) {
 		&s.rootSid, &s.Depth, &s.Agents,
 		&s.Stats.Turns, &s.Stats.Items, &s.Stats.Tools, &s.Stats.Failures, &s.Stats.Calls,
 		&s.Stats.Usage.Input, &s.Stats.Usage.Output, &s.Stats.Usage.CacheRead, &s.Stats.Usage.CacheWrite, &s.Stats.Usage.Reasoning, &s.Stats.CostUSD,
-		&s.LastAsk, &s.Answer, &s.Error)
+		&s.LastAsk, &s.Answer, &s.Error, &s.Stats.PassedLater)
 	if err != nil {
 		return s, err
 	}

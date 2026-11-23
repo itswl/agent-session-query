@@ -102,6 +102,28 @@ func TestAFailureSaysWhereItsCommandPassedLater(t *testing.T) {
 	sync(commands{[][]ran{one, two}})
 	later("a turn later", map[string]string{"go test ./...": "#2 go test ./internal/x", "make lint": "-"})
 
+	// And the session, its turns and the digest say so
+	s, err := ix.Resolve(ctx, "claude/s", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Stats.Failures != 2 || s.Stats.PassedLater != 1 {
+		t.Errorf("session: %d failed, %d passed later; want 2, 1", s.Stats.Failures, s.Stats.PassedLater)
+	}
+	if list, _, err := ix.Sessions(ctx, Filter{}, Page{}); err != nil || len(list) != 1 || list[0].Stats.PassedLater != 1 {
+		t.Errorf("sessions = %+v, %v; want the one, 1 passed later", list, err)
+	}
+	outline, err := ix.Outline(ctx, &s)
+	if err != nil || len(outline) != 2 || outline[0].PassedLater != 1 || outline[1].PassedLater != 0 {
+		t.Errorf("outline = %+v, %v; want turn 1 with 1 passed later", outline, err)
+	}
+	if turns, err := ix.Turns(ctx, &s, TurnRange{First: 1, Last: 1}); err != nil || len(turns) != 1 || turns[0].PassedLater != 1 {
+		t.Errorf("turn 1 = %+v, %v; want 1 passed later", turns, err)
+	}
+	if d, err := ix.Digest(ctx, Filter{}, Window{}); err != nil || d.Total.Failures != 2 || d.Total.PassedLater != 1 || len(d.Projects) != 1 || d.Projects[0].PassedLater != 1 {
+		t.Errorf("digest = %+v, %v; want 2 failed, 1 passed later", d, err)
+	}
+
 	// Rewritten without it: it no longer has
 	sync(commands{[][]ran{one}})
 	later("the turn gone", map[string]string{"go test ./...": "-"})

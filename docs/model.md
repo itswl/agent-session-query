@@ -27,7 +27,7 @@ Session ─┬─ Turn 0   what came before the first ask: injected context, a f
 | `startedAt`, `updatedAt` | first and last row |
 | `archived` | put away by its CLI |
 | `parent` | set on a subagent's transcript: the session it ran in, the tool call that started it, what kind of agent it is |
-| `stats` | turns, items, tool calls, failures, model calls, usage, and the cost its CLI worked out, where it did |
+| `stats` | turns, items, tool calls, failures and how many of them passed later, model calls, usage, and the cost its CLI worked out, where it did |
 
 **Turn** — one exchange. A turn starts when *a person* asks and at no other time: text a
 harness injected in the user's place (a slash command's expansion, a notification, a hook's
@@ -41,6 +41,7 @@ output, a compaction summary) is not an ask and opens nothing.
 | `startedAt`, `endedAt` | the ask, and the last thing the agent *did* — a notification dropped in hours later does not stretch the turn |
 | `interrupted` | it stopped before the agent was done: the person stopped it, or, in a Gemini CLI session, an error cut it off — an `error` event in the turn says which. Another CLI's error is an `error` event that marks nothing |
 | `tools`, `failures`, `toolKinds` | tool calls, how many failed, and what they were for (`exec` `write` `read` `search` `net` `agent` `other`) |
+| `passedLater` | of the failures, how many the same command passed later, in this turn or the three after it — what the index judges, which no transcript says |
 | `files` | every file a tool named, and whether it was changed — a write counts only if it did not fail |
 | `calls` | the model responses, in order, each with its usage |
 | `usage`, `costUsd` | their sum; a cost only where the CLI priced its own responses |
@@ -163,9 +164,10 @@ and the next command rebuilds it from the stores.
   search is and when it was, for search and `files` alike: a word most turns hold is counted
   and ranked without a turn's text being read, until the page shown is.
 - **A failure says whether it passed later.** Where the same command next succeeded is worked
-  out when the session is read, and kept beside the failure: the failures report, a search's
-  hits and a brief read it rather than the turns after each failure. A turn the session gains
-  has the failures of the three before it worked out again, whichever `asq` wrote it.
+  out when the session is read, and kept beside the failure: the failures report, the list, a
+  session's turns, a search's hits, a brief and the digest read it rather than the turns after
+  each failure. A turn the session gains has the failures of the three before it worked out
+  again, whichever `asq` wrote it.
 - **Long text is kept twice.** A turn holds a preview of each long output — the head and, larger,
   the tail, since the end of an output is where a command says why it failed — and the whole text
   sits beside it, read only when asked for.

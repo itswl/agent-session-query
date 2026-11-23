@@ -38,7 +38,7 @@ export function mount(main, route, ctx) {
       h('span', null, f.plural(t.sessions, 'session')),
       h('span', null, f.plural(t.turns, 'turn')),
       h('span', null, f.plural(t.tools, 'tool call')),
-      h('span', { class: t.failures ? 'bad' : null }, `${f.num(t.failures)} failed`),
+      h('span', { class: f.open(t) ? 'bad' : null, title: f.passedTitle }, f.failed(t) || '0 failed'),
       h('span', { title: f.num(f.totalTokens(t.usage)) }, `${f.tokens(f.totalTokens(t.usage))} tokens`),
       h('span', null, `${f.plural(KINDS.reduce((n, k) => n + (t.changed?.[k] || 0), 0), 'file')} changed`)));
     body.replaceChildren(r.projects.length
@@ -78,7 +78,7 @@ function entry(d, since) {
       h('span', null, f.plural(d.sessions, 'session')),
       h('span', null, f.plural(d.turns, 'turn')),
       h('span', null, f.plural(d.tools, 'tool call')),
-      d.failures > 0 && h('span', { class: 'bad' }, `${f.num(d.failures)} failed`),
+      d.failures > 0 && h('span', { class: f.open(d) ? 'bad' : null, title: f.passedTitle }, f.failed(d)),
       tok > 0 && h('span', { title: `${f.num(tok)} tokens, ${f.pct(d.cacheHit)} from cache` }, `${f.tokens(tok)} tokens`)),
     h('dl', { class: 'd-facts' },
       changed.length > 0 && h('div', null, h('dt', null, 'Changed'), h('dd', { class: 'dots' }, changed.map((k) => h('span', null, `${k} ${f.num(d.changed[k])}`)))),

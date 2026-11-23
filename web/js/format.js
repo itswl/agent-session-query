@@ -37,14 +37,21 @@ export function pct(x) {
 
 export const cost = (usd) => (!usd ? '' : usd < 0.01 ? '<$0.01' : '$' + usd.toFixed(2));
 
-// failed says how many of a turn a search found had calls fail, and how many of those the
-// same command passed later: "2 failed, 1 passed later".
-export function failed(hit) {
-  const n = hit.failures || 0, p = hit.passedLater || 0;
+// failed says how many calls of a turn, a session or a project failed, and how many of
+// those the same command passed later: "2 failed, 1 passed later"; with calls, "2 failed
+// calls, 1 passed later".
+export function failed(x, calls = false) {
+  const n = x.failures || 0, p = x.passedLater || 0;
   if (!n) return '';
   const later = !p ? '' : p < n ? `, ${num(p)} passed later` : n === 1 ? ', passed later' : ', all passed later';
-  return `${num(n)} failed${later}`;
+  return `${calls ? plural(n, 'failed call') : `${num(n)} failed`}${later}`;
 }
+
+// open is how many of those the same command did not pass later: what is still to see to.
+export const open = (x) => Math.max((x.failures || 0) - (x.passedLater || 0), 0);
+
+// passedTitle is what a count of failures says on hover.
+export const passedTitle = 'Calls that failed, and how many of them the same command passed later, in that turn or the three after';
 
 export function dur(ms) {
   if (!(ms > 0)) return '';

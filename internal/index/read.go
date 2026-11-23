@@ -12,6 +12,10 @@ import (
 // Outline is a session's turns without their items: what was asked and how each ended.
 // Turn 0 — what came before the first ask — is listed only when there is one.
 func (ix *Index) Outline(ctx context.Context, s *Session) ([]model.Turn, error) {
+	passed, err := ix.passed(ctx, s.sid, 0, -1)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := ix.ro.QueryContext(ctx, `SELECT head, items FROM turns WHERE sid = ? ORDER BY idx`, s.sid)
 	if err != nil {
 		return nil, err
@@ -28,7 +32,7 @@ func (ix *Index) Outline(ctx context.Context, s *Session) ([]model.Turn, error) 
 		if err := json.Unmarshal([]byte(head), &t); err != nil {
 			return nil, err
 		}
-		t.Steps = steps
+		t.Steps, t.PassedLater = steps, passed[t.Index]
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -80,6 +84,15 @@ func (ix *Index) Turns(ctx context.Context, s *Session, r TurnRange) ([]model.Tu
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if len(out) > 0 {
+		passed, err := ix.passed(ctx, s.sid, out[0].Index, out[len(out)-1].Index)
+		if err != nil {
+			return nil, err
+		}
+		for i := range out {
+			out[i].PassedLater = passed[out[i].Index]
+		}
 	}
 	if r.Full {
 		for i := range out {

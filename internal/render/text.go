@@ -116,14 +116,45 @@ func stem(id string) int {
 	return 0
 }
 
-func marks(st Style, failures int, interrupted bool) string {
+// marks is how a turn ended, in a mark: ✗ and how many calls failed, while the same command
+// has not passed later for each of them; ⚠ when the person stopped it; ✓ otherwise.
+func marks(st Style, t *model.Turn) string {
 	switch {
-	case failures > 0:
-		return st.red("✗" + strconv.Itoa(failures))
-	case interrupted:
+	case t.Failures > t.PassedLater:
+		return st.red("✗" + strconv.Itoa(t.Failures))
+	case t.Interrupted:
 		return st.yellow("⚠")
 	}
 	return st.green("✓")
+}
+
+// failedWords says how many calls failed, and how many of them the same command passed
+// later: "2 failed, 1 passed later".
+func failedWords(failed, passed int) string {
+	return strconv.Itoa(failed) + " failed" + laterWords(failed, passed)
+}
+
+// laterWords is how many of the calls that failed the same command passed later, as it
+// follows their count: ", 1 passed later", ", all passed later"; "" for none.
+func laterWords(failed, passed int) string {
+	switch {
+	case passed <= 0:
+		return ""
+	case passed >= failed && failed == 1:
+		return ", passed later"
+	case passed >= failed:
+		return ", all passed later"
+	}
+	return ", " + strconv.Itoa(passed) + " passed later"
+}
+
+// failedNote is failedWords painted: red while a failure is open, muted once the same
+// command passed later for each — a step of the work, not where it stands.
+func failedNote(st Style, failed, passed int) string {
+	if passed >= failed {
+		return st.dim(failedWords(failed, passed))
+	}
+	return st.red(strconv.Itoa(failed)+" failed") + st.dim(laterWords(failed, passed))
 }
 
 // Sessions prints a list of sessions, two lines each: where and when, then what.
@@ -147,7 +178,7 @@ func Sessions(w io.Writer, list []index.Session, total int, st Style) {
 		}
 		facts := []string{txt.Ago(s.UpdatedAt, st.now()), plural(s.Stats.Turns, "turn")}
 		if s.Stats.Failures > 0 {
-			facts = append(facts, st.red(strconv.Itoa(s.Stats.Failures)+" failed"))
+			facts = append(facts, failedNote(st, s.Stats.Failures, s.Stats.PassedLater))
 		}
 		if s.Agents > 0 {
 			facts = append(facts, plural(s.Agents, "agent"))
@@ -279,20 +310,15 @@ func outside(w io.Writer, o *index.Outside, st Style) {
 }
 
 // ending says how a hit's turn ended: the calls that failed, and how many of them the same
-// command passed later; that the person stopped it; or, neither, ✓.
+// command passed later — ✗ while one has not, ✓ once each has; that the person stopped it;
+// or, neither, ✓.
 func ending(h index.Hit, st Style) string {
 	var parts []string
-	if h.Failed > 0 {
-		s := st.red("✗" + strconv.Itoa(h.Failed) + " failed")
-		switch {
-		case h.PassedLater == h.Failed && h.Failed == 1:
-			s += st.green(", passed later")
-		case h.PassedLater == h.Failed:
-			s += st.green(", all passed later")
-		case h.PassedLater > 0:
-			s += st.green(", " + strconv.Itoa(h.PassedLater) + " passed later")
-		}
-		parts = append(parts, s)
+	switch {
+	case h.Failed > h.PassedLater:
+		parts = append(parts, st.red("✗")+failedNote(st, h.Failed, h.PassedLater))
+	case h.Failed > 0:
+		parts = append(parts, st.green("✓")+" "+failedNote(st, h.Failed, h.PassedLater))
 	}
 	if h.Interrupted {
 		parts = append(parts, st.yellow("⚠ interrupted"))
@@ -331,7 +357,7 @@ func Outline(w io.Writer, s *index.Session, turns []model.Turn, children []index
 	fmt.Fprintln(w, st.dim(strings.Join(facts, " · ")))
 	sums := []string{plural(s.Stats.Turns, "turn"), plural(s.Stats.Tools, "tool call")}
 	if s.Stats.Failures > 0 {
-		sums = append(sums, strconv.Itoa(s.Stats.Failures)+" failed")
+		sums = append(sums, failedWords(s.Stats.Failures, s.Stats.PassedLater))
 	}
 	if line := TokenLine(s.Stats.Usage); line != "" {
 		sums = append(sums, line)
@@ -357,13 +383,16 @@ func Outline(w io.Writer, s *index.Session, turns []model.Turn, children []index
 		if t.Index == 0 {
 			continue
 		}
-		head := fmt.Sprintf("#%-3d %s  %s", t.Index, shortTime(t.StartedAt), marks(st, t.Failures, t.Interrupted))
+		head := fmt.Sprintf("#%-3d %s  %s", t.Index, shortTime(t.StartedAt), marks(st, &t))
 		facts := []string{}
 		if d := workEnd(t).Sub(t.StartedAt); d > 0 {
 			facts = append(facts, txt.Duration(d))
 		}
 		if t.Tools > 0 {
 			facts = append(facts, plural(t.Tools, "tool"))
+		}
+		if t.PassedLater > 0 {
+			facts = append(facts, failedWords(t.Failures, t.PassedLater))
 		}
 		if n := changed(t.Files); n > 0 {
 			facts = append(facts, "changed "+plural(n, "file"))
@@ -781,7 +810,7 @@ func Digest(w io.Writer, rep index.DigestReport, st Style) {
 	line := func(d index.Digest) string {
 		parts := []string{plural(d.Sessions, "session"), plural(d.Turns, "turn"), plural(d.Tools, "tool call")}
 		if d.Failures > 0 {
-			parts = append(parts, strconv.Itoa(d.Failures)+" failed")
+			parts = append(parts, failedWords(d.Failures, d.PassedLater))
 		}
 		if t := TokenLine(d.Usage); t != "" {
 			parts = append(parts, t)

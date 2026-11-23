@@ -10,7 +10,7 @@ import { steps, text } from './steps.js';
 import * as f from '../format.js';
 
 const titleOf = (s) => s.title || f.firstLine(s.lastAsk, 120) || 'Untitled session';
-const sigOf = (t) => [t.endedAt, t.lastAt, t.steps, t.tools, t.failures, t.interrupted, t.ask?.length, t.answer?.length, f.totalTokens(t.usage)].join('|');
+const sigOf = (t) => [t.endedAt, t.lastAt, t.steps, t.tools, t.failures, t.passedLater, t.interrupted, t.ask?.length, t.answer?.length, f.totalTokens(t.usage)].join('|');
 const atBottom = () => innerHeight + scrollY >= document.documentElement.scrollHeight - 120;
 const behavior = () => (reducedMotion() ? 'auto' : 'smooth');
 // A phone: the bar scrolls away, and the session keeps a row of its own at the top
@@ -167,7 +167,8 @@ export function mount(main, route, ctx) {
       h('dl', { class: 'totals' },
         fact('Turns', f.num(st.turns)),
         fact('Tool calls', f.num(st.tools)),
-        fact('Failed', f.num(st.failures), { class: st.failures ? 'fact bad' : 'fact' }),
+        fact('Failed', f.num(st.failures), { class: f.open(st) ? 'fact bad' : 'fact' }),
+        st.passedLater > 0 && fact('Passed later', f.num(st.passedLater), { title: 'Calls that failed and whose command passed later, in that turn or the three after' }),
         fact('Tokens in', f.tokens(f.promptTokens(u)), { title: `${f.num(f.promptTokens(u))} prompt tokens: ${f.num(u.input)} new, ${f.num(u.cacheRead)} read from cache, ${f.num(u.cacheWrite)} written to cache` }),
         fact('Tokens out', f.tokens(u.output), { title: `${f.num(u.output)} output tokens${u.reasoning ? `, ${f.num(u.reasoning)} of them reasoning` : ''}` }),
         fact('Cache hit', f.pct(f.cacheHit(u))),
@@ -184,7 +185,7 @@ export function mount(main, route, ctx) {
       h('span', { class: 'agent-type' }, a.parent?.type || 'subagent'),
       h('span', { class: 'agent-title' }, titleOf(a)),
       h('span', { class: 'dim dots' }, h('span', null, f.plural(a.stats?.turns || 0, 'turn')), h('span', null, f.plural(a.stats?.tools || 0, 'tool call')),
-        a.stats?.failures > 0 && h('span', { class: 'bad' }, `${a.stats.failures} failed`), a.agents > 0 && h('span', null, f.plural(a.agents, 'subagent'))))));
+        a.stats?.failures > 0 && h('span', { class: f.open(a.stats) ? 'bad' : null, title: f.passedTitle }, f.failed(a.stats)), a.agents > 0 && h('span', null, f.plural(a.agents, 'subagent'))))));
     const list = h('ul', { class: 'agents' }, rows);
     const many = rows.length > 6;
     if (many) list.classList.add('folded');
@@ -217,7 +218,9 @@ export function mount(main, route, ctx) {
   function fillTurn(rec) {
     const t = rec.t;
     const zero = t.index === 0;
-    const [status, said] = t.failures ? ['failed', f.plural(t.failures, 'failed call')] : t.interrupted ? ['interrupted', 'interrupted'] : ['fine', 'fine'];
+    // A turn whose failures the same command each passed later is not marked failed: they
+    // were steps of the work, and it is said, muted
+    const [status, said] = f.open(t) ? ['failed', f.failed(t, true)] : t.interrupted ? ['interrupted', 'interrupted'] : t.failures ? ['passed', f.failed(t, true)] : ['fine', 'fine'];
     const took = f.when(t.endedAt) - f.when(t.startedAt);
     rec.toggle = h('button', { type: 'button', class: 't-toggle', 'aria-expanded': String(rec.open), 'aria-controls': rec.stepsEl.id },
       icon('chevron', 'chev'), h('span', null, toggleLabel(rec)));
@@ -376,19 +379,19 @@ export function mount(main, route, ctx) {
   }
 
   // toFailed goes to the next failed turn after the one in view, or before it, round from
-  // the end to the start
+  // the end to the start: one with a failure the same command did not pass later
   function toFailed(d) {
     const n = v.recs.length;
     const from = current();
     for (let k = 1; k <= n; k++) {
       const i = (((from + d * k) % n) + n) % n;
-      if (v.recs[i].t.failures > 0) return jump(i);
+      if (f.open(v.recs[i].t) > 0) return jump(i);
     }
   }
 
   function renderNav() {
     whereOf.textContent = v.recs.length ? '/ ' + v.recs.at(-1).t.index : '';
-    failBtn.hidden = !v.recs.some((r) => r.t.failures > 0);
+    failBtn.hidden = !v.recs.some((r) => f.open(r.t) > 0);
     renderWhere();
   }
 

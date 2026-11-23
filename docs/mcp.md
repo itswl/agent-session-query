@@ -90,8 +90,11 @@ output worth seeing whole.
 history's: a word finds its other forms (*retries* finds *retried*), a session's title is
 searched with its first turn, and a query no turn matches whole is answered with the turns that
 come closest, each saying which words it lacks, rather than with nothing. Each hit ends its first
-line with how the turn ended — `✓`, `✗2 failed, 1 passed later`, `⚠ interrupted` — and shows the
-turn's answer, so that which turn to `read` can be decided without reading each.
+line with how the turn ended — `✓`, `✗2 failed, 1 passed later`, `✓ 1 failed, passed later`,
+`⚠ interrupted` — and shows the turn's answer, so that which turn to `read` can be decided
+without reading each. `sessions`, `read`'s outline and `digest` count failed calls the same way:
+a failure the same command passed later is said to have, and a turn whose failures all did is
+`✓`.
 
 ```
 No turn holds all 3 words; none holds “queue”.

@@ -205,6 +205,9 @@ type Turn struct {
 	Tools     int            `json:"tools,omitempty"`     // tool calls
 	Failures  int            `json:"failures,omitempty"`  // of which failed or were interrupted
 	ToolKinds map[string]int `json:"toolKinds,omitempty"` // calls by what they were for
+	// PassedLater is how many of the failures the same command passed later, in this turn or
+	// the three after it: what the index judges of a turn read from it, and no transcript says
+	PassedLater int `json:"passedLater,omitempty"`
 
 	Files []File `json:"files,omitempty"` // every file a tool named, and whether it was changed
 
@@ -353,6 +356,10 @@ type Stats struct {
 	Calls    int     `json:"calls"`
 	Usage    Usage   `json:"usage,omitzero"`
 	CostUSD  float64 `json:"costUsd,omitempty"`
+
+	// PassedLater is how many of the failures the same command passed later, as the index
+	// judges it (see Turn.PassedLater)
+	PassedLater int `json:"passedLater,omitempty"`
 }
 
 // Ref names a session the way a person or an agent passes it around: "claude/3f2a9c1e-…".

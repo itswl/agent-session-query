@@ -35,17 +35,18 @@ signing in and the MCP endpoint. The page is a client of this API and uses nothi
 ```json
 {"sessions": [{"source": "claude", "id": "3f2a…", "ref": "claude/3f2a…", "title": "…",
                "cwd": "/work/api", "branch": "main", "model": "…", "updatedAt": "…",
-               "stats": {"turns": 4, "tools": 31, "failures": 1, "calls": 40, "usage": {…}},
+               "stats": {"turns": 4, "tools": 31, "failures": 2, "passedLater": 1, "calls": 40, "usage": {…}},
                "agents": 2, "lastAsk": "…", "answer": "…", "active": true, "resume": "cd … && claude --resume …"}],
  "total": 363, "limit": 50, "offset": 0}
 ```
 
 `lastAsk` and `answer` are cut to a row's worth here; a session read on its own carries them
-whole. `active` means written within the last two minutes — recency, not a process check.
+whole. `stats.passedLater` is how many of its failures the same command passed later, [as failures
+judge it](#reports). `active` means written within the last two minutes — recency, not a process check.
 
 **`GET /api/sessions/{source}/{id}`** — one session: `{"session", "turns", "agents", "above"}`.
 `turns` is the **outline** — every turn without its items, each saying how many `steps` it
-holds; an ask or an answer longer than a couple of thousand characters is cut here and whole in
+holds, and of its `failures` how many `passedLater`; an ask or an answer longer than a couple of thousand characters is cut here and whole in
 the turn itself. `agents` is the subagent sessions directly beneath it, and `above` — for a
 subagent's transcript — the transcripts it sits beneath, the session it ran in first. `{id}` may
 be any unambiguous start of the id.
@@ -130,7 +131,7 @@ a match archived sessions alone hold, and one confined to a `session` never has 
 | `GET /api/usage` | `{"total", "windows", "byModel", "byDay", "bySource", "byProject"}` — the rolling windows are 24h, 7d, 30d, all; `byDay` is the last 30 days — or, when `until` is in the past, the days from `since` to `until`, or the 30 before `until` with no `since`; the rest cover `since` and `until` |
 | `GET /api/usage?by=model\|day\|source\|project\|session` | `{"by", "rows", "total"}` |
 | `GET /api/failures?tool=&q=` | `{"failures", "total", "byTool"}` — the last 7 days unless `since` says otherwise. `tool` names one tool exactly (`Bash` is not `bash`), or with a trailing `*` by how its name begins; `q` keeps the calls whose command or the end of whose output holds each of its words, in any case (`"a phrase"` as written, `-word` not there); `byTool` counts every tool of the window whichever is asked for |
-| `GET /api/digest` | `{"projects", "total"}` — likewise |
+| `GET /api/digest` | `{"projects", "total"}` — likewise; each counts its `failures`, and how many of them `passedLater` |
 | `GET /api/files?path=&changed=1` | `{"files", "total"}` — each file with `now`, how it stands against what that turn left (below); `waiting` instead names the folder a look at it is waiting in, as macOS asks on the Mac whether `asq` may read it |
 | `GET /api/projects` | `{"projects"}` |
 | `GET /api/pack?turns=1` | `{"pack", "sessions"}` — Markdown |

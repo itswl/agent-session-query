@@ -639,7 +639,8 @@ func KindLine(files []string) string {
 	return strings.Join(parts, " · ")
 }
 
-// ToolLine is a turn's tool calls by what they were for: "exec 3 · read 4 · failed 1".
+// ToolLine is a turn's tool calls by what they were for: "exec 3 · read 4 · failed 1", and
+// how many of those the same command passed later.
 func ToolLine(t *model.Turn) string {
 	kinds := make([]string, 0, len(t.ToolKinds))
 	for kind := range t.ToolKinds {
@@ -654,7 +655,7 @@ func ToolLine(t *model.Turn) string {
 		parts = append(parts, strconv.Itoa(t.Tools))
 	}
 	if t.Failures > 0 {
-		parts = append(parts, "failed "+strconv.Itoa(t.Failures))
+		parts = append(parts, "failed "+strconv.Itoa(t.Failures)+laterWords(t.Failures, t.PassedLater))
 	}
 	return strings.Join(parts, " · ")
 }

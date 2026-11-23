@@ -404,7 +404,7 @@ function sessionRow(s, base, route) {
         fresh(s, base),
         h('span', null, f.plural(st.turns, 'turn')),
         st.tools > 0 && h('span', null, f.plural(st.tools, 'tool call')),
-        st.failures > 0 && h('span', { class: 'bad' }, `${f.num(st.failures)} failed`),
+        st.failures > 0 && h('span', { class: f.open(st) ? 'bad' : null, title: f.passedTitle }, f.failed(st)),
         s.agents > 0 && h('span', null, f.plural(s.agents, 'subagent')),
         s.parent && h('span', null, s.parent.type || 'subagent'),
         s.cwd && h('span', { class: 'path', title: s.cwd }, f.shortPath(s.cwd)),
@@ -465,7 +465,7 @@ function hitRow(hit, query) {
         h('span', { class: 'store-name' }, s.source),
         time(hit.at),
         hit.tools > 0 && h('span', null, f.plural(hit.tools, 'tool call')),
-        hit.failures > 0 && h('span', { class: 'bad', title: 'Calls that failed, and how many of them the same command passed later, in that turn or the three after' }, f.failed(hit)),
+        hit.failures > 0 && h('span', { class: f.open(hit) ? 'bad' : null, title: f.passedTitle }, f.failed(hit)),
         hit.interrupted && h('span', { class: 'lacks' }, 'interrupted'),
         s.cwd && h('span', { class: 'path', title: s.cwd }, f.shortPath(s.cwd)))),
     matches.length > 0 && h('ul', { class: 'matches' }, matches.map((m) =>

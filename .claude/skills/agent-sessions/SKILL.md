@@ -82,6 +82,9 @@ on a turn with build logs that is far more than is wanted.
 - A long outline keeps its *latest* turns and says which earlier ones it left out.
 - A tool call is shown with how it ended: `✓`, `✗ failed`, `interrupted`, an exit code, a
   duration. **No mark is not success** — some CLIs (Hermes) record no outcome at all.
+- A failed call the same command passed later — in that turn or the three after — is a step
+  of the work: a session counts it (`2 failed, 1 passed later`), and a turn whose failures all
+  passed later is `✓ 1 failed, passed later`. `✗` is what did not.
 - A note in `[brackets]` at the end of an answer is about the answer: the index is still reading
   a large history (the answer covers what has been read so far), or a store could not be read
   (an empty answer may not mean an empty history). Tell the user.

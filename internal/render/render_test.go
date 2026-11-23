@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -494,6 +495,47 @@ func TestASearchSaysWhatWouldShowWhatItLeftOut(t *testing.T) {
 		Hits(&b, index.SearchResult{Hits: []index.Hit{}, Missing: []string{"retry"}, Outside: c.outside}, 0, c.style)
 		if b.String() != c.want {
 			t.Errorf("outside %+v:\n%s\nwant\n%s", c.outside, b.String(), c.want)
+		}
+	}
+}
+
+// A failure the same command passed later is a step of the work: the list, the outline and a
+// search's hit say it, muted, and keep the red ✗ for a failure that is still open.
+func TestAFailureThatPassedLaterIsNotAnOpenOne(t *testing.T) {
+	s, turns := hostile()
+	colour := Style{Color: true}
+	red, dim := "\x1b[31m", "\x1b[2m"
+	for _, tc := range []struct {
+		failed, passed   int
+		words, mark, end string
+		open             bool
+	}{
+		{1, 0, "1 failed", "✗1", "✗1 failed", true},
+		{2, 1, "2 failed, 1 passed later", "✗2", "✗2 failed, 1 passed later", true},
+		{1, 1, "1 failed, passed later", "✓", "✓ 1 failed, passed later", false},
+		{3, 3, "3 failed, all passed later", "✓", "✓ 3 failed, all passed later", false},
+	} {
+		s.Stats.Failures, s.Stats.PassedLater = tc.failed, tc.passed
+		turns[0].Failures, turns[0].PassedLater = tc.failed, tc.passed
+		var list, outline, hits, painted bytes.Buffer
+		Sessions(&list, []index.Session{*s}, 1, Style{})
+		Outline(&outline, s, turns, nil, Style{})
+		Hits(&hits, index.SearchResult{Hits: []index.Hit{{Session: *s, Turn: 1, Ref: s.Ref + "#1", Failed: tc.failed, PassedLater: tc.passed}}, Total: 1, Sessions: 1}, 0, Style{})
+		Sessions(&painted, []index.Session{*s}, 1, colour)
+		if !strings.Contains(list.String(), " · "+tc.words+" · ") {
+			t.Errorf("%d failed, %d passed later: the list says\n%s", tc.failed, tc.passed, list.String())
+		}
+		if !strings.Contains(outline.String(), "  "+tc.mark+"  ") || !strings.Contains(outline.String(), tc.words) {
+			t.Errorf("%d failed, %d passed later: the outline says\n%s", tc.failed, tc.passed, outline.String())
+		}
+		if !strings.Contains(hits.String(), "  "+tc.end+"\n") {
+			t.Errorf("%d failed, %d passed later: the hit says\n%s", tc.failed, tc.passed, hits.String())
+		}
+		if got := strings.Contains(painted.String(), red+strconv.Itoa(tc.failed)+" failed"); got != tc.open {
+			t.Errorf("%d failed, %d passed later: painted red %v, want %v:\n%q", tc.failed, tc.passed, got, tc.open, painted.String())
+		}
+		if !tc.open && !strings.Contains(painted.String(), dim+tc.words) {
+			t.Errorf("%d failed, %d passed later: not muted:\n%q", tc.failed, tc.passed, painted.String())
 		}
 	}
 }

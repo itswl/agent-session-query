@@ -95,6 +95,16 @@ func TestDoctorAsksTheServerWhichAsqItRuns(t *testing.T) {
 		}
 	}
 
+	// Port 0 asks none
+	out, errs, code := asq(t, h, indexPath, "doctor", "--port", "0")
+	if code != 0 || strings.Contains(out, "server") {
+		t.Errorf("doctor --port 0 asked a server: exit %d\n%s%s", code, out, errs)
+	}
+	out, _, _ = asq(t, h, indexPath, "doctor", "--port", "0", "--json")
+	if strings.Contains(out, `"server"`) {
+		t.Errorf("doctor --port 0 --json asked a server:\n%s", out)
+	}
+
 	// The real thing: what the server reports is what doctor reads
 	t.Setenv("ASQ_TOKEN", "")
 	a, _ := fixture.Open(t)

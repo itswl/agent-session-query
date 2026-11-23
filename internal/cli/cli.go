@@ -821,7 +821,7 @@ func cmdResume(ctx context.Context, args []string, io *streams) error {
 
 func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 	c := newCommand("doctor", io.err)
-	port := c.fs.Int("port", envInt("ASQ_PORT", DefaultPort), "the port a server on this machine listens on, to ask which asq it runs (ASQ_PORT)")
+	port := c.fs.Int("port", envInt("ASQ_PORT", DefaultPort), "the port a server on this machine listens on, to ask which asq it runs (ASQ_PORT; 0 asks none)")
 	if _, err := c.parse(args); err != nil {
 		return err
 	}
@@ -841,7 +841,10 @@ func cmdDoctor(ctx context.Context, args []string, io *streams) error {
 	if path == "" {
 		path = index.DefaultPath()
 	}
-	server := net.JoinHostPort("127.0.0.1", strconv.Itoa(*port))
+	server := ""
+	if *port > 0 {
+		server = net.JoinHostPort("127.0.0.1", strconv.Itoa(*port))
+	}
 	return checkUp(ctx, checkup{stores: set.All(), keptAll: kept.All, index: path, server: server, token: os.Getenv("ASQ_TOKEN")}, c.json, c.style(io.out), io.out)
 }
 

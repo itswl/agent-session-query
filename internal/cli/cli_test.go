@@ -42,6 +42,8 @@ func setup(t *testing.T) (fixture.History, string) {
 	t.Setenv("ASQ_INDEX", "")
 	t.Setenv("ASQ_PROXY_HEADER", "")
 	t.Setenv("ASQ_STATE", t.TempDir()) // nothing a test does is kept beside the real thing
+	t.Setenv("ASQ_PORT", "0")          // doctor asks no server: one may be running here
+	t.Setenv("ASQ_TOKEN", "")
 	h := fixture.Write(t)
 	return h, h.Config(t).IndexPath
 }

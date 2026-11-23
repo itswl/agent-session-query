@@ -20,6 +20,7 @@ internal/server         the HTTP API, the guards and the token, the live stream;
 internal/mcp            the MCP server: stdio and HTTP, ten tools and two prompts
 internal/otel           OTLP export: what a turn becomes, the ledger of what was sent
 internal/skill          the agent-sessions skill, built in: what asq skill prints
+internal/service        asq serve kept running: launchd, systemd, Task Scheduler
 web/                    the page: hand-written HTML, CSS and ES modules, embedded as they are
         │
 internal/app            the program without a face: the index, the stores, the operations

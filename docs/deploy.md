@@ -141,6 +141,34 @@ refused without a token.
 
 ## Keeping it running
 
+```sh
+asq service install                    # serve on 127.0.0.1:7717, started at login and kept running
+asq service install --port 7720        # serve's own flags: --host, --port, --proxy-header, --cors-origin
+asq service status                     # what it runs, whether it answers, where its log is
+asq service uninstall                  # stopped, and its definition removed
+```
+
+`asq service install` sets up what the sections below show — a LaunchAgent on macOS, a systemd
+user unit on Linux, a task at logon on Windows — with the full path of the `asq` that ran it,
+has the system's service manager start it, and waits for it to answer. What it runs is what
+`asq serve` would run in the shell it was typed in: the flags given (and `--index`, `--only`,
+`--path`), and the variables `asq` reads as that shell has them — `ASQ_TOKEN` and the other
+`ASQ_*`, the `XDG_*` directories, `TZ`, and each CLI's own for moving its store
+(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …), which a service does not get from a shell. To serve
+beyond this machine, set `ASQ_TOKEN` first: a definition that holds it is its owner's alone.
+`--dry-run` prints what would be written and run, the token's value left out.
+
+- Install it again to change it: the definition is written anew and the server started again.
+  The same after an upgrade, which replaces the binary but not the server already running it.
+- A definition made by hand, from below, is neither replaced nor removed without `--force`:
+  status says whose it is, and how to take it down by hand.
+- Something else answering on the port — an `asq serve` started in a terminal — is refused: the
+  service would never get the port.
+- If the server does not answer, install says so and exits 1 — under launchd, quoting what the
+  server wrote to its log meanwhile.
+
+What it writes for each system, and how to set it up by hand:
+
 **Linux — a systemd user service**
 
 ```ini
@@ -172,9 +200,12 @@ sudo loginctl enable-linger "$USER"     # without this the service stops when yo
 ```
 
 The home directory is mounted read-only for the service — it reads the stores and can write only
-its index and its state. A folder named with `asq keep --dir` goes in `ReadWritePaths` too. Variables that move a CLI's store (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …)
-go in the environment file too: they are read from the service's environment, not from your
-shell's. A server that finds no sessions says on the page where it looked.
+its index and its state. A folder named with `asq keep --dir` goes in `ReadWritePaths` too.
+Variables that move a CLI's store (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …) go in the environment
+file too: they are read from the service's environment, not from your shell's. `asq service
+install` writes them into the unit instead, as `Environment=` lines, the two writable directories
+as they are on this machine, and says when lingering is off. A server that finds no sessions says
+on the page where it looked.
 
 **macOS — a LaunchAgent**
 
@@ -208,7 +239,7 @@ launchctl bootout "gui/$(id -u)/io.github.itswl.asq"          # stop and unload
 ```
 
 - A plist does not expand `~`: every path in it is absolute. This is the usual way a launchd
-  setup fails, and it fails quietly.
+  setup fails, and it fails quietly; `asq service install` writes them out.
 - A LaunchAgent, not a LaunchDaemon: a daemon runs as root, whose home is not yours, and reads
   nobody's sessions.
 - If the plist holds a token (`EnvironmentVariables`), `chmod 600` it.
@@ -240,16 +271,20 @@ Start-ScheduledTask -TaskName asq
 ```
 
 Task Scheduler's defaults are for work that ends: a task is stopped after three days, is not
-started on battery and is stopped when the machine goes on battery, is not started again when it
-fails, and runs below normal priority. The settings undo each — no time limit, battery as mains,
-started again a minute after a failure, and priority 5, which is normal.
+started on battery and is stopped when the machine goes on battery, is not tried again when it
+fails to start, and runs below normal priority. The settings undo each — no time limit, battery
+as mains, a start that fails tried again every minute, and priority 5, which is normal.
+`asq service install` registers the same task, from Task Scheduler's XML.
 
 - It runs in a console window of its own, which is the server: minimise it rather than close it.
+  A server that has stopped starts again at the next logon, or with
+  `Start-ScheduledTask -TaskName asq`; `asq service status` says whether it runs.
 - An upgrade replaces `asq.exe`, which Windows does not allow while it runs:
   `Stop-ScheduledTask -TaskName asq` before, `Start-ScheduledTask -TaskName asq` after.
-- For a token, set it in the user's environment
+- A task has the user's environment as Windows keeps it, not a shell's. For a token, set it there
   (`[Environment]::SetEnvironmentVariable('ASQ_TOKEN', '…', 'User')`) rather than on the command
-  line, which Task Manager shows.
+  line, which Task Manager shows; `asq service install` names the variables of its shell that the
+  task gets only from there.
 
 ## In a container
 

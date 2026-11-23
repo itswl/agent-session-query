@@ -143,9 +143,10 @@ The copies `asq keep` made, if it was asked to, are the only record of what a CL
 since. They are in the state directory, or the folder `asq keep --dir` named; `asq keep` says
 which. Move them elsewhere first to keep them.
 
-If `asq serve` was kept running, take the service down before the binary — the launchd
-agent, the systemd unit or the scheduled task, each named in [Deploying](docs/deploy.md);
-a container is `docker rm` and its `/data` volume.
+If `asq serve` was kept running, take the service down before the binary —
+`asq service uninstall`; one set up by hand, the launchd agent, the systemd unit or the
+scheduled task, each named in [Deploying](docs/deploy.md); a container is `docker rm` and
+its `/data` volume.
 
 ## Commands
 
@@ -166,6 +167,7 @@ a container is `docker rm` and its `/data` volume.
 | `asq resume <ref>` | the command that reopens a session in its own CLI — `--run` to run it |
 | `asq keep` | copies of the sessions a CLI deletes — `--all`, or `<ref>` for one session |
 | `asq serve` | the web page and the HTTP API |
+| `asq service install` | keep `asq serve` running — a LaunchAgent, a systemd unit or a scheduled task, written with this binary's path; `status`, `uninstall` |
 | `asq mcp` | an MCP server on stdio, for agents to ask their own history |
 | `asq skill` | the skill that tells an agent when and how to use asq, to save where its CLI reads skills |
 | `asq otel` | export sessions as OpenTelemetry traces |
@@ -199,7 +201,8 @@ a timeline of turns that opens down to a single tool call's full output and the 
 or returned in it, usage charts, failures and a digest — updating live while agents work, and
 saying which of them are working, which wait on a command or a permission prompt, and which have
 finished and wait for you. It listens on loopback only and refuses to listen anywhere else
-without a token. → [The page](docs/ui.md) · [HTTP API](docs/api.md) · [Deploying](docs/deploy.md)
+without a token. `asq service install` keeps it running, started at login.
+→ [The page](docs/ui.md) · [HTTP API](docs/api.md) · [Deploying](docs/deploy.md)
 
 ## For agents: MCP
 

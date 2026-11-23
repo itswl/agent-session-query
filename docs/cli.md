@@ -334,6 +334,20 @@ clock of the machine `asq` runs on — `Since Mon 2026-11-23 00:00 +08:00` — w
 **`asq ping`** — exits 0 if a server is answering on `--port`; what a container's health check
 runs.
 
+**`asq service install | status | uninstall`** — keeps `asq serve` running under the system's
+service manager: a LaunchAgent under launchd, a user unit under systemd, a task at logon in Task
+Scheduler. `install` writes its definition — this binary by its full path, then `serve` with
+the `--host`, `--port`, `--proxy-header`, `--cors-origin`, `--index`, `--only` and `--path` given,
+and the variables `asq` reads as this shell has them — has the manager start it, and waits for it
+to answer; it exits 1 when it does not, under launchd quoting what the server logged. Installed again, the
+definition is written anew and the server started again. `--dry-run` prints what would be
+written and run, with `ASQ_TOKEN`'s value left out. `status`, or `asq service` alone, says which
+definition there is and whose, what it runs, whether the manager holds it and it answers, and
+where its log is; `uninstall` stops it and removes the definition. One `asq` did not write is
+neither replaced nor removed without `--force`, and status gives the commands that take it down
+by hand. Install refuses a port something else answers on, and to run as root. `--json` answers
+what was planned, done or found. See [Deploying](deploy.md#keeping-it-running).
+
 **`asq mcp`** — an MCP server on stdio. See [MCP](mcp.md).
 
 **`asq skill`** — prints the skill that tells an agent when to reach for asq and how, built into

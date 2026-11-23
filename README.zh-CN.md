@@ -131,8 +131,9 @@ Windows：删除 `%LOCALAPPDATA%\Programs\asq`、`%LocalAppData%\asq` 和 `%AppD
 `asq keep` 存下的副本（如果让它存过）是 CLI 删掉的会话仅剩的一份。它们在状态目录里，或者在
 `asq keep --dir` 指定的目录里；`asq keep` 会说是哪个。想留着就先挪走。
 
-若 `asq serve` 是常驻运行的，先按[部署](docs/deploy.md)里写的那样停掉服务——launchd、
-systemd 或计划任务——再删二进制；容器则是 `docker rm` 加它的 `/data` 卷。
+若 `asq serve` 是常驻运行的，先停掉服务再删二进制——`asq service uninstall`；手工配置的
+launchd、systemd 或计划任务，按[部署](docs/deploy.md)里写的停；容器则是 `docker rm` 加它的
+`/data` 卷。
 
 ## 命令
 
@@ -153,6 +154,7 @@ systemd 或计划任务——再删二进制；容器则是 `docker rm` 加它�
 | `asq resume <ref>` | 在原 CLI 里重新打开该会话的命令 —— `--run` 直接执行 |
 | `asq keep` | 为 CLI 会删除的会话留一份副本 —— `--all`，或用 `<ref>` 只留某一个会话 |
 | `asq serve` | 网页与 HTTP API |
+| `asq service install` | 让 `asq serve` 常驻——LaunchAgent、systemd unit 或计划任务，写入本二进制的完整路径；`status`、`uninstall` |
 | `asq mcp` | stdio 上的 MCP server，让 agent 查询自己的历史 |
 | `asq skill` | 告诉 agent 什么时候、怎样使用 asq 的 skill，存到它的 CLI 读取 skill 的地方 |
 | `asq otel` | 把会话导出为 OpenTelemetry trace |
@@ -177,6 +179,7 @@ asq serve --open        # http://127.0.0.1:7717
 
 同一份记录的浏览器形态：带筛选的列表、高亮命中的搜索、把会话展开成轮次时间线（可以一路点到某次工具调用的完整输出，以及其中粘贴或返回的图片）、
 用量图表、失败列表、摘要——agent 干活时实时更新，并标出哪些 agent 正在干活、哪些在等某条命令或权限确认、哪些已经做完在等你。默认只监听回环地址；没有 token 时拒绝监听其他地址。
+`asq service install` 让它常驻，登录即启动。
 → [网页](docs/ui.md) · [HTTP API](docs/api.md) · [部署](docs/deploy.md)
 
 ## 给 agent 用：MCP

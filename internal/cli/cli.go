@@ -48,6 +48,7 @@ const usage = `asq — the session history of every agent CLI on this machine, a
   asq resume <ref>             the command that reopens a session in its own CLI (--run)
   asq keep                     keep copies of what a CLI deletes (--all, or <ref> for one session)
   asq serve                    the web page and the HTTP API    (--port, --token)
+  asq service                  keep asq serve running: install, status, uninstall
   asq mcp                      an MCP server on stdio, for agents to ask their own history
   asq skill                    the skill that tells agents how to use asq, to save where a CLI reads them
   asq otel                     export sessions as OpenTelemetry traces
@@ -136,6 +137,7 @@ func init() {
 		"show": cmdShow, "brief": cmdBrief, "pack": cmdPack, "export": cmdExport,
 		"usage": cmdUsage, "failures": cmdFailures, "digest": cmdDigest, "files": cmdFiles, "why": cmdWhy, "projects": cmdProjects,
 		"resume": cmdResume, "keep": cmdKeep, "serve": cmdServe, "ping": cmdPing, "mcp": cmdMCP, "skill": cmdSkill, "otel": cmdOTel, "doctor": cmdDoctor, "index": cmdIndex,
+		"service": cmdService,
 	}
 }
 

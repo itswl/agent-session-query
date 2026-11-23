@@ -321,6 +321,40 @@ func TestUninstallLeavesTheKeptCopies(t *testing.T) {
 	}
 }
 
+// Copies made in kept before asq keep --dir named another folder, or by an asq that had not
+// read keep.json again since, are copies too: kept stays, and is said, beside the folder
+// keep.json names — in the state asq keeps by default, and in a folder ASQ_STATE names.
+func TestUninstallLeavesTheCopiesInKeptWhateverKeepJSONNames(t *testing.T) {
+	for _, named := range []bool{false, true} {
+		t.Run(map[bool]string{false: "default", true: "ASQ_STATE"}[named], func(t *testing.T) {
+			home, state := uninstallHome(t, runtime.GOOS, nil)
+			if !named {
+				state = defaultState(t, home)
+			}
+			elsewhere := filepath.Join(home, "elsewhere")
+			if err := keep.Save(state, keep.Settings{Dir: elsewhere}); err != nil {
+				t.Fatal(err)
+			}
+			kept := filepath.Join(state, "kept")
+			copies := append(keptHere(t, home, kept), keptHere(t, home, elsewhere)...)
+
+			got := uninstallJSON(t)
+			for _, p := range copies {
+				there(t, p)
+			}
+			gone(t, filepath.Join(state, "session.key"))
+			gone(t, filepath.Join(state, "keep.json"))
+			var left []string
+			for _, l := range got.Left {
+				left = append(left, l.Path)
+			}
+			if want := []string{elsewhere, kept}; !reflect.DeepEqual(left, want) {
+				t.Errorf("left %+v, want %q", got.Left, want)
+			}
+		})
+	}
+}
+
 // A folder ASQ_STATE names may hold more than asq's — a CLI's store, a person's files —: of
 // it uninstall takes what asq writes there and nothing else, and says the folder is left,
 // and what is in it.

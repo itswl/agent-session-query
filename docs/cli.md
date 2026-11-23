@@ -423,10 +423,10 @@ differently whether a failed command passed later judges every failure again the
 index's tables alone, not a CLI's database it was pointed at, which holds tables of its own; of
 a folder `ASQ_STATE` names, the files asq writes there alone, and the folder once that leaves
 it empty — but for the copies `asq keep` made, which may be all there is of what a CLI deleted:
-their folder stays, in the state directory or where `asq keep --dir` put it, and is said with
-how many transcripts it holds, how many of those the CLI has deleted since, and the command
-that would remove them: the folder when they are all it holds, or else the folder of each
-CLI's copies in it. A state dir that is a home, or holds one — an `ASQ_STATE` pointed too wide
+their folder stays — the one `asq keep --dir` named, and `kept` in the state directory, where
+copies made before it was named are — and is said with how many transcripts it holds, how many
+of those the CLI has deleted since, and the command that would remove them: the folder when
+they are all it holds, or else the folder of each CLI's copies in it. A state dir that is a home, or holds one — an `ASQ_STATE` pointed too wide
 — is refused, not removed, and so is one whose `keep.json`, which says where the copies are,
 does not read. What the command will not do itself is said as commands, in the order to
 run them. First what keeps `asq serve` running: `asq service uninstall` for the service it set

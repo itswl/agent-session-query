@@ -99,14 +99,25 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 			done.Left = append(done.Left, leftBehind{Path: state, What: "state",
 				Why: "its keep.json, which says where the copies asq keep made are, does not read: " + kerr.Error()})
 		default:
-			spare := ""
-			if copies := keptCopies(ctx, cfg.Stores, st.Folder(state), m.OS); copies != nil {
-				spare = copies.Path
+			// The copies are in the folder keep.json names — and in kept, the one asq keeps
+			// them in by default, when they were made there before asq keep --dir named
+			// another, or by an asq that had not read keep.json again since
+			folders := []string{st.Folder(state)}
+			if st.Dir != "" {
+				folders = append(folders, filepath.Join(state, "kept"))
+			}
+			var spares []string
+			for _, folder := range folders {
+				copies := keptCopies(ctx, cfg.Stores, folder, m.OS)
+				if copies == nil || slices.ContainsFunc(spares, func(s string) bool { return inside(s, copies.Path) && inside(copies.Path, s) }) {
+					continue
+				}
+				spares = append(spares, copies.Path)
 				done.Left = append(done.Left, *copies)
 			}
 			if os.Getenv("ASQ_STATE") != "" {
 				// A folder a person named may hold more than asq's: only what asq writes goes
-				took, others, whole, err := removeOurs(state, spare)
+				took, others, whole, err := removeOurs(state, spares)
 				if err != nil {
 					return err
 				}
@@ -124,7 +135,7 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 				}
 				break
 			}
-			took, whole, err := removeBut(state, spare)
+			took, whole, err := removeBut(state, spares)
 			if err != nil {
 				return err
 			}
@@ -326,19 +337,25 @@ func tooWide(dir string) bool {
 	return err == nil && home != "" && inside(home, dir)
 }
 
-// removeBut removes the directory dir and what it holds, but for the folder spare when that
-// is in it: then what is beside spare, and beside each folder on the way down to it, is
-// removed, and they stay. A link on the way to spare is left as it is, never followed into
-// what it leads to. It reports whether it removed anything, and whether it removed dir
-// whole; a dir in spare, or spare itself, it leaves.
-func removeBut(dir, spare string) (took, whole bool, err error) {
-	switch {
-	case spare == "" || !inside(spare, dir):
-		return true, true, os.RemoveAll(dir)
-	case inside(dir, spare):
-		return false, false, nil
+// removeBut removes the directory dir and what it holds, but for the folders of copies
+// spares that are in it: then what is beside them, and beside each folder on the way down
+// to them, is removed, and they stay. A link on the way to one is left as it is, never
+// followed into what it leads to. It reports whether it removed anything, and whether it
+// removed dir whole; dir itself, when it is a folder of copies, it leaves.
+func removeBut(dir string, spares []string) (took, whole bool, err error) {
+	var in []string
+	for _, spare := range spares {
+		if inside(spare, dir) {
+			if inside(dir, spare) {
+				return false, false, nil
+			}
+			in = append(in, spare)
+		}
 	}
-	took, err = removeAround(dir, spare)
+	if len(in) == 0 {
+		return true, true, os.RemoveAll(dir)
+	}
+	took, err = removeAround(dir, in)
 	return took, false, err
 }
 
@@ -362,10 +379,10 @@ func asqWrites(name string) bool {
 
 // removeOurs removes what asq writes in a directory ASQ_STATE names, and nothing else: a
 // folder a person named may hold what is not asq's — a CLI's store, their documents — and
-// that stays. The folder of copies spare, and what holds it, stays too, and kept goes only
+// that stays. The folders of copies spares, and what holds them, stay too, and kept goes only
 // empty of files. It reports what it removed and the names of what it left that asq does
 // not write, and removes the directory itself, whole, once nothing is left in it.
-func removeOurs(dir, spare string) (took, others []string, whole bool, err error) {
+func removeOurs(dir string, spares []string) (took, others []string, whole bool, err error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, nil, false, err
@@ -373,7 +390,7 @@ func removeOurs(dir, spare string) (took, others []string, whole bool, err error
 	copies := false
 	for _, e := range entries {
 		p := filepath.Join(dir, e.Name())
-		if spare != "" && inside(spare, p) {
+		if slices.ContainsFunc(spares, func(spare string) bool { return inside(spare, p) }) {
 			copies = true // they, or what holds them: their own line says where they are
 			continue
 		}
@@ -405,18 +422,24 @@ func some(names []string) string {
 	return fmt.Sprintf("%s and %d more", strings.Join(names[:3], ", "), len(names)-3)
 }
 
-func removeAround(dir, spare string) (took bool, err error) {
+func removeAround(dir string, spares []string) (took bool, err error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false, err
 	}
 	for _, e := range entries {
 		p := filepath.Join(dir, e.Name())
-		if inside(spare, p) {
-			if !e.IsDir() || inside(p, spare) {
-				continue // spare, or a link to it or on the way to it
+		var on []string // the folders of copies that are p, or in it
+		for _, spare := range spares {
+			if inside(spare, p) {
+				on = append(on, spare)
 			}
-			t, err := removeAround(p, spare)
+		}
+		if len(on) > 0 {
+			if !e.IsDir() || slices.ContainsFunc(on, func(spare string) bool { return inside(p, spare) }) {
+				continue // a folder of copies, or a link to one or on the way to one
+			}
+			t, err := removeAround(p, on)
 			if took = took || t; err != nil {
 				return took, err
 			}

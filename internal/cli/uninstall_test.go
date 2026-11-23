@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -161,6 +162,43 @@ func TestUninstallRefusesAHomeForState(t *testing.T) {
 		if !strings.Contains(out, "left "+state+" — a home, or a folder that holds one") {
 			t.Errorf("the home was not said as left:\n%s", out)
 		}
+	}
+}
+
+// An index ASQ_INDEX names is removed when it is one — a SQLite database, or the empty file
+// it is when just made —, and left when it is a file asq never wrote, or a folder.
+func TestUninstallTakesANamedIndexOnlyWhenItIsOne(t *testing.T) {
+	home, _ := uninstallHome(t, runtime.GOOS, nil)
+	for _, tc := range []struct {
+		name, content string
+		taken         bool
+	}{
+		{"index.db", "SQLite format 3\x00 and the rest", true},
+		{"new.db", "", true},
+		{"s.jsonl", "{}\n", false},
+		{"folder", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(home, "elsewhere", tc.name)
+			if tc.name == "folder" {
+				put(t, filepath.Join(path, "mine"), "m")
+			} else {
+				put(t, path, tc.content)
+			}
+			t.Setenv("ASQ_INDEX", path)
+			got := uninstallJSON(t)
+			if tc.taken {
+				gone(t, path)
+				if len(got.Removed) == 0 || got.Removed[0] != path {
+					t.Errorf("removed %q, want %s first", got.Removed, path)
+				}
+				return
+			}
+			there(t, path)
+			if len(got.Left) == 0 || got.Left[0].Path != path || got.Left[0].What != "index" || slices.Contains(got.Removed, path) {
+				t.Errorf("removed %q, left %+v; want %s left", got.Removed, got.Left, path)
+			}
+		})
 	}
 }
 

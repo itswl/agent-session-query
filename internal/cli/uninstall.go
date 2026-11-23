@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,7 +60,10 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 		removed(p, note)
 		return nil
 	}
-	if err := take(path, "the index, rebuilt from the stores on the next run"); err != nil {
+	if why := notAnIndex(path); why != "" && (cfg.IndexPath != "" || os.Getenv("ASQ_INDEX") != "") {
+		// A path a person named may be a file asq never wrote: it is left, not taken for one
+		done.Left = append(done.Left, leftBehind{Path: path, What: "index", Why: why})
+	} else if err := take(path, "the index, rebuilt from the stores on the next run"); err != nil {
 		return err
 	}
 	if cfg.IndexPath == "" {
@@ -165,7 +169,7 @@ type uninstalled struct {
 // leftBehind is what uninstall left, and why.
 type leftBehind struct {
 	Path string `json:"path"`
-	What string `json:"what"` // "copies", what asq keep made; "state", what was not asq's to take
+	What string `json:"what"` // "copies", what asq keep made; "state" or "index", what was not asq's to take
 	Why  string `json:"why"`
 	// Of the copies: how many transcripts, how many of those their CLI has deleted since —
 	// which are kept nowhere else —, and the command that removes them, for a person who
@@ -174,6 +178,32 @@ type leftBehind struct {
 	Gone        int    `json:"gone,omitempty"`
 	Remove      string `json:"remove,omitempty"`
 }
+
+// notAnIndex says why the file at path is not an index asq wrote, or "" when it may be: a
+// SQLite database, or an empty file, as an index is the moment it is made — or nothing there.
+func notAnIndex(path string) string {
+	info, err := os.Stat(path)
+	switch {
+	case err != nil:
+		return ""
+	case info.IsDir():
+		return "a folder, which is no index: not asq's to remove"
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	head := make([]byte, len(sqliteHeader))
+	n, _ := io.ReadFull(f, head)
+	if n == 0 || string(head[:n]) == sqliteHeader {
+		return ""
+	}
+	return "not a SQLite database, which an index is: not asq's to remove"
+}
+
+// sqliteHeader is how every SQLite database begins.
+const sqliteHeader = "SQLite format 3\x00"
 
 // keptCopies is the folder of the copies asq keep made, said as what is left: where it is,
 // what it holds — counted as asq keep counts it, by each CLI's adapter on its folder of

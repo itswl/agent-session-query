@@ -21,7 +21,7 @@ It is one static binary. It only ever reads. Nothing leaves your machine unless 
 
 ```console
 $ asq ls
-claude/aaaa1111  28m ago · 2 turns · 1 failed · 1 agent · /work/alpha · main
+claude/aaaa1111  idle · 28m ago · 2 turns · 1 failed · 1 agent · /work/alpha · main
   Fix flaky test
 codex/bbbb2222   2d ago · 1 turn · /work/beta · release
   rotate the deploy key

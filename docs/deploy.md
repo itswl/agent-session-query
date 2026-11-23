@@ -231,11 +231,25 @@ launchctl bootout "gui/$(id -u)/io.github.itswl.asq"          # stop and unload
 **Windows — a scheduled task at logon**
 
 ```powershell
-schtasks /create /tn asq /sc onlogon /tr "$env:LOCALAPPDATA\Programs\asq\asq.exe serve"
+$action   = New-ScheduledTaskAction -Execute "$env:LOCALAPPDATA\Programs\asq\asq.exe" -Argument serve
+$trigger  = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -Priority 5 `
+  -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+Register-ScheduledTask -TaskName asq -Action $action -Trigger $trigger -Settings $settings
+Start-ScheduledTask -TaskName asq
 ```
 
-For a token, set it in the user's environment (`[Environment]::SetEnvironmentVariable('ASQ_TOKEN', '…', 'User')`)
-rather than on the command line, which Task Manager shows.
+Task Scheduler's defaults are for work that ends: a task is stopped after three days, is not
+started on battery and is stopped when the machine goes on battery, is not started again when it
+fails, and runs below normal priority. The settings undo each — no time limit, battery as mains,
+started again a minute after a failure, and priority 5, which is normal.
+
+- It runs in a console window of its own, which is the server: minimise it rather than close it.
+- An upgrade replaces `asq.exe`, which Windows does not allow while it runs:
+  `Stop-ScheduledTask -TaskName asq` before, `Start-ScheduledTask -TaskName asq` after.
+- For a token, set it in the user's environment
+  (`[Environment]::SetEnvironmentVariable('ASQ_TOKEN', '…', 'User')`) rather than on the command
+  line, which Task Manager shows.
 
 ## In a container
 

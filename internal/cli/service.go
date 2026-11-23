@@ -14,6 +14,7 @@ import (
 	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/catalog"
 	"github.com/itswl/agent-session-query/internal/index"
+	"github.com/itswl/agent-session-query/internal/keep"
 	"github.com/itswl/agent-session-query/internal/server"
 	"github.com/itswl/agent-session-query/internal/service"
 )
@@ -130,7 +131,12 @@ func cmdService(ctx context.Context, args []string, io *streams) error {
 		}
 		flagArg("path", name+"="+dir)
 	}
-	s.Writable = []string{filepath.Dir(indexPath), app.StateDir()}
+	state := app.StateDir()
+	s.Writable = []string{filepath.Dir(indexPath), state}
+	if st, err := keep.Load(state); err == nil && st.Dir != "" {
+		// The folder asq keep --dir named, where the server copies what is kept
+		s.Writable = append(s.Writable, st.Dir)
+	}
 
 	// What asq serve would refuse, refused before there is a service that cannot start
 	listen := cmp.Or(*host, os.Getenv("ASQ_HOST"), "127.0.0.1")

@@ -44,7 +44,7 @@ type Setup struct {
 	Args   []string // what follows it: serve and its flags
 	Env    []Var    // what it runs with beyond what the manager gives every service
 	// Writable is what systemd lets it write in a home it otherwise only reads: the
-	// index's directory and the state's.
+	// index's directory and the state's, and the folder asq keep --dir named.
 	Writable []string
 }
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/itswl/agent-session-query/internal/keep"
 	"github.com/itswl/agent-session-query/internal/service"
 )
 
@@ -153,6 +154,33 @@ func TestServiceNamesTheIndexByItsFullPath(t *testing.T) {
 	}
 	if i := slices.Index(st.Command, "--index"); i < 0 || i+1 >= len(st.Command) || st.Command[i+1] != abs {
 		t.Errorf("runs %q, want --index %s", st.Command, abs)
+	}
+}
+
+func TestServiceMayWriteTheFolderAsqKeepNamed(t *testing.T) {
+	f := withSystemd(t)
+	kept := filepath.Join(t.TempDir(), "copies-kept-here")
+	if err := keep.Save(os.Getenv("ASQ_STATE"), keep.Settings{All: true, Dir: kept}); err != nil {
+		t.Fatal(err)
+	}
+	if out, errs, code := runAsq("service", "install", "--port", "7920"); code != 0 {
+		t.Fatalf("exit %d\n%s%s", code, out, errs)
+	}
+	unit, err := os.ReadFile(f.unit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var writable []string
+	for _, line := range strings.Split(string(unit), "\n") {
+		if dir, ok := strings.CutPrefix(line, "ReadWritePaths="); ok {
+			writable = append(writable, dir)
+		}
+	}
+	if len(writable) != 3 || !strings.Contains(writable[2], "copies-kept-here") {
+		t.Errorf("ReadWritePaths %q, want the index's, the state's and %s", writable, kept)
+	}
+	if _, err := os.Stat(kept); err != nil {
+		t.Errorf("the folder of copies is not made: %v", err)
 	}
 }
 

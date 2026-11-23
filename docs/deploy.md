@@ -211,9 +211,10 @@ The home directory is mounted read-only for the service — it reads the stores 
 its index and its state. A folder named with `asq keep --dir` goes in `ReadWritePaths` too.
 Variables that move a CLI's store (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …) go in the environment
 file too: they are read from the service's environment, not from your shell's. `asq service
-install` writes them into the unit instead, as `Environment=` lines, the two writable directories
-as they are on this machine, and says when lingering is off. A server that finds no sessions says
-on the page where it looked.
+install` writes them into the unit instead, as `Environment=` lines, and the directories the
+service writes as they are on this machine — the index's, the state's, and the folder
+`asq keep --dir` named when there is one, so install again after naming another — and says when
+lingering is off. A server that finds no sessions says on the page where it looked.
 
 **macOS — a LaunchAgent**
 

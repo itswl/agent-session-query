@@ -845,8 +845,8 @@ func doctor(ctx context.Context, stores []index.Store, keptAll, asJSON bool, st 
 	return checkUp(ctx, checkup{stores: stores, keptAll: keptAll}, asJSON, st, out)
 }
 
-// checkUp looks at the stores, and at the index file — that it holds together — and says
-// what it found. It fails as doctor does, and when the index is
+// checkUp looks at the stores, and at the index file — that it holds together, and how much
+// of it is free — and says what it found. It fails as doctor does, and when the index is
 // damaged.
 func checkUp(ctx context.Context, up checkup, asJSON bool, st render.Style, out io.Writer) error {
 	stores := up.stores
@@ -985,7 +985,10 @@ func checkUp(ctx context.Context, up checkup, asJSON bool, st render.Style, out 
 			case ix.Problem != "":
 				fmt.Fprintf(out, "✗ %-12s DAMAGED            %s\n    %s — asq index rebuild makes it anew from the stores\n", "index", st.Path(ix.Path), ix.Problem)
 			default:
-				fmt.Fprintf(out, "✓ %-12s %s, holds together   %s\n", "index", mb(ix.Bytes), st.Path(ix.Path))
+				fmt.Fprintf(out, "✓ %-12s %s%s, holds together   %s\n", "index", mb(ix.Bytes), freeOf(ix.Free, ", %s of it free"), st.Path(ix.Path))
+				if ix.Keeps() {
+					fmt.Fprintf(out, "  · this file keeps the space it frees: asq index rebuild makes one that gives it back\n")
+				}
 			}
 		}
 		if stopped {
@@ -1226,7 +1229,10 @@ func cmdIndex(ctx context.Context, args []string, io *streams) error {
 	}
 	fmt.Fprintf(io.out, "%s\n  %s · %s · %s · %s · last brought up to date in %s\n", path,
 		sessions, plural(h.Totals.Agents, "subagent transcript"), plural(h.Totals.Turns, "turn"),
-		mb(h.Totals.Bytes), txt.Duration(time.Duration(h.Sync.Took)*time.Millisecond))
+		mb(h.Totals.Bytes)+freeOf(h.Totals.Free, " (%s of it free)"), txt.Duration(time.Duration(h.Sync.Took)*time.Millisecond))
+	if sp, err := a.Index.Space(ctx); err == nil && sp.Keeps() {
+		fmt.Fprintf(io.out, "  · this file keeps the space it frees: asq index rebuild makes one that gives it back\n")
+	}
 	if cfg.IndexPath == "" {
 		for _, old := range index.Older() {
 			fmt.Fprintf(io.out, "  · an earlier asq's index is still here, and not read: %s (once no earlier asq runs, asq index rm removes it)\n", old)
@@ -1244,6 +1250,15 @@ func cmdIndex(ctx context.Context, args []string, io *streams) error {
 
 // mb is a size in megabytes, to a tenth.
 func mb(n int64) string { return strconv.FormatFloat(float64(n)/(1<<20), 'f', 1, 64) + " MB" }
+
+// freeOf says how much of the index file is free, in format, when it is a tenth of a
+// megabyte or more; "" otherwise.
+func freeOf(free int64, format string) string {
+	if free < 1<<20/20 {
+		return ""
+	}
+	return fmt.Sprintf(format, mb(free))
+}
 
 func plural(n int, word string) string {
 	if n == 1 {

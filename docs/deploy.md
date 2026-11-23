@@ -304,7 +304,8 @@ file. See [Telemetry](telemetry.md).
 An idle server looks at the stores every thirty seconds — a `stat` per transcript — and reads
 nothing that did not change. While a page is open it looks every two seconds. Memory is the
 SQLite page cache, tens of megabytes. The index is a fraction of the size of the transcripts it
-caches, and `asq index rm` gets all of it back.
+caches, and `asq index rm` gets all of it back. What sessions leaving it free — Claude Code's
+cleanup after 30 days, say — is given back to the disk as it goes.
 
 Nothing about the index needs the server stopped: `asq index rebuild` and `asq index rm` make a
 new file, and the server goes on with that one at its next look at the stores. One it finds

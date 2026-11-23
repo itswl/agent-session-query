@@ -174,6 +174,12 @@ and the next command rebuilds it from the stores.
   one it opened. When `asq index rebuild` or `asq index rm` made another, or none, it lets go of
   the old file and uses the new one, making it if need be: what it reads after is what every
   other process reads, and the old file's space goes back to the disk.
+- **Space comes back.** Pages that sessions leaving the index free are given back to the file
+  system once they are more than a quarter of the file and at least 16 MB, at the end of a sync
+  and for at most half a second of it, the next sync going on from there; less than that, and
+  they are kept for the next sessions. A file can do this
+  only if it was made to — `asq index` and `asq doctor` say when it was not, and `asq index
+  rebuild` makes one that does.
 - **A store that cannot be read is not an empty store.** If a store, or one directory or
   database of it, cannot be listed, everything already known of it is kept and `asq` says which
   store and why — on stderr, in `/api/health`, in the page, at the end of an MCP answer.

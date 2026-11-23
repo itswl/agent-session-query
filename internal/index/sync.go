@@ -135,13 +135,18 @@ type job struct {
 //
 // It first makes sure the file it writes is the one at the index's path (see follow). A
 // sync that finds the file damaged sets it aside and reads the stores again into a new one,
-// at once: the index is a cache.
+// at once: the index is a cache. Then it gives back what the index no longer uses (see
+// giveBack).
 func (ix *Index) Sync(ctx context.Context, stores []Store, opts SyncOptions) (SyncResult, error) {
 	ix.syncMu.Lock()
 	defer ix.syncMu.Unlock()
 	res, err := ix.sync(ctx, stores, opts)
 	if ix.Damage(err) && ctx.Err() == nil {
 		res, err = ix.sync(ctx, stores, opts)
+	}
+	if err == nil {
+		err = ix.giveBack(ctx)
+		ix.Damage(err)
 	}
 	return res, err
 }

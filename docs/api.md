@@ -249,8 +249,9 @@ may be most of a minute behind.
 
 ## Status
 
-**`GET /api/health`** — the version, the index file, what it holds, where the last sync stands,
-every store (found or not; `sessions` as the list counts them, and `transcripts` with subagents',
+**`GET /api/health`** — the version, the index file, what it holds (`totals`: `bytes` the
+file's size, `free` how much of it no longer holds anything), where the last sync stands, every
+store (found or not; `sessions` as the list counts them, and `transcripts` with subagents',
 archived and empty ones), and `warnings`: the stores that could not be read, in whole or in
 part. Without it, "no sessions" reads the same whether there are none or the store broke. A
 store that could be read only in part keeps everything known of it: what a short listing leaves

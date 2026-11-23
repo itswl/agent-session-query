@@ -1,7 +1,8 @@
 package index
 
 // The file the index is kept in: that this process reads and writes the file at the index's
-// path and not one another asq took away, and that a damaged one is set aside and made anew.
+// path and not one another asq took away, that a damaged one is set aside and made anew,
+// and that what sessions leaving free is given back.
 
 import (
 	"context"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -269,11 +271,76 @@ func (ix *Index) follow() (string, error) {
 	return why, nil
 }
 
+// Giving space back: a file made by this asq is made to give back the pages that come free
+// (auto_vacuum incremental, which a file can be given only when it is made), and gives them
+// back once they are more than a quarter of the file and at least giveFrom: a file given
+// back a little at a time would only grow again. A file made before keeps what it frees,
+// for the next sessions to fill; asq index rebuild makes one that gives it back.
+const (
+	givePages  = 2048                   // pages given back in one transaction: tens of milliseconds
+	giveBudget = 500 * time.Millisecond // given back in one sync at most; the next goes on
+)
+
+var giveFrom int64 = 16 << 20 // a variable for the tests
+
+// giveBack returns to the file system what the index no longer uses, when there is enough
+// of it to be worth it (see giveFrom), for no longer than giveBudget at a time.
+func (ix *Index) giveBack(ctx context.Context) error {
+	deadline := time.Now().Add(giveBudget)
+	gave := false
+	for ctx.Err() == nil && time.Now().Before(deadline) {
+		sp, err := space(ctx, ix.rw)
+		if err != nil {
+			return err
+		}
+		if !sp.GivesBack || sp.Free == 0 || !gave && (sp.Free < giveFrom || 4*sp.Free < sp.Bytes) {
+			break
+		}
+		if _, err := ix.rw.ExecContext(ctx, fmt.Sprintf(`PRAGMA incremental_vacuum(%d)`, givePages)); err != nil {
+			return err
+		}
+		gave = true
+	}
+	if gave {
+		// The file shrinks when what was moved is copied back into it from the log
+		_, err := ix.rw.ExecContext(ctx, `PRAGMA wal_checkpoint(PASSIVE)`)
+		return err
+	}
+	return nil
+}
+
+// Space is how large the index file is, and how much of it is not in use.
+type Space struct {
+	Bytes int64 `json:"bytes"`
+	Free  int64 `json:"free"`
+	// GivesBack says the file gives free pages back to the file system (see giveBack)
+	GivesBack bool `json:"givesBack"`
+}
+
+// Keeps reports whether the file keeps more free space than a file made to give it back
+// would: one asq index rebuild would make smaller.
+func (sp Space) Keeps() bool {
+	return !sp.GivesBack && sp.Free >= giveFrom && 4*sp.Free >= sp.Bytes
+}
+
+func space(ctx context.Context, q querier) (Space, error) {
+	var sp Space
+	var mode int
+	err := q.QueryRowContext(ctx, `SELECT page_count * page_size, freelist_count * page_size, auto_vacuum
+FROM pragma_page_count(), pragma_page_size(), pragma_freelist_count(), pragma_auto_vacuum()`).Scan(&sp.Bytes, &sp.Free, &mode)
+	sp.GivesBack = mode == 2
+	return sp, err
+}
+
+// Space says how large the index file is, how much of it is free, and whether it gives
+// free space back.
+func (ix *Index) Space(ctx context.Context) (Space, error) { return space(ctx, ix.ro) }
+
 // Checked is what a look at the whole index file found.
 type Checked struct {
 	Path  string `json:"path"`
 	Found bool   `json:"found"`
-	Bytes int64  `json:"bytes,omitempty"`
+	Space
 	// Problem is what SQLite found wrong with the file; empty when it holds together
 	Problem string `json:"problem,omitempty"`
 }
@@ -304,7 +371,7 @@ func Check(ctx context.Context, path string) (Checked, error) {
 		}
 		return ck, err
 	}
-	if err := db.QueryRowContext(ctx, `SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()`).Scan(&ck.Bytes); err != nil {
+	if ck.Space, err = space(ctx, db); err != nil {
 		return damaged(err)
 	}
 	rows, err := db.QueryContext(ctx, `PRAGMA quick_check(5)`)

@@ -2,15 +2,19 @@ package index
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/itswl/agent-session-query/internal/sources"
+	"github.com/itswl/agent-session-query/internal/transcript"
 )
 
 // sessions is how many sessions the index holds, as a reader sees them.
@@ -199,5 +203,69 @@ func TestAProcessFollowsTheFileAtItsPath(t *testing.T) {
 	}
 	if n := sessions(t, open(t, path)); n != 5 {
 		t.Errorf("after rm, the index at the path holds %d sessions; want 5", n)
+	}
+}
+
+// bulky is a store of n sessions, each holding size bytes that do not compress.
+type bulky struct{ n, size int }
+
+func (bulky) Location() string                              { return "test" }
+func (bulky) Exists() bool                                  { return true }
+func (b bulky) Scan(context.Context) ([]sources.Ref, error) { return many{n: b.n}.Scan(nil) }
+func (b bulky) Read(_ context.Context, ref sources.Ref, w *transcript.Writer) error {
+	w.S.ID = "s" + ref.Key
+	raw := make([]byte, b.size/2)
+	rand.Read(raw)
+	text := hex.EncodeToString(raw)
+	w.Add(transcript.Message{Role: transcript.User, At: time.Now(), Blocks: []transcript.Block{transcript.TextOf("hello")}})
+	w.Add(transcript.Message{Role: transcript.Assistant, At: time.Now(), Blocks: []transcript.Block{transcript.TextOf(text)}})
+	return nil
+}
+
+// What sessions leaving the index free is given back to the file system, once it is worth
+// it — by a file made to give it back. One made otherwise keeps it, and says so.
+func TestSpaceIsGivenBack(t *testing.T) {
+	defer func(was int64) { giveFrom = was }(giveFrom)
+	giveFrom = 256 << 10
+	ctx := context.Background()
+	fill := func(ix *Index, n int) {
+		t.Helper()
+		if _, err := ix.Sync(ctx, []Store{{Name: "claude", Spec: sources.Spec{Name: "claude"}, Source: bulky{n: n, size: 64 << 10}}}, SyncOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ix := open(t, filepath.Join(t.TempDir(), "index.db"))
+	fill(ix, 40)
+	full, err := ix.Space(ctx)
+	if err != nil || !full.GivesBack || full.Bytes < 40*(32<<10) {
+		t.Fatalf("a new index = %+v, %v", full, err)
+	}
+	fill(ix, 8) // the store's cleanup took 32 of them
+	after, err := ix.Space(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Free >= giveFrom || after.Bytes > full.Bytes/2 || after.Keeps() {
+		t.Errorf("after most sessions left: %+v; it was %+v", after, full)
+	}
+
+	// A file made without it: the space stays, free, for the next sessions to fill
+	old := filepath.Join(t.TempDir(), "index.db")
+	db, _ := sql.Open("sqlite", "file:"+filepath.ToSlash(old)+"?_pragma=journal_mode(WAL)")
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	ix = open(t, old)
+	fill(ix, 40)
+	fill(ix, 8)
+	kept, err := ix.Space(ctx)
+	if err != nil || kept.GivesBack || kept.Free < giveFrom || !kept.Keeps() {
+		t.Errorf("a file made without auto_vacuum, after most sessions left: %+v, %v", kept, err)
+	}
+	totals, err := ix.Totals(ctx, []string{"claude"})
+	if err != nil || totals.Free != kept.Free || totals.Bytes != kept.Bytes {
+		t.Errorf("totals = %+v, %v; want the space %+v", totals, err, kept)
 	}
 }

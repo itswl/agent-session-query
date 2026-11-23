@@ -314,17 +314,17 @@ held that the adapter did not understand: records a CLI has started to write sin
 was written. Those are a warning (see [Sources](sources.md#what-each-adapter-reads)). Sessions
 whose CLI moved them, whole or in part, where `asq` does not read them (OpenClaw's cold storage)
 are counted, and are not taken for a format that drifted. Then it reads the whole index file
-and says whether it holds together. Exits 1 if a store that is
-there cannot be read, if the index is damaged, or if doctor was stopped before it looked at every
+and says whether it holds together, and how much of it is free. Exits 1 if a store that is there
+cannot be read, if the index is damaged, or if doctor was stopped before it looked at every
 store. Its first line is the version of `asq` that read them, which is what a report of a store
 that will not read needs first.
 
-**`asq index`** — where the index is and what it holds. `asq index path` prints the file;
-`asq index rebuild` reads everything again into a new file; `asq index rm` deletes it (the next
-command rebuilds it), with a damaged one set aside beside it and any index an earlier version of
-`asq` left there, which `asq index` names. A server or an MCP server running meanwhile goes on
-with the new file at its next look at the stores. A damaged index is set aside and made anew
-without being asked ([The index](model.md#the-index)). A
+**`asq index`** — where the index is, what it holds, and how much of the file is free. `asq
+index path` prints the file; `asq index rebuild` reads everything again into a new file; `asq
+index rm` deletes it (the next command rebuilds it), with a damaged one set aside beside it and
+any index an earlier version of `asq` left there, which `asq index` names. A server or an MCP
+server running meanwhile goes on with the new file at its next look at the stores. A damaged
+index is set aside and made anew without being asked ([The index](model.md#the-index)). A
 new release that reads a CLI's files differently has that CLI's sessions read again by itself, at
 the first sync after the upgrade; a rebuild is not needed for that. One that keeps a search's
 words differently writes them again from what the index holds, at the first sync too, reading

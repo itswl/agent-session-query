@@ -676,6 +676,7 @@ type Totals struct {
 	Agents   int   `json:"agents"` // subagent transcripts
 	Turns    int   `json:"turns"`
 	Bytes    int64 `json:"bytes"` // the index file's size
+	Free     int64 `json:"free"`  // of which no longer in use (see Space)
 }
 
 // Totals counts what the index holds of the given stores.
@@ -690,7 +691,9 @@ FROM sessions s WHERE `+where, args...).Scan(&t.Sessions, &t.Archived, &t.Agents
 	if err != nil {
 		return t, err
 	}
-	_ = ix.ro.QueryRowContext(ctx, `SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()`).Scan(&t.Bytes)
+	if sp, err := ix.Space(ctx); err == nil {
+		t.Bytes, t.Free = sp.Bytes, sp.Free
+	}
 	return t, nil
 }
 

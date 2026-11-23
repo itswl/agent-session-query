@@ -237,9 +237,10 @@ func Open(path string) (*Index, error) {
 	uri := kit.FileURI(path)
 	// The write-ahead log is reused after each checkpoint rather than shrunk; a burst of
 	// writes — a rebuild — would leave it at its largest for good. journal_size_limit
-	// cuts it back to a few megabytes whenever a checkpoint has emptied it.
+	// cuts it back to a few megabytes whenever a checkpoint has emptied it. auto_vacuum
+	// is what a new file is made with (see giveBack), and changes nothing in one made.
 	writer := func() (*sql.DB, error) {
-		return pool(uri+"?_txlock=immediate&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=journal_size_limit(4194304)&_pragma=synchronous(NORMAL)&_pragma=temp_store(MEMORY)&_pragma=cache_size(-65536)", &ix.rwGen, 1, rwIdle)
+		return pool(uri+"?_txlock=immediate&_pragma=auto_vacuum(2)&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=journal_size_limit(4194304)&_pragma=synchronous(NORMAL)&_pragma=temp_store(MEMORY)&_pragma=cache_size(-65536)", &ix.rwGen, 1, rwIdle)
 	}
 	rw, err := writer()
 	if err != nil {

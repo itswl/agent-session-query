@@ -270,6 +270,15 @@ asq skill > ~/.claude/skills/agent-sessions/SKILL.md
 asq skill > ~/.agents/skills/agent-sessions/SKILL.md
 ```
 
+On Windows, in cmd, whose `>` writes what asq prints as it is — Windows PowerShell's writes it
+again as UTF-16, which no CLI reads as a skill:
+
+```bat
+mkdir "%USERPROFILE%\.claude\skills\agent-sessions" "%USERPROFILE%\.agents\skills\agent-sessions"
+asq skill > "%USERPROFILE%\.claude\skills\agent-sessions\SKILL.md"
+asq skill > "%USERPROFILE%\.agents\skills\agent-sessions\SKILL.md"
+```
+
 Gemini CLI also reads `~/.gemini/skills`, Pi `~/.pi/agent/skills` and OpenCode
 `~/.config/opencode/skills`; a repository's own `.claude/skills` or `.agents/skills` holds a
 skill for that repository alone. asq writes none of them itself, as it writes nothing where a CLI

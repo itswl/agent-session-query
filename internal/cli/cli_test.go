@@ -498,6 +498,23 @@ func TestSkill(t *testing.T) {
 	if _, errs, code := asq(t, h, index, "skill", "install"); code != 2 || !strings.Contains(errs, "takes no arguments") {
 		t.Errorf("asq skill install: exit %d %q", code, errs)
 	}
+	// On a terminal it says where to save it, in lines the system's shell runs: on Windows
+	// cmd's, whose > writes the bytes as they come
+	for goos, want := range map[string][]string{
+		"darwin": {"mkdir -p ~/.claude/skills/agent-sessions ~/.agents/skills/agent-sessions\n", "  asq skill > ~/.agents/skills/agent-sessions/SKILL.md\n"},
+		"windows": {"OpenCode and Pi, in cmd:\n", `  mkdir "%USERPROFILE%\.claude\skills\agent-sessions" "%USERPROFILE%\.agents\skills\agent-sessions"` + "\n",
+			`  asq skill > "%USERPROFILE%\.claude\skills\agent-sessions\SKILL.md"` + "\n"},
+	} {
+		lines := saveLines(goos)
+		for _, w := range want {
+			if !strings.Contains(lines, w) {
+				t.Errorf("on %s, no %q in\n%s", goos, w, lines)
+			}
+		}
+		if goos == "windows" && strings.Contains(lines, "~/") {
+			t.Errorf("on Windows, a path cmd does not read:\n%s", lines)
+		}
+	}
 }
 
 func TestIndexRebuildAndRemove(t *testing.T) {

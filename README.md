@@ -226,6 +226,8 @@ asq skill > ~/.claude/skills/agent-sessions/SKILL.md    # Claude Code
 asq skill > ~/.agents/skills/agent-sessions/SKILL.md    # Codex, Gemini CLI, OpenCode, Pi
 ```
 
+On Windows the lines are cmd's: [A skill](docs/mcp.md#a-skill).
+
 Ten read-only tools — `search`, `sessions`, `read`, `brief`, `pack`, `usage`, `failures`,
 `digest`, `files`, `projects` — return compact plain text rather than JSON, cut to a budget the
 caller can raise, with secret-shaped strings masked: what a model reads is paid for by the

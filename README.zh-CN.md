@@ -202,6 +202,8 @@ asq skill > ~/.claude/skills/agent-sessions/SKILL.md    # Claude Code
 asq skill > ~/.agents/skills/agent-sessions/SKILL.md    # Codex、Gemini CLI、OpenCode、Pi
 ```
 
+Windows 上要在 cmd 里执行，写法见 [A skill](docs/mcp.md#a-skill)。
+
 十个只读工具——`search`、`sessions`、`read`、`brief`、`pack`、`usage`、`failures`、`digest`、`files`、
 `projects`——返回紧凑的纯文本而不是 JSON，按预算截断（调用方可以调大），并遮掉形似密钥的字符串：模型读到的每个字都
 按 token 计费，而且会随它离开这台机器。两个 prompt 在 Claude Code、Gemini CLI 和 OpenCode 里成为斜杠命令。在 Claude Code 里，

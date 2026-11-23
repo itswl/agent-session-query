@@ -137,6 +137,25 @@ func TestServiceInstallsWhatServeHereWouldServe(t *testing.T) {
 	}
 }
 
+// An index named from here is named from wherever the service starts: by its full path.
+func TestServiceNamesTheIndexByItsFullPath(t *testing.T) {
+	withSystemd(t)
+	t.Chdir(t.TempDir())
+	rel := filepath.Join("elsewhere", "index.db")
+	abs, _ := filepath.Abs(rel)
+	if out, errs, code := runAsq("service", "install", "--port", "7920", "--index", rel); code != 0 {
+		t.Fatalf("exit %d\n%s%s", code, out, errs)
+	}
+	out, _, _ := runAsq("service", "status", "--json")
+	var st service.Status
+	if err := json.Unmarshal([]byte(out), &st); err != nil {
+		t.Fatal(err)
+	}
+	if i := slices.Index(st.Command, "--index"); i < 0 || i+1 >= len(st.Command) || st.Command[i+1] != abs {
+		t.Errorf("runs %q, want --index %s", st.Command, abs)
+	}
+}
+
 func TestServiceDryRunWritesAndRunsNothing(t *testing.T) {
 	f := withSystemd(t)
 	t.Setenv("ASQ_TOKEN", "0123456789abcdef0123456789abcdef")

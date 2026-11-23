@@ -614,7 +614,7 @@ func cmdFailures(ctx context.Context, args []string, io *streams) error {
 	c := newCommand("failures", io.err).selection(20)
 	tool := c.fs.String("tool", "", "only this tool's calls, named exactly (Bash) or by how the name begins (mcp__playwright*)")
 	openOnly := c.fs.Bool("open", false, "only the failures whose command did not pass later")
-	by := c.fs.String("by", "", "command: one line per command that failed, those still open first")
+	by := c.fs.String("by", "", "command: one entry per command that failed, those still open first")
 	rest, err := c.parse(args)
 	if err != nil {
 		return err

@@ -181,7 +181,8 @@ are replaced with `[redacted]` in every answer (see [what is cleaned](model.md#w
 **Honest about freshness.** A call first brings the index up to date, waiting up to eight
 seconds. While a first read of a large history is still under way, the answer covers what has
 been read so far and ends with a note saying so. A store that could not be read is named the
-same way, so an empty answer is not mistaken for an empty history.
+same way, so an empty answer is not mistaken for an empty history; and when no store held a
+session at all, the note says where asq looked — each store's place, and whether it is there.
 
 **Errors a model can act on.** A question that cannot be answered — a ref that names nothing, an
 argument misspelled, a time that does not parse — comes back as the tool's answer with

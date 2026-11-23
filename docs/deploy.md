@@ -174,7 +174,7 @@ sudo loginctl enable-linger "$USER"     # without this the service stops when yo
 The home directory is mounted read-only for the service — it reads the stores and can write only
 its index and its state. A folder named with `asq keep --dir` goes in `ReadWritePaths` too. Variables that move a CLI's store (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …)
 go in the environment file too: they are read from the service's environment, not from your
-shell's.
+shell's. A server that finds no sessions says on the page where it looked.
 
 **macOS — a LaunchAgent**
 

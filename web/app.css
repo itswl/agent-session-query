@@ -129,6 +129,8 @@ kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width:
 .empty { max-width: 600px; padding: 40px 12px; color: var(--muted); }
 .empty p + p { margin-top: 6px; }
 .empty-title { color: var(--text); font-size: 15px; font-weight: 600; }
+.empty .looked { margin: 6px 0 0; padding-left: 18px; }
+.empty .looked li { margin-top: 2px; overflow-wrap: anywhere; }
 .error-box { display: flex; align-items: center; gap: 10px; margin: 16px 0; padding: 10px 12px; background: var(--bad-soft); border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent); border-radius: 6px; }
 .error-box p { flex: 1; }
 .error-box > .icon { color: var(--bad); }

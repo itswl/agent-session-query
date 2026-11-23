@@ -78,12 +78,21 @@ export function mount(main, route, ctx) {
   // The filters list the stores health reports; they are drawn again when it changes. So
   // is a list that came back empty, which says when a store could not be read: the list
   // does not wait for the report, and is often answered first.
+  // A list that came back empty says too, once nothing is being read, when no store held a
+  // session at all: that is drawn again when a read starts or ends.
   let seenHealth = status.health;
+  let seenReading = !!status.sync?.running;
   let saidEmpty = false;
   const offStatus = onStatus((st) => {
-    if (!st.health || st.health === seenHealth) return;
-    seenHealth = st.health;
-    renderFilters();
+    const reading = !!st.sync?.running;
+    const moved = reading !== seenReading;
+    seenReading = reading;
+    if (st.health && st.health !== seenHealth) {
+      seenHealth = st.health;
+      renderFilters();
+    } else if (!moved) {
+      return;
+    }
     if (saidEmpty && !v.busy) renderList();
   });
   // A new visit marks the list against the last look of the one before
@@ -198,10 +207,12 @@ export function mount(main, route, ctx) {
     const filtered = ['source', 'project', 'branch', 'since', 'state'].some((k) => v.route.query.get(k));
     const warned = (status.health?.warnings || []).length;
     const clear = filtered && h('a', { href: hrefWith(v.route, { source: '', project: '', branch: '', since: '', state: '' }) }, 'Clear the filters');
+    const none = !filtered && nothingFound();
     if (searching() && !q.trim()) {
       return empty('Search every turn of every session.', 'Type in the search box above. Words match what they begin, and other forms of an English word: "deploy" finds "deployment", "retries" finds "retried".',
         'Use "a phrase" in quotes, -word to exclude, and ask: reply: thinking: tool: output: title: to search one part of a turn.');
     }
+    if (none) return none;
     if (searching() && v.outside) {
       // The filters, or archived sessions being left out, are what kept the search from
       // matching: said, and undone in one link
@@ -224,6 +235,21 @@ export function mount(main, route, ctx) {
     return empty(filtered ? 'No sessions match these filters.' : 'No sessions yet.',
       warned ? `${f.plural(warned, 'store')} could not be read — see the notice above. This list may be incomplete.` : null,
       filtered ? clear : 'Sessions appear here as soon as an agent CLI on this machine writes one.');
+  }
+
+  // nothingFound says where asq looked, when no store it reads held a session and nothing
+  // is being read: a service started without the variable that moves a CLI's store, or a
+  // container with one mounted in the wrong place, finds none, and "No sessions yet" would
+  // be all it said.
+  function nothingFound() {
+    const stores = f.looked(status.health, status.sync);
+    if (!stores) return null;
+    return h('div', { class: 'empty' },
+      h('p', { class: 'empty-title' }, 'No CLI\'s sessions were found.'),
+      h('p', null, 'asq looked in these places, on the machine it runs on:'),
+      h('ul', { class: 'looked' }, stores.map((s) => h('li', null, h('span', { class: 'mono' }, s.location), ` — ${s.title || s.source}, ${s.found ? 'there, and empty' : 'not there'}`))),
+      h('p', null, h('code', null, 'asq doctor'), ' on that machine says more. A store somewhere else is named with ', h('code', null, 'ASQ_PATH'),
+        '. A service reads the variables that move a store (', h('code', null, 'CLAUDE_CONFIG_DIR'), ', ', h('code', null, 'CODEX_HOME'), ', …) from its own environment, not from a shell\'s.'));
   }
 
   async function load(reset) {

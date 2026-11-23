@@ -268,6 +268,22 @@ type Health struct {
 	Warnings []index.Warning `json:"warnings"`
 }
 
+// NothingFound is every store this process reads, found or not, when the index holds no
+// session of any of them; nil when it holds one. An empty answer then says where asq looked,
+// rather than only that there is nothing: a service started without the variable that
+// moves a CLI's store, or a container with a store mounted in the wrong place, finds none.
+func (a *App) NothingFound(ctx context.Context) ([]StoreStatus, error) {
+	_, n, err := a.Index.Sessions(ctx, index.Filter{Stores: a.Stores(), Archived: true, Agents: true, Empty: true}, index.Page{Limit: 1})
+	if err != nil || n > 0 {
+		return nil, err
+	}
+	var looked []StoreStatus
+	for _, st := range a.Set.All() {
+		looked = append(looked, StoreStatus{Source: st.Name, Title: st.Spec.Title, Location: st.Source.Location(), Found: st.Source.Exists()})
+	}
+	return looked, nil
+}
+
 // Health reports the stores, what the index holds, and which stores could not be read.
 func (a *App) Health(ctx context.Context) (Health, error) {
 	h := Health{Version: Version, Index: a.Index.Path(), Sync: a.Index.State()}

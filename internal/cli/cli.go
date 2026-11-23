@@ -214,6 +214,21 @@ func warn(ctx context.Context, a *app.App, io *streams) {
 	for _, w := range warnings {
 		fmt.Fprintf(io.err, "asq: %s could not be read (%s): %s\n", w.Source, w.Location, w.Error)
 	}
+	// Nor does it say why there is nothing, when nothing was found anywhere
+	looked, _ := a.NothingFound(ctx)
+	if len(looked) == 0 {
+		return
+	}
+	st := render.Style{Home: os.Getenv("HOME")}
+	fmt.Fprintln(io.err, "asq: no CLI's sessions were found. Looked in:")
+	for _, s := range looked {
+		state := "not there"
+		if s.Found {
+			state = "there, and empty"
+		}
+		fmt.Fprintf(io.err, "  %-12s %-44s %s\n", s.Source, st.Path(s.Location), state)
+	}
+	fmt.Fprintln(io.err, "asq: asq doctor says more; a store somewhere else is named with --path name=dir, or ASQ_PATH")
 }
 
 func cmdList(ctx context.Context, args []string, io *streams) error {

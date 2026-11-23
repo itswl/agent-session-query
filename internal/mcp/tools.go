@@ -300,6 +300,18 @@ func (s *Server) run(ctx context.Context, t tool, given map[string]any) (string,
 			notes = append(notes, fmt.Sprintf("%s could not be read (%s): its sessions may be missing here.", w.Source, txt.OneLine(w.Error, 160)))
 		}
 	}
+	if looked, err := s.App.NothingFound(ctx); err == nil && len(looked) > 0 {
+		places := make([]string, len(looked))
+		for i, l := range looked {
+			state := "not there"
+			if l.Found {
+				state = "there, and empty"
+			}
+			places[i] = fmt.Sprintf("%s %s (%s)", l.Source, l.Location, state)
+		}
+		notes = append(notes, "No CLI's sessions were found on the machine asq runs on. It looked in: "+strings.Join(places, ", ")+
+			". asq doctor there says more; a store somewhere else is named with ASQ_PATH.")
+	}
 	if len(notes) > 0 {
 		text += "\n\n[" + strings.Join(notes, " ") + "]"
 	}

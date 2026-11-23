@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -62,5 +64,30 @@ func TestDamageMetByAQuestionNamesTheRebuild(t *testing.T) {
 	}
 	if out, errs, code := asq(t, h, indexPath, "search", "flaky"); code != 0 || !strings.Contains(out, "1 turn in 1 session") {
 		t.Errorf("a search after the rebuild: exit %d\n%s%s", code, out, errs)
+	}
+}
+
+// With no store found anywhere, an empty answer says where asq looked; one found and empty
+// says so too. A history with sessions in it says nothing of the kind.
+func TestNothingFoundSaysWhereItLooked(t *testing.T) {
+	h, indexPath := setup(t)
+	if _, errs, _ := asq(t, h, indexPath, "ls"); strings.Contains(errs, "Looked in") {
+		t.Errorf("a history with sessions says where it looked:\n%s", errs)
+	}
+
+	nowhere := filepath.Join(t.TempDir(), "no", "such", "store")
+	var out, errs bytes.Buffer
+	code := Run([]string{"ls", "--index", filepath.Join(t.TempDir(), "index.db"), "--only", "claude", "--path", "claude=" + nowhere}, strings.NewReader(""), &out, &errs)
+	if code != 0 || out.String() != "No sessions.\n" || !strings.Contains(errs.String(), "asq: no CLI's sessions were found. Looked in:\n  claude") ||
+		!strings.Contains(errs.String(), nowhere) || !strings.Contains(errs.String(), "not there") || !strings.Contains(errs.String(), "asq doctor says more") {
+		t.Errorf("ls with no store: exit %d\n%s%s", code, &out, &errs)
+	}
+
+	empty := t.TempDir()
+	out.Reset()
+	errs.Reset()
+	code = Run([]string{"search", "flaky", "--index", filepath.Join(t.TempDir(), "index.db"), "--only", "claude", "--path", "claude=" + empty}, strings.NewReader(""), &out, &errs)
+	if code != 0 || !strings.Contains(errs.String(), "there, and empty") {
+		t.Errorf("search of an empty store: exit %d\n%s%s", code, &out, &errs)
 	}
 }

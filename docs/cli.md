@@ -42,6 +42,9 @@ shell gives or the one its symbolic links lead to (`/tmp/x` and `/private/tmp/x`
 to case. An empty answer says on stderr which directory was looked in, since `.` is wherever
 the command happened to run.
 
+When no store holds a session at all, every command says so on stderr beside its answer, with
+where it looked — each store's place, there or not — and that `asq doctor` says more.
+
 ## Finding
 
 **`asq ls [word]`** — recent sessions, newest first. A word narrows to sessions whose title, id

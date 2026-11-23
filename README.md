@@ -175,7 +175,13 @@ which. Move them elsewhere first to keep them.
 If `asq serve` was kept running, take the service down before the binary —
 `asq service uninstall`, or `brew services stop asq`; one set up by hand, the launchd agent,
 the systemd unit or the scheduled task, each named in [Deploying](docs/deploy.md); a
-container is `docker rm` and its `/data` volume.
+container is `docker rm` and its `/data` volume. Its log stays behind, with the callers it
+refused in it:
+
+```sh
+rm -f ~/Library/Logs/asq.log                 # the service asq service install, or the launchd agent, set up on macOS
+rm -f "$(brew --prefix)/var/log/asq.log"     # Homebrew's service
+```
 
 The agent CLIs given asq go on asking for it until told otherwise: remove the `asq` MCP server
 with each CLI's own command or from its settings, and the skill's folders,

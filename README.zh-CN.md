@@ -160,7 +160,12 @@ Windows：删除 `%LOCALAPPDATA%\Programs\asq`、`%LocalAppData%\asq` 和 `%AppD
 
 若 `asq serve` 是常驻运行的，先停掉服务再删二进制——`asq service uninstall` 或
 `brew services stop asq`；手工配置的 launchd、systemd 或计划任务，按[部署](docs/deploy.md)里写的
-停；容器则是 `docker rm` 加它的 `/data` 卷。
+停；容器则是 `docker rm` 加它的 `/data` 卷。服务的日志会留下来，里面记着它拒绝过的调用方：
+
+```sh
+rm -f ~/Library/Logs/asq.log                 # macOS 上 asq service install 或手工 launchd 配置的服务
+rm -f "$(brew --prefix)/var/log/asq.log"     # Homebrew 的服务
+```
 
 交给过 asq 的 agent CLI 会一直去找它，直到你告诉它们不用了：用各 CLI 自己的命令或在它的设置里删掉
 名为 `asq` 的 MCP server；存过 skill 的话，删掉 `~/.claude/skills/agent-sessions` 和

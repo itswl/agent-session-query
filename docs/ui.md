@@ -15,8 +15,17 @@ uses nothing else, so anything it shows can be had from the API too.
 The list is grouped by day, newest first, fifty at a time. A row is the session's title, its last
 ask and how it was answered, and the facts worth scanning for: which CLI, how many turns and tool
 calls, how many of those failed and how many of those the same command passed later — in red
-while one has not, muted once each has — subagents, project, branch. A session written in the last two
-minutes is marked *live*.
+while one has not, muted once each has — subagents, project, branch.
+
+A row opens with where its agent stands, as its transcript says
+([which CLIs say it](sources.md#where-a-turn-stands)): *working*; *waiting on Bash: npm run
+build* — a command still running, or a prompt asking permission to run it, which a transcript
+does not tell apart; or *your turn*, the agent done and waiting for you. Pointing at it says
+since when. Working is said for ten minutes after the transcript was last written — an agent at
+work writes as it goes — and the other two for a day. A session none of this is said of is
+marked *live* when it was written to in the last two minutes. *Agents* at the top of the filters
+narrows the list to the sessions *Working*, or to those that *Needs you*: waiting on a call, or
+your turn.
 
 What changed since you last looked is marked too: a session begun since is *new*, one begun
 before and written to since is *updated*, and a line — *Changed since your last visit · Today
@@ -27,9 +36,9 @@ minutes away — the page hidden or closed, the machine asleep — does, and the
 from when you left. *Mark as seen* on the line clears the marks at once. A first visit marks
 nothing.
 
-The filters on the left — store, time, project, archived sessions, subagent transcripts — live in
-the address, so a filtered view can be bookmarked and Back goes where you expect. The counts
-beside each store are what the list shows of it. A row's branch is a filter too: a tap on it
+The filters on the left — agents, store, time, project, archived sessions, subagent transcripts —
+live in the address, so a filtered view can be bookmarked and Back goes where you expect. The
+counts beside each store are what the list shows of it. A row's branch is a filter too: a tap on it
 narrows the list to the sessions on that branch (a branch whose name contains it, as on the
 command line), the filters name it, and *All branches* takes it off. A project chosen here stays
 chosen in the reports — see [one project throughout](#one-project-throughout). A filtered list
@@ -61,8 +70,9 @@ from.
 `/s/<store>/<id>` — the address is the session's ref, and `#4` on the end is turn 4, `#4.31`
 step 31 in it. Any of these can be pasted to someone with the same history.
 
-The head says what the session is: title, ref, project, branch, when, totals, and the command
-that reopens it in its own CLI. **Brief** opens the [handoff brief](cli.md#handing-over) with a
+The head says what the session is: title, ref, project, branch, where its agent stands — a
+session waiting on a call links to that step — when, totals, and the command that reopens it
+in its own CLI. **Brief** opens the [handoff brief](cli.md#handing-over) with a
 copy button, of the latest turn — or, chosen above it, of the turn in view and every turn after
 it (*From #7*), or of the whole session; **Export** downloads the session as Markdown, JSON,
 JSON Lines or a standalone page. A subagent's transcript links to the session it ran in, and a

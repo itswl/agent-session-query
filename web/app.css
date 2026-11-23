@@ -279,6 +279,11 @@ div.row-main { position: relative; }
 [data-store="openclaw"] { --store: #ef4444; }
 [data-store="copilot"] { --store: #65a30d; }
 .live { padding-left: 11px; color: var(--ok); background: radial-gradient(circle at 3.5px 50%, var(--ok) 3px, transparent 3.5px) no-repeat; }
+/* Where a session's latest turn stands, past at work (.live): waiting on a call, which is
+   named, and the person's turn */
+.standing { font-weight: 560; }
+.standing.on-call { color: var(--warn); }
+.standing.yours { color: var(--accent); }
 /* Written to since the last look: a session new or updated, a failure new */
 .fresh { color: var(--accent); font-weight: 600; }
 .branch, .path { font-family: var(--mono); font-size: 11.5px; }

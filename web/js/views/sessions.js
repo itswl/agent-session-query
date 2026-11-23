@@ -10,6 +10,7 @@ import * as f from '../format.js';
 import { WINDOWS } from '../windows.js';
 import * as seen from '../seen.js';
 import * as projects from '../projects.js';
+import { standing, NEEDS_YOU } from '../standing.js';
 
 const PAGE = 50;
 const HITS = 20;
@@ -33,6 +34,9 @@ function apiFilters(q) {
     archived: q.get('archived') === '1',
   };
 }
+
+// listFilters are the filters of the list alone, which a search does not take.
+const listFilters = (q) => ({ agents: q.get('agents') === '1', state: q.get('state') });
 
 // hrefWith is the current view's address with some parameters changed.
 function hrefWith(route, changes) {
@@ -95,7 +99,7 @@ export function mount(main, route, ctx) {
     count.textContent = !v.items.length && !v.total ? '' : searching()
       ? `${f.plural(v.total, 'turn')} in ${f.plural(v.sessions, 'session')}`
       : f.plural(v.total, 'session');
-    const active = ['source', 'project', 'branch', 'since', 'archived', 'agents'].filter((k) => v.route.query.get(k)).length;
+    const active = ['source', 'project', 'branch', 'since', 'archived', 'agents', 'state'].filter((k) => v.route.query.get(k)).length;
     toggle.lastChild.textContent = active ? `Filters (${active})` : 'Filters';
   }
 
@@ -128,6 +132,11 @@ export function mount(main, route, ctx) {
       this.textContent = restList.hidden ? `${rest.length} more` : 'Fewer';
     } }, `${rest.length} more`);
     fill(aside,
+      // Where each agent stands is the list's own: a search finds turns, not where they stand
+      !searching() && h('section', null, h('h2', null, 'Agents'), h('ul', { class: 'opts seg' },
+        option('state', '', 'All'),
+        option('state', 'working', 'Working', { title: 'At work now, as their transcripts say: the model answering, or a result on its way back' }),
+        option('state', NEEDS_YOU, 'Needs you', { title: 'Waiting on a call — a command still running, or a prompt asking permission — or done, and waiting for you' }))),
       h('section', null, h('h2', null, 'Store'), h('ul', { class: 'opts' },
         option('source', '', 'All stores'),
         stores.map((s) => option('source', s.source, [mark(s.source), s.title || s.source], { n: s.sessions, title: `${f.plural(s.sessions, 'session')}, ${f.plural(s.transcripts, 'transcript')} with subagents and archived ones · ${s.location}` })))),
@@ -186,9 +195,9 @@ export function mount(main, route, ctx) {
 
   function emptyState() {
     const q = v.route.query.get('q') || '';
-    const filtered = ['source', 'project', 'branch', 'since'].some((k) => v.route.query.get(k));
+    const filtered = ['source', 'project', 'branch', 'since', 'state'].some((k) => v.route.query.get(k));
     const warned = (status.health?.warnings || []).length;
-    const clear = filtered && h('a', { href: hrefWith(v.route, { source: '', project: '', branch: '', since: '' }) }, 'Clear the filters');
+    const clear = filtered && h('a', { href: hrefWith(v.route, { source: '', project: '', branch: '', since: '', state: '' }) }, 'Clear the filters');
     if (searching() && !q.trim()) {
       return empty('Search every turn of every session.', 'Type in the search box above. Words match what they begin, and other forms of an English word: "deploy" finds "deployment", "retries" finds "retried".',
         'Use "a phrase" in quotes, -word to exclude, and ask: reply: thinking: tool: output: title: to search one part of a turn.');
@@ -206,6 +215,11 @@ export function mount(main, route, ctx) {
     }
     if (searching()) {
       return empty(`No turns match “${q}”.`, 'Try fewer words, a shorter word (words match what they begin), or drop a column prefix.', clear);
+    }
+    const state = v.route.query.get('state');
+    if (state) {
+      return empty(state === NEEDS_YOU ? 'Nothing is waiting on you.' : 'No agent is at work.',
+        'Where an agent stands is said for Claude Code, Codex, Gemini CLI and OpenCode, by what their transcripts say: at work for ten minutes after they were last written, waiting or done for a day.', clear);
     }
     return empty(filtered ? 'No sessions match these filters.' : 'No sessions yet.',
       warned ? `${f.plural(warned, 'store')} could not be read — see the notice above. This list may be incomplete.` : null,
@@ -245,7 +259,7 @@ export function mount(main, route, ctx) {
         v.outside = r.outside || null;
         v.end = r.hits.length < HITS;
       } else {
-        const r = await api('/api/sessions' + qs({ ...apiFilters(v.route.query), agents: v.route.query.get('agents') === '1', limit: PAGE, offset: v.items.length }), { signal });
+        const r = await api('/api/sessions' + qs({ ...apiFilters(v.route.query), ...listFilters(v.route.query), limit: PAGE, offset: v.items.length }), { signal });
         const have = new Set(v.items.map((s) => s.ref));
         v.items.push(...r.sessions.filter((s) => !have.has(s.ref)));
         v.total = r.total;
@@ -277,7 +291,7 @@ export function mount(main, route, ctx) {
     const c = new AbortController();
     v.busy = c;
     try {
-      const r = await api('/api/sessions' + qs({ ...apiFilters(v.route.query), agents: v.route.query.get('agents') === '1', limit: PAGE }), { signal: AbortSignal.any([ctx.signal, c.signal]) });
+      const r = await api('/api/sessions' + qs({ ...apiFilters(v.route.query), ...listFilters(v.route.query), limit: PAGE }), { signal: AbortSignal.any([ctx.signal, c.signal]) });
       const last = r.sessions.at(-1);
       const joins = r.sessions.length >= PAGE && v.items.some((s) => s.ref === last.ref && s.updatedAt === last.updatedAt);
       if (v.renew || !joins) {
@@ -399,6 +413,7 @@ function sessionRow(s, base, route) {
       h('a', { class: 'row-title row-link', href: sessionHref(s.ref) }, title),
       sub.some(Boolean) && h('span', { class: 'row-sub' }, sub.filter(Boolean).join('  →  ')),
       h('span', { class: 'row-facts dots' },
+        standing(s),
         h('span', { class: 'store-name' }, s.source),
         time(s.updatedAt),
         fresh(s, base),
@@ -410,8 +425,7 @@ function sessionRow(s, base, route) {
         s.cwd && h('span', { class: 'path', title: s.cwd }, f.shortPath(s.cwd)),
         s.branch && h('a', { class: 'branch', href: hrefWith(route, { branch: onBranch ? '' : s.branch }), 'aria-current': onBranch ? 'true' : null,
           title: onBranch ? 'All branches' : `Only the sessions on ${s.branch}` }, s.branch),
-        s.archived && h('span', null, 'archived'),
-        s.active && h('span', { class: 'live', title: 'Written to in the last two minutes' }, 'live'))));
+        s.archived && h('span', null, 'archived'))));
 }
 
 // fresh marks a session written to since the last look: new if it began since, updated

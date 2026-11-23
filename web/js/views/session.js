@@ -8,6 +8,7 @@ import { coalesce } from '../live.js';
 import { md, needles, highlight, formsIn } from '../md.js';
 import { steps, text } from './steps.js';
 import * as f from '../format.js';
+import { standing } from '../standing.js';
 
 const titleOf = (s) => s.title || f.firstLine(s.lastAsk, 120) || 'Untitled session';
 const sigOf = (t) => [t.endedAt, t.lastAt, t.steps, t.tools, t.failures, t.passedLater, t.interrupted, t.ask?.length, t.answer?.length, f.totalTokens(t.usage)].join('|');
@@ -161,7 +162,8 @@ export function mount(main, route, ctx) {
         s.model && h('span', null, s.model),
         s.version && h('span', { class: 'dim' }, 'v' + s.version),
         s.archived && h('span', null, 'archived'),
-        s.active && h('span', { class: 'live' }, 'live')));
+        // what a session waits on is a step of its latest turn, which its turns are counted to
+        standing(s, s.live?.seq && st.turns ? `#${st.turns}.${s.live.seq}` : null)));
     fill(details,
       h('div', { class: 'meta when' }, time(s.startedAt, 'stamp'), ' → ', time(s.updatedAt, 'stamp'), ' ', h('span', { class: 'dim' }, '(', time(s.updatedAt), ')')),
       h('dl', { class: 'totals' },
@@ -558,7 +560,7 @@ export function mount(main, route, ctx) {
   // Following keeps a reader who is at the bottom there as turns arrive. Scrolled up, the
   // pill offers the way back down; switched off, the way to switch it on.
   function renderPill() {
-    const show = Boolean(v.sess?.active || v.live);
+    const show = Boolean(v.sess?.active || v.live || ['working', 'waiting'].includes(v.sess?.live?.state));
     pill.hidden = !show;
     if (!show) return;
     const mode = !v.follow ? 'off' : atBottom() ? 'on' : 'away';

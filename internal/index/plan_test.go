@@ -122,7 +122,9 @@ func TestAQueryReadsWhatItAsksForAndNotTheWholeIndex(t *testing.T) {
 // A search, and the files report, take of each turn they find which it is and when, and
 // read that from turns_at rather than from the turn's row, which holds its text: a common
 // word or a path most turns name would otherwise read most of the index. The planner takes
-// the table's own key for a lookup by sid and idx unless the index is named.
+// the table's own key for a lookup by sid and idx unless the index is named, or holds every
+// column the query takes, as it does for usage's agent time, with no window, over each
+// session's turns.
 func TestASearchReadsTheTurnsTimesFromTheirIndex(t *testing.T) {
 	ix, err := Open(filepath.Join(t.TempDir(), "index.db"))
 	if err != nil {
@@ -157,6 +159,14 @@ func TestASearchReadsTheTurnsTimesFromTheirIndex(t *testing.T) {
 	files := plan(`SELECT count(*)`+filesFrom+where+` AND instr(lower(x.path), lower(?)) > 0`, append(args, "internal")...)
 	if !strings.Contains(files, "COVERING INDEX turns_at") {
 		t.Errorf("the files report counts its turns from their rows:\n%s", files)
+	}
+	// Usage with no window counts every turn of each session, and the agents' time on it
+	for _, by := range []string{ByAll, BySource, ByProject} {
+		when, whenArgs := Window{}.where("t.started_at")
+		got := plan(usageTurns(by, "", where, when), append(append([]any{}, args...), whenArgs...)...)
+		if !strings.Contains(got, "COVERING INDEX turns_at") {
+			t.Errorf("all-time usage by %q reads every turn's row:\n%s", by, got)
+		}
 	}
 }
 

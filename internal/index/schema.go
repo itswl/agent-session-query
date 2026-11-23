@@ -139,8 +139,11 @@ CREATE INDEX IF NOT EXISTS turns_started ON turns (started_at);
 -- What a search takes of each turn it finds: which it is and when, in the index itself. A
 -- common word is found in most turns, and each read from its row is a page or more of text
 -- for two numbers. Named by the queries that use it (see wordsFrom): the planner takes the
--- table's own key for a lookup by sid and idx, whatever the row holds.
-CREATE INDEX IF NOT EXISTS turns_at ON turns (sid, idx, started_at, last_at);
+-- table's own key for a lookup by sid and idx, whatever the row holds. ended_at is here for
+-- usage, which adds up the agents' time on every turn of each session when no window bounds
+-- it (see usageTurns): a column another report reads of the turns it finds by session goes
+-- here too.
+CREATE INDEX IF NOT EXISTS turns_at ON turns (sid, idx, started_at, last_at, ended_at);
 -- What a report adds up over the turns of a window, in the index itself. A turn's row
 -- holds its text, so a month of turns read for four numbers each is most of the file.
 CREATE INDEX IF NOT EXISTS turns_report ON turns (started_at, tools, failures, ended_at);

@@ -154,9 +154,7 @@ FROM usage u JOIN sessions s ON s.sid = u.sid` + root + ` WHERE ` + where + ` AN
 	}
 	when, whenArgs = w.where("t.started_at")
 	where, args = ix.widen(ctx, reportFilter(f), !w.Since.IsZero()).where()
-	rows, err = ix.ro.QueryContext(ctx, `SELECT `+keyOf(by, "t.started_at")+` AS k, count(*), `+agentMs+`
-FROM turns t JOIN sessions s ON s.sid = t.sid`+root+` WHERE t.idx > 0 AND s.parent_session = '' AND `+where+` AND `+when+` GROUP BY k`,
-		append(args, whenArgs...)...)
+	rows, err = ix.ro.QueryContext(ctx, usageTurns(by, root, where, when), append(args, whenArgs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +171,14 @@ FROM turns t JOIN sessions s ON s.sid = t.sid`+root+` WHERE t.idx > 0 AND s.pare
 		}
 	}
 	return out, rows.Err()
+}
+
+// usageTurns counts the turns of each usage group, and adds up the agents' time on them. With
+// no window to start from, the planner reads every turn of each session the filter keeps,
+// and turns_at holds all it takes of them: from the turns' own rows, that is their text.
+func usageTurns(by, root, where, when string) string {
+	return `SELECT ` + keyOf(by, "t.started_at") + ` AS k, count(*), ` + agentMs + `
+FROM turns t JOIN sessions s ON s.sid = t.sid` + root + ` WHERE t.idx > 0 AND s.parent_session = '' AND ` + where + ` AND ` + when + ` GROUP BY k`
 }
 
 // keyOf is what a usage grouping groups by, of a moment in the column at; "" for a grouping

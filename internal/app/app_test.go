@@ -159,6 +159,15 @@ func TestAResumeNeedsItsDirectoryWhereTheCLIDoes(t *testing.T) {
 	if got := app.Resume(&index.Session{Session: model.Session{Source: "codex", ID: "c-1"}}); got != "codex resume c-1" {
 		t.Errorf("a Codex session, which resumes from anywhere = %q", got)
 	}
+	// A reverted thread's later rollout, named for the thread and the rollout, is reopened
+	// by the thread's id
+	later := index.Session{Session: model.Session{Source: "codex", ID: "c-1_r-2", Cwd: "/w"}}
+	if got := app.Resume(&later); !strings.HasSuffix(got, "/w && codex resume c-1") {
+		t.Errorf("a reverted thread's later rollout = %q", got)
+	}
+	if _, argv := app.ResumeArgs(&later); strings.Join(argv, " ") != "codex resume c-1" {
+		t.Errorf("argv = %q", argv)
+	}
 
 	// Why not, said as it is: the directory unknown is not a CLI without the command
 	for _, c := range []struct {

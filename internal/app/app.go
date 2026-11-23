@@ -18,6 +18,7 @@ import (
 	"github.com/itswl/agent-session-query/internal/catalog"
 	"github.com/itswl/agent-session-query/internal/index"
 	"github.com/itswl/agent-session-query/internal/keep"
+	"github.com/itswl/agent-session-query/internal/sources"
 	"github.com/itswl/agent-session-query/internal/txt"
 )
 
@@ -442,7 +443,7 @@ func ResumeThere(s *index.Session) string {
 // resumeLine is the command that reopens a session, for a shell on Windows or not.
 func resumeLine(s *index.Session, windows bool) string {
 	spec, _ := catalog.Spec(s.Source)
-	cmd := spec.Resume + " " + quoteArg(s.ID, windows) // a spec's words are plain: see ResumeArgs
+	cmd := spec.Resume + " " + quoteArg(resumeID(spec, s.ID), windows) // a spec's words are plain: see ResumeArgs
 	if isAbsolute(s.Cwd) {
 		cd := "cd "
 		if windows {
@@ -461,11 +462,19 @@ func ResumeArgs(s *index.Session) (dir string, argv []string) {
 		return "", nil
 	}
 	spec, _ := catalog.Spec(s.Source)
-	argv = append(strings.Fields(spec.Resume), s.ID)
+	argv = append(strings.Fields(spec.Resume), resumeID(spec, s.ID))
 	if isAbsolute(s.Cwd) {
 		dir = s.Cwd
 	}
 	return dir, argv
+}
+
+// resumeID is the id the CLI's command reopens a session by.
+func resumeID(spec sources.Spec, id string) string {
+	if spec.ResumeID != nil {
+		return spec.ResumeID(id)
+	}
+	return id
 }
 
 // isAbsolute: a plain absolute path, Unix or Windows.

@@ -261,6 +261,52 @@ func TestPatchedFilesAreNamedWhole(t *testing.T) {
 	}
 }
 
+// A thread reverted goes on in a new rollout under the same thread id, named for the
+// thread and the rollout, which holds only what came after the revert and points at the
+// part of the earlier one it keeps. The two are sessions apart, and the later is named as
+// its file is, so that a ref tells them apart; both carry the thread's name.
+func TestARevertedThread(t *testing.T) {
+	home := t.TempDir()
+	sessions := filepath.Join(home, "sessions")
+	const thread, rollout = "0199b310-0000-7000-8000-00000000000a", "0199b310-0000-7000-8000-00000000000b"
+	day := filepath.Join(sessions, "2026", "11", "14")
+	turn := func(id, ask, answer, ts string) []any {
+		return []any{
+			`{"timestamp":"` + ts + `","type":"turn_context","payload":{"turn_id":"` + id + `","model":"gpt-6.1","cwd":"/w"}}`,
+			`{"timestamp":"` + ts + `","type":"response_item","payload":{"type":"message","role":"user","id":"u-` + id + `","content":[{"type":"input_text","text":"` + ask + `"}]}}`,
+			`{"timestamp":"` + ts + `","type":"response_item","payload":{"type":"message","role":"assistant","id":"a-` + id + `","content":[{"type":"output_text","text":"` + answer + `"}]}}`,
+		}
+	}
+	first := []any{`{"timestamp":"2026-11-14T10:00:00Z","type":"session_meta","payload":{"session_id":"` + thread + `","id":"` + thread + `","cwd":"/w","history_mode":"paginated"}}`}
+	first = append(first, turn("t1", "add the endpoint", "Added.", "2026-11-14T10:00:01Z")...)
+	first = append(first, turn("t2", "now rename it", "Renamed.", "2026-11-14T10:05:00Z")...)
+	sourcetest.Write(t, filepath.Join(day, "rollout-2026-11-14T10-00-00-"+thread+".jsonl"), first...)
+	later := []any{`{"timestamp":"2026-11-14T11:00:00Z","type":"session_meta","payload":{"session_id":"` + thread + `","id":"` + thread + `","cwd":"/w","history_mode":"paginated",` +
+		`"history_base":{"thread_id":"` + thread + `","end_ordinal_exclusive":4,"end_byte_offset":900}}}`}
+	later = append(later, turn("t3", "keep the old name, add a test instead", "Test added.", "2026-11-14T11:00:01Z")...)
+	sourcetest.Write(t, filepath.Join(day, "rollout-2026-11-14T11-00-00-"+thread+"_"+rollout+".jsonl"), later...)
+	sourcetest.Write(t, filepath.Join(home, "session_index.jsonl"), `{"id":"`+thread+`","thread_name":"Invoices endpoint"}`)
+
+	all := sourcetest.All(t, Spec.Open(sessions))
+	sourcetest.NothingUnread(t, all...)
+	if len(all) != 2 {
+		t.Fatalf("sessions = %d", len(all))
+	}
+	before, after := sourcetest.ByID(t, all, thread), sourcetest.ByID(t, all, thread+"_"+rollout)
+	if before.Stats.Turns != 2 || after.Stats.Turns != 1 || after.Turn(t, 1).Ask != "keep the old name, add a test instead" {
+		t.Errorf("turns: %d before the revert's file, %d after", before.Stats.Turns, after.Stats.Turns)
+	}
+	if before.Session.Title != "Invoices endpoint" || after.Session.Title != "Invoices endpoint" {
+		t.Errorf("titles %q, %q", before.Session.Title, after.Session.Title)
+	}
+	if got := Spec.ResumeID(after.Session.ID); got != thread {
+		t.Errorf("the later rollout is reopened by %q", got)
+	}
+	if got := Spec.ResumeID(thread); got != thread {
+		t.Errorf("the thread is reopened by %q", got)
+	}
+}
+
 // A summary entry opens with a heading in Markdown's bold, which is shown bare; bold
 // anywhere else, or a line that only starts or ends in it, is as it was written.
 func TestSummaryHeadings(t *testing.T) {

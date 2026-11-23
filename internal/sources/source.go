@@ -90,6 +90,10 @@ type Spec struct {
 	// when it knows every one. An adapter that names a session after its file, for want
 	// of the id the CLI keeps in it, gives an id the command cannot take.
 	Resumable func(id string) bool
+	// ResumeID is the id the command takes for a session the adapter named otherwise; nil
+	// when it takes the session's own. Codex reopens a reverted thread's later rollout,
+	// which its adapter names <thread>_<rollout>, by the thread's.
+	ResumeID func(id string) string
 	// Store is the layout in one line, for the documentation the program prints.
 	Store string
 	// Retention is what the CLI deletes of its own history without being asked, in one

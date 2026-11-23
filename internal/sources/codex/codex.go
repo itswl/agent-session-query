@@ -59,8 +59,14 @@ var Spec = sources.Spec{
 	Open:    func(location string) sources.Source { return &Source{root: location} },
 	Movable: true,
 	Resume:  "codex resume",
-	Reads:   3,
-	Store:   "~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl",
+	// A reverted thread's later rollout is named <thread>_<rollout>; Codex reopens the
+	// thread, at its latest rollout, by the thread's id
+	ResumeID: func(id string) string {
+		thread, _, _ := strings.Cut(id, "_")
+		return thread
+	},
+	Reads: 3,
+	Store: "~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl",
 }
 
 // Source is a Codex sessions directory.
@@ -143,12 +149,20 @@ func stem(path string) string {
 // and rollout-<time>-<thread>_<rollout>.jsonl for a later rollout of the same thread
 // (codex-rs rollout/src/rollout_file_name.rs). "" for a name of another shape.
 func threadOf(path string) string {
+	thread, _ := idsOf(path)
+	return thread
+}
+
+// idsOf is the thread a rollout is named for and, for a later rollout of that thread, the
+// rollout's own id: "" for a rollout named for its thread alone, as every rollout is but
+// the one a revert starts.
+func idsOf(path string) (thread, rollout string) {
 	rest, ok := strings.CutPrefix(stem(path), "rollout-")
 	if !ok || len(rest) < 21 || rest[19] != '-' {
-		return ""
+		return "", ""
 	}
-	id, _, _ := strings.Cut(rest[20:], "_")
-	return id
+	thread, rollout, _ = strings.Cut(rest[20:], "_")
+	return thread, rollout
 }
 
 // threadNames is the name of each thread that has one, by thread id. Codex appends a
@@ -753,6 +767,14 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	}
 
 	w.S.ID = sessionIDOf(ownID, sessionID, salvaged, hasMeta, forkedOf != "" || parentID != "", stem(path))
+	// A thread reverted (thread/revert) goes on in a new rollout under the same thread id:
+	// the earlier one, with the turns the revert took back, is kept as it was, and the new
+	// one holds what came after (codex-rs thread-store/src/local/revert_thread.rs). Two
+	// sessions of one id could not be told apart by any ref, so the later is named for the
+	// thread and the rollout, as its file is: <thread>_<rollout>.
+	if thread, rollout := idsOf(path); rollout != "" && w.S.ID == thread {
+		w.S.ID = thread + "_" + rollout
+	}
 	w.S.Model = turnModel
 	// A rollout that writes task_started writes task_complete as each turn ends, and
 	// turn_aborted as one is stopped: a turn without either is in flight. An older one

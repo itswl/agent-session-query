@@ -134,7 +134,12 @@ a call to `image_generation`, its prompt the input; a compaction the API made in
 is a compaction event. A rollback (`thread_rolled_back`) took the thread's last turns out of what
 the model is given, and the turns after it go on from before them: it is a `rollback` event at the
 end of the last turn it took back, and the turns it took back are read and counted, since they
-ran and were paid for.
+ran and were paid for. A thread reverted (`thread/revert`, which the clients that keep a
+paginated history offer) goes on in a new rollout under the same id, and the earlier one is kept
+as it was. The new one is a session of its own, holding what came after the revert, and is named
+for the thread and the rollout as its file is — `codex/<thread>_<rollout>` — so that a ref tells
+the two apart; the turns before the revert are in the earlier one's session. Either reopens the
+thread, with `codex resume <thread>`.
 
 **OpenCode** — one SQLite database, both the 1.x and 2.x schemas. A tool part that finished with
 a non-zero exit is a failure whatever its status says. Reasoning is reported beside the output

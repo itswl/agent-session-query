@@ -552,6 +552,19 @@ func TestInstallRefuses(t *testing.T) {
 			t.Error("written anyway")
 		}
 	})
+	// The manager holds the service, but it has stopped: what answers is something else
+	t.Run("a port something else answers on, beside a service that has stopped", func(t *testing.T) {
+		for _, goos := range []string{"darwin", "linux", "windows"} {
+			f := newFake(t, goos)
+			if _, err := f.m.Install(f.setup(), false); err != nil {
+				t.Fatal(err)
+			}
+			f.running, f.taken = false, true
+			if _, err := f.m.Install(f.setup(), false); err == nil || !strings.Contains(err.Error(), "already answers at http://127.0.0.1:7920") {
+				t.Errorf("%s: %v", goos, err)
+			}
+		}
+	})
 	t.Run("beside Homebrew's", func(t *testing.T) {
 		// The name Homebrew gives a service, and the one an older Homebrew gave it
 		for _, file := range [][]string{

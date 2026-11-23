@@ -207,8 +207,10 @@ func (m *Machine) Install(s Setup, force bool) (*Installed, error) {
 	if others := m.others(); len(others) > 0 && !force {
 		return nil, fmt.Errorf("%s — two services would start asq serve on one port: take that one down, or keep it instead of this (--force sets this one up anyway)", others[0])
 	}
+	// What answers is the service itself only while the manager says it runs: one it holds
+	// that has stopped — a task whose window was closed, a job that failed — is not
 	addr := Address(s, m.Port)
-	if loaded, _, _ := mg.state(); !loaded && m.Answers(addr) {
+	if _, state, _ := mg.state(); !runs(state) && m.Answers(addr) {
 		return nil, fmt.Errorf("something already answers at http://%s — an asq serve started by hand? Stop it, or give the service another --port", addr)
 	}
 	for _, dir := range s.Writable {
@@ -247,6 +249,10 @@ func (m *Machine) Install(s Setup, force bool) (*Installed, error) {
 	}
 	return done, nil
 }
+
+// runs says whether a state the manager gave is a service that runs: launchd's and Task
+// Scheduler's running, systemd's active.
+func runs(state string) bool { return state == "running" || strings.HasPrefix(state, "active") }
 
 // notes are what a person should know of the service on this system beyond what it runs.
 func (m *Machine) notes(mg manager, s Setup) []string {

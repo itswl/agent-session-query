@@ -225,6 +225,9 @@ Which turns it spells out:
   second time, or whole.
 - With no ref it briefs the newest session here, [as `show` takes it](#reading).
 
+`--turn`, `--from`, `--since` and a ref's `#N` each choose the turns, so a brief takes one of
+them: given two, it says which and briefs nothing.
+
 **`asq pack`** — several sessions as one document, oldest first: for each, what was asked and
 what it concluded. `--project` and `--since` choose them; `--turns` spells out every turn. A
 pack is a record, not a summary: where two sessions disagree, the later one was said later, and

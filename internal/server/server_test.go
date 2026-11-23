@@ -206,6 +206,9 @@ func TestRoutes(t *testing.T) {
 	if !strings.Contains(brief.Brief, "## From turn 2") || strings.Contains(brief.Brief, "## Turn 1\n") {
 		t.Errorf("brief from turn 2 = %s", brief.Brief)
 	}
+	if rec := (call{path: alpha + "/brief?turn=1&since=all"}).do(s); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "give one of them") {
+		t.Errorf("a brief asked for one turn and the whole session = %d %s", rec.Code, rec.Body)
+	}
 
 	var found index.SearchResult
 	get(t, s, "/api/search?q=%E6%95%B0%E6%8D%AE%E5%BA%93", &found)

@@ -175,10 +175,27 @@ func (a *App) Brief(ctx context.Context, s *index.Session, o render.BriefOptions
 
 // BriefOf reads what a brief is asked to cover as the command line, the API and the MCP
 // tool take it: one turn, the turn to start from, or a moment to start after — "all"
-// for the whole session, which is no moment at all.
+// for the whole session, which is no moment at all. Each says which turns the brief
+// covers, so it is given one of them: given two, one would be taken and the other
+// dropped without a word, and the caller handed a brief of turns it did not ask for.
 func BriefOf(turn, from int, since string) (render.BriefOptions, error) {
+	since = strings.TrimSpace(since)
+	var asked []string
+	if turn != 0 {
+		asked = append(asked, fmt.Sprintf("turn %d", turn))
+	}
+	if from != 0 {
+		asked = append(asked, fmt.Sprintf("from %d", from))
+	}
+	if since != "" {
+		asked = append(asked, "since "+since)
+	}
+	if n := len(asked); n > 1 {
+		return render.BriefOptions{}, fmt.Errorf("%s and %s each say which turns the brief covers: give one of them",
+			strings.Join(asked[:n-1], ", "), asked[n-1])
+	}
 	o := render.BriefOptions{Turn: turn, From: from}
-	if strings.TrimSpace(since) == "all" {
+	if since == "all" {
 		o.All = true
 		return o, nil
 	}

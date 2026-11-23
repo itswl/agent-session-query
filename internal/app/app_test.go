@@ -256,8 +256,25 @@ func TestBriefOf(t *testing.T) {
 	if o, err := app.BriefOf(0, 0, "all"); err != nil || !o.All || !o.Since.IsZero() {
 		t.Errorf("since all = %+v, %v", o, err)
 	}
-	if o, err := app.BriefOf(3, 2, "2h"); err != nil || o.All || o.Turn != 3 || o.From != 2 || time.Since(o.Since) < 2*time.Hour-time.Minute {
-		t.Errorf("turn 3, from 2, since 2h = %+v, %v", o, err)
+	if o, err := app.BriefOf(0, 0, "2h"); err != nil || o.All || time.Since(o.Since) < 2*time.Hour-time.Minute {
+		t.Errorf("since 2h = %+v, %v", o, err)
+	}
+	if o, err := app.BriefOf(3, 0, ""); err != nil || o.All || o.Turn != 3 || o.From != 0 {
+		t.Errorf("turn 3 = %+v, %v", o, err)
+	}
+	// Each says which turns the brief covers: given two, one would be dropped unsaid
+	for _, tc := range []struct {
+		turn, from  int
+		since, want string
+	}{
+		{2, 0, "all", "turn 2 and since all each say which turns the brief covers"},
+		{0, 2, "2h", "from 2 and since 2h each say"},
+		{3, 2, "", "turn 3 and from 2 each say"},
+		{3, 2, " all ", "turn 3, from 2 and since all each say"},
+	} {
+		if _, err := app.BriefOf(tc.turn, tc.from, tc.since); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("turn %d, from %d, since %q = %v; want %q", tc.turn, tc.from, tc.since, err, tc.want)
+		}
 	}
 	if o, err := app.BriefOf(0, 0, ""); err != nil || o.All || !o.Since.IsZero() {
 		t.Errorf("nothing = %+v, %v", o, err)

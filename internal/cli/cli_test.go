@@ -218,6 +218,7 @@ func TestWhatGoesWrong(t *testing.T) {
 		{[]string{"brief", "aaaa1111", "--turn", "9"}, 1, "turn must be 1..2"},
 		{[]string{"brief", "aaaa1111", "--from", "3"}, 1, "from must be 1..2"},
 		{[]string{"brief", "aaaa1111", "--since", "whenever"}, 2, "since: unreadable time"},
+		{[]string{"brief", "aaaa1111", "--turn", "1", "--since", "all"}, 2, "turn 1 and since all each say which turns the brief covers"},
 		{[]string{"resume", "claude/x1"}, 1, "resume the session it ran in"},
 		{[]string{"files"}, 2, "which file?"},
 		{[]string{"why", "notes.go"}, 2, "asq why <file>:<line>"},

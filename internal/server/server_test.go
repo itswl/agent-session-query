@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,6 +27,7 @@ import (
 	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/fixture"
 	"github.com/itswl/agent-session-query/internal/index"
+	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/web"
 )
 
@@ -311,6 +313,55 @@ func TestExportIsAlwaysADownload(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), "fix the flaky test") {
 			t.Errorf("%s: the export does not hold the session", format)
 		}
+	}
+}
+
+// A picture a step carried is sent as the picture its bytes are and as nothing else: its
+// type by its bytes, opened on its own a sandbox that loads nothing, kept by no cache. One
+// that is not a picture the page may show — an SVG holding a script — is not sent at all,
+// and none is sent to a caller without the token.
+func TestAPictureIsSentAsWhatItIs(t *testing.T) {
+	s, a, h := build(t, Options{Host: "0.0.0.0", Token: token})
+	h.WritePictures(t)
+	if _, err := a.Sync(t.Context(), index.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	bearer := map[string]string{"Authorization": "Bearer " + token}
+	base := "/api/sessions/claude/" + fixture.Pictured
+	var turn struct {
+		Turns []struct {
+			Items []struct {
+				Seq         int                `json:"seq"`
+				Attachments []model.Attachment `json:"attachments"`
+			} `json:"items"`
+		} `json:"turns"`
+	}
+	if rec := (call{path: base + "/turns?turns=1", header: bearer}).do(s); rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &turn) != nil {
+		t.Fatalf("turns = %d", rec.Code)
+	}
+	items := turn.Turns[0].Items
+	if want := (model.Attachment{Mime: "image/png", Bytes: 70, Inline: true}); len(items[0].Attachments) != 1 || items[0].Attachments[0] != want {
+		t.Fatalf("the ask carries %+v, want %+v", items[0].Attachments, want)
+	}
+	png, _ := base64.StdEncoding.DecodeString(fixture.PNG)
+	path := fmt.Sprintf("%s/items/%d/attachments/0", base, items[0].Seq)
+	rec := call{path: path, header: bearer}.do(s)
+	hd := rec.Header()
+	if rec.Code != http.StatusOK || hd.Get("Content-Type") != "image/png" || !bytes.Equal(rec.Body.Bytes(), png) {
+		t.Fatalf("the picture = %d %q, %d bytes", rec.Code, hd.Get("Content-Type"), rec.Body.Len())
+	}
+	if hd.Get("X-Content-Type-Options") != "nosniff" || hd.Get("Cache-Control") != "no-store" || !strings.Contains(hd.Get("Content-Security-Policy"), "sandbox") || hd.Get("Content-Encoding") != "" {
+		t.Errorf("headers = %v", hd)
+	}
+	if rec := (call{path: path}).do(s); rec.Code != http.StatusUnauthorized {
+		t.Errorf("without the token = %d", rec.Code)
+	}
+	svg := fmt.Sprintf("%s/items/%d/attachments/0", base, items[2].Seq)
+	if rec := (call{path: svg, header: bearer}).do(s); rec.Code != http.StatusNotFound || !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+		t.Errorf("an SVG = %d %q", rec.Code, rec.Header().Get("Content-Type"))
+	}
+	if rec := (call{path: base + "/items/x/attachments/0", header: bearer}).do(s); rec.Code != http.StatusBadRequest {
+		t.Errorf("a step that is not a number = %d", rec.Code)
 	}
 }
 

@@ -29,6 +29,7 @@ func TestAnAttachmentIsMarkedAsWhatItIs(t *testing.T) {
 		{"only said to be an image", Embedded("image/*", pngData), "[image · png · 70 bytes]", "image/png", 70},
 		{"a data URL", Embedded("", "data:image/png;base64,"+pngData), "[image · png · 70 bytes]", "image/png", 70},
 		{"its parameters", Embedded("Image/JPEG; q=1", strings.Repeat("A", 65536)), "[image · jpeg · 48 KB]", "image/jpeg", 49152},
+		{"another name for it", Embedded("image/jpg", "AAAA"), "[image · jpeg · 3 bytes]", "image/jpeg", 3},
 		{"a large one", Embedded("application/pdf", strings.Repeat("A", 1677722)), "[document · pdf · 1.2 MB]", "application/pdf", 1258291},
 		{"its bytes left out", Embedded("image/png", ""), "[image · png]", "image/png", 0},
 		{"named", Referenced("image/png", "/w/proj/plot.png"), "[image · png · plot.png]", "image/png", 0},

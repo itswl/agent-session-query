@@ -52,7 +52,8 @@ type App struct {
 	last     time.Time     // when the last sync ended
 	lastErr  error
 
-	waits waits // the folders a look at a file is waiting in (see lookWait)
+	waits    waits    // the folders a look at a file is waiting in (see lookWait)
+	pictures pictures // the pictures read from transcripts lately (see Picture)
 
 	state   string     // where what is kept is written down; "" keeps nothing
 	copyMu  sync.Mutex // one round of copying what is kept at a time (see keepUp)

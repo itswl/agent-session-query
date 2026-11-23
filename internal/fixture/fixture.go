@@ -114,6 +114,57 @@ func Write(t testing.TB) History {
 	return h
 }
 
+// The session WritePictures adds, and the pictures it carries as a transcript holds them:
+// a 1×1 PNG and GIF, and an SVG whose script a page must never run.
+const (
+	Pictured = "dddd4444-0000-4000-8000-000000000004"
+	PNG      = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+	GIF      = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=="
+	SVG      = "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxzY3JpcHQ+YWxlcnQoMSk8L3NjcmlwdD48L3N2Zz4="
+)
+
+// WritePictures adds a session that carried pictures, in /work/gamma ten minutes ago. It
+// is kept apart from Write, whose counts the other tests rely on.
+//
+//	#1  why is the login button blue   a PNG pasted into the ask; a screenshot tool
+//	                                   returning a PNG and a GIF; a Read returning an SVG,
+//	                                   and the SVG again calling itself a PNG
+//	#2  and this one                   a picture the transcript only names
+//
+// It returns the transcript's path.
+func (h History) WritePictures(t testing.TB) string {
+	t.Helper()
+	at := func(ago time.Duration) string { return h.Now.Add(-ago).Format(time.RFC3339Nano) }
+	image := func(media, data string) m {
+		return m{"type": "image", "source": m{"type": "base64", "media_type": media, "data": data}}
+	}
+	user := func(uuid, ts string, content any) m {
+		return m{"type": "user", "uuid": uuid, "timestamp": ts, "sessionId": Pictured, "cwd": "/work/gamma", "gitBranch": "main",
+			"version": "2.1.300", "message": m{"role": "user", "content": content}}
+	}
+	assistant := func(uuid, ts, response string, content ...m) m {
+		return m{"type": "assistant", "uuid": uuid, "timestamp": ts, "sessionId": Pictured,
+			"message": m{"id": response, "role": "assistant", "model": "claude-opus-5", "content": content,
+				"usage": m{"input_tokens": 10, "output_tokens": 5}, "stop_reason": "end_turn"}}
+	}
+	const minute, second = time.Minute, time.Second
+	path := filepath.Join(h.Dir, "-work-gamma", Pictured+".jsonl")
+	write(t, path,
+		user("g-u1", at(10*minute), []m{image("image/png", PNG), {"type": "text", "text": "why is the login button blue"}}),
+		assistant("g-a1", at(10*minute-2*second), "msg_g1", m{"type": "tool_use", "id": "toolu_shot", "name": "mcp__playwright__browser_take_screenshot", "input": m{}}),
+		user("g-u2", at(10*minute-3*second), []m{{"type": "tool_result", "tool_use_id": "toolu_shot",
+			"content": []m{{"type": "text", "text": "Took the screenshot"}, image("image/png", PNG), image("image/gif", GIF)}}}),
+		assistant("g-a2", at(10*minute-4*second), "msg_g2", m{"type": "tool_use", "id": "toolu_svg", "name": "Read", "input": m{"file_path": "/work/gamma/logo.svg"}}),
+		user("g-u3", at(10*minute-5*second), []m{{"type": "tool_result", "tool_use_id": "toolu_svg",
+			"content": []m{image("image/svg+xml", SVG), image("image/png", SVG)}}}),
+		assistant("g-a3", at(10*minute-6*second), "msg_g3", m{"type": "text", "text": "It has the primary class."}),
+		user("g-u4", at(5*minute), []m{{"type": "text", "text": "and this one"},
+			{"type": "image", "source": m{"type": "url", "url": "https://example.com/two.png"}}}),
+		assistant("g-a4", at(5*minute-2*second), "msg_g4", m{"type": "text", "text": "That one is secondary."}),
+	)
+	return path
+}
+
 // dated gives a file a modification time: one that has no records to take it from.
 func dated(t testing.TB, path, at string) {
 	t.Helper()

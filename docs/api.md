@@ -74,6 +74,16 @@ and the tail — with the whole size beside it (`item.bytes`, `tool.outBytes`, `
 **`GET /api/sessions/{source}/{id}/items/{seq}`** — one step whole:
 `{"session", "turn", "item"}`.
 
+**`GET /api/sessions/{source}/{id}/items/{seq}/attachments/{n}`** — a picture the step
+carried: the `n`th of its `attachments`, from 0, read from the transcript — the index keeps
+what each file is, not its bytes. Only a picture the transcript holds is sent: PNG, JPEG, GIF or
+WebP, as the transcript says and as its bytes are, at most 8 MB, as the type its bytes have.
+Opened on its own it is a sandbox that loads nothing. A file the transcript only names is never
+read — a path in a transcript could be any file on this machine. Anything else is `404`, saying
+why, and so is a file the transcript no longer holds as it did when it was read. The transcript
+is read to the end of the step's turn once for all the turn's pictures, and the ones read last
+are kept a while, up to 32 MB, for the next to be asked for.
+
 **`GET /api/sessions/{source}/{id}/brief?turn=&from=&since=`** — `{"session", "brief"}`, the
 [handoff brief](cli.md#handing-over) as Markdown: of the latest turn, of `turn`, of turn `from`
 and every turn after it, of every turn after `since`, or with `since=all` of the whole session.

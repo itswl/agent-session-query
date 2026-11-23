@@ -125,6 +125,9 @@ func cleanMime(s string) string {
 	if !strings.Contains(s, "/") || len(s) > 100 || strings.ContainsAny(s, " \t\r\n[]") {
 		return ""
 	}
+	if s == "image/jpg" {
+		return "image/jpeg" // a name some write for it
+	}
 	return s
 }
 

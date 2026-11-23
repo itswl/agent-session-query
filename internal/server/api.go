@@ -292,6 +292,38 @@ func (s *Server) handleItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, map[string]any{"session": sess.Ref, "turn": turn, "item": item})
 }
 
+// handlePicture sends a picture a step carried: PNG, JPEG, GIF or WebP, by its bytes, read
+// from the transcript. It is sent as what it is and nothing else can be made of it: its
+// type is the one its bytes have, and opened on its own it is a sandboxed page that loads
+// nothing. Like every reply it is not kept: the page keeps it for as long as it is open.
+func (s *Server) handlePicture(w http.ResponseWriter, r *http.Request) {
+	sess, err := s.session(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	seq, err1 := strconv.Atoi(r.PathValue("seq"))
+	n, err2 := strconv.Atoi(r.PathValue("n"))
+	if err1 != nil || err2 != nil || seq < 0 || n < 0 {
+		s.fail(w, r, badRequest{fmt.Errorf("a step's file is named by two numbers, not %q and %q", r.PathValue("seq"), r.PathValue("n"))})
+		return
+	}
+	pic, err := s.app.Picture(r.Context(), &sess, seq, n)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", pic.Type)
+	h.Set("Cache-Control", "no-store")
+	h.Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	h.Set("Content-Length", strconv.Itoa(len(pic.Data)))
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(pic.Data)
+	}
+}
+
 func (s *Server) handleBrief(w http.ResponseWriter, r *http.Request) {
 	s.fresh(r)
 	sess, err := s.session(r)

@@ -2,7 +2,10 @@ package index
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"time"
 )
 
@@ -51,6 +54,17 @@ WHERE ` + where + ` AND t.idx > 0 AND ` + when
 
 // BySID finds a session by its row in this index.
 func (ix *Index) BySID(ctx context.Context, sid int64) (Session, error) { return ix.bySID(ctx, sid) }
+
+// Key is what names a session's transcript within its store (sources.Ref.Key): what it
+// was read by, and is read again by.
+func (ix *Index) Key(ctx context.Context, s *Session) (string, error) {
+	var key string
+	err := ix.ro.QueryRowContext(ctx, `SELECT key FROM sessions WHERE sid = ?`, s.sid).Scan(&key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: %s", ErrNotFound, s.Ref)
+	}
+	return key, err
+}
 
 // Parent finds the transcript that spawned a subagent's — the session it ran in, or
 // another agent of it — and reports false for a session, or for a subagent whose parent

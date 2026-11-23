@@ -65,7 +65,8 @@ holds no words, and is marked in the item's text where it came: `[image · png �
 the words of a prompt or the output of a call, `[image · png · plot.png]` for one the transcript
 only names. A picture sent with no words is an ask all the same. `attachments` lists them, each
 with its `mime`, its size in `bytes`, the `name` it was given by, and `inline` when the
-transcript holds its bytes. The record keeps what each is, not its bytes.
+transcript holds its bytes. The record keeps what each is, not its bytes: a picture is read from
+the transcript when [it is asked for](api.md#sessions).
 
 A tool call and its result are one item, paired once, when the transcript is read — by the call's
 id; failing that, to the latest call of the same tool still waiting. No reader pairs them again.

@@ -5,6 +5,7 @@
 //	GET  /api/sessions/{source}/{id}            one session: its outline and its subagents
 //	GET  /api/sessions/{source}/{id}/turns      turns step by step   ?turns=3 | 3-5 | last | all  ?full
 //	GET  /api/sessions/{source}/{id}/items/{seq}  one step whole
+//	GET  …/items/{seq}/attachments/{n}          a picture the step carried, from the transcript
 //	GET  /api/sessions/{source}/{id}/brief      a handoff brief      ?turn ?from ?since
 //	GET  /api/sessions/{source}/{id}/export     the session whole    ?format=md | json | jsonl | html
 //	GET  /api/search                            the turns that match ?q …and the list's filters ?recent ?per_session
@@ -281,6 +282,7 @@ func (s *Server) routes() {
 	api("GET /api/sessions/{source}/{id}", s.handleSession)
 	api("GET /api/sessions/{source}/{id}/turns", s.handleTurns)
 	api("GET /api/sessions/{source}/{id}/items/{seq}", s.handleItem)
+	api("GET /api/sessions/{source}/{id}/items/{seq}/attachments/{n}", s.handlePicture)
 	api("GET /api/sessions/{source}/{id}/brief", s.handleBrief)
 	api("GET /api/sessions/{source}/{id}/export", s.handleExport)
 	api("POST /api/sessions/{source}/{id}/keep", s.handleKeep)

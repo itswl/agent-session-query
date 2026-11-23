@@ -60,8 +60,12 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 		removed(p, note)
 		return nil
 	}
-	if why := notAnIndex(path); why != "" && (cfg.IndexPath != "" || os.Getenv("ASQ_INDEX") != "") {
+	why := ""
+	if cfg.IndexPath != "" || os.Getenv("ASQ_INDEX") != "" {
 		// A path a person named may be a file asq never wrote: it is left, not taken for one
+		why = notAnIndex(ctx, path)
+	}
+	if why != "" {
 		done.Left = append(done.Left, leftBehind{Path: path, What: "index", Why: why})
 	} else if err := take(path, "the index, rebuilt from the stores on the next run"); err != nil {
 		return err
@@ -180,8 +184,10 @@ type leftBehind struct {
 }
 
 // notAnIndex says why the file at path is not an index asq wrote, or "" when it may be: a
-// SQLite database, or an empty file, as an index is the moment it is made — or nothing there.
-func notAnIndex(path string) string {
+// SQLite database that holds an index's tables alone, or an empty file, as an index is the
+// moment it is made — or nothing there. A CLI's store that ASQ_INDEX was pointed at holds
+// asq's tables too, which asq added to it, and tables of its own beside them.
+func notAnIndex(ctx context.Context, path string) string {
 	info, err := os.Stat(path)
 	switch {
 	case err != nil:
@@ -196,10 +202,19 @@ func notAnIndex(path string) string {
 	defer f.Close()
 	head := make([]byte, len(sqliteHeader))
 	n, _ := io.ReadFull(f, head)
-	if n == 0 || string(head[:n]) == sqliteHeader {
+	switch {
+	case n == 0:
 		return ""
+	case string(head[:n]) != sqliteHeader:
+		return "not a SQLite database, which an index is: not asq's to remove"
 	}
-	return "not a SQLite database, which an index is: not asq's to remove"
+	switch foreign, err := index.Foreign(ctx, path); {
+	case err != nil:
+		return "a SQLite database that does not read (" + err.Error() + "): not asq's to remove"
+	case len(foreign) > 0:
+		return "a SQLite database with tables no index has — " + some(foreign) + " —, another program's: not asq's to remove"
+	}
+	return ""
 }
 
 // sqliteHeader is how every SQLite database begins.

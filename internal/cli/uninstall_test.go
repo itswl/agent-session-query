@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -165,24 +166,44 @@ func TestUninstallRefusesAHomeForState(t *testing.T) {
 	}
 }
 
-// An index ASQ_INDEX names is removed when it is one — a SQLite database, or the empty file
-// it is when just made —, and left when it is a file asq never wrote, or a folder.
+// An index ASQ_INDEX names is removed when it is one — a SQLite database of an index's
+// tables, or the empty file it is when just made —, and left when it is a file asq never
+// wrote, a folder, or a CLI's database it was pointed at, which asq added its tables to.
 func TestUninstallTakesANamedIndexOnlyWhenItIsOne(t *testing.T) {
 	home, _ := uninstallHome(t, runtime.GOOS, nil)
 	for _, tc := range []struct {
 		name, content string
 		taken         bool
 	}{
-		{"index.db", "SQLite format 3\x00 and the rest", true},
+		{"index.db", "", true},
 		{"new.db", "", true},
+		{"state.db", "CREATE TABLE messages (id TEXT)", false},
 		{"s.jsonl", "{}\n", false},
 		{"folder", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(home, "elsewhere", tc.name)
-			if tc.name == "folder" {
+			switch tc.name {
+			case "folder":
 				put(t, filepath.Join(path, "mine"), "m")
-			} else {
+			case "index.db", "state.db":
+				put(t, path, "")
+				if tc.content != "" {
+					db, err := sql.Open("sqlite", path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, err = db.Exec(tc.content)
+					if db.Close(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				ix, err := index.Open(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ix.Close()
+			default:
 				put(t, path, tc.content)
 			}
 			t.Setenv("ASQ_INDEX", path)

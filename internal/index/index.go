@@ -352,6 +352,44 @@ func Remove(path string) error {
 	return first
 }
 
+// Foreign lists the tables of the SQLite database at path that no index of asq's holds:
+// none for an index, and the tables of its own for another program's database — a CLI's
+// store that ASQ_INDEX was pointed at, which asq added its tables to and did not make. It
+// reads the file as kit reads a CLI's: read-only, and leaving nothing beside it.
+func Foreign(ctx context.Context, path string) ([]string, error) {
+	var foreign []string
+	err := kit.ReadDB(ctx, path, func(db *sql.DB) error {
+		foreign = nil
+		rows, err := db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type IN ('table', 'view') ORDER BY name`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return err
+			}
+			if !indexTable(name) {
+				foreign = append(foreign, name)
+			}
+		}
+		return rows.Err()
+	})
+	return foreign, err
+}
+
+// indexTable says whether an index of asq's — this one's or an earlier one's — holds a
+// table of this name: those schema makes, the words table and the tables FTS5 keeps for
+// it, and those SQLite keeps for itself.
+func indexTable(name string) bool {
+	switch name {
+	case "meta", "sessions", "turns", "bodies", "usage", "files", "failures", "source_state", "words":
+		return true
+	}
+	return strings.HasPrefix(name, "words_") || strings.HasPrefix(name, "sqlite_")
+}
+
 func ms(t time.Time) int64 {
 	if t.IsZero() {
 		return 0

@@ -341,3 +341,33 @@ func TestSpaceIsGivenBack(t *testing.T) {
 		t.Errorf("totals = %+v, %v; want the space %+v", totals, err, kept)
 	}
 }
+
+// Foreign tells an index from another program's database it was put in: an index holds no
+// table of its own, and a CLI's store that asq opened as its index keeps its tables beside
+// the ones asq added.
+func TestForeignTablesAreNoIndexOfAsqs(t *testing.T) {
+	dir := t.TempDir()
+	ours := filepath.Join(dir, "index.db")
+	theirs := filepath.Join(dir, "state.db")
+	db, err := sql.Open("sqlite", theirs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE messages (id TEXT); CREATE TABLE conversations (id TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	for _, path := range []string{ours, theirs} {
+		ix, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ix.Close()
+	}
+	if got, err := Foreign(context.Background(), ours); err != nil || len(got) != 0 {
+		t.Errorf("Foreign(an index) = %q, %v; want none", got, err)
+	}
+	if got, err := Foreign(context.Background(), theirs); err != nil || strings.Join(got, ",") != "conversations,messages" {
+		t.Errorf("Foreign(another's database) = %q, %v; want conversations, messages", got, err)
+	}
+}

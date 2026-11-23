@@ -70,6 +70,15 @@ export function dur(ms) {
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
+// work is how long agents worked, in hours past the first however many: "38h 20m", not the
+// day and a half no one worked.
+export function work(ms) {
+  if (!(ms > 0)) return '';
+  if (ms < 60e3) return dur(ms);
+  const m = Math.floor(ms / 60e3);
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
 // when reads an API timestamp; zero stands for "not recorded".
 export const when = (s) => (s ? Date.parse(s) : 0);
 

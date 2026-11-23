@@ -69,8 +69,8 @@ console.log(JSON.stringify({
 	}
 }
 
-// format.js is run in node: which line a row of the list shows and how a turn names the
-// files it changed are decisions no syntax check sees.
+// format.js is run in node: which line a row of the list shows, how a turn names the files
+// it changed and how agent time reads are decisions no syntax check sees.
 const formatRun = `
 const f = await import('./format.mjs');
 const cases = JSON.parse(process.argv[2]);
@@ -102,6 +102,12 @@ func TestFormat(t *testing.T) {
 		{"beside it, by its name", []any{"beneath", "/work/api-old/main.go", "/work/api"}, "/work/api-old/main.go"},
 		{"on Windows", []any{"beneath", `C:\work\api\cmd\main.go`, `C:\work\api`}, `cmd\main.go`},
 		{"no directory", []any{"beneath", "/work/api/main.go", nil}, "/work/api/main.go"},
+
+		// How long agents worked, in hours however many: 38 of them are not a day and a half
+		{"seconds of work", []any{"work", 45_000}, "45s"},
+		{"minutes of work", []any{"work", 12 * 60_000}, "12m"},
+		{"hours of work", []any{"work", (38*60 + 20) * 60_000}, "38h 20m"},
+		{"no work", []any{"work", 0}, ""},
 	}
 	calls := make([][]any, len(cases))
 	for i, tc := range cases {

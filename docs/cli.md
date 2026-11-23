@@ -238,7 +238,13 @@ tokens and cache hit rate. `--by model|day|week|month|source|project|session` pr
 breakdown, `--since` bounds it. Days, weeks and months are this machine's calendar's, a week
 named by the Monday it begins on, and come in order, the latest `--limit` of them; the other
 breakdowns come largest first. A session is named as `ls` names it, with its title and
-directory beneath its figures; a subagent's calls are counted in the session it ran in. Token counts are in [one shape](model.md#usage-one-shape) across CLIs. A
+directory beneath its figures; a subagent's calls are counted in the session it ran in.
+
+Every breakdown but by model — a turn may call on several models — ends with `agent time`:
+how long agents worked on the turns asked in that group, from each ask to the last thing the
+agent did, summed. Two agents at work at once count twice, as two people would; a subagent's
+time is inside the turn that started it, and is not counted again. A dash is a group whose
+turns recorded no end. Token counts are in [one shape](model.md#usage-one-shape) across CLIs. A
 dash under `reasoning` means the provider did not say, which is not the same as none.
 
 The report is in tokens, not money. `asq` holds no price list, and the costs some CLIs work out
@@ -279,6 +285,11 @@ latest twelve of each project: the ref, when it was last at work in the window, 
 tool calls there, how they ended (`✓`, `✗2 failed, 1 passed later`, `⚠ interrupted`), its
 title, and the last thing its agent said; a subagent's work is in the session it ran in. A
 project with more says how to list them. Passing later is judged as `failures` judges it.
+
+It says how long agents worked, as `usage` counts it, and on how many days, in all, per project
+and per session, and draws when: a row for each weekday, Monday first, and a mark for each hour
+of this machine's clock, as high as the time agents worked in it against the busiest hour, each
+day's time at the end of its row. A turn's time falls in every hour it ran through.
 
 The digest, and `usage` given `--since` or `--until`, open with the moments they cover on the
 clock of the machine `asq` runs on — `Since Mon 2026-11-23 00:00 +08:00` — which is what

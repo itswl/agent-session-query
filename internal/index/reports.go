@@ -64,7 +64,17 @@ type UsageRow struct {
 	Usage    model.Usage `json:"usage"`
 	Total    int64       `json:"total"`
 	CacheHit float64     `json:"cacheHit"`
+	// Turns and AgentMs are the person's turns asked in the row's group and how long the
+	// agents worked on them (see agentMs) — in every grouping but by model, which a turn
+	// is not: it may call on several.
+	Turns   int   `json:"turns,omitempty"`
+	AgentMs int64 `json:"agentMs,omitempty"`
 }
+
+// agentMs is how long the agents worked on a window's turns, in milliseconds: from each ask
+// to the last thing the agent did, summed. Two agents at work at once count twice, as two
+// people would; a subagent's time is in the turn that started it, and not counted again.
+const agentMs = `sum(CASE WHEN t.started_at > 0 AND t.ended_at > t.started_at THEN t.ended_at - t.started_at ELSE 0 END)`
 
 // Usage dimensions.
 const (
@@ -91,18 +101,7 @@ func calendar(by string) bool { return by == ByDay || by == ByWeek || by == ByMo
 // a month as 2026-11 — and come in order; other groups come largest first. By session, a
 // subagent's calls are the session's it ran in, and a row names its session.
 func (ix *Index) Usage(ctx context.Context, f Filter, w Window, by string, limit int) ([]UsageRow, error) {
-	_, offset := time.Now().Zone()
-	local := "(u.at / 1000) + " + itoa(offset) + ", 'unixepoch'"
-	key := map[string]string{
-		ByModel:   "u.model",
-		ByDay:     "strftime('%Y-%m-%d', " + local + ")",
-		ByWeek:    "date(" + local + ", '-6 days', 'weekday 1')",
-		ByMonth:   "strftime('%Y-%m', " + local + ")",
-		BySource:  "s.source",
-		ByProject: "s.cwd",
-		BySession: "coalesce(r.source || '/' || r.id, s.source || '/' || s.id)",
-		ByAll:     "''",
-	}[by]
+	key := keyOf(by, "u.at")
 	if key == "" {
 		return nil, fmt.Errorf("usage is grouped by model, day, week, month, source, project or session, not by %q", by)
 	}
@@ -141,7 +140,56 @@ FROM usage u JOIN sessions s ON s.sid = u.sid` + root + ` WHERE ` + where + ` AN
 		r.Total, r.CacheHit = r.Usage.Total(), r.Usage.CacheHit()
 		out = append(out, r)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if by == ByModel || len(out) == 0 {
+		return out, nil
+	}
+	// The turns of each group, and the agents' time on them
+	at := map[string]*UsageRow{}
+	for i := range out {
+		at[out[i].Key] = &out[i]
+	}
+	when, whenArgs = w.where("t.started_at")
+	where, args = ix.widen(ctx, reportFilter(f), !w.Since.IsZero()).where()
+	rows, err = ix.ro.QueryContext(ctx, `SELECT `+keyOf(by, "t.started_at")+` AS k, count(*), `+agentMs+`
+FROM turns t JOIN sessions s ON s.sid = t.sid`+root+` WHERE t.idx > 0 AND s.parent_session = '' AND `+where+` AND `+when+` GROUP BY k`,
+		append(args, whenArgs...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		var turns int
+		var ms int64
+		if err := rows.Scan(&k, &turns, &ms); err != nil {
+			return nil, err
+		}
+		if r := at[k]; r != nil {
+			r.Turns, r.AgentMs = turns, ms
+		}
+	}
 	return out, rows.Err()
+}
+
+// keyOf is what a usage grouping groups by, of a moment in the column at; "" for a grouping
+// there is none of.
+func keyOf(by, at string) string {
+	_, offset := time.Now().Zone()
+	local := "(" + at + " / 1000) + " + itoa(offset) + ", 'unixepoch'"
+	return map[string]string{
+		ByModel:   "u.model",
+		ByDay:     "strftime('%Y-%m-%d', " + local + ")",
+		ByWeek:    "date(" + local + ", '-6 days', 'weekday 1')",
+		ByMonth:   "strftime('%Y-%m', " + local + ")",
+		BySource:  "s.source",
+		ByProject: "s.cwd",
+		BySession: "coalesce(r.source || '/' || r.id, s.source || '/' || s.id)",
+		ByAll:     "''",
+	}[by]
 }
 
 // Failure is a tool call that failed.
@@ -519,14 +567,18 @@ type Digest struct {
 	Failures int    `json:"failures"`
 	// PassedLater is how many of the failures the same command passed later (see
 	// Failure.Later)
-	PassedLater int            `json:"passedLater"`
-	FirstAt     time.Time      `json:"firstAt,omitzero"`
-	LastAt      time.Time      `json:"lastAt,omitzero"`
-	Usage       model.Usage    `json:"usage"`
-	CacheHit    float64        `json:"cacheHit"`
-	Changed     map[string]int `json:"changed"` // files changed, counted as code / test / docs / config
-	Models      map[string]int `json:"models"`  // model calls by model
-	Sources     map[string]int `json:"sources"` // sessions by store
+	PassedLater int `json:"passedLater"`
+	// AgentMs is how long agents worked on the turns (see agentMs); Days on how many days,
+	// this machine's, a turn was asked
+	AgentMs  int64          `json:"agentMs"`
+	Days     int            `json:"days"`
+	FirstAt  time.Time      `json:"firstAt,omitzero"`
+	LastAt   time.Time      `json:"lastAt,omitzero"`
+	Usage    model.Usage    `json:"usage"`
+	CacheHit float64        `json:"cacheHit"`
+	Changed  map[string]int `json:"changed"` // files changed, counted as code / test / docs / config
+	Models   map[string]int `json:"models"`  // model calls by model
+	Sources  map[string]int `json:"sources"` // sessions by store
 	// List is the sessions behind the counts, the latest first: at most digestListed of
 	// them, of the Sessions there are. A project's, not the total's.
 	List []DigestSession `json:"list,omitempty"`
@@ -538,10 +590,11 @@ type DigestSession struct {
 	Ref   string `json:"ref"`
 	Title string `json:"title,omitempty"`
 	// Turns are the person's, asked in the window; Tools and Failures its subagents' too
-	Turns       int `json:"turns"`
-	Tools       int `json:"tools"`
-	Failures    int `json:"failures"`
-	PassedLater int `json:"passedLater"` // as Digest.PassedLater
+	Turns       int   `json:"turns"`
+	Tools       int   `json:"tools"`
+	Failures    int   `json:"failures"`
+	PassedLater int   `json:"passedLater"` // as Digest.PassedLater
+	AgentMs     int64 `json:"agentMs"`
 	// Interrupted and Answer are of its last turn in the window: whether the person
 	// stopped it, and the last thing the agent said
 	Interrupted bool      `json:"interrupted,omitempty"`
@@ -563,6 +616,9 @@ type DigestReport struct {
 	Until    time.Time `json:"until,omitzero"`
 	Projects []Digest  `json:"projects"`
 	Total    Digest    `json:"total"`
+	// When is when the agents worked, in milliseconds by weekday — Monday first — and hour,
+	// on this machine's clock: a turn's time in each hour it ran through
+	When [7][24]int64 `json:"when"`
 }
 
 // Digest answers what a window's work added up to, per project: sessions, turns,
@@ -700,6 +756,9 @@ SELECT DISTINCT s.cwd, x.path FROM files x JOIN sessions s ON s.sid = x.sid WHER
 	if err := ix.digestList(ctx, where, args, w, get, passed); err != nil {
 		return rep, err
 	}
+	if err := ix.digestTime(ctx, where, args, w, get, &rep); err != nil {
+		return rep, err
+	}
 
 	for _, d := range by {
 		d.CacheHit = d.Usage.CacheHit()
@@ -779,6 +838,79 @@ WHERE t.idx > 0 AND `+where+` AND `+when+` GROUP BY s.cwd, root ORDER BY 9 DESC,
 		d.Interrupted = stopped != 0
 	}
 	return nil
+}
+
+// digestTime adds up when the agents worked on a window's turns: how long, per project and
+// per session listed, on how many days, and in which hours of the week.
+func (ix *Index) digestTime(ctx context.Context, where string, args []any, w Window, get func(string) *Digest, rep *DigestReport) error {
+	when, whenArgs := w.where("t.started_at")
+	rows, err := ix.ro.QueryContext(ctx, `
+SELECT s.cwd, t.sid, t.started_at, max(t.ended_at, t.started_at) FROM turns t JOIN sessions s ON s.sid = t.sid
+WHERE t.idx > 0 AND s.parent_session = '' AND t.started_at > 0 AND `+where+` AND `+when,
+		append(append([]any{}, args...), whenArgs...)...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type key struct {
+		cwd string
+		sid int64
+	}
+	bySession := map[key]int64{}
+	days := map[string]map[string]bool{} // the days of each project, and "" of all
+	for rows.Next() {
+		var k key
+		var start, end int64
+		if err := rows.Scan(&k.cwd, &k.sid, &start, &end); err != nil {
+			return err
+		}
+		ms := end - start
+		d := get(k.cwd)
+		d.AgentMs += ms
+		rep.Total.AgentMs += ms
+		bySession[k] += ms
+		day := time.UnixMilli(start).Local().Format("2006-01-02")
+		for _, cwd := range []string{k.cwd, ""} {
+			if days[cwd] == nil {
+				days[cwd] = map[string]bool{}
+			}
+			days[cwd][day] = true
+		}
+		spread(&rep.When, time.UnixMilli(start).Local(), time.UnixMilli(end).Local())
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rep.Total.Days = len(days[""])
+	for cwd, set := range days {
+		if cwd != "" {
+			get(cwd).Days = len(set)
+		}
+	}
+	for k, ms := range bySession {
+		d := get(k.cwd)
+		for i := range d.List {
+			if d.List[i].sid == k.sid {
+				d.List[i].AgentMs = ms
+			}
+		}
+	}
+	return nil
+}
+
+// spread lays the time from start to end into the hours of the week it ran through.
+func spread(grid *[7][24]int64, start, end time.Time) {
+	for at := start; at.Before(end); {
+		next := time.Date(at.Year(), at.Month(), at.Day(), at.Hour()+1, 0, 0, 0, at.Location())
+		if !next.After(at) { // a clock put back: the hour comes again
+			next = at.Truncate(time.Hour).Add(time.Hour)
+		}
+		if next.After(end) {
+			next = end
+		}
+		grid[(int(at.Weekday())+6)%7][at.Hour()] += next.Sub(at).Milliseconds()
+		at = next
+	}
 }
 
 // digestTurns is what a digest adds up over the turns of a window. Everything it reads

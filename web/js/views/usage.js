@@ -58,7 +58,8 @@ export function mount(main, route, ctx) {
         h('dt', null, label(w.key)),
         h('dd', { class: 'big', title: f.num(w.total) + ' tokens' }, f.tokens(w.total)),
         h('dd', { class: 'dots dim' }, h('span', { title: f.num(w.calls) + ' model calls' }, f.plural(w.calls, 'call')),
-          w.total > 0 && h('span', null, f.pct(w.cacheHit) + ' cached'))))),
+          w.total > 0 && h('span', null, f.pct(w.cacheHit) + ' cached'),
+          w.agentMs > 0 && h('span', { title: AGENT_TIME(w) }, f.work(w.agentMs) + ' agent time'))))),
       chart(r.byDay),
       section('By model', span(since), table(r.byModel, r.total, 'Model', (k) => k || '(not recorded)')),
       section('By store', span(since), table(r.bySource, r.total, 'Store', (k) => h('span', { class: 'store' }, mark(k), k))),
@@ -134,7 +135,10 @@ function niceMax(v) {
 
 const section = (title, when, content) => h('section', null, h('header', { class: 'section-head' }, h('h2', null, title), h('span', { class: 'dim' }, when)), content);
 
+const AGENT_TIME = (r) => `How long agents worked on ${f.plural(r.turns, 'turn')}: from each ask to the last thing the agent did, summed`;
+
 const HEAD_TITLES = {
+  'Agent time': 'How long agents worked: from each ask to the last thing the agent did, summed over the turns',
   'New input': 'The prompt, less what was read from cache or written to it. With those two, it is the prompt: what the command line calls in',
   Reasoning: 'The part of the output that was reasoning',
 };
@@ -142,6 +146,8 @@ const HEAD_TITLES = {
 // A table of sessions has no column of how many sessions each row is: one
 function table(rows, total, keyLabel, keyCell) {
   const counted = keyLabel !== 'Session';
+  // How long agents worked is had of turns, which a model is not: a turn may call on several
+  const timed = rows.some((r) => r.turns > 0);
   const n = (v) => h('td', { class: 'n', title: f.num(v) }, f.tokens(v));
   // Reasoning is the part of the output that was thinking, where the provider said so:
   // nothing recorded is a dash, not a zero
@@ -149,9 +155,10 @@ function table(rows, total, keyLabel, keyCell) {
   const row = (r, head) => h('tr', null, head,
     counted && h('td', { class: 'n' }, f.num(r.sessions)), h('td', { class: 'n' }, f.num(r.calls)),
     n(r.usage?.input), n(r.usage?.output), reasoning(r.usage?.reasoning), n(r.usage?.cacheRead), n(r.usage?.cacheWrite), n(r.total),
-    h('td', { class: 'n' }, f.pct(r.cacheHit)));
-  return h('div', { class: 'table-wrap' }, h('table', null,
-    h('thead', null, h('tr', null, [keyLabel, counted && 'Sessions', 'Calls', 'New input', 'Output', 'Reasoning', 'Cache read', 'Cache write', 'Total', 'Cache hit']
+    h('td', { class: 'n' }, f.pct(r.cacheHit)),
+    timed && (r.agentMs > 0 ? h('td', { class: 'n', title: AGENT_TIME(r) }, f.work(r.agentMs)) : h('td', { class: 'n dim', title: 'Not recorded' }, '—')));
+  return h('div', { class: 'table-wrap' }, h('table', { class: counted ? null : 'by-session' },
+    h('thead', null, h('tr', null, [keyLabel, counted && 'Sessions', 'Calls', 'New input', 'Output', 'Reasoning', 'Cache read', 'Cache write', 'Total', 'Cache hit', timed && 'Agent time']
       .filter(Boolean).map((c, i) => h('th', { scope: 'col', class: i ? 'n' : null, title: HEAD_TITLES[c] }, c)))),
     h('tbody', null, rows.map((r) => row(r, h('th', { scope: 'row' }, keyCell(r.key, r))))),
     h('tfoot', null, row(total, h('th', { scope: 'row' }, 'Total', rows.length >= 12 && h('span', { class: 'dim' }, ' · with those not listed'))))));

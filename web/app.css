@@ -527,6 +527,7 @@ table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { padding: 7px 12px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
 thead th { background: var(--sunk); color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
 tbody th { max-width: 340px; overflow: hidden; font-weight: 500; text-overflow: ellipsis; }
+.by-session tbody th { max-width: 260px; }
 tbody tr:hover { background: var(--sunk); }
 tfoot th, tfoot td { border-top: 1px solid var(--line-strong); border-bottom: 0; font-weight: 650; }
 th.n, td.n { text-align: right; }
@@ -574,6 +575,19 @@ th.n, td.n { text-align: right; }
 .d-sessions .warn { color: var(--warn); }
 .d-answer { overflow: hidden; color: var(--muted); font-size: 13px; white-space: nowrap; text-overflow: ellipsis; }
 .d-more { display: inline-block; margin-top: 8px; font-size: 12.5px; }
+.when { margin-bottom: 8px; }
+.when-wrap { overflow-x: auto; }
+.when-grid { width: auto; border-collapse: separate; border-spacing: 2px; font-size: 11px; }
+.when-grid th, .when-grid td { padding: 0; border: 0; background: none; }
+.when-grid thead th { color: var(--faint); font-size: 10px; font-weight: 400; letter-spacing: 0; text-align: left; text-transform: none; }
+.when-grid tbody th { padding-right: 6px; color: var(--muted); font-weight: 400; }
+.when-grid td.n { padding-left: 8px; }
+.when-grid td[data-level] { width: 16px; height: 16px; border-radius: 3px; background: var(--sunk); }
+.when-grid td[data-level="1"] { background: color-mix(in srgb, var(--accent) 25%, var(--sunk)); }
+.when-grid td[data-level="2"] { background: color-mix(in srgb, var(--accent) 50%, var(--sunk)); }
+.when-grid td[data-level="3"] { background: color-mix(in srgb, var(--accent) 75%, var(--sunk)); }
+.when-grid td[data-level="4"] { background: var(--accent); }
+.when-grid tbody tr:hover { background: none; }
 
 .login { display: grid; gap: 10px; max-width: 360px; margin: 14vh auto 0; padding: 0 20px; }
 .login h1 { font-size: 28px; letter-spacing: -.02em; }
@@ -658,6 +672,7 @@ th.n, td.n { text-align: right; }
   .where-of { display: none; }
 }
 @media (max-width: 479px) {
+  .when-grid td[data-level] { width: 9px; height: 12px; border-radius: 2px; }
   /* Five views do not fit beside the name and the status on a phone: the bar is three
      rows — the name with the status and the buttons, the views across the width, the
      search and its help */

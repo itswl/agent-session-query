@@ -716,3 +716,69 @@ func TestDigestNamesItsSessions(t *testing.T) {
 		t.Errorf("a directory with a space, for a shell:\n%s", out.String())
 	}
 }
+
+// How long agents worked reads in hours however many there are — no one worked the day and
+// a half that 38 hours would otherwise read as — and is a column of usage where the rows are
+// groups of turns, which a model is not.
+func TestAgentTime(t *testing.T) {
+	for ms, want := range map[int64]string{45_000: "45s", 12 * 60_000: "12m", 65 * 60_000: "1h05m", (38*60 + 20) * 60_000: "38h20m"} {
+		if got := AgentTime(ms); got != want {
+			t.Errorf("AgentTime(%d) = %q, want %q", ms, got, want)
+		}
+	}
+	rows := []index.UsageRow{
+		{Key: "2026-11-16", Calls: 9, Turns: 4, AgentMs: 65 * 60_000},
+		{Key: "2026-11-23", Calls: 2},
+	}
+	var out bytes.Buffer
+	Usage(&out, "By week", rows, &index.UsageRow{Key: "total", Calls: 11, Turns: 4, AgentMs: 65 * 60_000}, Style{})
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if f := strings.Fields(lines[1]); len(lines) != 5 || strings.Join(f[len(f)-2:], " ") != "agent time" {
+		t.Fatalf("by week:\n%s", out.String())
+	}
+	for i, want := range map[int]string{2: "1h05m", 3: "—", 4: "1h05m"} {
+		if f := strings.Fields(lines[i]); f[len(f)-1] != want {
+			t.Errorf("row %d = %q, want it to end %q", i, lines[i], want)
+		}
+	}
+	out.Reset()
+	Usage(&out, "By model", []index.UsageRow{{Key: "claude-opus-5", Calls: 3}}, nil, Style{})
+	if strings.Contains(out.String(), "agent time") {
+		t.Errorf("a model's row has a time:\n%s", out.String())
+	}
+}
+
+// When agents worked is a row a weekday, Monday first, a mark an hour as high as the time in
+// it against the busiest, and the day's time at the end of its row.
+func TestWhenAgentsWorked(t *testing.T) {
+	var grid [7][24]int64
+	grid[0][10] = 60 * 60_000 // Monday 10:00
+	grid[6][23] = 15 * 60_000 // Sunday 23:00
+	var out bytes.Buffer
+	When(&out, grid, Style{})
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != 10 || !strings.Contains(lines[1], "█ is 1h00m in an hour") {
+		t.Fatalf("when:\n%s", out.String())
+	}
+	if want := "  Mon  " + strings.Repeat("·", 10) + "█" + strings.Repeat("·", 13) + "  1h00m"; lines[3] != want {
+		t.Errorf("Monday = %q, want %q", lines[3], want)
+	}
+	if want := "  Tue  " + strings.Repeat("·", 24); lines[4] != want {
+		t.Errorf("Tuesday = %q, want %q", lines[4], want)
+	}
+	if want := "  Sun  " + strings.Repeat("·", 23) + "▃  15m"; lines[9] != want {
+		t.Errorf("Sunday = %q, want %q", lines[9], want)
+	}
+	out.Reset()
+	When(&out, [7][24]int64{}, Style{})
+	if out.Len() != 0 {
+		t.Errorf("no time recorded draws %q", out.String())
+	}
+	// The digest says it, with the time and days of each project
+	out.Reset()
+	Digest(&out, index.DigestReport{When: grid, Total: index.Digest{Sessions: 1, Turns: 2, AgentMs: 75 * 60_000, Days: 2},
+		Projects: []index.Digest{{Cwd: "/w", Sessions: 1, Turns: 2, AgentMs: 75 * 60_000, Days: 2}}}, Style{})
+	if !strings.Contains(out.String(), "Total  1 session · 2 turns · 0 tool calls · 1h15m of agent time on 2 days\n\nWhen agents worked") {
+		t.Errorf("digest:\n%s", out.String())
+	}
+}

@@ -141,17 +141,18 @@ days, 30 days, All time**. They roll — the last 24 hours, not today — so a w
 whenever it is asked. The sessions list and the usage tables show all time unless a window is
 chosen; failures, files and the digest, the last 7 days.
 
-**Usage** — tokens in each of those windows, with the one chosen marked; the last thirty days as
-stacked bars (cache reads, cache writes, new input, output; *Without cache reads* rescales to what
-is left, since cache reads are usually most of it), whichever window is chosen; then tables by
-model, store, project and session over the chosen window, which each names — with how much of the
-output was reasoning, where the provider said, and the share of the prompt that came from cache;
-a session is its title, opening it, with its subagents' tokens in it. *New input* is the part
-of the prompt neither read from cache nor written to it: with the two cache columns it is the
-whole prompt, which the command line and a session's page call *in*. Every rounded figure
-carries its exact value on hover, and the chart can be read as a table. The reports are in
-tokens: a session's own cost, where its CLI recorded one, is on the session's page and
-[is not summed](cli.md#measuring).
+**Usage** — tokens in each of those windows, and how long agents worked in it, with the one chosen
+marked; the last thirty days as stacked bars (cache reads, cache writes, new input, output;
+*Without cache reads* rescales to what is left, since cache reads are usually most of it),
+whichever window is chosen; then tables by model, store, project and session over the chosen
+window, which each names — with how much of the output was reasoning, where the provider said, and
+the share of the prompt that came from cache; a session is its title, opening it, with its
+subagents' tokens in it. Every table but the models' ends with *Agent time*, how long agents worked
+on its turns. *New input* is the part of the prompt neither read from cache nor written to it: with
+the two cache columns it is the whole prompt, which the command line and a session's page call
+*in*. Every rounded figure carries its exact value on hover, and the chart can be read as a table.
+The reports are in tokens and time: a session's own cost, where its CLI recorded one, is on the
+session's page and [is not summed](cli.md#measuring).
 
 ![Usage](screenshots/usage.png)
 
@@ -176,9 +177,11 @@ narrows to paths that contain what is typed; *Read or changed* adds the turns th
 ![Files](screenshots/files.png)
 
 **Digest** — the same window per project: sessions, turns, tool calls and failures — how many of
-them passed later too — tokens, files changed by kind, which models and CLIs did the work; then
-the project's latest sessions, each opening it, with how its turns in the window ended and the
-last thing its agent said, and a link to the rest.
+them passed later too — how long agents worked, tokens, files changed by kind, which models and
+CLIs did the work; then the project's latest sessions, each opening it, with how its turns in
+the window ended and the last thing its agent said, and a link to the rest. Above the projects,
+*When agents worked* is the week by hour, on the clock of the machine `asq` runs on, each hour
+as dark as the time agents worked in it, and each day's time at the end of its row.
 
 ![Digest](screenshots/digest.png)
 

@@ -143,8 +143,8 @@ var tools = []tool{
 	{
 		name:  "usage",
 		title: "Token usage",
-		about: "What the model calls consumed — calls, the prompt (in), output and total tokens, how much of the output was reasoning, and the cache hit rate. " +
-			"Without by: rolling windows (24h, 7d, 30d, all), then by model, source, project and session — a session by its ref, title and directory, its subagents' calls in it. Use it for \"where did the tokens go\", \"which session ate them\".",
+		about: "What the model calls consumed — calls, the prompt (in), output and total tokens, how much of the output was reasoning, and the cache hit rate — and, in every grouping but by model, how long agents worked on the turns (agent time: from each ask to the last thing the agent did, summed). " +
+			"Without by: rolling windows (24h, 7d, 30d, all), then by model, source, project and session — a session by its ref, title and directory, its subagents' calls in it. Use it for \"where did the tokens go\", \"which session ate them\", \"how long did agents work each week\" (by week).",
 		props: []prop{
 			{"by", "string", "One breakdown instead of the summary: model, day, week (by the Monday it begins on), month, source, project or session. Days, weeks and months are the latest, in order."},
 			pSource, pProject, pBranch, pSince, pUntil, pLimit, pChars,
@@ -169,7 +169,8 @@ var tools = []tool{
 	{
 		name:  "digest",
 		title: "Digest of a stretch of work",
-		about: "What a stretch of work added up to, per project: sessions, turns, tool calls and failures (and how many of those the same command passed later), tokens, files changed by kind, models used — " +
+		about: "What a stretch of work added up to, per project: sessions, turns, tool calls and failures (and how many of those the same command passed later), tokens, files changed by kind, models used, " +
+			"and how long agents worked and on how many days, with a grid of when by weekday and hour; " +
 			"then the project's latest sessions, each with its ref, when it was last at work, how its turns ended (✓, ✗N failed and how many passed later, ⚠ interrupted), its title and the last thing its agent said. " +
 			"Covers the last 7 days unless since says otherwise; the answer's first line says which moments that was, on the clock of the machine asq runs on. Use it for a standup, a weekly report, \"what did I do today\", \"where did the time go\".",
 		props: []prop{pSource, pProject, pBranch, pSince, pUntil, pChars},

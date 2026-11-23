@@ -736,16 +736,34 @@ func Usage(w io.Writer, title string, rows []index.UsageRow, total *index.UsageR
 		width = max(width, len([]rune(k)))
 	}
 	width = min(width, 48)
+	// How long agents worked is a column where the rows are groups of turns: by any
+	// grouping but the model
+	timed := false
+	for _, r := range rows {
+		timed = timed || r.Turns > 0
+	}
 	// reasoning is the part of out that was thinking, where the provider said: a dash is
 	// "not said", which is not "none"
-	fmt.Fprintln(w, st.dim(fmt.Sprintf("  %-*s %8s %9s %9s %9s %9s %6s", width, "", "calls", "in", "out", "reasoning", "total", "cache")))
+	head := fmt.Sprintf("  %-*s %8s %9s %9s %9s %9s %6s", width, "", "calls", "in", "out", "reasoning", "total", "cache")
+	if timed {
+		head += fmt.Sprintf(" %11s", "agent time")
+	}
+	fmt.Fprintln(w, st.dim(head))
 	line := func(key string, r index.UsageRow) string {
 		reasoning := "—"
 		if r.Usage.Reasoning > 0 {
 			reasoning = txt.Tokens(r.Usage.Reasoning)
 		}
-		return fmt.Sprintf("  %-*s %8d %9s %9s %9s %9s %5.0f%%", width+len(key)-len([]rune(key)), key, r.Calls,
+		out := fmt.Sprintf("  %-*s %8d %9s %9s %9s %9s %5.0f%%", width+len(key)-len([]rune(key)), key, r.Calls,
 			txt.Tokens(r.Usage.Prompt()), txt.Tokens(r.Usage.Output), reasoning, txt.Tokens(r.Usage.Total()), 100*r.Usage.CacheHit())
+		if timed {
+			spent := "—" // no turn, or none whose end was recorded
+			if r.AgentMs > 0 {
+				spent = AgentTime(r.AgentMs)
+			}
+			out += fmt.Sprintf(" %11s", spent)
+		}
+		return out
 	}
 	for i, r := range rows {
 		key := txt.Truncate(keys[i], width, "…")
@@ -1080,6 +1098,9 @@ func Digest(w io.Writer, rep index.DigestReport, st Style) {
 		if d.Failures > 0 {
 			parts = append(parts, failedWords(d.Failures, d.PassedLater))
 		}
+		if d.AgentMs > 0 {
+			parts = append(parts, AgentTime(d.AgentMs)+" of agent time on "+plural(d.Days, "day"))
+		}
 		if t := TokenLine(d.Usage); t != "" {
 			parts = append(parts, t)
 		}
@@ -1115,6 +1136,7 @@ func Digest(w io.Writer, rep index.DigestReport, st Style) {
 		refs[listed[i].Source+"/"+listed[i].ID] = short
 	}
 	fmt.Fprintf(w, "%s  %s\n", st.bold("Total"), line(rep.Total))
+	When(w, rep.When, st)
 	for _, d := range rep.Projects {
 		name := st.Path(d.Cwd)
 		if name == "" {
@@ -1147,6 +1169,9 @@ func digestSession(w io.Writer, e index.DigestSession, ref string, st Style) {
 	if e.Tools > 0 {
 		facts = append(facts, plural(e.Tools, "tool call"))
 	}
+	if e.AgentMs > 0 {
+		facts = append(facts, AgentTime(e.AgentMs))
+	}
 	fmt.Fprintf(w, "  %s  %s  %s\n", st.cyan(ref), st.dim(strings.Join(facts, " · ")), outcome(e.Failures, e.PassedLater, e.Interrupted, st))
 	title := txt.OneLine(e.Title, 0)
 	if title == "" {
@@ -1155,6 +1180,56 @@ func digestSession(w io.Writer, e index.DigestSession, ref string, st Style) {
 	fmt.Fprintf(w, "    %s\n", st.fit(title, 4))
 	if e.Answer != "" {
 		fmt.Fprintf(w, "    %s %s\n", st.dim("→"), st.dim(st.fit(txt.OneLine(e.Answer, digestAnswer), 6)))
+	}
+}
+
+// AgentTime is how long agents worked, as a reader adds it up: in hours past the first,
+// however many — "38h20m", not a day and a half, which no one worked.
+func AgentTime(ms int64) string {
+	d := time.Duration(ms) * time.Millisecond
+	switch {
+	case d < time.Minute:
+		return txt.Duration(d)
+	case d < time.Hour:
+		return strconv.Itoa(int(d.Minutes())) + "m"
+	}
+	return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
+// When draws when agents worked: a row a weekday, Monday first, a mark an hour of the
+// machine's clock, as high as the time in that hour against the busiest, and each day's
+// time at the end of its row. Nothing, when no time was recorded.
+func When(w io.Writer, grid [7][24]int64, st Style) {
+	var top int64
+	for _, day := range grid {
+		for _, ms := range day {
+			top = max(top, ms)
+		}
+	}
+	if top == 0 {
+		return
+	}
+	marks := []rune("▁▂▃▄▅▆▇█")
+	zone := time.Now().Format("-07:00")
+	fmt.Fprintf(w, "\n%s\n", st.dim("When agents worked, by hour ("+zone+"); "+string(marks[len(marks)-1])+" is "+AgentTime(top)+" in an hour"))
+	fmt.Fprintf(w, "       %s\n", st.dim("0     6     12    18"))
+	for i, day := range grid {
+		var b strings.Builder
+		var sum int64
+		for _, ms := range day {
+			sum += ms
+			switch {
+			case ms == 0:
+				b.WriteRune('·')
+			default:
+				b.WriteRune(marks[min(len(marks)-1, int(float64(ms)/float64(top)*float64(len(marks)-1)+0.5))])
+			}
+		}
+		total := ""
+		if sum > 0 {
+			total = "  " + AgentTime(sum)
+		}
+		fmt.Fprintf(w, "  %s  %s%s\n", st.dim(time.Weekday((i + 1) % 7).String()[:3]), b.String(), st.dim(total))
 	}
 }
 

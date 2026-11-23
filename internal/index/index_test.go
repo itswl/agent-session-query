@@ -389,6 +389,19 @@ func TestReports(t *testing.T) {
 			t.Errorf("by %s, one = %+v, %v; want the latest, %s", by, latest, err, want[len(want)-1])
 		}
 	}
+	// Every grouping but by model says how long agents worked on its turns: alpha's took 20
+	// and 65 seconds, beta's 40; the subagent's time is in the turn that started it
+	const second = int64(time.Second / time.Millisecond)
+	if byModel[0].Turns != 0 || byModel[0].AgentMs != 0 || total.Turns != 3 {
+		t.Errorf("a model has no turns of its own: %+v; the total has them all: %+v", byModel[0], total)
+	}
+	all, _ := a.Index.Usage(ctx, f, index.Window{}, index.ByAll, 0)
+	if len(all) != 1 || all[0].Turns != 3 || all[0].AgentMs != 125*second {
+		t.Errorf("all = %+v, want 3 turns and 125 s of agent time", all)
+	}
+	if alpha := bySession[0]; alpha.Turns != 2 || alpha.AgentMs != 85*second {
+		t.Errorf("alpha by session = %d turns, %d ms; want 2 and 85 s", alpha.Turns, alpha.AgentMs)
+	}
 	if _, err := a.Index.Usage(ctx, f, index.Window{}, "colour", 0); err == nil {
 		t.Error("an unknown grouping is an error, not a silent total")
 	}
@@ -470,6 +483,25 @@ func TestReports(t *testing.T) {
 			if e.Ref != "claude/"+fixture.Beta || e.Turns != 1 || !strings.HasPrefix(e.Answer, "Rotated.") {
 				t.Errorf("beta in its digest = %+v", e)
 			}
+		}
+	}
+	// How long the agents worked, on how many days, and in which hours
+	days := map[string]bool{}
+	for _, ago := range []time.Duration{3 * 24 * time.Hour, time.Hour, 30 * time.Minute} {
+		days[h.Now.Add(-ago).Local().Format("2006-01-02")] = true
+	}
+	var spread int64
+	for _, row := range digest.When {
+		for _, ms := range row {
+			spread += ms
+		}
+	}
+	if digest.Total.AgentMs != 125*second || digest.Total.Days != len(days) || spread != 125*second {
+		t.Errorf("digest's agent time = %d ms on %d days, %d ms in its hours; want 125 s on %d", digest.Total.AgentMs, digest.Total.Days, spread, len(days))
+	}
+	for _, d := range digest.Projects {
+		if d.Cwd == "/work/alpha" && (d.AgentMs != 85*second || d.List[0].AgentMs != 85*second) {
+			t.Errorf("alpha's agent time = %d ms, its session's %d; want 85 s", d.AgentMs, d.List[0].AgentMs)
 		}
 	}
 	if !digest.Since.Equal(h.Now.Add(-7*24*time.Hour)) || !digest.Until.IsZero() || digest.Total.List != nil {

@@ -39,11 +39,12 @@ export function mount(main, route, ctx) {
       h('span', null, f.plural(t.turns, 'turn')),
       h('span', null, f.plural(t.tools, 'tool call')),
       h('span', { class: f.open(t) ? 'bad' : null, title: f.passedTitle }, f.failed(t) || '0 failed'),
+      t.agentMs > 0 && h('span', { title: AGENT_TIME }, `${f.work(t.agentMs)} of agent time on ${f.plural(t.days, 'day')}`),
       h('span', { title: f.num(f.totalTokens(t.usage)) }, `${f.tokens(f.totalTokens(t.usage))} tokens`),
       h('span', null, `${f.plural(KINDS.reduce((n, k) => n + (t.changed?.[k] || 0), 0), 'file')} changed`)));
-    body.replaceChildren(r.projects.length
-      ? h('ol', { class: 'digest' }, r.projects.map((d) => entry(d, since)))
-      : empty(`Nothing was asked${projects.within(project)}${within(since)}.`, longer(since)));
+    body.replaceChildren(...(r.projects.length
+      ? [whenGrid(r.when), h('ol', { class: 'digest' }, r.projects.map((d) => entry(d, since)))]
+      : [empty(`Nothing was asked${projects.within(project)}${within(since)}.`, longer(since))]).filter(Boolean));
   }
 
   async function load() {
@@ -79,6 +80,7 @@ function entry(d, since) {
       h('span', null, f.plural(d.turns, 'turn')),
       h('span', null, f.plural(d.tools, 'tool call')),
       d.failures > 0 && h('span', { class: f.open(d) ? 'bad' : null, title: f.passedTitle }, f.failed(d)),
+      d.agentMs > 0 && h('span', { title: AGENT_TIME }, `${f.work(d.agentMs)} of agent time`),
       tok > 0 && h('span', { title: `${f.num(tok)} tokens, ${f.pct(d.cacheHit)} from cache` }, `${f.tokens(tok)} tokens`)),
     h('dl', { class: 'd-facts' },
       changed.length > 0 && h('div', null, h('dt', null, 'Changed'), h('dd', { class: 'dots' }, changed.map((k) => h('span', null, `${k} ${f.num(d.changed[k])}`)))),
@@ -92,6 +94,29 @@ function entry(d, since) {
       `${f.plural(d.sessions - d.list.length, 'more session')}`));
 }
 
+const AGENT_TIME = 'How long agents worked: from each ask to the last thing the agent did, summed over the turns';
+const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const hour = (n) => String(n % 24).padStart(2, '0') + ':00';
+
+// When the agents worked: a row a weekday, a cell an hour of the server's clock, as dark as
+// the time in it against the busiest, and each day's time at the end of its row
+function whenGrid(grid) {
+  const top = Math.max(0, ...(grid || []).flat());
+  if (!top) return null;
+  const level = (ms) => (ms > 0 ? Math.max(1, Math.round((ms / top) * 4)) : 0);
+  return h('section', { class: 'when' },
+    h('header', { class: 'section-head' }, h('h2', null, 'When agents worked'), h('span', { class: 'dim' }, 'by hour, on the clock of the machine asq runs on')),
+    h('div', { class: 'when-wrap' }, h('table', { class: 'when-grid' },
+      h('thead', null, h('tr', null, h('td'), grid[0].map((_, i) => h('th', { scope: 'col' }, i % 6 === 0 ? String(i) : '')), h('td'))),
+      h('tbody', null, grid.map((row, d) => h('tr', null,
+        h('th', { scope: 'row' }, DAYS[d]),
+        row.map((ms, i) => {
+          const said = `${DAYS[d]} ${hour(i)}–${hour(i + 1)}: ${ms > 0 ? f.work(ms) : 'none'}`;
+          return h('td', { dataset: { level: String(level(ms)) }, title: said, 'aria-label': said });
+        }),
+        h('td', { class: 'n dim' }, f.work(row.reduce((n, ms) => n + ms, 0)))))))));
+}
+
 function session(e) {
   return h('li', null,
     h('a', { href: sessionHref(e.ref), title: e.ref }, e.title || 'Untitled session'),
@@ -99,6 +124,7 @@ function session(e) {
       time(e.lastAt),
       e.turns > 0 && h('span', null, f.plural(e.turns, 'turn')),
       e.tools > 0 && h('span', null, f.plural(e.tools, 'tool call')),
+      e.agentMs > 0 && h('span', { title: AGENT_TIME }, f.work(e.agentMs)),
       e.failures > 0 && h('span', { class: f.open(e) ? 'bad' : null, title: f.passedTitle }, f.failed(e)),
       e.interrupted && h('span', { class: 'warn' }, 'interrupted')),
     e.answer && h('span', { class: 'd-answer' }, f.firstLine(e.answer, 300)));

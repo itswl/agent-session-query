@@ -87,6 +87,7 @@ func TestTheWorkerKeepsOnlyAPageOfItsOwn(t *testing.T) {
 		{"a sign-in", "POST", "cors", "/api/login", "up", "not answered"},
 		{"the page's style, by its tag", "GET", "no-cors", "/a/abc/app.css", "up", "not answered"},
 		{"what its own page is drawn with", "GET", "no-cors", "/app.css", "down", "200 kept /app.css"},
+		{"the font it is written in", "GET", "cors", "/fonts/Geist-Variable.woff2", "down", "200 kept /fonts/Geist-Variable.woff2"},
 		// put after the page's origin, it reads as asq.test@other.test: another host
 		{"another origin", "GET", "navigate", "@other.test/", "down", "not answered"},
 	}
@@ -117,7 +118,7 @@ func TestTheWorkerKeepsOnlyAPageOfItsOwn(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &got); err != nil || len(got.Visits) != len(cases) {
 		t.Fatalf("node said %q (%v)", out, err)
 	}
-	shell := []string{"/offline.html", "/app.css", "/js/theme.js", "/icons/icon-192.png"}
+	shell := []string{"/offline.html", "/app.css", "/js/theme.js", "/icons/icon-192.png", "/fonts/Geist-Variable.woff2"}
 	if !slices.Equal(got.Caches, []string{"asq-abc"}) || !slices.Equal(got.Kept, shell) || !slices.Equal(got.After, shell) {
 		t.Errorf("caches %v holding %v, then %v: one, of this set of files, holding its own page and what draws it", got.Caches, got.Kept, got.After)
 	}

@@ -237,6 +237,26 @@ func (a *App) dropCopy(ctx context.Context, st keep.Settings, s *index.Session) 
 	return nil
 }
 
+// keeping fills in how a session is kept, and whether it can be: nothing, where this
+// process keeps nothing.
+func (a *App) keeping(s *index.Session) {
+	if a.state == "" {
+		return
+	}
+	st, _ := keep.Load(a.state)
+	spec, _ := catalog.Spec(s.Source)
+	s.Keepable = Unkeepable(s) == ""
+	switch {
+	case keptCopy(s):
+		s.Kept = "copy"
+	case !s.Keepable:
+	case st.Starred(s.Agent, s.ID):
+		s.Kept = "one"
+	case st.All && spec.Retention != "":
+		s.Kept = "all"
+	}
+}
+
 // Unkeepable says why a session is not one asq keeps a copy of, or "" when it is.
 func Unkeepable(s *index.Session) string {
 	spec, ok := catalog.Spec(s.Source)

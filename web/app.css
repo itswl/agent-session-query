@@ -86,6 +86,8 @@ time, .dots, .n, dd, td, .count { font-variant-numeric: tabular-nums; }
 .btn:hover { background: var(--sunk); }
 .btn:disabled { opacity: .6; cursor: default; }
 .btn[aria-pressed="true"] { background: var(--raised); }
+.keep-btn .icon.filled { fill: currentColor; }
+.keep-btn.failed { color: var(--bad); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .icon-btn { display: inline-grid; flex: none; place-items: center; width: 32px; height: 32px; padding: 0; background: none; border: 0; border-radius: 6px; color: var(--muted); }
 .icon-btn:hover { background: var(--sunk); color: var(--text); }

@@ -74,6 +74,12 @@ type Session struct {
 	// reopens it where that store is its CLI's own: on the machine it came from, not this
 	// one. Resume is then empty.
 	ResumeThere string `json:"resumeThere,omitempty"`
+	// Kept says how asq keeps a copy of the session (see internal/keep): "one", kept one by
+	// one; "all", as every session of its CLI is; "copy", its CLI has deleted it and this is
+	// the copy. Keepable says it is a session asq can keep one by one. The layer that knows
+	// what is kept fills both in, for a session asked for on its own.
+	Kept     string `json:"kept,omitempty"`
+	Keepable bool   `json:"keepable,omitempty"`
 
 	sid     int64
 	rootSid int64

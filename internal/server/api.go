@@ -211,6 +211,37 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, map[string]any{"session": sess, "turns": turns, "agents": app.Listed(agents), "above": above})
 }
 
+// handleKeep keeps a session one by one, or stops (see internal/keep): the one thing the
+// API changes, and only in asq's own state, never in a CLI's store.
+func (s *Server) handleKeep(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Keep *bool `json:"keep"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body); err != nil || body.Keep == nil {
+		writeError(w, r, http.StatusBadRequest, `say whether to keep it: {"keep": true} or {"keep": false}`)
+		return
+	}
+	sess, err := s.session(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if why := app.Unkeepable(&sess); why != "" && (*body.Keep || sess.Kept != "copy") {
+		writeError(w, r, http.StatusConflict, sess.Ref+" is not kept one by one: "+why)
+		return
+	}
+	k, err := s.app.KeepSession(r.Context(), &sess, *body.Keep)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if sess, err = s.session(r); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{"session": sess, "keeping": k})
+}
+
 func (s *Server) handleTurns(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.session(r)
 	if err != nil {

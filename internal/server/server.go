@@ -281,6 +281,7 @@ func (s *Server) routes() {
 	api("GET /api/sessions/{source}/{id}/items/{seq}", s.handleItem)
 	api("GET /api/sessions/{source}/{id}/brief", s.handleBrief)
 	api("GET /api/sessions/{source}/{id}/export", s.handleExport)
+	api("POST /api/sessions/{source}/{id}/keep", s.handleKeep)
 	api("GET /api/search", s.handleSearch)
 	api("GET /api/projects", s.handleProjects)
 	api("GET /api/usage", s.handleUsage)

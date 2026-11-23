@@ -1,13 +1,14 @@
 # HTTP API
 
 `asq serve` answers on `http://127.0.0.1:7717`. Everything is `GET`, JSON and read-only, except
-signing in and the MCP endpoint. The page is a client of this API and uses nothing else.
+signing in, keeping a session, and the MCP endpoint. The page is a client of this API and uses nothing else.
 
 - Field names are those of [the record](model.md).
 - Times are RFC 3339. `since` and `until` take a span back from now (`90m`, `12h`, `7d`, `2w`),
   a date, or a date and time.
 - An error is `{"error": "…"}` with a status that means it: `400` the request does not parse,
-  `401` no token, `403` refused by a guard, `404` no such session, `429` too many wrong tokens.
+  `401` no token, `403` refused by a guard, `404` no such session, `409` a session that cannot be
+  kept, `429` too many wrong tokens.
 - Replies are `gzip`-compressed when the caller accepts it, and `Cache-Control: no-store`: the
   record is private and changes under the reader.
 - In JSON, `<`, `>` and `&` are written `\u003c`, `\u003e` and `\u0026`. A JSON parser reads
@@ -82,6 +83,16 @@ now, as `failures` and `files` [have them](#reports).
 **`GET /api/sessions/{source}/{id}/export?format=md|json|jsonl|html`** — the whole session, as a
 download. Always `Content-Disposition: attachment`: an exported page is a transcript's text laid
 out as HTML, and it is not served as a page of this origin.
+
+**`POST /api/sessions/{source}/{id}/keep`** with `{"keep": true}` — keeps a copy of the session
+and its subagents, made at once, as [`asq keep <ref>`](cli.md#maintaining) does; `{"keep": false}`
+stops keeping it one by one. It writes only in asq's state directory and its folder of copies,
+never in a CLI's store. `{"session", "keeping"}`: the session as it stands now, and what was
+copied (`transcripts`, `bytes`) or, stopped, why the copy stays (`stays`: `all`, every session of
+its CLI is kept; `gone`, its CLI deleted it and the copy is all there is). A session asq does not
+keep one by one — a subagent's transcript, one from a store added by name, one of a CLI that keeps
+its own — is `409`, saying why. A session read on its own says how it is kept: `kept` is `one`,
+`all` or `copy` (its CLI deleted it, and this is the copy), and `keepable` that it can be kept.
 
 ## Search
 

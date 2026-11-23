@@ -35,6 +35,8 @@ export function mount(main, route, ctx) {
   const facts = h('div');
   const details = h('div', { class: 's-details', id: 's-details' });
   const actions = h('div', { class: 'actions' });
+  // Keep: a copy of the session in asq's own folder, which outlasts its CLI deleting it
+  const keepBtn = h('button', { type: 'button', class: 'btn keep-btn', hidden: true, onclick: () => keepIt() });
   const extra = h('div', { class: 's-extra' });
   const notice = h('div');
   const timeline = h('ol', { class: 'timeline', 'aria-label': 'Turns' });
@@ -151,8 +153,10 @@ export function mount(main, route, ctx) {
           h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'true' }, icon('download'), 'Export'),
           h('div', { class: 'menu' }, [['md', 'Markdown'], ['json', 'JSON'], ['jsonl', 'JSON Lines'], ['html', 'HTML page']].map(([fmt, label]) =>
             h('a', { href: `${base}/export${qs({ format: fmt })}`, download: '' }, label, h('span', { class: 'dim' }, '.' + fmt))))),
-        h('button', { type: 'button', class: 'btn find-btn', 'aria-expanded': 'false', 'aria-controls': finder.id, title: 'Find in this session (f)', onclick: () => openFind() }, icon('search'), 'Find'));
+        h('button', { type: 'button', class: 'btn find-btn', 'aria-expanded': 'false', 'aria-controls': finder.id, title: 'Find in this session (f)', onclick: () => openFind() }, icon('search'), 'Find'),
+        keepBtn);
     }
+    renderKeep();
     fill(facts,
       h('div', { class: 'meta dots' },
         h('span', { class: 'store' }, mark(s.source, s.agent), s.source),
@@ -162,6 +166,7 @@ export function mount(main, route, ctx) {
         s.model && h('span', null, s.model),
         s.version && h('span', { class: 'dim' }, 'v' + s.version),
         s.archived && h('span', null, 'archived'),
+        s.kept === 'copy' && h('span', { title: 'Its CLI has deleted it: this is the copy asq kept' }, 'kept copy'),
         // what a session waits on is a step of its latest turn, which its turns are counted to
         standing(s, s.live?.seq && st.turns ? `#${st.turns}.${s.live.seq}` : null)));
     fill(details,
@@ -183,6 +188,37 @@ export function mount(main, route, ctx) {
       s.error && h('p', { class: 'notice warn' }, icon('alert'), h('span', null, 'This transcript could not be read whole: ', s.error)),
       v.agents.length > 0 && agentsList(),
     );
+  }
+
+  // The Keep button says whether the session is kept, and keeps it or stops. Kept as every
+  // session of its CLI is, it is kept whatever is pressed here, and says so instead
+  function renderKeep() {
+    const s = v.sess;
+    keepBtn.hidden = !s.keepable;
+    if (keepBtn.hidden) return;
+    const on = s.kept === 'one' || s.kept === 'all';
+    keepBtn.setAttribute('aria-pressed', String(on));
+    keepBtn.disabled = s.kept === 'all';
+    keepBtn.title = s.kept === 'all' ? 'asq keeps a copy of every session of this CLI (asq keep --all)'
+      : on ? 'asq keeps a copy of this session, and its subagents: press to stop'
+      : 'Keep a copy of this session in asq\'s own folder, so that it stays when its CLI deletes it';
+    keepBtn.replaceChildren(icon('star', on ? 'filled' : ''), on ? 'Kept' : 'Keep');
+  }
+
+  async function keepIt() {
+    const on = v.sess.kept !== 'one';
+    keepBtn.disabled = true;
+    try {
+      const d = await api(`${base}/keep`, { method: 'POST', body: { keep: on }, signal: ctx.signal });
+      v.sess = d.session;
+      renderHead();
+    } catch (e) {
+      if (isAbort(e)) return;
+      keepBtn.disabled = false;
+      keepBtn.title = e.message;
+      keepBtn.classList.add('failed');
+      setTimeout(() => keepBtn.classList.remove('failed'), 1500);
+    }
   }
 
   function agentsList() {

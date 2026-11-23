@@ -32,6 +32,7 @@ func (a *App) Resolve(ctx context.Context, ref string) (index.Session, int, erro
 		return s, turn, err
 	}
 	Resumes(&s)
+	a.keeping(&s)
 	return s, turn, nil
 }
 

@@ -76,8 +76,11 @@ in its own CLI; for a session read from a store added by name, that is the comma
 machine it came from, labelled so. **Brief** opens the [handoff brief](cli.md#handing-over) with a
 copy button, of the latest turn — or, chosen above it, of the turn in view and every turn after
 it (*From #7*), or of the whole session; **Export** downloads the session as Markdown, JSON,
-JSON Lines or a standalone page. A subagent's transcript links to the session it ran in, and a
-session lists its subagents.
+JSON Lines or a standalone page. **Keep** keeps a copy of the session and its subagents in asq's
+own folder, so that it stays when its CLI deletes it ([`asq keep`](cli.md#maintaining)); pressed
+again, it stops. It is offered for the CLIs that delete their own sessions, says *Kept* while
+every session of the CLI is kept, and a session read from the copy says *kept copy*. A subagent's
+transcript links to the session it ran in, and a session lists its subagents.
 
 ![A session](screenshots/session.png)
 

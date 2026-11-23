@@ -788,19 +788,20 @@ func Usage(w io.Writer, title string, rows []index.UsageRow, total *index.UsageR
 }
 
 // usageKeys is how each row of a usage table is named: a directory with the home as ~, and
-// a session by the shortest ref that tells it from the others listed, as ls names it.
+// a session by the shortest ref that tells it from the others listed, as ls names it. A
+// table is of sessions when its rows name some and every key is a ref: one session among
+// them with no title or directory is a session still.
 func usageKeys(rows []index.UsageRow, st Style) []string {
 	keys := make([]string, len(rows))
-	var sessions []index.Session
+	sessions := make([]index.Session, len(rows))
+	named, refs := false, true
 	for i, r := range rows {
 		keys[i] = st.Path(r.Key)
-		if r.Title != "" || r.Cwd != "" {
-			var s index.Session
-			s.Source, s.ID, _ = index.SplitRef(r.Key)
-			sessions = append(sessions, s)
-		}
+		named = named || r.Title != "" || r.Cwd != ""
+		sessions[i].Source, sessions[i].ID, _ = index.SplitRef(r.Key)
+		refs = refs && sessions[i].Source != ""
 	}
-	if len(sessions) == len(rows) {
+	if named && refs {
 		keys = ShortRefs(sessions)
 	}
 	return keys

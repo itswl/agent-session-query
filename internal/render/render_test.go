@@ -654,11 +654,23 @@ func TestUsageBySessionNamesItsSessions(t *testing.T) {
 	if got := strings.TrimSpace(lines[5]); got != "~/work/infra" {
 		t.Errorf("a session with no title = %q, want its directory", got)
 	}
-	// Any other grouping is one line a row, its key whole
+	// One with neither is still named as ls names it, and the rest with it; nothing beneath
+	out.Reset()
+	Usage(&out, "By session", append(rows, index.UsageRow{Key: "gemini/5d1e0c77-2f00-4b1a-9c3e-000000000003", Calls: 1}), nil, Style{Home: "/home/u"})
+	lines = strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != 7 || strings.Fields(lines[2])[0] != "claude/8a80b919" || strings.Fields(lines[6])[0] != "gemini/5d1e0c77" {
+		t.Errorf("by session, one unnamed:\n%s", out.String())
+	}
+	// Any other grouping is one line a row, its key whole — a model's too, slash and all
 	out.Reset()
 	Usage(&out, "By project", []index.UsageRow{{Key: "/home/u/work/infra", Calls: 2}}, nil, Style{Home: "/home/u"})
 	if lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n"); len(lines) != 3 || strings.Fields(lines[2])[0] != "~/work/infra" {
 		t.Errorf("by project:\n%s", out.String())
+	}
+	out.Reset()
+	Usage(&out, "By model", []index.UsageRow{{Key: "openrouter/anthropic-claude-opus-5-20261101", Calls: 2}}, nil, Style{})
+	if lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n"); len(lines) != 3 || strings.Fields(lines[2])[0] != "openrouter/anthropic-claude-opus-5-20261101" {
+		t.Errorf("by model:\n%s", out.String())
 	}
 }
 

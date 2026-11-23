@@ -146,7 +146,7 @@ var tools = []tool{
 		about: "What the model calls consumed — calls, the prompt (in), output and total tokens, how much of the output was reasoning, and the cache hit rate. " +
 			"Without by: rolling windows (24h, 7d, 30d, all), then by model, source, project and session — a session by its ref, title and directory, its subagents' calls in it. Use it for \"where did the tokens go\", \"which session ate them\".",
 		props: []prop{
-			{"by", "string", "One breakdown instead of the summary: model, day, source, project or session."},
+			{"by", "string", "One breakdown instead of the summary: model, day, week (by the Monday it begins on), month, source, project or session. Days, weeks and months are the latest, in order."},
 			pSource, pProject, pBranch, pSince, pUntil, pLimit, pChars,
 		},
 		run: runUsage,

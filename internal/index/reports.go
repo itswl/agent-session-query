@@ -68,6 +68,8 @@ type UsageRow struct {
 const (
 	ByModel   = "model"
 	ByDay     = "day"
+	ByWeek    = "week"
+	ByMonth   = "month"
 	BySource  = "source"
 	ByProject = "project"
 	BySession = "session"
@@ -78,27 +80,35 @@ const (
 // subagent's, and its own for any other.
 const rootOf = `CASE WHEN s.root_sid > 0 THEN s.root_sid ELSE s.sid END`
 
-// Usage sums what the model calls in a window consumed, grouped by a dimension. Days
-// are the local calendar's; the largest groups come first, days in order. By session, a
+// calendar reports whether a grouping is by the calendar: its rows come in order, not
+// largest first.
+func calendar(by string) bool { return by == ByDay || by == ByWeek || by == ByMonth }
+
+// Usage sums what the model calls in a window consumed, grouped by a dimension. Days,
+// weeks and months are the local calendar's — a week is keyed by the Monday it begins on,
+// a month as 2026-11 — and come in order; other groups come largest first. By session, a
 // subagent's calls are the session's it ran in, and a row names its session.
 func (ix *Index) Usage(ctx context.Context, f Filter, w Window, by string, limit int) ([]UsageRow, error) {
 	_, offset := time.Now().Zone()
+	local := "(u.at / 1000) + " + itoa(offset) + ", 'unixepoch'"
 	key := map[string]string{
 		ByModel:   "u.model",
-		ByDay:     "strftime('%Y-%m-%d', (u.at / 1000) + " + itoa(offset) + ", 'unixepoch')",
+		ByDay:     "strftime('%Y-%m-%d', " + local + ")",
+		ByWeek:    "date(" + local + ", '-6 days', 'weekday 1')",
+		ByMonth:   "strftime('%Y-%m', " + local + ")",
 		BySource:  "s.source",
 		ByProject: "s.cwd",
 		BySession: "coalesce(r.source || '/' || r.id, s.source || '/' || s.id)",
 		ByAll:     "''",
 	}[by]
 	if key == "" {
-		return nil, fmt.Errorf("usage is grouped by model, day, source, project or session, not by %q", by)
+		return nil, fmt.Errorf("usage is grouped by model, day, week, month, source, project or session, not by %q", by)
 	}
 	where, args := ix.widen(ctx, reportFilter(f), !w.Since.IsZero()).where()
 	when, whenArgs := w.where("u.at")
 	order := "sum(u.tok_in + u.tok_out + u.tok_cr + u.tok_cw) DESC"
-	if by == ByDay {
-		order = "1"
+	if calendar(by) {
+		order = "1 DESC" // the latest, when there are more than limit, then put in order
 	}
 	named, root := "'', ''", ""
 	if by == BySession {
@@ -111,6 +121,9 @@ FROM usage u JOIN sessions s ON s.sid = u.sid` + root + ` WHERE ` + where + ` AN
 	if limit > 0 {
 		q += ` LIMIT ?`
 		args = append(args, limit)
+	}
+	if calendar(by) {
+		q = `SELECT * FROM (` + q + `) ORDER BY 1`
 	}
 	rows, err := ix.ro.QueryContext(ctx, q, args...)
 	if err != nil {

@@ -143,7 +143,7 @@ systemd 或计划任务——再删二进制；容器则是 `docker rm` 加它�
 | `asq brief <ref>` | 交接简报：问了什么、改了什么、什么失败了、结论是什么，以及现在怎样了 —— `--turn N`、`--from N`、`--since 2h`、`--since all` |
 | `asq pack` | 把多个会话合成一份文档，由旧到新 —— `--project`、`--since` |
 | `asq export <ref>` | 导出整个会话 —— `--format md \| json \| jsonl \| html` |
-| `asq usage` | 模型调用消耗 —— `--by model \| day \| source \| project \| session` |
+| `asq usage` | 模型调用消耗 —— `--by model \| day \| week \| month \| source \| project \| session` |
 | `asq failures [词]` | 失败的工具调用 —— `--open` 只看同一命令后来没通过的、`--by command` 按命令归并、`--tool Bash`、`--since`，或命令与输出中包含的词 |
 | `asq digest` | 一段时间的工作按项目汇总 |
 | `asq files <路径>` | 碰过某个文件的轮次 —— `--changed` 只看修改 |

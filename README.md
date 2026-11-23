@@ -156,7 +156,7 @@ a container is `docker rm` and its `/data` volume.
 | `asq brief <ref>` | a handoff brief: what was asked, changed, failed and concluded, and how it stands now — `--turn N`, `--from N`, `--since 2h`, `--since all` |
 | `asq pack` | several sessions as one document, oldest first — `--project`, `--since` |
 | `asq export <ref>` | a session whole — `--format md \| json \| jsonl \| html` |
-| `asq usage` | what the model calls consumed — `--by model \| day \| source \| project \| session` |
+| `asq usage` | what the model calls consumed — `--by model \| day \| week \| month \| source \| project \| session` |
 | `asq failures [words]` | the tool calls that failed — `--open` for those whose command never passed later, `--by command`, `--tool Bash`, `--since`, or words their command or output holds |
 | `asq digest` | what a stretch of work added up to, per project |
 | `asq files <path>` | the turns that touched a file — `--changed` |

@@ -257,7 +257,7 @@ func TestWhatGoesWrongIsToldToTheModel(t *testing.T) {
 		{"brief", map[string]any{"ref": "aaaa1111", "from": 9}, "from must be 1..2"},
 		{"brief", map[string]any{"ref": "aaaa1111", "since": "soon"}, "since: unreadable time"},
 		{"brief", map[string]any{"ref": "this"}, "over HTTP"},
-		{"usage", map[string]any{"by": "colour"}, "grouped by model, day, source, project or session"},
+		{"usage", map[string]any{"by": "colour"}, "grouped by model, day, week, month, source, project or session"},
 		{"failures", map[string]any{"by": "tool"}, "grouped by command"},
 	} {
 		text, isErr := call(t, s, tc.tool, tc.args)

@@ -361,6 +361,34 @@ func TestReports(t *testing.T) {
 	if r := bySession[1]; r.Key != "claude/"+fixture.Beta || r.Cwd != "/work/beta" || r.Title == "" || r.Calls != 2 {
 		t.Errorf("beta by session = %+v", r)
 	}
+	// Days, weeks and months are the local calendar's, in order — a week by the Monday it
+	// begins on — and under a limit the latest of them
+	monday := func(t time.Time) string { return t.AddDate(0, 0, -(int(t.Weekday())+6)%7).Format("2006-01-02") }
+	for by, key := range map[string]func(time.Time) string{
+		index.ByDay:   func(t time.Time) string { return t.Format("2006-01-02") },
+		index.ByWeek:  monday,
+		index.ByMonth: func(t time.Time) string { return t.Format("2006-01") },
+	} {
+		// beta's calls, three days ago, then alpha's, from an hour ago to half an hour
+		var want []string
+		for _, ago := range []time.Duration{3 * 24 * time.Hour, time.Hour, 29 * time.Minute} {
+			if k := key(h.Now.Add(-ago).Local()); len(want) == 0 || want[len(want)-1] != k {
+				want = append(want, k)
+			}
+		}
+		rows, err := a.Index.Usage(ctx, f, index.Window{}, by, 0)
+		var got []string
+		for _, r := range rows {
+			got = append(got, r.Key)
+		}
+		if err != nil || strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Errorf("by %s = %v, %v; want %v", by, got, err, want)
+		}
+		latest, err := a.Index.Usage(ctx, f, index.Window{}, by, 1)
+		if err != nil || len(latest) != 1 || latest[0].Key != want[len(want)-1] {
+			t.Errorf("by %s, one = %+v, %v; want the latest, %s", by, latest, err, want[len(want)-1])
+		}
+	}
 	if _, err := a.Index.Usage(ctx, f, index.Window{}, "colour", 0); err == nil {
 		t.Error("an unknown grouping is an error, not a silent total")
 	}

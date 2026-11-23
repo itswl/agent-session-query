@@ -38,7 +38,7 @@ const usage = `asq — the session history of every agent CLI on this machine, a
   asq pack                     several sessions as one document (--project, --since)
   asq export <ref>             a session whole                  (--format md|json|jsonl|html)
 
-  asq usage                    what the model calls consumed    (--by model|day|source|project)
+  asq usage                    what the model calls consumed    (--by model|day|week|month|project …)
   asq failures [words]         the tool calls that failed       (--open, --by command, --tool, --since)
   asq digest                   what a stretch of work added up to, per project
   asq files <path>             the turns that touched a file    (--changed)
@@ -586,7 +586,7 @@ func cmdExport(ctx context.Context, args []string, io *streams) error {
 
 func cmdUsage(ctx context.Context, args []string, io *streams) error {
 	c := newCommand("usage", io.err).selection(20)
-	by := c.fs.String("by", "", "group by: model, day, source, project, session (default: a summary)")
+	by := c.fs.String("by", "", "group by: model, day, week, month, source, project, session (default: a summary)")
 	if _, err := c.parse(args); err != nil {
 		return err
 	}

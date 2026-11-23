@@ -11,7 +11,7 @@ const version = new URL(self.location.href).searchParams.get('v') || 'dev';
 const CACHE = 'asq-' + version;
 // The page shown when the server cannot be reached, and what it is drawn with: the font
 // too, which app.css asks for and would otherwise fail to come, an error in the console
-const SHELL = ['/offline.html', '/app.css', '/js/theme.js', '/icons/icon-192.png', '/fonts/Geist-Variable.woff2'];
+const SHELL = ['/offline.html', '/app.css', '/js/theme.js', '/js/offline.js', '/icons/icon-192.png', '/fonts/Geist-Variable.woff2'];
 const OFFLINE = '/offline.html';
 
 self.addEventListener('install', (e) => {

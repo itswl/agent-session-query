@@ -118,7 +118,7 @@ func TestTheWorkerKeepsOnlyAPageOfItsOwn(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &got); err != nil || len(got.Visits) != len(cases) {
 		t.Fatalf("node said %q (%v)", out, err)
 	}
-	shell := []string{"/offline.html", "/app.css", "/js/theme.js", "/icons/icon-192.png", "/fonts/Geist-Variable.woff2"}
+	shell := []string{"/offline.html", "/app.css", "/js/theme.js", "/js/offline.js", "/icons/icon-192.png", "/fonts/Geist-Variable.woff2"}
 	if !slices.Equal(got.Caches, []string{"asq-abc"}) || !slices.Equal(got.Kept, shell) || !slices.Equal(got.After, shell) {
 		t.Errorf("caches %v holding %v, then %v: one, of this set of files, holding its own page and what draws it", got.Caches, got.Kept, got.After)
 	}
@@ -136,5 +136,15 @@ func TestTheWorkerKeepsOnlyAPageOfItsOwn(t *testing.T) {
 	}
 	if m := regexp.MustCompile(`const SHELL = \[([^\]]*)\]`).FindStringSubmatch(string(src)); m == nil || strings.Count(m[1], "'")/2 != len(shell) {
 		t.Errorf("sw.js keeps other files than the test knows of: %v", m)
+	}
+	// and everything its page links to is kept: its Retry is a script of its own
+	page, err := fs.ReadFile(Files, "offline.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range regexp.MustCompile(`(?:href|src)="(/[^"]+)"`).FindAllStringSubmatch(string(page), -1) {
+		if !slices.Contains(shell, m[1]) {
+			t.Errorf("the page for when the server cannot be reached links %s, which the worker does not keep", m[1])
+		}
 	}
 }

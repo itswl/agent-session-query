@@ -113,19 +113,23 @@ func (s *Server) getPrompt(ctx context.Context, params json.RawMessage) (any, *r
 			given[name] = strings.TrimSpace(fmt.Sprint(v))
 		}
 	}
-	s.App.Fresh(ctx, s.MaxAge, s.Wait)
+	at := s.look(ctx)
 	text, err := pr.get(ctx, s, p.Meta.asker(), given)
 	if err != nil {
-		if ctx.Err() != nil {
-			err = errors.New("cancelled")
+		// Why no session was found may be that a store could not be read, or that none was
+		// found anywhere: the person is told as a tool's answer would tell the model
+		message := s.failed(ctx, err).Error()
+		if ctx.Err() == nil {
+			message += bracketed(s.notes(ctx, at))
 		}
-		return nil, &rpcError{Code: codeParams, Message: err.Error()}
+		return nil, &rpcError{Code: codeParams, Message: message}
 	}
 	return map[string]any{
 		"description": pr.about,
 		"messages": []any{map[string]any{"role": "user", "content": map[string]any{"type": "text",
-			// What is handed to another model leaves this machine with it, as a tool's answer does
-			"text": txt.Redact(text)}}},
+			// What is handed to another model leaves this machine with it, as a tool's answer
+			// does; and what it is handed is said to be as far as it goes, as a tool's answer is
+			"text": txt.Redact(text) + bracketed(s.notes(ctx, at))}}},
 	}, nil
 }
 

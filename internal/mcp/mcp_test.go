@@ -799,6 +799,42 @@ func TestPrompts(t *testing.T) {
 	}
 }
 
+// A prompt says beneath what it hands over what a tool's answer would: here, that a store
+// could not be read, and so that the session handed over may not be the newest, or the
+// sessions caught up on all of them. A handoff that finds none says so with its error.
+func TestAPromptSaysAStoreCouldNotBeRead(t *testing.T) {
+	s := withCodex(t)
+	codexRoot := ""
+	for _, st := range s.App.Set.All() {
+		if st.Name == "codex" {
+			codexRoot = st.Source.Location()
+		}
+	}
+	sourcetest.Unreadable(t, codexRoot)
+	if _, err := s.App.Sync(t.Context(), index.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	unread := "codex could not be read ("
+	for _, tc := range []struct {
+		caller *Caller
+		prompt string
+		args   map[string]any
+	}{
+		{&Caller{Dirs: []string{"/work/beta"}}, "handoff", nil},
+		{nil, "catchup", map[string]any{"project": "beta", "since": "30d"}},
+	} {
+		s.Caller = tc.caller
+		text, rpcErr := getPrompt(t, s, tc.prompt, tc.args)
+		if rpcErr != nil || !strings.Contains(text, unread) || !strings.Contains(text, "its sessions may be missing here.]") {
+			t.Errorf("%s %v, with codex unreadable = %+v\n%s", tc.prompt, tc.args, rpcErr, text)
+		}
+	}
+	s.Caller = &Caller{Dirs: []string{"/work/beta"}}
+	if _, rpcErr := getPrompt(t, s, "handoff", map[string]any{"session": "codex"}); rpcErr != nil && !strings.Contains(rpcErr.Message, unread) {
+		t.Errorf("a handoff of codex's newest session, with codex unreadable = %+v", rpcErr)
+	}
+}
+
 // The 2026-07-28 revision does without initialize: each request says its revision, its
 // client and what that client can do in _meta, and is answered on its own — server/discover
 // saying what initialize said. The earlier revisions are answered as they were, over stdio

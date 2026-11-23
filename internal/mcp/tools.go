@@ -252,14 +252,76 @@ func (s *Server) call(ctx context.Context, params json.RawMessage) (any, *rpcErr
 	}
 	text, err := s.run(ctx, t, p.Arguments, p.Meta.asker())
 	if err != nil {
-		if ctx.Err() != nil {
-			err = errors.New("cancelled")
-		} else if s.App.Index.Damage(err) {
-			err = fmt.Errorf("%w — the index is damaged, and is set aside and made anew from the stores at their next look: ask again in a few seconds", err)
-		}
-		return map[string]any{"content": []any{map[string]any{"type": "text", "text": err.Error()}}, "isError": true}, nil
+		return map[string]any{"content": []any{map[string]any{"type": "text", "text": s.failed(ctx, err).Error()}}, "isError": true}, nil
 	}
 	return map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}}, nil
+}
+
+// failed is what is said of an answer that could not be given: that the question was
+// cancelled, or that the index is damaged and is being made anew, where either is why.
+func (s *Server) failed(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return errors.New("cancelled")
+	}
+	if s.App.Index.Damage(err) {
+		return fmt.Errorf("%w — the index is damaged, and is set aside and made anew from the stores at their next look: ask again in a few seconds", err)
+	}
+	return err
+}
+
+// standing is where the index stood as an answer was read: whether it had caught up with
+// the stores, and if not, how far it had got. Where it stood before the answer was read is
+// what the answer can say of it: a sync that caught up while it was being read may not
+// have caught up with what it read.
+type standing struct {
+	fresh  bool
+	st     index.SyncState
+	behind time.Duration
+}
+
+// look brings the index up to date before a question, as far as it may in the time it is
+// given, and says where it stood then.
+func (s *Server) look(ctx context.Context) standing {
+	fresh := s.App.Fresh(ctx, s.MaxAge, s.Wait)
+	return standing{fresh: fresh, st: s.App.Index.State(), behind: s.App.Behind()}
+}
+
+// notes are what an answer, or the error in its place, says beneath it of how far it can
+// be taken: that the index is still reading, that a store could not be read, and, when no
+// CLI's sessions were found at all, where asq looked.
+func (s *Server) notes(ctx context.Context, at standing) []string {
+	var notes []string
+	if !at.fresh {
+		if at.behind > 0 {
+			notes = append(notes, fmt.Sprintf("The index is reading the history again for a newer reading of it (%d of %d transcripts): every session is here, but what changed in the last %s is not yet.", at.st.Done, at.st.Total, at.behind.Round(time.Second)))
+		} else if at.st.Running && at.st.Total > 0 {
+			notes = append(notes, fmt.Sprintf("The index is still reading the history (%d of %d transcripts): this answer covers what has been read so far.", at.st.Done, at.st.Total))
+		} else {
+			notes = append(notes, "The index is still catching up: this answer may miss the last few seconds.")
+		}
+	}
+	if warnings, err := s.App.Index.Warnings(ctx, s.App.Stores()); err == nil {
+		for _, w := range warnings {
+			notes = append(notes, fmt.Sprintf("%s could not be read (%s): its sessions may be missing here.", w.Source, txt.OneLine(w.Error, 160)))
+		}
+	}
+	if looked, err := s.App.NothingFound(ctx); err == nil && len(looked) > 0 {
+		places := make([]string, len(looked))
+		for i, l := range looked {
+			places[i] = fmt.Sprintf("%s %s (%s)", l.Source, l.Location, l.State())
+		}
+		notes = append(notes, "No CLI's sessions were found on the machine asq runs on. It looked in: "+strings.Join(places, ", ")+
+			". asq doctor there says more; a store somewhere else is named with ASQ_PATH.")
+	}
+	return notes
+}
+
+// bracketed is notes as they follow what they are about: in brackets, after a blank line.
+func bracketed(notes []string) string {
+	if len(notes) == 0 {
+		return ""
+	}
+	return "\n\n[" + strings.Join(notes, " ") + "]"
 }
 
 func (s *Server) run(ctx context.Context, t tool, given map[string]any, who asker) (string, error) {
@@ -273,10 +335,7 @@ func (s *Server) run(ctx context.Context, t tool, given map[string]any, who aske
 	}
 	a.budget = min(max(budget, 500), maxChars)
 
-	fresh := s.App.Fresh(ctx, s.MaxAge, s.Wait)
-	// Where the index stood before the answer was read is what the answer can say of it: a
-	// sync that caught up while it was being read may not have caught up with what it read
-	st, behind := s.App.Index.State(), s.App.Behind()
+	at := s.look(ctx)
 	// A project of "." is the directory the agent asking works in, not a part of a path
 	if project := a.str("project"); app.Relative(project) {
 		dir, how, err := s.workDir(ctx, who)
@@ -304,32 +363,7 @@ func (s *Server) run(ctx context.Context, t tool, given map[string]any, who aske
 	if a.here != "" {
 		notes = append(notes, a.here)
 	}
-	if !fresh {
-		if behind > 0 {
-			notes = append(notes, fmt.Sprintf("The index is reading the history again for a newer reading of it (%d of %d transcripts): every session is here, but what changed in the last %s is not yet.", st.Done, st.Total, behind.Round(time.Second)))
-		} else if st.Running && st.Total > 0 {
-			notes = append(notes, fmt.Sprintf("The index is still reading the history (%d of %d transcripts): this answer covers what has been read so far.", st.Done, st.Total))
-		} else {
-			notes = append(notes, "The index is still catching up: this answer may miss the last few seconds.")
-		}
-	}
-	if warnings, err := s.App.Index.Warnings(ctx, s.App.Stores()); err == nil {
-		for _, w := range warnings {
-			notes = append(notes, fmt.Sprintf("%s could not be read (%s): its sessions may be missing here.", w.Source, txt.OneLine(w.Error, 160)))
-		}
-	}
-	if looked, err := s.App.NothingFound(ctx); err == nil && len(looked) > 0 {
-		places := make([]string, len(looked))
-		for i, l := range looked {
-			places[i] = fmt.Sprintf("%s %s (%s)", l.Source, l.Location, l.State())
-		}
-		notes = append(notes, "No CLI's sessions were found on the machine asq runs on. It looked in: "+strings.Join(places, ", ")+
-			". asq doctor there says more; a store somewhere else is named with ASQ_PATH.")
-	}
-	if len(notes) > 0 {
-		text += "\n\n[" + strings.Join(notes, " ") + "]"
-	}
-	return text, nil
+	return text + bracketed(append(notes, s.notes(ctx, at)...)), nil
 }
 
 // joinDir is the directory a project of ".", "./web" or ".." names from dir. "." is dir as

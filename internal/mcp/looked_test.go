@@ -24,9 +24,18 @@ func TestNothingFoundSaysWhereItLooked(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	text, failed := call(t, New(a, io.Discard), "sessions", map[string]any{})
-	if failed || !strings.Contains(text, "No CLI's sessions were found on the machine asq runs on. It looked in: claude "+nowhere+" (not there).") ||
-		!strings.Contains(text, "asq doctor there says more") {
+	s := New(a, io.Discard)
+	looked := "No CLI's sessions were found on the machine asq runs on. It looked in: claude " + nowhere + " (not there)."
+	text, failed := call(t, s, "sessions", map[string]any{})
+	if failed || !strings.Contains(text, looked) || !strings.Contains(text, "asq doctor there says more") {
 		t.Errorf("sessions with no store:\n%s", text)
+	}
+
+	// A person who asks for a handoff or a catch-up is told the same, with why there was none
+	s.Caller = &Caller{Dirs: []string{"/work/alpha"}}
+	for _, name := range []string{"handoff", "catchup"} {
+		if _, rpcErr := getPrompt(t, s, name, nil); rpcErr == nil || !strings.Contains(rpcErr.Message, "no session ran in /work/alpha") || !strings.Contains(rpcErr.Message, looked) {
+			t.Errorf("%s with no store = %+v", name, rpcErr)
+		}
 	}
 }

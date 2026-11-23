@@ -198,7 +198,9 @@ server, or the Codex thread a request names. A client that names neither, as Gem
 OpenCode do not, may be handed its own conversation if the person typed in it before asking: the
 line that says which session it took then says that it could not tell. Over HTTP, where nothing
 says which directory the agent works in, `handoff` takes the newest session in any directory and
-says so, and `catchup` wants a `project`.
+says so, and `catchup` wants a `project`. Both end with the notes a tool's answer ends with (see
+*Honest about freshness* below), and a prompt that finds no session gives them with its error:
+the newest session asq could read is not the newest if a store could not be read.
 
 ## How the answers are shaped
 

@@ -456,6 +456,10 @@ func TestMaxChars(t *testing.T) {
 		{[]string{"show", "aaaa1111", "--turns", "all", "--max-chars", "500"}, 900, []string{"#1 · ", "#2 · ", "4 more steps left out"}},
 		{[]string{"show", "bbbb2222", "--seq", "1", "--max-chars", "1000"}, 1300, []string{"[Cut here: ", "raise --max-chars"}},
 		{[]string{"brief", "aaaa1111", "--max-chars", "1000"}, 1000, []string{"## State at the end", "Dig deeper"}},
+		// An outline of too few turns to leave any out, and a brief whose head and end
+		// alone overrun the budget, are cut at it, as the MCP tools cut them
+		{[]string{"show", "aaaa1111", "--max-chars", "500"}, 700, []string{"aaaa1111-0000-4000-8000-000000000001 · ", "[Cut here: "}},
+		{[]string{"brief", "aaaa1111", "--max-chars", "500"}, 700, []string{"# Session brief: Fix flaky test", "[Cut here: "}},
 		{[]string{"pack", "--turns", "--max-chars", "500"}, 800, []string{"# Session pack", "[Cut here: ", "a smaller --limit"}},
 		// Below 500 it is 500, as an MCP tool's budget is
 		{[]string{"search", "the", "--max-chars", "10"}, 800, []string{"claude/"}},

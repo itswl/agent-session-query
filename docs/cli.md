@@ -56,9 +56,11 @@ where it looked — each store's place, and whether it is there and could be rea
 characters (at least 500), as an [MCP tool's](mcp.md#how-the-answers-are-shaped) is — for an
 agent that reads `asq` from a shell, and pays for what it reads by the token. An outline keeps
 its latest turns; turns read step by step leave out whole turns; a brief is written to fit,
-and keeps where things stood at the end; anything else is cut on a line boundary. Each says
-what it left out and the flag that asks for it. It is for text: not with `--json`, which is
-several times the size, nor `show -f`. Without it, an answer is as long as it is.
+and keeps where things stood at the end. What is still over — an outline whose latest four
+turns overrun it, a brief whose head and end do — and anything else is cut on a line
+boundary. Each says what it left out and the flag that asks for it. It is for text: not with
+`--json`, which is several times the size, nor `show -f`. Without it, an answer is as long as
+it is.
 
 ## Finding
 

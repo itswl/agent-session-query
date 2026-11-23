@@ -410,8 +410,11 @@ func cmdShow(ctx context.Context, args []string, io *streams) error {
 		if c.json {
 			return printJSON(io.out, map[string]any{"session": s, "turns": outline, "agents": app.Listed(children)})
 		}
-		// One too long for a budget keeps its latest turns, where the work stands
-		render.FitOutline(io.out, &s, outline, children, c.maxChars, st)
+		// One too long for a budget keeps its latest turns, where the work stands; what is
+		// cut after is what four turns still overrun it by, as the MCP read tool cuts it
+		var b strings.Builder
+		render.FitOutline(&b, &s, outline, children, c.maxChars, st)
+		c.held(io.out, b.String())
 		return nil
 	}
 	r.Full = *full
@@ -542,7 +545,8 @@ func cmdBrief(ctx context.Context, args []string, io *streams) error {
 	if c.json {
 		return printJSON(io.out, map[string]any{"session": s, "brief": text})
 	}
-	fmt.Fprint(io.out, text)
+	// Only a budget smaller than the brief's head and where things stood together is cut
+	c.held(io.out, text)
 	return nil
 }
 

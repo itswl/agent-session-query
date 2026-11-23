@@ -177,6 +177,12 @@ If `asq serve` was kept running, take the service down before the binary —
 the systemd unit or the scheduled task, each named in [Deploying](docs/deploy.md); a
 container is `docker rm` and its `/data` volume.
 
+The agent CLIs given asq go on asking for it until told otherwise: remove the `asq` MCP server
+with each CLI's own command or from its settings, and the skill's folders,
+`~/.claude/skills/agent-sessions` and `~/.agents/skills/agent-sessions`, where it was saved. A
+browser that opened the page keeps its offline page, a few files, until that site's data is
+cleared there.
+
 ## Commands
 
 | | |

@@ -162,6 +162,11 @@ Windows：删除 `%LOCALAPPDATA%\Programs\asq`、`%LocalAppData%\asq` 和 `%AppD
 `brew services stop asq`；手工配置的 launchd、systemd 或计划任务，按[部署](docs/deploy.md)里写的
 停；容器则是 `docker rm` 加它的 `/data` 卷。
 
+交给过 asq 的 agent CLI 会一直去找它，直到你告诉它们不用了：用各 CLI 自己的命令或在它的设置里删掉
+名为 `asq` 的 MCP server；存过 skill 的话，删掉 `~/.claude/skills/agent-sessions` 和
+`~/.agents/skills/agent-sessions` 目录。打开过网页的浏览器会留着它的离线页（几个文件），清除该站点
+的数据即可。
+
 ## 命令
 
 | | |

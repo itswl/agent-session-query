@@ -220,6 +220,9 @@ func TestWhatGoesWrong(t *testing.T) {
 		{[]string{"brief", "aaaa1111", "--since", "whenever"}, 2, "since: unreadable time"},
 		{[]string{"resume", "claude/x1"}, 1, "resume the session it ran in"},
 		{[]string{"files"}, 2, "which file?"},
+		{[]string{"why", "notes.go"}, 2, "asq why <file>:<line>"},
+		{[]string{"why", "notes.go:0"}, 2, "asq why <file>:<line>"},
+		{[]string{"why", "notes.go:6", "more"}, 2, "asq why <file>:<line>"},
 		{[]string{"index", "sideways"}, 2, "asq index [path | rebuild | rm]"},
 		{[]string{"otel"}, 2, "where to?"},
 		{[]string{"otel", "--dry-run", "--content", "everything"}, 2, "none, asks or all"},
@@ -752,6 +755,31 @@ func TestAStoppedDoctorSaysSo(t *testing.T) {
 		said := out.String()
 		if err == nil || !(json && strings.Contains(said, `"stopped": true`) || !json && strings.Contains(said, "stopped before every store")) {
 			t.Errorf("a stopped doctor (json %v): %v\n%s", json, err, said)
+		}
+	}
+}
+
+// why takes one argument, <file>:<line>: the file is all that comes before the last colon,
+// a Windows drive's included.
+func TestFileLine(t *testing.T) {
+	for _, c := range []struct {
+		arg  string
+		file string
+		line int
+		ok   bool
+	}{
+		{"notes.go:6", "notes.go", 6, true},
+		{`C:\work\notes.go:12`, `C:\work\notes.go`, 12, true},
+		{"a:b:3", "a:b", 3, true},
+		{"notes.go", "", 0, false},
+		{":6", "", 0, false},
+		{"notes.go:", "", 0, false},
+		{"notes.go:-1", "", 0, false},
+		{"notes.go:six", "", 0, false},
+	} {
+		file, line, ok := fileLine([]string{c.arg})
+		if file != c.file || line != c.line || ok != c.ok {
+			t.Errorf("fileLine(%q) = %q %d %v", c.arg, file, line, ok)
 		}
 	}
 }

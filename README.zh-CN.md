@@ -147,6 +147,7 @@ systemd 或计划任务——再删二进制；容器则是 `docker rm` 加它�
 | `asq failures [词]` | 失败的工具调用 —— `--open` 只看同一命令后来没通过的、`--by command` 按命令归并、`--tool Bash`、`--since`，或命令与输出中包含的词 |
 | `asq digest` | 一段时间的工作按项目汇总 |
 | `asq files <路径>` | 碰过某个文件的轮次 —— `--changed` 只看修改 |
+| `asq why <文件>:<行>` | 最后改动这一行的 commit 出自哪个会话 —— 借 `git blame`，只读 |
 | `asq projects` | 会话所在的工作目录 |
 | `asq resume <ref>` | 在原 CLI 里重新打开该会话的命令 —— `--run` 直接执行 |
 | `asq keep` | 为 CLI 会删除的会话留一份副本 —— `--all`，或用 `<ref>` 只留某一个会话 |

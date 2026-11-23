@@ -237,38 +237,7 @@ func Hits(w io.Writer, res index.SearchResult, offset int, st Style) {
 		fmt.Fprintln(w, st.dim(fmt.Sprintf("%s in %s", plural(res.Total, "turn"), plural(res.Sessions, "session"))))
 	}
 	for i, h := range res.Hits {
-		where := []string{h.At.Local().Format("2006-01-02 15:04")}
-		if h.Session.Cwd != "" {
-			where = append(where, st.Path(h.Session.Cwd))
-		}
-		if h.Session.Parent != nil {
-			where = append(where, "subagent of "+h.Session.Root)
-		}
-		fmt.Fprintf(w, "\n%s %s  %s  %s\n", st.dim(strconv.Itoa(offset+i+1)+"."), st.cyan(h.Ref), st.dim(strings.Join(where, " · ")), ending(h, st))
-		if len(h.Lacks) > 0 {
-			fmt.Fprintf(w, "   %s %s\n", st.dim("lacks "), st.Warn(st.fit(strings.Join(h.Lacks, " "), 10)))
-		}
-		fmt.Fprintf(w, "   %s %s\n", st.dim("ask   "), st.fit(txt.OneLine(h.Ask, 0), 10))
-		answer := st.fit(txt.OneLine(h.Answer, 0), 10)
-		for _, m := range h.Matches {
-			label := string(m.Kind)
-			switch {
-			case m.Kind == model.Prompt:
-				continue // the ask is already there, whole
-			case m.Kind == model.Reply && answer != "" && strings.Contains(answer, strings.Trim(m.Snippet, "…")):
-				continue // and so is the answer, below
-			case m.Kind == model.ToolUse:
-				label = m.Part
-			}
-			text := m.Snippet
-			if m.Tool != "" {
-				text = m.Tool + " › " + text
-			}
-			fmt.Fprintf(w, "   %s %s\n", st.dim(fmt.Sprintf("%-6s", label)), st.fit(text, 10))
-		}
-		if answer != "" {
-			fmt.Fprintf(w, "   %s %s\n", st.dim("answer"), answer)
-		}
+		hit(w, offset+i+1, h, st)
 	}
 	if shown := offset + len(res.Hits); shown < res.Total {
 		fmt.Fprintln(w, st.dim(fmt.Sprintf("\n… more turns match: %s %d for the next page, or narrow the search", st.opt("offset"), shown)))
@@ -310,6 +279,43 @@ func outside(w io.Writer, o *index.Outside, st Style) {
 		verb, them = "matches", "it"
 	}
 	fmt.Fprintln(w, st.Warn(fmt.Sprintf("%s %s: %s to see %s.", where, verb, strings.Join(change, " and "), them)))
+}
+
+// hit prints one turn a search found, numbered n: where and when, how it ended, the ask,
+// the lines the words were found in, and the answer.
+func hit(w io.Writer, n int, h index.Hit, st Style) {
+	where := []string{h.At.Local().Format("2006-01-02 15:04")}
+	if h.Session.Cwd != "" {
+		where = append(where, st.Path(h.Session.Cwd))
+	}
+	if h.Session.Parent != nil {
+		where = append(where, "subagent of "+h.Session.Root)
+	}
+	fmt.Fprintf(w, "\n%s %s  %s  %s\n", st.dim(strconv.Itoa(n)+"."), st.cyan(h.Ref), st.dim(strings.Join(where, " · ")), ending(h, st))
+	if len(h.Lacks) > 0 {
+		fmt.Fprintf(w, "   %s %s\n", st.dim("lacks "), st.Warn(st.fit(strings.Join(h.Lacks, " "), 10)))
+	}
+	fmt.Fprintf(w, "   %s %s\n", st.dim("ask   "), st.fit(txt.OneLine(h.Ask, 0), 10))
+	answer := st.fit(txt.OneLine(h.Answer, 0), 10)
+	for _, m := range h.Matches {
+		label := string(m.Kind)
+		switch {
+		case m.Kind == model.Prompt:
+			continue // the ask is already there, whole
+		case m.Kind == model.Reply && answer != "" && strings.Contains(answer, strings.Trim(m.Snippet, "…")):
+			continue // and so is the answer, below
+		case m.Kind == model.ToolUse:
+			label = m.Part
+		}
+		text := m.Snippet
+		if m.Tool != "" {
+			text = m.Tool + " › " + text
+		}
+		fmt.Fprintf(w, "   %s %s\n", st.dim(fmt.Sprintf("%-6s", label)), st.fit(text, 10))
+	}
+	if answer != "" {
+		fmt.Fprintf(w, "   %s %s\n", st.dim("answer"), answer)
+	}
 }
 
 // ending says how a hit's turn ended: the calls that failed, and how many of them the same
@@ -1088,6 +1094,55 @@ func Files(w io.Writer, list []index.FileTouch, total int, st Style) {
 	}
 	if total > len(list) {
 		fmt.Fprintln(w, st.dim(fmt.Sprintf("… %d more", total-len(list))))
+	}
+}
+
+// Blamed is a line of a file and the commit git says last changed it, as Why prints it.
+// Commit is empty for a line not committed yet.
+type Blamed struct {
+	File    string // as it was given
+	Path    string // its whole path
+	Line    int
+	Text    string
+	Commit  string
+	Subject string
+	At      time.Time
+}
+
+// Why prints which session wrote a line: the line, the commit that last changed it, the
+// turns whose calls made that commit, and the others that name it.
+func Why(w io.Writer, b Blamed, made, mentioned []index.Hit, st Style) {
+	fmt.Fprintf(w, "%s\n    %s\n", b.File+":"+strconv.Itoa(b.Line), st.fit(txt.OneLine(b.Text, 0), 4))
+	if b.Commit == "" {
+		fmt.Fprintf(w, "Not committed yet: asq files %s names the turns that changed the file.\n", st.Path(b.Path))
+		return
+	}
+	short := b.Commit[:min(12, len(b.Commit))]
+	line := []string{st.cyan(short)}
+	if !b.At.IsZero() {
+		line = append(line, b.At.Local().Format("2006-01-02 15:04"))
+	}
+	if b.Subject != "" {
+		line = append(line, st.fit(txt.OneLine(b.Subject, 0), 34))
+	}
+	fmt.Fprintln(w, strings.Join(line, st.dim(" · ")))
+	if len(made) == 0 {
+		fmt.Fprintf(w, "\nNo turn made %s: it was committed outside the sessions asq reads. asq files %s names the turns that changed the file.\n", short, st.Path(b.Path))
+	} else {
+		fmt.Fprintf(w, "\nMade in %s:\n", plural(len(made), "turn"))
+		for i, h := range made {
+			hit(w, i+1, h, st)
+		}
+	}
+	if len(mentioned) > 0 {
+		label := "Named in " + plural(len(mentioned), "turn")
+		if len(made) > 0 {
+			label = "Also named in " + plural(len(mentioned), "turn")
+		}
+		fmt.Fprintf(w, "\n%s:\n", label)
+		for i, h := range mentioned {
+			hit(w, i+1, h, st)
+		}
 	}
 }
 

@@ -592,3 +592,38 @@ func TestWhereALatestTurnStandsIsSaid(t *testing.T) {
 		t.Errorf("the outline of an idle session:\n%s", b.String())
 	}
 }
+
+// Why prints the line, the commit that last changed it, and the turns: those that made it,
+// then those that name it. A line no turn made says so, and one not committed yet says
+// that; each points at files for the turns that changed the file. What the file and git
+// say is printed as a line of text, whatever escape it holds.
+func TestWhy(t *testing.T) {
+	at := time.Date(2026, 11, 5, 10, 8, 0, 0, time.UTC)
+	hit := func(ref, ask string) index.Hit {
+		return index.Hit{Ref: ref, At: at, Ask: ask, Answer: "Committed.", Session: index.Session{Session: model.Session{Cwd: "/work/notes"}}}
+	}
+	b := Blamed{File: "notes.go", Path: "/work/notes/notes.go", Line: 6, Text: "\treturn strings.TrimSpace(s)\x1b]52;c;aGk=\x07",
+		Commit: "3f9c2ab4e5f60718293a4b5c6d7e8f9012345678", Subject: "Trim the title", At: at}
+	var out bytes.Buffer
+	Why(&out, b, []index.Hit{hit("claude/aaaa#1", "trim the titles")}, []index.Hit{hit("codex/bbbb#2", "what was the last commit?")}, Style{})
+	text := out.String()
+	for _, want := range []string{"notes.go:6\n", "return strings.TrimSpace(s)", "3f9c2ab4e5f6 · ", "Trim the title",
+		"Made in 1 turn:", "1. claude/aaaa#1", "Also named in 1 turn:", "1. codex/bbbb#2"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("why lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.ContainsRune(text, 0x1b) || strings.Index(text, "Made in") > strings.Index(text, "Also named") {
+		t.Errorf("why:\n%q", text)
+	}
+	out.Reset()
+	Why(&out, b, nil, nil, Style{})
+	if text := out.String(); !strings.Contains(text, "No turn made 3f9c2ab4e5f6") || !strings.Contains(text, "asq files /work/notes/notes.go") || strings.Contains(text, "named in") {
+		t.Errorf("made by none:\n%s", text)
+	}
+	out.Reset()
+	Why(&out, Blamed{File: "notes.go", Path: "/work/notes/notes.go", Line: 1, Text: "package notes"}, nil, nil, Style{})
+	if text := out.String(); !strings.Contains(text, "Not committed yet: asq files /work/notes/notes.go") {
+		t.Errorf("not committed:\n%s", text)
+	}
+}

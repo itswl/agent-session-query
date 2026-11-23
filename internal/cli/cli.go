@@ -42,6 +42,7 @@ const usage = `asq — the session history of every agent CLI on this machine, a
   asq failures [words]         the tool calls that failed       (--open, --by command, --tool, --since)
   asq digest                   what a stretch of work added up to, per project
   asq files <path>             the turns that touched a file    (--changed)
+  asq why <file>:<line>        the session whose commit last changed a line, by git blame
   asq projects                 the directories sessions ran in
 
   asq resume <ref>             the command that reopens a session in its own CLI (--run)
@@ -132,7 +133,7 @@ func init() {
 		"ls": cmdList, "list": cmdList, "sessions": cmdList,
 		"search": cmdSearch, "s": cmdSearch,
 		"show": cmdShow, "brief": cmdBrief, "pack": cmdPack, "export": cmdExport,
-		"usage": cmdUsage, "failures": cmdFailures, "digest": cmdDigest, "files": cmdFiles, "projects": cmdProjects,
+		"usage": cmdUsage, "failures": cmdFailures, "digest": cmdDigest, "files": cmdFiles, "why": cmdWhy, "projects": cmdProjects,
 		"resume": cmdResume, "keep": cmdKeep, "serve": cmdServe, "ping": cmdPing, "mcp": cmdMCP, "otel": cmdOTel, "doctor": cmdDoctor, "index": cmdIndex,
 	}
 }
@@ -750,6 +751,51 @@ func cmdFiles(ctx context.Context, args []string, io *streams) error {
 	}
 	render.Files(io.out, list, total, c.style(io.out))
 	return nil
+}
+
+func cmdWhy(ctx context.Context, args []string, io *streams) error {
+	c := newCommand("why", io.err)
+	rest, err := c.parse(args)
+	if err != nil {
+		return err
+	}
+	file, line, ok := fileLine(rest)
+	if !ok {
+		return usagef("which line?  asq why <file>:<line>")
+	}
+	a, err := open(ctx, c, io)
+	if err != nil {
+		return err
+	}
+	defer a.Close()
+	why, err := a.Why(ctx, file, line)
+	if err != nil {
+		return err
+	}
+	why.Made, why.Mentioned = app.ListedHits(index.SearchResult{Hits: why.Made}).Hits, app.ListedHits(index.SearchResult{Hits: why.Mentioned}).Hits
+	if c.json {
+		return printJSON(io.out, why)
+	}
+	render.Why(io.out, render.Blamed{File: why.File, Path: why.Path, Line: why.Line, Text: why.Text, Commit: why.Commit, Subject: why.Subject, At: why.At},
+		why.Made, why.Mentioned, c.style(io.out))
+	return nil
+}
+
+// fileLine reads the one argument why takes, <file>:<line>: the file is everything before
+// the last colon, which on Windows may hold a drive's.
+func fileLine(args []string) (string, int, bool) {
+	if len(args) != 1 {
+		return "", 0, false
+	}
+	i := strings.LastIndexByte(args[0], ':')
+	if i <= 0 {
+		return "", 0, false
+	}
+	line, err := strconv.Atoi(args[0][i+1:])
+	if err != nil || line < 1 {
+		return "", 0, false
+	}
+	return args[0][:i], line, true
 }
 
 func cmdProjects(ctx context.Context, args []string, io *streams) error {

@@ -160,6 +160,7 @@ a container is `docker rm` and its `/data` volume.
 | `asq failures [words]` | the tool calls that failed — `--open` for those whose command never passed later, `--by command`, `--tool Bash`, `--since`, or words their command or output holds |
 | `asq digest` | what a stretch of work added up to, per project |
 | `asq files <path>` | the turns that touched a file — `--changed` |
+| `asq why <file>:<line>` | the session whose commit last changed a line, by `git blame`, which only reads |
 | `asq projects` | the directories sessions ran in |
 | `asq resume <ref>` | the command that reopens a session in its own CLI — `--run` to run it |
 | `asq keep` | copies of the sessions a CLI deletes — `--all`, or `<ref>` for one session |

@@ -144,6 +144,13 @@ the file since, or it is to the byte the whole of what the turn wrote), *written
 between a history that still holds and one that has moved on
 ([how it is judged](api.md#reports)). Only this machine's files are judged.
 
+**`asq why <file>:<line>`** — which session wrote a line of a file, and why. `git blame` names the
+commit that last changed the line, and the answer is the turns whose calls made that commit —
+those whose `git commit` printed its id, however much of it — then the other turns that name it,
+each shown as `search` shows a turn. git is only asked to read: it takes no lock and writes
+nothing in the repository. A line committed outside the sessions asq reads, or not committed yet,
+is said to be, with the `asq files` that names the turns that changed the file.
+
 **`asq projects`** — the working directories sessions ran in, most recently used first.
 
 ## Reading

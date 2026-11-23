@@ -76,13 +76,17 @@ to tell which turn to open without opening each.
 | `ask:deploy` | the person's ask has the word; also `reply:` `thinking:` `tool:` (a tool's input) `output:` (a tool's output) `title:` (the session's title) |
 | `rebind` | any word *starting* with it — bare words are prefixes |
 | `retries` | … or any other form of the same English word: `retried`, `retry`, `retrying` |
+| `3f9c2ab4e5f6…` | a commit's id, as long as it is given: also the turn whose `git commit` printed seven characters of it |
 | `数据库` | the characters appear together, in any position |
 
 Punctuation separates words, as it does in the index: `session_query`, `session-query` and
 `session query` are the same search. A word alone, unquoted, finds the other forms of an English
 word by its stem, Porter's, as SQLite's FTS5 has it: `logs` finds `log` and `logging` but not
 `login`, `deploy` finds `deployment`. A quoted word or phrase, a word of several parts
-(`session_query`), one with digits in it, and words in other scripts match as written. An
+(`session_query`), one with digits in it, and words in other scripts match as written — except
+a commit's id: eight to forty hexadecimal digits, letters and digits both, also finds the same id
+cut short to as few as seven, the way `git commit` and `git log --oneline` print it, so the whole
+id GitHub shows finds the turn that made the commit. An
 excluded word is excluded as typed, by how a word begins: `-windows` leaves in a turn that says
 only `window`. What is typed after a word says that it ends there: `c++` finds the word *c* —
 the index holds no `+` — and not every word that begins with c; a `*` says the opposite, and

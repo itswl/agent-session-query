@@ -114,7 +114,8 @@ transcripts, which are sessions of their own. A ref that names no session is `40
 `total` is turns that matched across all pages; `sessions` how many sessions they are in. A
 match's `seq` is the step to open (`/items/{seq}`); `kind` is `title` for one in the session's
 title, which is no step (its `seq` is 0). `word` is the word the snippet was cut around when it
-is another form of the one searched for, for a page to mark.
+is another form of the one searched for — or a commit's id as the turn cut it short — for a page
+to mark.
 
 How the turn ended: `failures` is its calls that failed or were interrupted, `passedLater` how
 many of those were followed — in that turn or the three after it — by the same command

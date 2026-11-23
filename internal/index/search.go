@@ -46,7 +46,8 @@ type Match struct {
 	Seq     int        `json:"seq"`
 	Snippet string     `json:"snippet"`
 	// Word is the word the snippet was cut around, as it is written there, when it is
-	// another form of the one searched for: "retried", for retries.
+	// another form of the one searched for: "retried", for retries; "3f9c2ab", for a
+	// commit's whole id.
 	Word string `json:"word,omitempty"`
 }
 

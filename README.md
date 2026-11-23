@@ -174,10 +174,11 @@ id, the way a commit is named. `#4` names a turn. Every command takes `--json`.
 **Search** understands `"a phrase"`, `-not`, and `ask:` `reply:` `thinking:` `tool:` `output:`
 `title:` to confine a word to one part of a turn or to the session's title. Bare words match as
 prefixes (`rebind` finds `rebinding`) and in their other English forms (`retries` finds
-`retried`). Chinese, Japanese, Korean and Thai are matched by substring: `asq search 数据库`
-works. When no turn holds every word, the answer says which word is missing and lists the turns
-that come closest, marked as partial matches; when a filter — `--since`, `--project` — kept the
-turns that hold them out, it says how many there are, and which flag to drop.
+`retried`), and a commit's whole id finds the turn whose `git commit` printed the start of it.
+Chinese, Japanese, Korean and Thai are matched by substring: `asq search 数据库` works. When no
+turn holds every word, the answer says which word is missing and lists the turns that come
+closest, marked as partial matches; when a filter — `--since`, `--project` — kept the turns that
+hold them out, it says how many there are, and which flag to drop.
 → [Command line](docs/cli.md)
 
 ## The page

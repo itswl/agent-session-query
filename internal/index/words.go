@@ -343,6 +343,16 @@ func (t Term) expr() string {
 		}
 		expr = "(" + strings.Join(append(forms, `"`+stemMark+s+`"`), " OR ") + ")"
 	}
+	if w := toks[0]; !t.Exact && !t.Not && len(toks) == 1 && commitID(w) {
+		// A commit's id also finds it cut short, as git commit and git log --oneline print
+		// it: the full id from GitHub or git log finds the turn whose commit printed seven
+		// characters of it
+		forms := []string{expr}
+		for n := shortestID; n < len(w); n++ {
+			forms = append(forms, `"`+w[:n]+`"`)
+		}
+		expr = "(" + strings.Join(forms, " OR ") + ")"
+	}
 	if t.Column != "" {
 		expr = "{" + t.Column + "}: " + expr
 	}
@@ -375,14 +385,40 @@ func lastRune(s string) rune {
 	return r
 }
 
+// shortestID is the fewest characters git cuts a commit's id to: git commit and git log
+// --oneline print seven, or more where seven do not tell it from another.
+const shortestID = 7
+
+// commitID reports whether a word may be a commit's id: eight to forty hexadecimal digits,
+// a letter among them and a digit — a word of digits alone is a number, and one of letters
+// alone a word, far more often than an id.
+func commitID(w string) bool {
+	if len(w) <= shortestID || len(w) > 40 {
+		return false
+	}
+	var digit, letter bool
+	for i := 0; i < len(w); i++ {
+		switch c := w[i]; {
+		case '0' <= c && c <= '9':
+			digit = true
+		case 'a' <= c && c <= 'f':
+			letter = true
+		default:
+			return false
+		}
+	}
+	return digit && letter
+}
+
 // needle is a term of a query as it is looked for in a turn's text, to cut a snippet
 // around: as typed, as the words table splits it, and, for an English word alone, in any of
-// its forms.
+// its forms; for a commit's id, cut short.
 type needle struct {
 	text   string   // lowercased
 	toks   []string // its words, lowercased, as the words table splits them
 	prefix bool     // the last of them matches the words it begins
 	stem   string   // the word's stem; "" when the term is not a word alone
+	id     bool     // a commit's id, found too by a word that is the start of it
 	term   string   // the term it is of, as typed
 }
 
@@ -397,6 +433,9 @@ func (q Query) needles() []needle {
 		n := needle{text: strings.ToLower(t.Text), toks: toks, prefix: t.prefix(toks), term: t.String()}
 		if !t.Exact && len(toks) == 1 && stemmable(toks[0]) {
 			n.stem = stem(toks[0])
+		}
+		if !t.Exact && len(toks) == 1 && commitID(toks[0]) {
+			n.text, n.id = toks[0], true
 		}
 		out = append(out, n)
 	}
@@ -494,6 +533,18 @@ func (n needle) find(text string) (at, size int, word string) {
 	}
 	if at, size := n.findWords(text); at >= 0 {
 		return at, size, ""
+	}
+	if n.id {
+		// The id cut short: a word of at least seven characters that it begins with
+		at = -1
+		eachToken(text, func(start, end int) bool {
+			if end-start >= shortestID && end-start < len(n.text) && strings.HasPrefix(n.text, strings.ToLower(text[start:end])) {
+				at, size, word = start, end-start, text[start:end]
+				return false
+			}
+			return true
+		})
+		return at, size, word
 	}
 	if n.stem == "" {
 		return -1, 0, ""

@@ -498,3 +498,43 @@ func TestWordsOfANewerAsqAreLeftAlone(t *testing.T) {
 		t.Errorf("the words table is %q, %v, with %d turns queued: the newer asq's, as it left them", v, err, count(`SELECT count(*) FROM words_stale`))
 	}
 }
+
+// A commit's id finds the turn that printed it, at whatever length either gave it: git
+// commit and git log --oneline print seven characters, GitHub and git log the whole forty.
+// A word of digits alone is a number, not an id, and is not cut short.
+func TestACommitIsFoundByAnyLengthOfItsID(t *testing.T) {
+	h := fixture.Write(t)
+	const id = "eeee5555-0000-4000-8000-000000000005"
+	const full = "3f9c2ab4e5f60718293a4b5c6d7e8f9012345678"
+	writeSession(t, h, id, "", []turnSaid{
+		{ask: "commit the cursor fix", output: "[main 3f9c2ab] Return next_cursor as null\n 1 file changed, 2 insertions(+)", reply: "Committed."},
+		{ask: "how long did the build take", output: "built in 31415926 ns", reply: "About 31 ms."},
+	})
+	a := openSynced(t, h)
+	ctx := context.Background()
+	for _, c := range []struct {
+		query string
+		hits  []string
+	}{
+		{full, []string{"eeee5555#1"}},
+		{"output:" + full, []string{"eeee5555#1"}},
+		{strings.ToUpper(full), []string{"eeee5555#1"}},
+		{full[:8], []string{"eeee5555#1"}},
+		{full[:7], []string{"eeee5555#1"}},
+		{"3f9c2ac4e5f60718", nil},
+		{`"` + full + `"`, nil},
+		{"314159265358", nil},
+	} {
+		res, err := a.Index.Search(ctx, index.ParseQuery(c.query), filter(a), index.SearchOptions{})
+		if names := hitNames(res); err != nil || !reflect.DeepEqual(names, c.hits) || res.Partial != nil {
+			t.Errorf("%s = %q, partial %+v, %v; want %q", c.query, names, res.Partial, err, c.hits)
+		}
+	}
+	res, _ := a.Index.Search(ctx, index.ParseQuery(full), filter(a), index.SearchOptions{})
+	if len(res.Hits) != 1 || len(res.Hits[0].Matches) == 0 {
+		t.Fatalf("hits = %+v", res.Hits)
+	}
+	if m := res.Hits[0].Matches[0]; m.Part != "output" || m.Word != "3f9c2ab" || !strings.Contains(m.Snippet, "[main 3f9c2ab]") {
+		t.Errorf("match = %+v: the snippet is cut around the id as the turn gave it", m)
+	}
+}

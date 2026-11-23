@@ -583,6 +583,25 @@ func TestInstallSaysWhatTheServiceSaidWhenItDoesNotAnswer(t *testing.T) {
 	}
 }
 
+// A task has no environment of its own: where it listens is in the user's, as install
+// took it from the shell's, and status asks there.
+func TestTaskStatusAsksWhereTheEnvironmentSays(t *testing.T) {
+	f := newFake(t, "windows")
+	f.m.Getenv = func(name string) string { return map[string]string{"ASQ_PORT": "7921", "ASQ_HOST": "0.0.0.0"}[name] }
+	f.place(byHand["windows"])
+	st, err := f.m.Status("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Address != "http://127.0.0.1:7921" || len(st.Env) != 0 {
+		t.Errorf("address %s, env %q", st.Address, st.Env)
+	}
+	f.task = []byte(strings.Replace(byHand["windows"], "<Arguments>serve<", "<Arguments>serve --port 7922<", 1))
+	if st, _ := f.m.Status(""); st.Address != "http://127.0.0.1:7922" {
+		t.Errorf("the flag is not what counts: %s", st.Address)
+	}
+}
+
 func TestStatusSaysTheBinaryIsGone(t *testing.T) {
 	f := newFake(t, "linux")
 	s := f.setup()

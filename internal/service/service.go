@@ -70,6 +70,9 @@ type Machine struct {
 	Answers func(addr string) bool
 	// Lingers says whether this user's systemd services outlive a logout.
 	Lingers func() bool
+	// Getenv is this process's environment. A task has none of its own and starts with the
+	// user's, for which this stands in when status asks where it listens.
+	Getenv func(string) string
 	// Wait is how long Install waits for the service to answer.
 	Wait time.Duration
 }
@@ -77,7 +80,7 @@ type Machine struct {
 // ThisMachine is the machine asq runs on.
 func ThisMachine(port int) *Machine {
 	m := &Machine{OS: runtime.GOOS, UID: os.Getuid(), Port: port, Temp: os.TempDir(),
-		Run: run, Answers: answers, Wait: 15 * time.Second}
+		Run: run, Answers: answers, Getenv: os.Getenv, Wait: 15 * time.Second}
 	m.Home, _ = os.UserHomeDir()
 	m.Config, _ = os.UserConfigDir()
 	m.Lingers = func() bool { return false }
@@ -341,6 +344,15 @@ func (m *Machine) Status(this string) (*Status, error) {
 	}
 	for _, v := range s.Env {
 		st.Env = append(st.Env, v.Name)
+	}
+	if _, task := mg.(*scheduler); task && m.Getenv != nil {
+		// Where it listens is in the user's environment as much as in its arguments, as
+		// install took it from this shell's
+		for _, name := range []string{"ASQ_HOST", "ASQ_PORT"} {
+			if v := m.Getenv(name); v != "" {
+				s.Env = append(s.Env, Var{name, v})
+			}
+		}
 	}
 	addr := Address(s, m.Port)
 	st.Address, st.Answers = "http://"+addr, m.Answers(addr)

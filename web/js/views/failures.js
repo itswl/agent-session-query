@@ -58,7 +58,9 @@ export function mount(main, route, ctx) {
         h('span', { class: 'mono' }, t.tool), h('span', { class: 'n' }, f.num(t.count)))));
     list.replaceChildren(...rows());
     freshen();
-    if (!v.items.length) list.replaceChildren(h('li', null, empty(`No failed tool calls${tool ? ` of ${tool}` : ''}${projects.within(project)}${within(since)}.`, tool ? (since === 'all' ? 'Try all tools.' : 'Try all tools, or a longer window.') : longer(since))));
+    // What the window alone left out is said, with the way to it
+    const outside = r.outside > 0 && h('span', null, `${f.plural(r.outside, 'failed call')} from before then — `, h('a', { href: href({ since: 'all' }) }, 'All time'));
+    if (!v.items.length) list.replaceChildren(h('li', null, empty(`No failed tool calls${tool ? ` of ${tool}` : ''}${projects.within(project)}${within(since)}.`, outside || (tool ? (since === 'all' ? 'Try all tools.' : 'Try all tools, or a longer window.') : longer(since)))));
     if (!body.contains(list)) body.replaceChildren(list, more);
     more.replaceChildren(v.end ? '' : h('button', { type: 'button', class: 'btn', onclick: () => load(false) }, 'Load more'));
   }

@@ -638,7 +638,11 @@ func cmdFailures(ctx context.Context, args []string, io *streams) error {
 	if c.json {
 		return printJSON(io.out, rep)
 	}
-	render.Failures(io.out, rep, c.style(io.out))
+	since := c.q.Since
+	if since == "" {
+		since = "7d"
+	}
+	render.Failures(io.out, rep, render.Within(since, c.q.Until), c.style(io.out))
 	return nil
 }
 

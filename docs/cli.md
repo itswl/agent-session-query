@@ -223,7 +223,9 @@ named exactly — Claude Code's `Bash` is not Pi's `bash` — and `--tool 'mcp__
 every tool whose name begins that way. Words narrow to the calls whose command or the end of
 whose output (the part shown) holds each of them, anywhere and in any case: `asq failures
 ECONNREFUSED`, or `asq failures '"go test" -race'` for a phrase as written and a word that must
-not be there.
+not be there. The answer names the window it looked in; when no call in it matches, it says how
+many match before it — `No failed calls hold those words in the last 7 days; 1 from before then:
+--since all.` — since a week is all it looks at unless told otherwise.
 When the same program and subcommand succeeded later in the session — `go test` after
 `go test`, in that turn or the next three — the failure says where
 (`↳ passed 40m later: claude/3f2a…#5 step 212`), and how it was run if that differs; the turns

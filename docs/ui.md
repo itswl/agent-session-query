@@ -131,7 +131,8 @@ page and [is not summed](cli.md#measuring).
 **Failures** — the tool calls that failed in the window, newest first: the
 command, how it ended, the end of what it printed, and a link to the step. The chips narrow to
 one tool. A failure since you last looked at Failures is marked *new*, by the same visits as
-[the sessions list](#sessions); the count above says how many, beside its *Mark as seen*.
+[the sessions list](#sessions); the count above says how many, beside its *Mark as seen*. A
+window with none says how many came before it, with a link to all time.
 
 ![Failures](screenshots/failures.png)
 

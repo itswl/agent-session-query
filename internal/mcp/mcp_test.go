@@ -195,7 +195,9 @@ func TestEveryToolAnswers(t *testing.T) {
 		{"search", map[string]any{"query": "rotate", "since": "1d"}, []string{
 			"No turn the filters select holds “rotate”.\n1 turn in 1 session outside them matches: drop since to see it."}},
 		{"failures", map[string]any{"query": "econnrefused"}, []string{"1 failure", "go test ./..."}},
-		{"failures", map[string]any{"query": "econnrefused -5432"}, []string{"No failed calls hold those words. In this window: Bash 1"}},
+		{"failures", map[string]any{"query": "econnrefused -5432"}, []string{"No failed calls hold those words in the last 7 days.\nFailed in the last 7 days: Bash 1"}},
+		{"failures", map[string]any{"query": "econnrefused", "since": "90m", "until": "45m"}, []string{"1 failure · in the last 90 minutes, until 45 minutes ago: Bash 1"}},
+		{"failures", map[string]any{"since": "5m"}, []string{"No failed tool calls in the last 5 minutes; 1 from before then: since all."}},
 		{"read", map[string]any{"ref": "aaaa1111"}, []string{"Fix flaky test", "#1", "#2", "fix the flaky test", "Subagents", "Explore"}},
 		{"read", map[string]any{"ref": "aaaa1111#1"}, []string{"go test ./...", "[2]", "The test depended on map order"}},
 		{"read", map[string]any{"ref": "aaaa1111", "turns": "1-2", "full": true}, []string{"go test ./...", "schema.sql", "索引已加上"}},

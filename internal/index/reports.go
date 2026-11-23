@@ -156,6 +156,9 @@ type FailureReport struct {
 	Failures []Failure      `json:"failures"`
 	Total    int            `json:"total"`
 	ByTool   []FailureCount `json:"byTool"`
+	// Outside is, when none in the window match, how many do outside it: what the window
+	// alone hid, which an answer of none would otherwise say does not exist
+	Outside int `json:"outside,omitempty"`
 	// What the failures were narrowed to, for a reader to be told why there are none
 	Tool  string `json:"-"`
 	Query string `json:"-"`
@@ -166,7 +169,8 @@ type FailureReport struct {
 // set, keeps the calls whose command or output holds its words — each word, or "a
 // phrase", anywhere in either, without regard to case; -word keeps those that do not. The
 // output is the end of it the table keeps, where a command says why it failed. ByTool
-// counts every tool of the window regardless.
+// counts every tool of the window regardless. When none in the window match, Outside says
+// how many do outside it.
 func (ix *Index) Failures(ctx context.Context, f Filter, w Window, tool, text string, p Page) (FailureReport, error) {
 	rep := FailureReport{Failures: []Failure{}, ByTool: []FailureCount{}, Tool: tool, Query: text}
 	where, args := ix.widen(ctx, reportFilter(f), !w.Since.IsZero()).where()
@@ -188,28 +192,20 @@ func (ix *Index) Failures(ctx context.Context, f Filter, w Window, tool, text st
 		rep.ByTool = append(rep.ByTool, c)
 	}
 	rows.Close()
-	// A tool is named exactly — "Bash" is Claude Code's, "bash" is Pi's — or by how its
-	// name begins: "mcp__playwright*"
-	from := every
-	if prefix, ok := strings.CutSuffix(tool, "*"); ok {
-		if prefix != "" {
-			from += ` AND substr(x.tool, 1, ?) = ?`
-			args = append(args, utf8.RuneCountInString(prefix), prefix)
-		}
-	} else if tool != "" {
-		from += ` AND x.tool = ?`
-		args = append(args, tool)
-	}
-	for _, t := range ParseQuery(text).Terms {
-		has := `(instr(lower(x.command), lower(?)) > 0 OR instr(lower(x.output), lower(?)) > 0)`
-		if t.Not {
-			has = `NOT ` + has
-		}
-		from += ` AND ` + has
-		args = append(args, t.Text, t.Text)
-	}
+	narrow, narrowArgs := failuresNarrowed(tool, text)
+	from := every + narrow
+	args = append(args, narrowArgs...)
 	if err := ix.ro.QueryRowContext(ctx, `SELECT count(*)`+from, args...).Scan(&rep.Total); err != nil {
 		return rep, err
+	}
+	if rep.Total == 0 && (!w.Since.IsZero() || !w.Until.IsZero()) {
+		// None in the window: whether the window is all that hid them
+		where, args := ix.widen(ctx, reportFilter(f), false).where()
+		err := ix.ro.QueryRowContext(ctx, `SELECT count(*) FROM failures x JOIN sessions s ON s.sid = x.sid WHERE `+where+narrow,
+			append(args, narrowArgs...)...).Scan(&rep.Outside)
+		if err != nil {
+			return rep, err
+		}
 	}
 	if p.Limit <= 0 {
 		p.Limit = 50
@@ -231,6 +227,33 @@ ORDER BY x.at DESC, x.sid DESC, x.seq DESC LIMIT ? OFFSET ?`, append(args, p.Lim
 		rep.Failures = append(rep.Failures, x)
 	}
 	return rep, rows.Err()
+}
+
+// failuresNarrowed is what keeps the failed calls of one tool and those that hold some
+// words, as conditions on the failures table aliased x, each after an AND. A tool is named
+// exactly — "Bash" is Claude Code's, "bash" is Pi's — or by how its name begins:
+// "mcp__playwright*".
+func failuresNarrowed(tool, text string) (string, []any) {
+	var cond string
+	var args []any
+	if prefix, ok := strings.CutSuffix(tool, "*"); ok {
+		if prefix != "" {
+			cond += ` AND substr(x.tool, 1, ?) = ?`
+			args = append(args, utf8.RuneCountInString(prefix), prefix)
+		}
+	} else if tool != "" {
+		cond += ` AND x.tool = ?`
+		args = append(args, tool)
+	}
+	for _, t := range ParseQuery(text).Terms {
+		has := `(instr(lower(x.command), lower(?)) > 0 OR instr(lower(x.output), lower(?)) > 0)`
+		if t.Not {
+			has = `NOT ` + has
+		}
+		cond += ` AND ` + has
+		args = append(args, t.Text, t.Text)
+	}
+	return cond, args
 }
 
 // failureColumns are what a Failure is read from, of the failures table aliased x.

@@ -153,7 +153,7 @@ var tools = []tool{
 		name:  "failures",
 		title: "Failed tool calls",
 		about: "The tool calls that failed or were interrupted, newest first: the command, how it ended and the end of its output, with the ref of the turn it happened in. " +
-			"Covers the last 7 days unless since says otherwise. Use it for \"what keeps going wrong\" and to see how an error was hit before. " +
+			"Covers the last 7 days unless since says otherwise, and says so; when none there match, it says how many match before then — widen since rather than conclude it never happened. Use it for \"what keeps going wrong\" and to see how an error was hit before. " +
 			"When the same program and subcommand (go test, pnpm build, git push) later succeeded in the same session, a line says where (\"passed 40m later: <ref>#<turn> step <n>\") and, if it was run differently, how (\"as $ go test ./internal/x\"): judge from that whether it is the same thing passing. What changed in between is how it was got past — read those turns rather than guess.",
 		props: []prop{
 			{"tool", "string", "Only this tool's calls, named exactly as the answer prints it (Bash is not bash); a trailing * matches by prefix: mcp__playwright*."},
@@ -648,7 +648,11 @@ func runFailures(ctx context.Context, s *Server, a *args) (string, error) {
 		return "", err
 	}
 	var b bytes.Buffer
-	render.Failures(&b, rep, style())
+	since := q.Since
+	if since == "" {
+		since = "7d"
+	}
+	render.Failures(&b, rep, render.Within(since, q.Until), style())
 	return b.String(), nil
 }
 

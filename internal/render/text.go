@@ -706,30 +706,95 @@ func Cost(usd float64) string {
 	return fmt.Sprintf("$%.2f", usd)
 }
 
-// Failures prints the tool calls that failed, newest first, and what failed most.
-func Failures(w io.Writer, rep index.FailureReport, st Style) {
+// Within says which stretch of time a report covers, from its bounds as they were asked
+// for — "in the last 7 days", "since 2026-09-01", "until 2026-10-01" — or "" for all time.
+func Within(since, until string) string {
+	since, until = strings.TrimSpace(since), strings.TrimSpace(until)
+	if since == "all" {
+		since = ""
+	}
+	if until == "all" {
+		until = ""
+	}
+	var parts []string
+	if since != "" {
+		if span := spanWords(since); span != "" {
+			parts = append(parts, "in the last "+span)
+		} else {
+			parts = append(parts, "since "+since)
+		}
+	}
+	if until != "" {
+		if span := spanWords(until); span != "" {
+			parts = append(parts, "until "+span+" ago")
+		} else {
+			parts = append(parts, "until "+until)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// spanWords is a span back from now as written for a command — 90m, 12h, 7d, 2w — in words:
+// "90 minutes", "hour"; "" for what is not one.
+func spanWords(s string) string {
+	n := len(s)
+	if n < 2 {
+		return ""
+	}
+	unit := map[byte]string{'m': "minute", 'h': "hour", 'd': "day", 'w': "week"}[s[n-1]]
+	amount, err := strconv.ParseFloat(s[:n-1], 64)
+	if unit == "" || err != nil || amount < 0 {
+		return ""
+	}
+	if amount == 1 {
+		return unit
+	}
+	return strconv.FormatFloat(amount, 'f', -1, 64) + " " + unit + "s"
+}
+
+// Failures prints the tool calls that failed, newest first, and what failed most. within
+// names the stretch of time they were looked for in (see Within).
+func Failures(w io.Writer, rep index.FailureReport, within string, st Style) {
 	by := make([]string, 0, len(rep.ByTool))
 	for _, c := range rep.ByTool {
 		by = append(by, fmt.Sprintf("%s %d", c.Tool, c.Count))
 	}
-	switch {
-	case rep.Total == 0 && len(by) > 0:
-		// A tool is named exactly, and the same tool has another name in another CLI:
-		// say what there is rather than "nothing"
-		none := "No failed calls of that tool"
+	in := ""
+	if within != "" {
+		in = " " + within
+	}
+	if rep.Total == 0 {
+		// A tool is named exactly, and the same tool has another name in another CLI: say
+		// what there is rather than "nothing" — and what the window alone left out
+		none := "No failed tool calls"
 		switch {
+		case len(by) == 0:
 		case rep.Tool != "" && strings.TrimSpace(rep.Query) != "":
-			none += " hold those words"
-		case rep.Tool == "":
+			none = "No failed calls of that tool hold those words"
+		case rep.Tool != "":
+			none = "No failed calls of that tool"
+		default:
 			none = "No failed calls hold those words"
 		}
-		fmt.Fprintln(w, none+". In this window: "+strings.Join(by, " · "))
-		return
-	case rep.Total == 0:
-		fmt.Fprintln(w, "No failed tool calls.")
+		line := none + in
+		if rep.Outside > 0 {
+			outside, all := "before then", st.opt("since")+" all"
+			if strings.Contains(within, "until") {
+				outside, all = "outside it", all+" and no "+st.opt("until")
+			}
+			line += fmt.Sprintf("; %d from %s: %s", rep.Outside, outside, all)
+		}
+		fmt.Fprintln(w, line+".")
+		if len(by) > 0 {
+			fmt.Fprintln(w, "Failed"+in+": "+strings.Join(by, " · "))
+		}
 		return
 	}
-	fmt.Fprintln(w, st.dim(plural(rep.Total, "failure")+" · in this window: "+strings.Join(by, " · ")))
+	of := "of all time"
+	if within != "" {
+		of = within
+	}
+	fmt.Fprintln(w, st.dim(plural(rep.Total, "failure")+" · "+of+": "+strings.Join(by, " · ")))
 	for _, f := range rep.Failures {
 		head := []string{f.At.Local().Format("01-02 15:04"), f.Session + "#" + strconv.Itoa(f.Turn)}
 		how := f.Status

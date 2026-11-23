@@ -232,8 +232,14 @@ func TestRoutes(t *testing.T) {
 		t.Errorf("failures holding a word = %+v", fails)
 	}
 	get(t, s, "/api/failures?q=postgres", &fails)
-	if fails.Total != 0 || len(fails.ByTool) != 1 {
+	if fails.Total != 0 || len(fails.ByTool) != 1 || fails.Outside != 0 {
 		t.Errorf("failures holding a word none holds = %+v", fails)
+	}
+	// The window alone hid one: how many there are outside it
+	fails = index.FailureReport{}
+	get(t, s, "/api/failures?q=econnrefused&since=10m", &fails)
+	if fails.Total != 0 || fails.Outside != 1 {
+		t.Errorf("failures before the window = %+v", fails)
 	}
 
 	for _, path := range []string{"/api/usage", "/api/usage?by=day", "/api/failures", "/api/digest", "/api/files?path=schema", "/api/projects", "/api/pack?since=7d", "/api/health"} {

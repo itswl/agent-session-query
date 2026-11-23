@@ -216,6 +216,38 @@ func TestRecordedTotalsWithAReadTakenUp(t *testing.T) {
 	}
 }
 
+// A mark is taken up only by a read like the one that left it, and only while the session's
+// row is as that read wrote it. Another asq that wrote the session since, with its stamp or
+// its reading, or a mark left with another reading, other rows or another version of what a
+// mark holds, has the transcript read whole.
+func TestAMarkIsTakenUpOnlyAsItWasLeft(t *testing.T) {
+	for _, c := range []struct {
+		name, since string // since: what happened to the row after the read that left the mark
+		taken       bool
+	}{
+		{"as it was left", ``, true},
+		{"the row written since by another asq", `UPDATE sessions SET stamp = 'another'`, false},
+		{"the row read since with another reading", `UPDATE sessions SET reads = reads + 1`, false},
+		{"a mark left by another reading", `UPDATE sessions SET mark = json_set(mark, '$.reads', 2)`, false},
+		{"a mark of other rows", `UPDATE sessions SET mark = json_set(mark, '$.rows', 2)`, false},
+		{"a mark of another version", `UPDATE sessions SET mark = json_set(mark, '$.v', 2)`, false},
+	} {
+		ix := openTemp(t)
+		syncOf(t, ix, growing{turns: 4, marked: true})
+		if c.since != "" {
+			if _, err := ix.rw.Exec(c.since); err != nil {
+				t.Fatal(err)
+			}
+		}
+		g := growing{turns: 5, marked: true}
+		refs, _ := g.Scan(context.Background())
+		rd := ix.read(context.Background(), growingStore(g)[0], refs[0], sidOf(t, ix))
+		if taken := rd.from > 0; taken != c.taken || len(rd.turns) == 0 {
+			t.Errorf("%s: taken up at turn %d, %d turns read; want taken up %v", c.name, rd.from, len(rd.turns), c.taken)
+		}
+	}
+}
+
 // Rows made before turns were named — by an older asq — are named at the next read, and
 // left as they are from then on.
 func TestRowsMadeBeforeSrcAreNamed(t *testing.T) {

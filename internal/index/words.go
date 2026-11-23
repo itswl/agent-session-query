@@ -351,10 +351,14 @@ func (t Term) expr() string {
 
 // prefix reports whether the last of a term's words, toks, matches the words it begins: in
 // a bare term it does — unless it is a single character of a spaceless script, which is
-// already as short as a word gets.
+// already as short as a word gets, or the term goes on past it: what is typed after a word
+// says where it ends, and c++ is the word c, not every word that begins with c.
 func (t Term) prefix(toks []string) bool {
 	last := toks[len(toks)-1]
-	return !t.Exact && !(utf8.RuneCountInString(last) == 1 && spaced([]rune(last)[0]))
+	if t.Exact || utf8.RuneCountInString(last) == 1 && spaced([]rune(last)[0]) {
+		return false
+	}
+	return wordRune(lastRune(t.Text))
 }
 
 // wordRune reports whether a rune is part of a word as the words table splits text, beside

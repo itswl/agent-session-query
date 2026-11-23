@@ -43,6 +43,10 @@ func TestMatchExpression(t *testing.T) {
 		`say "hi"`:          `("say"* OR "sai" OR "ǂsai") AND "hi"`,
 		"go1 v2 ab":         `"go1"* AND "v2"* AND "ab"*`, // digits, and words too short to stem, as they were
 		"café":              `"café"*`,
+		"c++":               `"c"`,           // what is typed after a word says it ends there
+		"f# -c++":           `("f") NOT "c"`, // … excluded as well
+		"node.js":           `"node js"*`,    // … and what ends in a word still begins others
+		"retry.":            `("retry" OR "retri" OR "ǂretri")`,
 		"!!!":               ``,
 	} {
 		if got := ParseQuery(in).match(); got != want {

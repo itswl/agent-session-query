@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -740,5 +741,52 @@ func TestADurationNoCallCouldTakeIsNone(t *testing.T) {
 	}
 	if !calls[0].EndAt.IsZero() && calls[0].EndAt.Before(calls[0].At) {
 		t.Errorf("a call ends at %v, before it began at %v", calls[0].EndAt, calls[0].At)
+	}
+}
+
+// Where the latest turn stands. 2.x writes a row as each turn ends, and a turn without it
+// is in flight; 1.x writes none, and the last response says it — one still being written
+// has neither a finish nor a time it completed.
+func TestWhereTheLatestTurnStands(t *testing.T) {
+	ms := func(n int64) time.Time { return time.UnixMilli(n).UTC() }
+	ask := `INSERT INTO session_message VALUES ('f1', 'ses_f', 'user', 1, 1790000001000, 1790000001000, '{"text":"run the tests"}')`
+	running := `INSERT INTO session_message VALUES ('f2', 'ses_f', 'assistant', 2, 1790000002000, 1790000002000,
+		'{"model":{"id":"m","providerID":"p"},"time":{"created":1790000002000},
+		  "content":[{"type":"tool","id":"call_1","name":"shell","time":{"created":1790000003000},"state":{"status":"running","input":{"command":"go test ./..."}}}]}')`
+	answered := `INSERT INTO session_message VALUES ('f2', 'ses_f', 'assistant', 2, 1790000002000, 1790000009000,
+		'{"finish":"stop","model":{"id":"m","providerID":"p"},"time":{"created":1790000002000,"completed":1790000009000},"content":[{"type":"text","text":"All pass."}]}')`
+	idle := `INSERT INTO session_message VALUES ('f3', 'ses_f', 'idle', 3, 1790000009500, 1790000009500, '{"outcome":"succeeded"}')`
+	session := `INSERT INTO session_v2 VALUES ('ses_f', NULL, 'f', '/w/f', 'Tests', '2.3.1', 'build', NULL, 1790000000000, 1790000009500, NULL)`
+	for _, c := range []struct {
+		name string
+		rows []string
+		id   string
+		want model.Live
+	}{
+		{"2.x, a command running", []string{schemaV2, session, ask, running}, "ses_f",
+			model.Live{State: model.LiveWaiting, Since: ms(1790000002000), Tool: "shell", Command: "go test ./...", Seq: 1}},
+		{"2.x, answered and not yet marked over", []string{schemaV2, session, ask, answered, idle,
+			`INSERT INTO session_message VALUES ('f4', 'ses_f', 'user', 4, 1790000010000, 1790000010000, '{"text":"and lint"}')`,
+			`INSERT INTO session_message VALUES ('f5', 'ses_f', 'assistant', 5, 1790000011000, 1790000012000,
+				'{"finish":"stop","model":{"id":"m","providerID":"p"},"time":{"created":1790000011000,"completed":1790000012000},"content":[{"type":"text","text":"Clean."}]}')`}, "ses_f",
+			model.Live{State: model.LiveWorking, Since: ms(1790000010000)}},
+		{"2.x, marked over", []string{schemaV2, session, ask, answered, idle}, "ses_f",
+			model.Live{State: model.LiveIdle, Since: ms(1790000009500)}},
+		{"2.x, the turn failed", append([]string{schemaV2}, rowsV2...), "ses_2", model.Live{State: model.LiveIdle, Since: ms(1790000017000)}},
+		{"1.x, answered, a call left running", append([]string{schemaV1}, rowsV1...), "ses_live",
+			model.Live{State: model.LiveIdle, Since: ms(1789697128725)}},
+		{"1.x, still being written", []string{schemaV1,
+			`INSERT INTO session VALUES ('ses_w', '/w/proj', 'w', 'w', NULL, 1789697128684, 1789697262019, NULL)`,
+			`INSERT INTO message VALUES ('w_u1', 'ses_w', 1789697128704, 1789697128704, '{"role":"user","time":{"created":1789697128704}}')`,
+			`INSERT INTO message VALUES ('w_a1', 'ses_w', 1789697128725, 1789697128725, '{"role":"assistant","modelID":"m","providerID":"p","time":{"created":1789697128725}}')`,
+			`INSERT INTO part VALUES ('w1', 'w_u1', 'ses_w', 1, 1, '{"type":"text","text":"explain the proxy"}')`,
+			`INSERT INTO part VALUES ('w2', 'w_a1', 'ses_w', 2, 2, '{"type":"text","text":"proxy_pass goes"}')`}, "ses_w",
+			model.Live{State: model.LiveWorking, Since: ms(1789697128704)}},
+	} {
+		src, _ := build(t, append([]string{}, c.rows...)...)
+		s := sourcetest.ByID(t, sourcetest.All(t, src), c.id)
+		if got := s.Session.Live; got == nil || *got != c.want {
+			t.Errorf("%s: %+v, want %+v", c.name, got, c.want)
+		}
 	}
 }

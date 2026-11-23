@@ -58,7 +58,7 @@ var Spec = sources.Spec{
 	Open:    func(location string) sources.Source { return &Source{root: location} },
 	Movable: true,
 	Resume:  "codex resume",
-	Reads:   2,
+	Reads:   3,
 	Store:   "~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl",
 }
 
@@ -376,6 +376,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		pending   []transcript.Message  // a response's rows, held until its usage arrives
 		responses int
 		anyRecord bool
+		marked    bool // the rollout writes where its turns start, and so where they end
 		// For a rollout too old to have records: the snapshots already read, and the
 		// highest each cumulative counter has stood
 		snapshots = map[[2]usage]bool{}
@@ -542,9 +543,16 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			case "item_started", "item_completed":
 				// The event stream's copy of each item — a message, a thought, a call and
 				// its result — which the response_item rows hold
-			case "task_started", "task_complete", "thread_settings_applied":
-				// A turn starting and ending, and the settings it runs with: turn_context
-				// opens a turn, and the rows in it say how it went
+			case "task_started":
+				// A turn starting: turn_context opens it, and a rollout that says so marks
+				// where each turn ends as well
+				marked = true
+			case "task_complete":
+				// A turn over: the agent answered, and the next move is the person's
+				flush(nil)
+				w.Add(transcript.Message{Role: transcript.System, At: at, Inherited: inherited, Ends: true})
+			case "thread_settings_applied":
+				// The settings a turn runs with
 			case "context_compacted":
 				// The event for a compaction, which the compacted row records
 			case "entered_review_mode", "exited_review_mode":
@@ -716,6 +724,13 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 
 	w.S.ID = sessionIDOf(ownID, sessionID, salvaged, hasMeta, forkedOf != "" || parentID != "", stem(path))
 	w.S.Model = turnModel
+	// A rollout that writes task_started writes task_complete as each turn ends, and
+	// turn_aborted as one is stopped: a turn without either is in flight. An older one
+	// writes neither, and its last rows say where the turn stands
+	w.Tells = transcript.TellsByRows
+	if marked {
+		w.Tells = transcript.TellsByMarks
+	}
 	// The name the thread was given, by the thread the file is named for: the key Scan
 	// stamps it under. A thread with none is titled by its first ask
 	w.S.Title = s.threadNames()[threadOf(path)]

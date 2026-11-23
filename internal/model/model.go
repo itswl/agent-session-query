@@ -43,6 +43,10 @@ type Session struct {
 	Archived bool `json:"archived,omitempty"` // put away by its CLI
 	Running  bool `json:"running,omitempty"`  // the CLI itself says a turn is in flight
 
+	// Live is where the latest turn stands, as the last rows of the transcript say: for
+	// the CLIs that record enough to tell, and nil for the others.
+	Live *Live `json:"live,omitempty"`
+
 	Parent *Parent `json:"parent,omitempty"`
 
 	// Recorded is what the CLI itself keeps at session level. Where it keeps no counters
@@ -51,6 +55,38 @@ type Session struct {
 	// model call that leaves no message — and the difference is spending too.
 	Recorded *Recorded `json:"recorded,omitempty"`
 }
+
+// Live is where a session's latest turn stands, as its transcript's last rows say. It is
+// what the transcript says, not a look at a process: a CLI closed in the middle of a turn
+// leaves it in flight for good, and a reader weighs it by how long ago the transcript was
+// last written.
+type Live struct {
+	// State is LiveWorking, LiveWaiting or LiveIdle.
+	State string `json:"state"`
+	// Since is when the session came to stand so: the turn's ask, or the moment it went
+	// back to work; the call waited on; the end of the turn.
+	Since time.Time `json:"since,omitzero"`
+
+	// What a waiting session waits on: the latest call with no result yet, the command it
+	// runs or else the first file it names, and its step.
+	Tool    string `json:"tool,omitempty"`
+	Command string `json:"command,omitempty"`
+	File    string `json:"file,omitempty"`
+	Seq     int    `json:"seq,omitempty"`
+}
+
+// Where a turn stands.
+const (
+	// LiveWorking: the agent is at its turn — the model answering, or a result on its way
+	// back to it.
+	LiveWorking = "working"
+	// LiveWaiting: a tool call it made has no result yet — a command still running, or a
+	// prompt asking the person's permission to run it, which transcripts do not tell apart.
+	LiveWaiting = "waiting"
+	// LiveIdle: its turn is over — it answered, gave up or was stopped — and the next move
+	// is the person's.
+	LiveIdle = "idle"
+)
 
 // Parent ties a subagent's transcript to the session it ran in.
 type Parent struct {

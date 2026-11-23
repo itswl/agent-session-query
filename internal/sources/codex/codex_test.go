@@ -916,3 +916,50 @@ func TestThreadNames(t *testing.T) {
 		t.Errorf("names = %v", names)
 	}
 }
+
+// Where the latest turn stands. A rollout that writes task_started marks each turn's end
+// with task_complete, and a turn without it is in flight whatever its last words were; an
+// older one writes neither, and its last rows say it.
+func TestWhereTheLatestTurnStands(t *testing.T) {
+	const (
+		meta    = `{"timestamp":"2026-11-05T10:00:00Z","type":"session_meta","payload":{"id":"codex-live","cwd":"/p","cli_version":"0.167.0"}}`
+		context = `{"timestamp":"2026-11-05T10:00:01Z","type":"turn_context","payload":{"turn_id":"t1","model":"gpt-6.1","cwd":"/p"}}`
+		started = `{"timestamp":"2026-11-05T10:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`
+		ask     = `{"timestamp":"2026-11-05T10:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"run the build"}]}}`
+		call    = `{"timestamp":"2026-11-05T10:00:04Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"make\"}","call_id":"call_1"}}`
+		paid    = `{"timestamp":"2026-11-05T10:00:04Z","type":"token_usage_record","payload":{"response_id":"resp_1","usage":{"input_tokens":50,"output_tokens":5}}}`
+		output  = `{"timestamp":"2026-11-05T10:00:40Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"built"}}`
+		answer  = `{"timestamp":"2026-11-05T10:00:45Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Built."}]}}`
+		paid2   = `{"timestamp":"2026-11-05T10:00:45Z","type":"token_usage_record","payload":{"response_id":"resp_2","usage":{"input_tokens":60,"output_tokens":2}}}`
+		done    = `{"timestamp":"2026-11-05T10:00:46Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":"Built."}}`
+		aborted = `{"timestamp":"2026-11-05T10:00:20Z","type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted"}}`
+	)
+	at := func(clock string) time.Time {
+		t, _ := time.Parse(time.RFC3339, "2026-11-05T"+clock+"Z")
+		return t
+	}
+	for _, c := range []struct {
+		name  string
+		lines []any
+		want  model.Live
+	}{
+		{"running the build", []any{meta, context, started, ask, call, paid},
+			model.Live{State: model.LiveWaiting, Since: at("10:00:04"), Tool: "exec_command", Command: "make", Seq: 1}},
+		{"answered, not yet marked over", []any{meta, context, started, ask, call, paid, output, answer, paid2},
+			model.Live{State: model.LiveWorking, Since: at("10:00:02")}},
+		{"marked over", []any{meta, context, started, ask, call, paid, output, answer, paid2, done},
+			model.Live{State: model.LiveIdle, Since: at("10:00:46")}},
+		{"stopped", []any{meta, context, started, ask, call, paid, aborted},
+			model.Live{State: model.LiveIdle, Since: at("10:00:20")}},
+		{"an older rollout, answered", []any{meta, context, ask, call, paid, output, answer, paid2},
+			model.Live{State: model.LiveIdle, Since: at("10:00:45")}},
+	} {
+		root := t.TempDir()
+		sourcetest.Write(t, filepath.Join(root, "2026", "11", "05", "rollout-2026-11-05T10-00-00-live.jsonl"), c.lines...)
+		s := sourcetest.One(t, Spec.Open(root))
+		sourcetest.NothingUnread(t, s)
+		if got := s.Session.Live; got == nil || *got != c.want {
+			t.Errorf("%s: %+v, want %+v", c.name, got, c.want)
+		}
+	}
+}

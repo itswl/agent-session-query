@@ -98,6 +98,12 @@ One package and one line.
    tokens, output with reasoning. Mark what was not typed by a person (`Injected`), what a fork
    copied (`Inherited`), what was typed mid-turn (`Queued`). Leave everything else to the Writer.
 
+   Where the CLI records [where a turn stands](sources.md#where-a-turn-stands), say how in
+   `w.Tells` — by its last rows, or by a row it writes as every turn ends — and mark that row
+   (`Ends`) and a response it is still writing (`Unfinished`); the Writer works out the rest.
+   Leave it unset for a CLI whose rows do not show it: a state that is wrong is worse than
+   none.
+
    Read leniently — a transcript is being written while you read it, so its last line may be
    half there, and CLIs change formats without notice. `kit` has what that takes: `kit.Lines`
    (any line length, zstd, a truncated tail), `kit.Str` / `kit.Num` / `kit.Time` (a value of the

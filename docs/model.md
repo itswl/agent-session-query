@@ -26,6 +26,7 @@ Session ─┬─ Turn 0   what came before the first ask: injected context, a f
 | `title`, `cwd`, `branch`, `model`, `version` | as the CLI recorded them; `branch` is the one the session *opened* on |
 | `startedAt`, `updatedAt` | first and last row |
 | `archived` | put away by its CLI |
+| `live` | where its latest turn stands, as the transcript's last rows say: `working`, `waiting` on a call, or `idle` — [below](#where-a-turn-stands) |
 | `parent` | set on a subagent's transcript: the session it ran in, the tool call that started it, what kind of agent it is |
 | `stats` | turns, items, tool calls, failures and how many of them passed later, model calls, usage, and the cost its CLI worked out, where it did |
 
@@ -69,6 +70,23 @@ An item with `inherited: true` is a fork's copy of its parent's row. It is shown
 counted nowhere: its tokens were the parent's. That holds for as long as the row it copies is
 there to be counted. With the parent deleted, the copy is the only record left of what was
 spent, and it is read as the fork's own.
+
+## Where a turn stands
+
+A session's `live` says what its transcript's last rows say of the latest turn, for the CLIs
+that record enough to tell ([which, and how](sources.md#where-a-turn-stands)):
+
+| `state` | |
+|---|---|
+| `working` | the agent is at its turn: the model answering, or a result on its way back to it |
+| `waiting` | a tool call it made has no result yet: a command still running, or a prompt asking the person's permission to run it. Transcripts do not tell the two apart; `tool`, `command` (or `file`) and `seq` name the call |
+| `idle` | its turn is over — it answered, gave up, or was stopped — and the next move is the person's |
+
+`since` is when it came to be so: the ask, or the moment the agent went back to work; the
+call; the end of the turn. It is what the transcript says, not a look at a process. A CLI
+closed in the middle of a turn leaves it in flight for good, which is why what reads the
+state weighs it by how long ago the transcript was last written (see the
+[HTTP API](api.md#sessions)).
 
 ## Usage: one shape
 

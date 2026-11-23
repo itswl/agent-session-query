@@ -206,6 +206,31 @@ Sessions a CLI has archived — Codex's and Grok's moved into `archived_sessions
 marked archived, the ones Hermes hides — are read like any other, marked `archived`, and left
 out unless `--archived` asks for them, as each CLI leaves them out of its own list.
 
+## Where a turn stands
+
+Whether an agent is at work, waiting on a call, or done and waiting for the person
+([the record](model.md#where-a-turn-stands)) is read from what each CLI writes as it goes:
+
+- **Claude Code** writes its rows as it goes, the model's a content block at a time. A call
+  with no result is waited on; the model's words with nothing after them are its answer,
+  unless the response says calls follow; the row saying how long a turn took marks it over,
+  and so does a call the person declined or stopped. While a permission prompt is open
+  Claude Code writes nothing, so a command waiting for permission and one still running both
+  read as waiting.
+- **Codex** writes `task_complete` as each turn ends and `turn_aborted` as one is stopped,
+  and a turn without either is in flight. A rollout old enough to write neither is read by
+  its last rows, as Claude Code's are.
+- **Gemini CLI** marks no turn's end, and writes a model row once its response is whole and
+  a call once it has finished. A call running, or waiting for permission, therefore reads as
+  working; and words the model said before calls of the same response read as its answer
+  until the calls are written.
+- **OpenCode** 2.x writes a row as each turn ends, and a turn without it is in flight. 1.x
+  writes none: the last response says where the turn stands, by how it finished and whether
+  it has.
+
+The other CLIs' turns are not read this way: their sessions are marked *live* by when they
+were last written alone.
+
 ## Adding a CLI
 
 One package and one line. See [Development](development.md#adding-a-cli).

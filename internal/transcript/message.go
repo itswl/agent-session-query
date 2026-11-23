@@ -45,6 +45,14 @@ type Message struct {
 	Injected  bool // assembled by the CLI, not typed by a person
 	Inherited bool // a fork's copy of its parent's row: the parent's, not this session's
 
+	// What an adapter knows of where the agent's turn stands, for a CLI that records it
+	// (see Writer.Tells). Ends says the CLI marked the turn over here: the agent answered,
+	// gave up or was stopped, and the next move is the person's. A message that holds
+	// nothing but the mark adds nothing to the turn. Unfinished, on an assistant message,
+	// says its response is not over: the CLI writes it as it streams, and more is to come.
+	Ends       bool
+	Unfinished bool
+
 	Blocks []Block
 }
 

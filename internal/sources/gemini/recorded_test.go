@@ -221,3 +221,38 @@ func TestRecordedKilledRun(t *testing.T) {
 		t.Errorf("turn = %+v", turn)
 	}
 }
+
+// Where the latest turn of each recorded session stands. Gemini CLI marks no turn's end:
+// the last row says it. A command it is running is not written until it has finished,
+// so the run killed while its command ran was, by its file, at work.
+func TestRecordedWhereTheLatestTurnStands(t *testing.T) {
+	at := func(clock string) time.Time {
+		t, _ := time.Parse(time.RFC3339Nano, "2026-11-17T"+clock+"Z")
+		return t
+	}
+	for id, want := range map[string]model.Live{
+		"66549caa-e84e-49c9-9a3c-4e8f5ad6f0ac": {State: model.LiveIdle, Since: at("04:53:48.404")},    // two commands, then the answer
+		"3b03f458-4980-4d8b-abc3-8f57d3e4ce1a": {State: model.LiveWorking, Since: at("04:59:11.399")}, // killed while its command ran
+		"517cee15-68c6-49e7-b1d4-8a98eb65c081": {State: model.LiveIdle, Since: at("05:05:42.05")},     // a command cancelled with Esc
+	} {
+		s := recordedSession(t, id)
+		if got := s.Session.Live; got == nil || *got != want {
+			t.Errorf("%s: %+v, want %+v", id, got, want)
+		}
+	}
+}
+
+// In the shape that writes a call while it runs, a call with no outcome yet is waited on.
+func TestACallRunningIsWaitedOn(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "projC", "chats", "session-2026-10-02T10-00-00.jsonl"),
+		`{"sessionId":"g-3","startTime":"2026-10-02T10:00:00Z","lastUpdated":"2026-10-02T10:05:00Z"}`,
+		`{"type":"user","id":"u1","timestamp":"2026-10-02T10:00:01Z","content":[{"text":"build it"}]}`,
+		`{"type":"gemini","id":"g1","timestamp":"2026-10-02T10:00:02Z","content":"","toolCalls":[{"id":"run-1","name":"run_shell_command","args":{"command":"make"},"status":"awaiting_approval"}]}`,
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	want := model.Live{State: model.LiveWaiting, Since: time.Date(2026, 10, 2, 10, 0, 2, 0, time.UTC), Tool: "run_shell_command", Command: "make", Seq: 1}
+	if got := s.Session.Live; got == nil || *got != want {
+		t.Errorf("%+v, want %+v", got, want)
+	}
+}

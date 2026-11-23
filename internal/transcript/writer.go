@@ -32,6 +32,9 @@ func (f SinkFunc) Turn(t *model.Turn) error { return f(t) }
 // so a transcript of any length is read in the memory of its largest turn.
 type Writer struct {
 	S model.Session
+	// Tells is how far the CLI records where a turn stands. An adapter whose CLI records
+	// it says so, and Finish then sets S.Live for the latest turn.
+	Tells Tells
 
 	sink  Sink
 	stats model.Stats
@@ -48,6 +51,8 @@ type Writer struct {
 
 	unread map[string]int    // what the adapter passed over without knowing what it was
 	kinds  map[string]string // a kind as the adapter named it → as it is counted
+
+	live liveTail // where the latest turn stands, by what has been added
 }
 
 // unreadKinds bounds how many different kinds of unread record a transcript is told
@@ -111,6 +116,13 @@ func (w *Writer) Add(m Message) {
 	if w.err != nil {
 		return
 	}
+	if m.Ends && len(m.Blocks) == 0 {
+		// The mark alone: it says where the turn stands, and is no row of it
+		if !m.Inherited && w.cur != nil && w.cur.t.Index > 0 {
+			w.live.end(m.At)
+		}
+		return
+	}
 	if !m.At.IsZero() {
 		if w.firstAt.IsZero() {
 			w.firstAt = m.At
@@ -124,6 +136,9 @@ func (w *Writer) Add(m Message) {
 		w.addAssistant(m)
 	default:
 		w.addOther(m)
+	}
+	if m.Ends && !m.Inherited {
+		w.live.end(m.At)
 	}
 }
 
@@ -156,6 +171,7 @@ func (w *Writer) addUser(m Message) {
 		w.cur = newTurn(w.turns)
 		w.cur.t.StartedAt = m.At
 		w.cur.t.Ask = ask
+		w.live = liveTail{since: m.At}
 		if w.firstAsk == "" {
 			w.firstAsk = ask
 		}
@@ -164,6 +180,9 @@ func (w *Writer) addUser(m Message) {
 	cur.lastWasAsk = starts
 	if !m.At.IsZero() {
 		cur.t.LastAt = m.At
+	}
+	if m.Queued && !m.Inherited {
+		w.live.work(m.At, "") // the agent takes it up as it goes on
 	}
 
 	work := starts
@@ -214,6 +233,11 @@ func (w *Writer) addAssistant(m Message) {
 	if !synthetic && !m.Inherited {
 		call = w.callOf(cur, m)
 	}
+	live := !m.Inherited && len(m.Blocks) > 0
+	in := ""
+	if live && !synthetic {
+		in = w.live.response(m.Response)
+	}
 	for _, b := range m.Blocks {
 		switch b.Type {
 		case Text:
@@ -221,11 +245,23 @@ func (w *Writer) addAssistant(m Message) {
 				continue
 			}
 			w.push(cur, model.Item{Kind: model.Reply, At: m.At, ID: m.ID, Text: b.Text, Call: call, Inherited: m.Inherited})
+			switch {
+			case !live:
+			case synthetic:
+				// The CLI's words in the model's place — an error it gave up on, a resumed
+				// session's "No response requested." — after which nothing is asked of it
+				w.live.end(m.At)
+			default:
+				w.live.said(m.At, in)
+			}
 		case Thinking:
 			if b.Text == "" {
 				continue
 			}
 			w.push(cur, model.Item{Kind: model.Thinking, At: m.At, ID: m.ID, Text: b.Text, Call: call, Inherited: m.Inherited})
+			if live {
+				w.live.work(m.At, in)
+			}
 		case Call:
 			w.pushCall(cur, m, b, call)
 		case Result:
@@ -236,6 +272,9 @@ func (w *Writer) addAssistant(m Message) {
 	}
 	if m.Inherited {
 		return
+	}
+	if w.live.answered && (m.Unfinished || callsFollow(m.Stop)) {
+		w.live.answered = false // what it said so far is not its answer
 	}
 	if text := strings.TrimSpace(joinText(m.Blocks, Text)); text != "" && !synthetic {
 		cur.t.Answer = text
@@ -363,6 +402,9 @@ func (w *Writer) pushCall(cur *turn, m Message, b Block, call int) {
 	if m.Inherited {
 		return
 	}
+	if m.Role != System { // a command the person ran beside the conversation is not the agent's
+		w.live.call(idx, m.At, w.liveIn(m))
+	}
 	cur.t.Tools++
 	cur.t.ToolKinds[tool.Kind]++
 	for _, f := range tool.Files {
@@ -433,6 +475,9 @@ func (w *Writer) settle(cur *turn, m Message, b Block) {
 	if m.Inherited {
 		return
 	}
+	if m.Role != System {
+		w.live.result(idx, tool.Status, m.At, w.liveIn(m))
+	}
 	if tool.Failed() {
 		cur.t.Failures++
 	}
@@ -446,6 +491,15 @@ func (w *Writer) settle(cur *turn, m Message, b Block) {
 	}
 }
 
+// liveIn names the response a call or a result is part of, for where the turn stands:
+// the latest response, for one in an assistant message; none for any other.
+func (w *Writer) liveIn(m Message) string {
+	if m.Role == Assistant {
+		return w.live.resp
+	}
+	return ""
+}
+
 func (w *Writer) pushEvent(cur *turn, m Message, b Block) {
 	kind := b.Name
 	if kind == "" {
@@ -454,6 +508,7 @@ func (w *Writer) pushEvent(cur *turn, m Message, b Block) {
 	w.push(cur, model.Item{Kind: model.Event, At: m.At, ID: m.ID, Event: kind, Text: b.Text, Inherited: m.Inherited})
 	if (kind == model.EventInterrupted || b.Stops) && !m.Inherited {
 		cur.t.Interrupted = true
+		w.live.end(m.At)
 	}
 }
 
@@ -563,6 +618,9 @@ func (w *Writer) flush() {
 // it where the adapter said nothing: when it started and was last written, the model that
 // answered last, and — for the CLIs that give a session no title — the first thing asked.
 func (w *Writer) Finish() (model.Stats, error) {
+	if w.Tells != TellsNothing && w.S.Live == nil && w.cur != nil && w.cur.t.Index > 0 {
+		w.S.Live = w.live.state(&w.cur.t, w.Tells)
+	}
 	w.flush()
 	s := &w.S
 	if s.StartedAt.IsZero() {

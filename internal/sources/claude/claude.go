@@ -48,7 +48,7 @@ var Spec = sources.Spec{
 	Movable:    true,
 	Resume:     "claude --resume",
 	ResumeHere: true,
-	Reads:      3,
+	Reads:      4,
 	Store:      "~/.claude/projects/<project>/<session>.jsonl",
 	// Claude Code sweeps every project after a session starts; from v2.1.248 it keeps the
 	// sessions started or last continued in Claude Desktop or Cowork, unless
@@ -404,6 +404,12 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 
 		switch r.Type {
 		case "system":
+			if r.Subtype == "turn_duration" {
+				// How long a turn took, written as it ends: the mark that it is over. The
+				// turn's own rows say when it ran
+				w.Add(transcript.Message{ID: r.UUID, Role: transcript.System, At: at, Inherited: inherited, Ends: true})
+				return true
+			}
 			if event, ok := systemEvent(&r, w.Unread); ok {
 				release(false)
 				w.Add(transcript.Message{ID: r.UUID, Role: transcript.System, At: at, Inherited: inherited, Blocks: []transcript.Block{event}})
@@ -489,6 +495,9 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	}
 
 	w.S.Title = kit.First(customTitle, aiTitle)
+	// Claude Code writes a turn's rows as it goes, the model's a content block at a time,
+	// each with why the response stopped once it has; and turn_duration as many turns end
+	w.Tells = transcript.TellsByRows
 	if !sub {
 		w.S.ID = kit.First(sessionID, stem)
 		return nil
@@ -656,9 +665,8 @@ func systemEvent(r *row, unread func(kind string)) (transcript.Block, bool) {
 			return transcript.Block{}, false
 		}
 		return transcript.EventOf(model.EventHookError, strings.Join(errs, "\n")), true
-	case "turn_duration", "informational", "local_command":
-		// How long a turn took, a notice, a local command's output: the turn's own rows
-		// say when it ran and what it did
+	case "informational", "local_command":
+		// A notice, a local command's output: the turn's own rows say what it did
 	case "api_error":
 		// A request that failed and is about to be retried; an error that ends a turn is
 		// written in the assistant's place, and read there

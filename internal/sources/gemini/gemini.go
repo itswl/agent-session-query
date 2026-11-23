@@ -55,7 +55,7 @@ var Spec = sources.Spec{
 	// A file with no metadata line goes by its own name (session-<time>-<id>), which is
 	// not an id --resume takes
 	Resumable: func(id string) bool { return !strings.HasPrefix(id, "session-") },
-	Reads:     3,
+	Reads:     4,
 	Store:     "~/.gemini/tmp/<project>/chats/session-*.jsonl",
 	// Gemini CLI sweeps the chats of the project it starts in, by the time each was last
 	// updated (packages/cli/src/utils/sessionCleanup.ts): a project it is not started in
@@ -514,6 +514,11 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	if w.S.Parent == nil {
 		w.S.Title = summary
 	}
+	// Gemini CLI marks no turn's end, and records a model row once its response is whole
+	// and a call once it has finished: the last row says where the turn stands, except
+	// that words with calls of the same response still running read as the answer until
+	// the calls are written
+	w.Tells = transcript.TellsByRows
 	// The metadata's lastUpdated is its value when the file was opened; the patch rows
 	// move it on afterwards (measured: 29 of 33 sessions had a stale first-line time, off
 	// by as much as 45 minutes). The time on the last row that carries one is the

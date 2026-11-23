@@ -55,7 +55,7 @@ var Spec = sources.Spec{
 	Open:    func(location string) sources.Source { return &Source{at: location} },
 	Movable: true,
 	Resume:  "opencode --session",
-	Reads:   1,
+	Reads:   2,
 	Store:   "~/.local/share/opencode/opencode.db",
 }
 
@@ -222,7 +222,13 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	}
 	sess.ID, sess.Path = id, path
 	w.S = sess
+	// 2.x writes a row as each turn ends, which is where it ends; 1.x writes none, and the
+	// last response says where the turn stands
+	w.Tells = transcript.TellsByRows
 	for _, m := range msgs {
+		if m.Ends {
+			w.Tells = transcript.TellsByMarks
+		}
 		w.Add(m)
 	}
 	for _, kind := range unread {
@@ -380,6 +386,9 @@ func assistant(m *transcript.Message, data map[string]any, parts []any) {
 	m.CostUSD = jsonmap.Cost(data["cost"])
 	m.Stop = kit.Str(data["finish"])
 	tm := kit.Map(data["time"])
+	// OpenCode writes a response into its row as it streams, and says how it finished,
+	// and when, once it has
+	m.Unfinished = m.Stop == "" && kit.Int(tm["completed"]) <= 0
 	created := kit.Int(tm["created"])
 	if created <= 0 {
 		return
@@ -667,17 +676,19 @@ FROM session_message m JOIN session_v2 s ON s.id = m.session_id WHERE m.session_
 			// The session moved to another directory or worktree; the session row says where
 			// it is now
 		case "idle":
-			// How the turn ended, once it had
+			// How the turn ended, once it had: the mark that it is over
+			var blocks []transcript.Block
 			switch kit.Str(data["outcome"]) {
 			case "interrupted":
 				if !stopped {
-					event(model.EventInterrupted, "Interrupted")
+					blocks = append(blocks, transcript.EventOf(model.EventInterrupted, "Interrupted"))
 				}
 			case "failed":
-				event("error", kit.First(errorText(data["error"]), "The turn failed"))
+				blocks = append(blocks, transcript.EventOf("error", kit.First(errorText(data["error"]), "The turn failed")))
 			case "succeeded":
 				// A turn that ended as it should: its last reply says so
 			}
+			*msgs = append(*msgs, transcript.Message{ID: mid, Role: transcript.System, At: at, Inherited: inherited, Ends: true, Blocks: blocks})
 			stopped = false
 		default:
 			unread(unknown("row", kind))

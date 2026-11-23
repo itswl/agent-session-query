@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
@@ -621,4 +622,49 @@ func TestCostsHeldToWhatACostCanBe(t *testing.T) {
 			t.Errorf("%s: turns: %v", s.Session.ID, err)
 		}
 	}
+}
+
+// Where the latest turn stands, by the rows Claude Code writes as it goes: a call with no
+// result is waited on — a command running, or a permission prompt — and the model's words
+// with nothing after them are its answer, unless its response says calls follow; the row
+// that says how long a turn took marks it over.
+func TestWhereTheLatestTurnStands(t *testing.T) {
+	ask := userRow("u1", "2026-10-01T10:00:00Z", "run the migration")
+	call := assistantRow("a1", "2026-10-01T10:00:04Z", "msg_1", nil, M{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": M{"command": "make migrate"}})
+	done := userRow("u2", "2026-10-01T10:00:30Z", []M{{"type": "tool_result", "tool_use_id": "toolu_1", "content": "migrated"}})
+	answer := assistantRow("a2", "2026-10-01T10:00:35Z", "msg_2", nil, M{"type": "text", "text": "Migrated."})
+	before := assistantRow("a3", "2026-10-01T10:00:35Z", "msg_2", nil, M{"type": "text", "text": "Now the seed data."})
+	before["message"].(M)["stop_reason"] = "tool_use"
+	lasted := M{"type": "system", "subtype": "turn_duration", "uuid": "d1", "timestamp": "2026-10-01T10:00:36Z", "durationMs": 36000}
+	declined := userRow("u3", "2026-10-01T10:00:50Z", []M{{"type": "tool_result", "tool_use_id": "toolu_1", "is_error": true,
+		"content": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."}})
+
+	for _, c := range []struct {
+		name string
+		rows []any
+		want model.Live
+	}{
+		{"asked", []any{ask}, model.Live{State: model.LiveWorking, Since: on("10:00:00")}},
+		{"a command running, or a prompt for it", []any{ask, call},
+			model.Live{State: model.LiveWaiting, Since: on("10:00:04"), Tool: "Bash", Command: "make migrate", Seq: 1}},
+		{"its result back to the model", []any{ask, call, done}, model.Live{State: model.LiveWorking, Since: on("10:00:00")}},
+		{"answered", []any{ask, call, done, answer}, model.Live{State: model.LiveIdle, Since: on("10:00:35")}},
+		{"words before calls", []any{ask, call, done, before}, model.Live{State: model.LiveWorking, Since: on("10:00:00")}},
+		{"marked over", []any{ask, call, done, before, lasted}, model.Live{State: model.LiveIdle, Since: on("10:00:36")}},
+		{"declined at the prompt", []any{ask, call, declined}, model.Live{State: model.LiveIdle, Since: on("10:00:50")}},
+	} {
+		root := t.TempDir()
+		sourcetest.Write(t, filepath.Join(root, "-work-proj", "sess-1.jsonl"), c.rows...)
+		s := sourcetest.One(t, Spec.Open(root))
+		sourcetest.NothingUnread(t, s)
+		if got := s.Session.Live; got == nil || *got != c.want {
+			t.Errorf("%s: %+v, want %+v", c.name, got, c.want)
+		}
+	}
+}
+
+// on is a moment of the day the tests' rows are dated.
+func on(clock string) time.Time {
+	t, _ := time.Parse(time.RFC3339, "2026-10-01T"+clock+"Z")
+	return t
 }

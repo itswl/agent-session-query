@@ -344,19 +344,6 @@ func outcome(failed, passedLater int, interrupted bool, st Style) string {
 	return strings.Join(parts, st.dim(" · "))
 }
 
-// passedOf is what follows "N failed": how many of them passed later, if any did.
-func passedOf(failed, passed int) string {
-	switch {
-	case passed <= 0:
-		return ""
-	case passed >= failed && failed == 1:
-		return ", passed later"
-	case passed >= failed:
-		return ", all passed later"
-	}
-	return ", " + strconv.Itoa(passed) + " passed later"
-}
-
 // quoted lists words in quotation marks: “a”, “b” or “c”.
 func quoted(words []string, and string) string {
 	q := make([]string, len(words))
@@ -1160,11 +1147,7 @@ func digestSession(w io.Writer, e index.DigestSession, ref string, st Style) {
 	if e.Tools > 0 {
 		facts = append(facts, plural(e.Tools, "tool call"))
 	}
-	passed := 0
-	if e.PassedLater != nil {
-		passed = *e.PassedLater
-	}
-	fmt.Fprintf(w, "  %s  %s  %s\n", st.cyan(ref), st.dim(strings.Join(facts, " · ")), outcome(e.Failures, passed, e.Interrupted, st))
+	fmt.Fprintf(w, "  %s  %s  %s\n", st.cyan(ref), st.dim(strings.Join(facts, " · ")), outcome(e.Failures, e.PassedLater, e.Interrupted, st))
 	title := txt.OneLine(e.Title, 0)
 	if title == "" {
 		title = "(untitled)"

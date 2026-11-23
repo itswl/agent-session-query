@@ -538,10 +538,10 @@ type DigestSession struct {
 	Ref   string `json:"ref"`
 	Title string `json:"title,omitempty"`
 	// Turns are the person's, asked in the window; Tools and Failures its subagents' too
-	Turns       int  `json:"turns"`
-	Tools       int  `json:"tools"`
-	Failures    int  `json:"failures"`
-	PassedLater *int `json:"passedLater,omitempty"` // as Digest.PassedLater
+	Turns       int `json:"turns"`
+	Tools       int `json:"tools"`
+	Failures    int `json:"failures"`
+	PassedLater int `json:"passedLater"` // as Digest.PassedLater
 	// Interrupted and Answer are of its last turn in the window: whether the person
 	// stopped it, and the last thing the agent said
 	Interrupted bool      `json:"interrupted,omitempty"`
@@ -619,24 +619,28 @@ func (ix *Index) Digest(ctx context.Context, f Filter, w Window) (DigestReport, 
 		return rep, err
 	}
 
-	// Of the failures of those turns, the ones whose command passed later
+	// Of the failures of those turns, the ones whose command passed later: per project, and
+	// per session — a subagent's toward the one it ran in — for the sessions listed
+	passed := map[digestKey]int{}
 	when, whenArgs = w.where("t.started_at")
 	rows, err = ix.ro.QueryContext(ctx, `
-SELECT s.cwd, count(*) FROM turns t JOIN failures x ON x.sid = t.sid AND x.idx = t.idx JOIN sessions s ON s.sid = t.sid
-WHERE t.idx > 0 AND x.later_seq > 0 AND `+where+` AND `+when+` GROUP BY s.cwd`,
+SELECT s.cwd, `+rootOf+` AS root, count(*) FROM turns t JOIN failures x ON x.sid = t.sid AND x.idx = t.idx JOIN sessions s ON s.sid = t.sid
+WHERE t.idx > 0 AND x.later_seq > 0 AND `+where+` AND `+when+` GROUP BY s.cwd, root`,
 		append(append([]any{}, args...), whenArgs...)...)
 	if err != nil {
 		return rep, err
 	}
 	for rows.Next() {
 		var cwd string
+		var root int64
 		var n int
-		if err := rows.Scan(&cwd, &n); err != nil {
+		if err := rows.Scan(&cwd, &root, &n); err != nil {
 			rows.Close()
 			return rep, err
 		}
 		get(cwd).PassedLater += n
 		rep.Total.PassedLater += n
+		passed[digestKey{cwd, root}] = n
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -693,7 +697,7 @@ SELECT DISTINCT s.cwd, x.path FROM files x JOIN sessions s ON s.sid = x.sid WHER
 		return rep, err
 	}
 
-	if err := ix.digestList(ctx, where, args, w, get); err != nil {
+	if err := ix.digestList(ctx, where, args, w, get, passed); err != nil {
 		return rep, err
 	}
 
@@ -711,9 +715,17 @@ SELECT DISTINCT s.cwd, x.path FROM files x JOIN sessions s ON s.sid = x.sid WHER
 	return rep, nil
 }
 
+// digestKey is a session of a project's digest: the project, and the session a
+// transcript's work counts toward (rootOf).
+type digestKey struct {
+	cwd  string
+	root int64
+}
+
 // digestList names each project's sessions in a window, the latest first, with how their
-// turns there went: what a count of sessions does not say.
-func (ix *Index) digestList(ctx context.Context, where string, args []any, w Window, get func(string) *Digest) error {
+// turns there went: what a count of sessions does not say. passed is how many failures of
+// each passed later.
+func (ix *Index) digestList(ctx context.Context, where string, args []any, w Window, get func(string) *Digest, passed map[digestKey]int) error {
 	when, whenArgs := w.where("t.started_at")
 	rows, err := ix.ro.QueryContext(ctx, `
 SELECT s.cwd, `+rootOf+` AS root, coalesce(r.source || '/' || r.id, s.source || '/' || s.id), coalesce(r.title, s.title),
@@ -738,6 +750,7 @@ WHERE t.idx > 0 AND `+where+` AND `+when+` GROUP BY s.cwd, root ORDER BY 9 DESC,
 			return err
 		}
 		e.FirstAt, e.LastAt = fromMs(first), fromMs(last)
+		e.PassedLater = passed[digestKey{cwd, e.sid}]
 		if d := get(cwd); len(d.List) < digestListed {
 			d.List = append(d.List, e)
 			listed = append(listed, at{d, len(d.List) - 1})
@@ -766,45 +779,6 @@ WHERE t.idx > 0 AND `+where+` AND `+when+` GROUP BY s.cwd, root ORDER BY 9 DESC,
 		d.Interrupted = stopped != 0
 	}
 	return nil
-}
-
-// DigestFailure is a failed call as a digest counts it: in the project of the transcript
-// that made it, and toward the session that transcript's work counts toward.
-type DigestFailure struct {
-	Failure
-	Root string // that session's ref: a subagent's call is the session's it ran in
-}
-
-// DigestFailures lists the failed calls a digest of the window counts — those of the turns
-// asked in it — newest first, at most limit of them, and how many there are.
-func (ix *Index) DigestFailures(ctx context.Context, f Filter, w Window, limit int) ([]DigestFailure, int, error) {
-	where, args := ix.widen(ctx, reportFilter(f), !w.Since.IsZero()).where()
-	when, whenArgs := w.where("t.started_at")
-	args = append(args, whenArgs...)
-	from := ` FROM failures x JOIN turns t ON t.sid = x.sid AND t.idx = x.idx JOIN sessions s ON s.sid = x.sid
-LEFT JOIN sessions r ON r.sid = ` + rootOf + ` WHERE t.idx > 0 AND ` + where + ` AND ` + when
-	var total int
-	if err := ix.ro.QueryRowContext(ctx, `SELECT count(*)`+from, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-	rows, err := ix.ro.QueryContext(ctx, `
-SELECT s.source || '/' || s.id, coalesce(r.source || '/' || r.id, s.source || '/' || s.id), s.cwd, x.idx, x.seq, x.at, x.tool, x.command`+from+`
-ORDER BY x.at DESC, x.sid DESC, x.seq DESC LIMIT ?`, append(args, limit)...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	var out []DigestFailure
-	for rows.Next() {
-		var x DigestFailure
-		var at int64
-		if err := rows.Scan(&x.Session, &x.Root, &x.Cwd, &x.Turn, &x.Seq, &at, &x.Tool, &x.Command); err != nil {
-			return nil, 0, err
-		}
-		x.At = fromMs(at)
-		out = append(out, x)
-	}
-	return out, total, rows.Err()
 }
 
 // digestTurns is what a digest adds up over the turns of a window. Everything it reads

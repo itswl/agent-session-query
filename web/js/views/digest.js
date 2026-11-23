@@ -92,8 +92,6 @@ function entry(d, since) {
       `${f.plural(d.sessions - d.list.length, 'more session')}`));
 }
 
-const PASSED = 'Calls that failed, and how many of them the same command passed later, in that turn or the three after';
-
 function session(e) {
   return h('li', null,
     h('a', { href: sessionHref(e.ref), title: e.ref }, e.title || 'Untitled session'),
@@ -101,7 +99,7 @@ function session(e) {
       time(e.lastAt),
       e.turns > 0 && h('span', null, f.plural(e.turns, 'turn')),
       e.tools > 0 && h('span', null, f.plural(e.tools, 'tool call')),
-      e.failures > 0 && h('span', { class: 'bad', title: PASSED }, f.failed(e)),
+      e.failures > 0 && h('span', { class: f.open(e) ? 'bad' : null, title: f.passedTitle }, f.failed(e)),
       e.interrupted && h('span', { class: 'warn' }, 'interrupted')),
     e.answer && h('span', { class: 'd-answer' }, f.firstLine(e.answer, 300)));
 }

@@ -698,7 +698,7 @@ func runDigest(ctx context.Context, s *Server, a *args) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	rep, err := s.App.Digest(ctx, f, w)
+	rep, err := s.App.Index.Digest(ctx, f, w)
 	if err != nil {
 		return "", err
 	}

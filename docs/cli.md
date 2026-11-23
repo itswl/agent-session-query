@@ -278,9 +278,7 @@ failures and how many of them the same command passed later, tokens, files chang
 latest twelve of each project: the ref, when it was last at work in the window, its turns and
 tool calls there, how they ended (`✓`, `✗2 failed, 1 passed later`, `⚠ interrupted`), its
 title, and the last thing its agent said; a subagent's work is in the session it ran in. A
-project with more says how to list them. Passing later is judged as `failures` judges it, and
-only while the window holds no more than a thousand failed calls: past that the digest says
-how many failed and nothing more, rather than read the turns after each.
+project with more says how to list them. Passing later is judged as `failures` judges it.
 
 The digest, and `usage` given `--since` or `--until`, open with the moments they cover on the
 clock of the machine `asq` runs on — `Since Mon 2026-11-23 00:00 +08:00` — which is what

@@ -708,7 +708,7 @@ func cmdDigest(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return usageError{err}
 	}
-	rep, err := a.Digest(ctx, f, w)
+	rep, err := a.Index.Digest(ctx, f, w)
 	if err != nil {
 		return err
 	}

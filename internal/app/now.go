@@ -156,56 +156,6 @@ func (a *App) Files(ctx context.Context, f index.Filter, w index.Window, path st
 	return list, total, nil
 }
 
-// digestLooks is how many failed calls a digest looks at for the same command passing
-// later. Each look reads the turns after the failure, so past this a digest says nothing of
-// passing later rather than take seconds to say it: a long window of a busy history.
-var digestLooks = 1000
-
-// Digest is the index's Digest, saying how many of the failed calls the same command passed
-// later in their session (see Failures) — in all, per project and per session listed —
-// when the window holds no more than digestLooks of them.
-func (a *App) Digest(ctx context.Context, f index.Filter, w index.Window) (index.DigestReport, error) {
-	rep, err := a.Index.Digest(ctx, f, w)
-	if err != nil || rep.Total.Failures == 0 {
-		return rep, err
-	}
-	calls, total, err := a.Index.DigestFailures(ctx, f, w, digestLooks)
-	if err != nil || total > len(calls) {
-		return rep, err
-	}
-	zero := func() *int { n := 0; return &n }
-	rep.Total.PassedLater = zero()
-	projects := map[string]*index.Digest{}
-	sessions := map[[2]string]*index.DigestSession{}
-	for i := range rep.Projects {
-		d := &rep.Projects[i]
-		d.PassedLater = zero()
-		projects[d.Cwd] = d
-		for j := range d.List {
-			d.List[j].PassedLater = zero()
-			sessions[[2]string{d.Cwd, d.List[j].Ref}] = &d.List[j]
-		}
-	}
-	look := newLooker(a)
-	for i := range calls {
-		if ctx.Err() != nil {
-			return rep, ctx.Err()
-		}
-		c := &calls[i]
-		if look.later(ctx, &c.Failure) == nil {
-			continue
-		}
-		*rep.Total.PassedLater++
-		if d := projects[c.Cwd]; d != nil {
-			*d.PassedLater++
-		}
-		if s := sessions[[2]string{c.Cwd, c.Root}]; s != nil {
-			*s.PassedLater++
-		}
-	}
-	return rep, nil
-}
-
 // Search is the index's Search, each hit whose turn had calls fail saying how many of them
 // were followed by the same command succeeding (index.Hit.PassedLater): what a reader
 // weighing which turn to open wants to know, and would otherwise open each to learn.

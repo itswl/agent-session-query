@@ -463,7 +463,7 @@ func TestReports(t *testing.T) {
 		switch d.Cwd {
 		case "/work/alpha":
 			if e.Ref != "claude/"+fixture.Alpha || e.Title != "Fix flaky test" || e.Turns != 2 || e.Tools != 3 || e.Failures != 1 || e.Interrupted ||
-				!strings.HasPrefix(e.Answer, "索引已加上") || e.PassedLater != nil || !e.LastAt.After(e.FirstAt) {
+				!strings.HasPrefix(e.Answer, "索引已加上") || e.PassedLater != 0 || !e.LastAt.After(e.FirstAt) {
 				t.Errorf("alpha in its digest = %+v", e)
 			}
 		case "/work/beta":
@@ -476,12 +476,8 @@ func TestReports(t *testing.T) {
 		t.Errorf("digest's window = %v → %v, total's list %+v", digest.Since, digest.Until, digest.Total.List)
 	}
 	// A turn asked before the window is not the digest's, nor are its failures
-	calls, n, err := a.Index.DigestFailures(ctx, f, index.Window{Since: h.Now.Add(-7 * 24 * time.Hour)}, 10)
-	if err != nil || n != 1 || len(calls) != 1 || calls[0].Root != "claude/"+fixture.Alpha || calls[0].Session != "claude/"+fixture.Alpha || calls[0].Cwd != "/work/alpha" || calls[0].Turn != 1 {
-		t.Errorf("the digest's failed calls = %+v, %d, %v", calls, n, err)
-	}
-	if _, n, _ := a.Index.DigestFailures(ctx, f, index.Window{Since: h.Now.Add(-50 * time.Minute)}, 10); n != 0 {
-		t.Errorf("the digest's failed calls since alpha's first turn = %d, want none", n)
+	if later, err := a.Index.Digest(ctx, f, index.Window{Since: h.Now.Add(-50 * time.Minute)}); err != nil || later.Total.Failures != 0 || later.Total.PassedLater != 0 {
+		t.Errorf("the digest since alpha's first turn = %+v, %v: want none of its failures", later.Total, err)
 	}
 
 	projects, err := a.Index.Projects(ctx, f)

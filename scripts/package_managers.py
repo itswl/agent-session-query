@@ -2,12 +2,18 @@
 """The Homebrew formula and the Scoop manifest, written for a release from its SHA256SUMS.
 
     python3 scripts/package_managers.py v1.6.0 SHA256SUMS   writes Formula/asq.rb and bucket/asq.json
+    python3 scripts/package_managers.py --newer v1.6.0 SHA256SUMS
+                                                            the same, but only for a release, not a
+                                                            pre-release, and not an older one than
+                                                            they name: writes nothing otherwise
     python3 scripts/package_managers.py --check             says whether they are what this script
                                                             writes for the release they name
 
 `brew tap` and `scoop bucket add` read this repository; what they install is what the two files
-on main name. The release workflow writes them for each release and commits them there; CI runs
---check, so that neither is edited by hand into something the next release would undo.
+on main name. The release workflow writes them for each release, with --newer, and commits them
+there: a pre-release, or a patch to an older line tagged after a newer release, would otherwise
+move every Homebrew and Scoop user onto it. CI runs --check, so that neither is edited by hand
+into something the next release would undo.
 """
 import json
 import os
@@ -100,6 +106,23 @@ def write(path, text):
         f.write(text)
 
 
+def named():
+    """The version the formula names, or None."""
+    try:
+        with open(FORMULA) as f:
+            version = re.search(r'^  version "([^"]+)"$', f.read(), re.M)
+    except FileNotFoundError:
+        return None
+    return version.group(1) if version else None
+
+
+def release(version):
+    """The numbers of a release's version, as a tuple to compare; None for a pre-release or
+    a build, which carry more than X.Y.Z."""
+    m = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', version)
+    return tuple(int(n) for n in m.groups()) if m else None
+
+
 def check():
     """The version and checksums the two files name, and whether each is what this script
     writes for them."""
@@ -133,10 +156,22 @@ def main(args):
         for w in wrong:
             print(w, file=sys.stderr)
         return 1 if wrong else 0
+    newer = args[:1] == ['--newer']
+    if newer:
+        args = args[1:]
     if len(args) != 2 or not re.fullmatch(r'v?\d+\.\d+\.\d+([-+.][0-9A-Za-z.-]+)?', args[0]):
         print(__doc__, file=sys.stderr)
         return 2
-    version, sums = args[0].removeprefix('v'), read_sums(args[1])
+    version = args[0].removeprefix('v')
+    if newer:
+        current = named()
+        if release(version) is None:
+            print(f'v{version} is a pre-release: Homebrew and Scoop stay on v{current}')
+            return 0
+        if current and release(current) and release(version) < release(current):
+            print(f'v{version} is older than v{current}, which Homebrew and Scoop install: they stay on it')
+            return 0
+    sums = read_sums(args[1])
     write(FORMULA, formula(version, sums))
     write(MANIFEST, manifest(version, sums))
     print(f'wrote {os.path.relpath(FORMULA, ROOT)} and {os.path.relpath(MANIFEST, ROOT)} for v{version}')

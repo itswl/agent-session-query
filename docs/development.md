@@ -267,8 +267,10 @@ This repository is a Homebrew tap and a Scoop bucket: `Formula/asq.rb` and `buck
 name the latest release, its archives and their checksums, and `brew upgrade` and
 `scoop update` see a release once main names it. Neither is edited by hand.
 `scripts/package_managers.py vX.Y.Z SHA256SUMS` writes both, and the release's last job runs it
-with the `SHA256SUMS` just published and commits the two files to main through the API, as the
-workflow's own commit. When main does not take that commit — protected, or moved meanwhile —
+with `--newer` and the `SHA256SUMS` just published and commits the two files to main through the
+API, as the workflow's own commit. `--newer` writes nothing for a pre-release (`v1.7.0-rc.1`), nor
+for a release older than the one the formula names (`v1.5.1` tagged after `v1.6.0`): either would
+move every Homebrew and Scoop user onto it. When main does not take that commit — protected, or moved meanwhile —
 the job fails and says to run the script by hand and commit what it writes. CI runs
 `scripts/package_managers.py --check`: each file is what the script writes for the release they
 both name.

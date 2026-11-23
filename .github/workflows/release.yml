@@ -361,7 +361,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release download "$GITHUB_REF_NAME" --pattern SHA256SUMS --dir "$RUNNER_TEMP"
-          python3 scripts/package_managers.py "$GITHUB_REF_NAME" "$RUNNER_TEMP/SHA256SUMS"
+          # Only a release newer than the one main names: a pre-release, or a patch to an
+          # older line, would move every Homebrew and Scoop user onto it
+          python3 scripts/package_managers.py --newer "$GITHUB_REF_NAME" "$RUNNER_TEMP/SHA256SUMS"
 
       - name: Commit to main
         env:
@@ -369,7 +371,7 @@ jobs:
         run: |
           set -euo pipefail
           if git diff --quiet -- Formula bucket; then
-            echo "Formula/asq.rb and bucket/asq.json already name $GITHUB_REF_NAME"
+            echo "Formula/asq.rb and bucket/asq.json stay as they are"
             exit 0
           fi
           git="repos/$GITHUB_REPOSITORY/git"

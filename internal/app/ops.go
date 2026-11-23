@@ -270,6 +270,18 @@ func Handoff(turn, from int, since string) (render.BriefOptions, error) {
 	return BriefOf(turn, from, since)
 }
 
+// NamedTurn is the turn a brief is asked for when its ref may end #N — named, -1 or 0 for
+// none — and turn may name one too: they are one turn, or the brief is not told which.
+func NamedTurn(named, turn int) (int, error) {
+	switch {
+	case named <= 0:
+		return turn, nil
+	case turn != 0 && turn != named:
+		return 0, fmt.Errorf("the ref's #%d and turn %d each say which turn the brief covers: give one of them", named, turn)
+	}
+	return named, nil
+}
+
 // Pack renders the sessions a query selects as one document: the most recent limit of
 // them, oldest first. It also says how many sessions the document holds.
 func (a *App) Pack(ctx context.Context, q Query, limit int, withTurns bool) (string, int, error) {

@@ -526,8 +526,8 @@ func cmdBrief(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return err
 	}
-	if *turn == 0 && named > 0 {
-		*turn = named
+	if *turn, err = app.NamedTurn(named, *turn); err != nil {
+		return usageError{err}
 	}
 	opts, err := app.Handoff(*turn, *from, *since)
 	if err != nil {

@@ -313,6 +313,15 @@ func TestHandoff(t *testing.T) {
 	if _, err := app.Handoff(2, 0, "all"); err == nil {
 		t.Error("turn 2 and since all are taken together")
 	}
+	// A ref's #N is a turn too: the same one again is that turn, another is a second answer
+	for _, tc := range []struct{ named, turn, want int }{{-1, 0, 0}, {-1, 3, 3}, {2, 0, 2}, {2, 2, 2}} {
+		if got, err := app.NamedTurn(tc.named, tc.turn); err != nil || got != tc.want {
+			t.Errorf("#%d with turn %d = %d, %v; want %d", tc.named, tc.turn, got, err, tc.want)
+		}
+	}
+	if _, err := app.NamedTurn(1, 2); err == nil || !strings.Contains(err.Error(), "the ref's #1 and turn 2 each say") {
+		t.Errorf("#1 with turn 2 = %v", err)
+	}
 }
 
 // A directory is found by every path a CLI may have recorded it as — through a link to

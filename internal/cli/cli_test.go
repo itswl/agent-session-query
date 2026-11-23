@@ -221,6 +221,7 @@ func TestWhatGoesWrong(t *testing.T) {
 		{[]string{"brief", "aaaa1111", "--from", "3"}, 1, "from must be 1..2"},
 		{[]string{"brief", "aaaa1111", "--since", "whenever"}, 2, "since: unreadable time"},
 		{[]string{"brief", "aaaa1111", "--turn", "1", "--since", "all"}, 2, "turn 1 and since all each say which turns the brief covers"},
+		{[]string{"brief", "aaaa1111#1", "--turn", "2"}, 2, "the ref's #1 and turn 2 each say which turn the brief covers"},
 		{[]string{"show", "aaaa1111", "--json", "--max-chars", "2000"}, 2, "--max-chars holds text to a budget: it goes without --json"},
 		{[]string{"show", "aaaa1111", "-f", "--max-chars", "2000"}, 2, "neither --json, --seq nor --max-chars"},
 		{[]string{"search", "flaky", "--max-chars", "-5"}, 2, "--max-chars wants a number of characters"},

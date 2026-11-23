@@ -602,9 +602,9 @@ func runBrief(ctx context.Context, s *Server, a *args) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	turn := a.num("turn", 0)
-	if turn == 0 && named > 0 {
-		turn = named
+	turn, err := app.NamedTurn(named, a.num("turn", 0))
+	if err != nil {
+		return "", err
 	}
 	opts, err := app.Handoff(turn, a.num("from", 0), a.str("since"))
 	if err != nil {

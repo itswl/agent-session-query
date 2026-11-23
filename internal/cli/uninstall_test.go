@@ -430,6 +430,7 @@ func TestUninstallNamesAKeptFolderElsewhere(t *testing.T) {
 	for _, more := range []bool{false, true} {
 		t.Run(map[bool]string{false: "alone", true: "with more"}[more], func(t *testing.T) {
 			home, state := uninstallHome(t, runtime.GOOS, nil)
+			t.Setenv("ASQ_ONLY", "codex") // the copies are counted whatever stores are read
 			folder := filepath.Join(home, "backup", "asq copies")
 			if err := keep.Save(state, keep.Settings{Dir: folder}); err != nil {
 				t.Fatal(err)
@@ -694,6 +695,15 @@ func TestUninstallLeavesTheBinaryToItsPackageManager(t *testing.T) {
 	check("windows", built, "Remove-Item -Recurse -Force -LiteralPath "+psArg(built))
 	check("windows", beside, "Remove-Item -Recurse -Force -LiteralPath "+psArg(beside))
 	check("linux", plain, "rm "+app.ShellArg(plain))
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		// A directory not this account's to write: removing the binary from it is sudo's
+		locked := put(t, filepath.Join(root, "locked", "asq"), "")
+		if err := os.Chmod(filepath.Dir(locked), 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(filepath.Dir(locked), 0o755) })
+		check("linux", locked, "sudo rm "+app.ShellArg(locked))
+	}
 	// Each package manager where it runs: a folder laid out as the other's is a folder
 	check("linux", scoop, "rm "+app.ShellArg(scoop))
 	check("windows", brewed, "Remove-Item -Recurse -Force -LiteralPath "+psArg(brewed))

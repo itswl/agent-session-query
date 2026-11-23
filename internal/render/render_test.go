@@ -717,6 +717,53 @@ func TestDigestNamesItsSessions(t *testing.T) {
 	}
 }
 
+// Held to a budget, a digest names fewer sessions of each project, the same number for
+// each, before it gives up any project's counts: cut at the budget, the sessions of the
+// first project would leave out the last project whole.
+func TestDigestWithinABudgetKeepsEveryProject(t *testing.T) {
+	since := time.Date(2026, 11, 23, 0, 0, 0, 0, time.Local)
+	rep := index.DigestReport{Since: since, Total: index.Digest{Sessions: 15, Turns: 15}}
+	for p := range 3 {
+		d := index.Digest{Cwd: fmt.Sprintf("/w/project-%d", p), Sessions: 5, Turns: 5}
+		for i := range 5 {
+			d.List = append(d.List, index.DigestSession{Ref: fmt.Sprintf("claude/%d%d000000-aaaa", p, i), Title: fmt.Sprintf("Session %d of project %d", i, p),
+				Turns: 1, Answer: strings.Repeat("an answer that takes room ", 6), LastAt: since.Add(time.Duration(10-i) * time.Hour)})
+		}
+		rep.Projects = append(rep.Projects, d)
+	}
+	var whole bytes.Buffer
+	Digest(&whole, rep, Style{Args: true})
+	listed := func(text string, p int) int { return strings.Count(text, fmt.Sprintf("of project %d\n", p)) }
+
+	var out bytes.Buffer
+	DigestWithin(&out, rep, Style{Args: true}, whole.Len())
+	if out.String() != whole.String() {
+		t.Errorf("a digest that fits is not the digest:\n%s", out.String())
+	}
+	for budget, want := range map[int]int{whole.Len() * 2 / 3: -1, 0: 0} {
+		out.Reset()
+		DigestWithin(&out, rep, Style{Args: true}, budget)
+		text := out.String()
+		if budget > 0 && len(text) > budget {
+			t.Errorf("a digest in %d bytes is %d:\n%s", budget, len(text), text)
+		}
+		first := listed(text, 0)
+		if want >= 0 && first != want || want < 0 && (first == 0 || first == 5) {
+			t.Errorf("in %d bytes, project 0 names %d sessions:\n%s", budget, first, text)
+		}
+		rest := "  … " + plural(5-first, "more session") + ": "
+		if first == 0 {
+			rest = "  … 5 sessions: "
+		}
+		for p := range 3 {
+			if !strings.Contains(text, fmt.Sprintf("/w/project-%d\n  5 sessions", p)) || listed(text, p) != first ||
+				!strings.Contains(text, rest+fmt.Sprintf(`sessions(project="/w/project-%d"`, p)) {
+				t.Errorf("in %d bytes, project %d is not as the others, %d sessions and %q:\n%s", budget, p, first, rest, text)
+			}
+		}
+	}
+}
+
 // How long agents worked reads in hours however many there are — no one worked the day and
 // a half that 38 hours would otherwise read as — and is a column of usage where the rows are
 // groups of turns, which a model is not.

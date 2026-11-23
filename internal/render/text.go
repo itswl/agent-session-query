@@ -1087,7 +1087,30 @@ func Span(w io.Writer, since, until time.Time, st Style) {
 
 // Digest prints what a window's work added up to, per project, and each project's latest
 // sessions with how they ended.
-func Digest(w io.Writer, rep index.DigestReport, st Style) {
+func Digest(w io.Writer, rep index.DigestReport, st Style) { digest(w, rep, st, -1) }
+
+// DigestWithin is Digest in about budget bytes: each project names fewer of its sessions,
+// the same number for each, until the whole fits — so that the counts of the last project
+// are not cut away for the sessions of the first. Those left out, it says how to list.
+func DigestWithin(w io.Writer, rep index.DigestReport, st Style, budget int) {
+	most := 0
+	for _, d := range rep.Projects {
+		most = max(most, len(d.List))
+	}
+	var b strings.Builder
+	for ; most >= 0; most-- {
+		b.Reset()
+		digest(&b, rep, st, most)
+		if b.Len() <= budget {
+			break
+		}
+	}
+	io.WriteString(w, b.String())
+}
+
+// digest prints a digest naming at most that many sessions of each project; all of them
+// when most is below zero.
+func digest(w io.Writer, rep index.DigestReport, st Style, most int) {
 	Span(w, rep.Since, rep.Until, st)
 	if len(rep.Projects) == 0 {
 		fmt.Fprintln(w, "Nothing happened in that window.")
@@ -1150,11 +1173,19 @@ func Digest(w io.Writer, rep index.DigestReport, st Style) {
 			fmt.Fprintf(w, "  %s %s\n", st.dim("models "), c)
 		}
 		fmt.Fprintf(w, "  %s %s · %s → %s\n", st.dim("with   "), counts(d.Sources, nil), shortTime(d.FirstAt), shortTime(d.LastAt))
-		for _, e := range d.List {
+		shown := d.List
+		if most >= 0 && len(shown) > most {
+			shown = shown[:most]
+		}
+		for _, e := range shown {
 			digestSession(w, e, refs[e.Ref], st)
 		}
-		if more := d.Sessions - len(d.List); more > 0 && len(d.List) > 0 {
-			fmt.Fprintln(w, st.dim("  … "+plural(more, "more session")+": "+moreSessions(d.Cwd, rep, st)))
+		if more := d.Sessions - len(shown); more > 0 && len(d.List) > 0 {
+			rest := plural(more, "more session")
+			if len(shown) == 0 {
+				rest = plural(more, "session")
+			}
+			fmt.Fprintln(w, st.dim("  … "+rest+": "+moreSessions(d.Cwd, rep, st)))
 		}
 	}
 }

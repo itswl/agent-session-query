@@ -174,7 +174,9 @@ where the work stands. `brief` is written to its budget rather than cut to it: i
 fewer of its latest turns, then says less of each, then leaves out its list of turns, the turn it
 spells out and what the stretch adds up to, so that where things stood at the end is still its
 last section. Only a budget smaller than the brief's head and that section together — under
-about a thousand characters — cuts it.
+about a thousand characters — cuts it. `digest` names fewer of each project's sessions, the same
+number for each, before it is cut, so that the last project's counts are not left out for the
+first one's sessions.
 
 **Text only.** A picture pasted into an ask or returned by a tool is its mark where it came,
 `[image · png · 48 KB]`, and not the picture: the page shows it, beneath that step.

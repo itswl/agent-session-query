@@ -119,6 +119,47 @@ func TestAQueryReadsWhatItAsksForAndNotTheWholeIndex(t *testing.T) {
 	}
 }
 
+// A search, and the files report, take of each turn they find which it is and when, and
+// read that from turns_at rather than from the turn's row, which holds its text: a common
+// word or a path most turns name would otherwise read most of the index. The planner takes
+// the table's own key for a lookup by sid and idx unless the index is named.
+func TestASearchReadsTheTurnsTimesFromTheirIndex(t *testing.T) {
+	ix, err := Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ix.Close()
+	ctx := context.Background()
+	plan := func(query string, args ...any) string {
+		t.Helper()
+		rows, err := ix.ro.QueryContext(ctx, "EXPLAIN QUERY PLAN "+query, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var lines []string
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			lines = append(lines, detail)
+		}
+		return strings.Join(lines, "\n")
+	}
+	where, args := Filter{Stores: []string{"claude"}}.where()
+	search := plan(`SELECT t.sid, t.idx, bm25(words), t.started_at, t.last_at`+wordsFrom+` WHERE words MATCH ? AND `+where+` ORDER BY 3 LIMIT 10`,
+		append([]any{"error"}, args...)...)
+	if !strings.Contains(search, "COVERING INDEX turns_at") {
+		t.Errorf("a search reads each turn it finds from the turn's row:\n%s", search)
+	}
+	files := plan(`SELECT count(*)`+filesFrom+where+` AND instr(lower(x.path), lower(?)) > 0`, append(args, "internal")...)
+	if !strings.Contains(files, "COVERING INDEX turns_at") {
+		t.Errorf("the files report counts its turns from their rows:\n%s", files)
+	}
+}
+
 // A sync that changes which stores the index holds is a change in what the plans should
 // be, at once and not within the minute the counts are kept.
 func TestASyncRecountsTheStores(t *testing.T) {

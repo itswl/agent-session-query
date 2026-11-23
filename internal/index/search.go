@@ -159,8 +159,10 @@ type cand struct {
 	at    int64
 }
 
-// wordsFrom joins each row of the words table to its turn, as t, and the turn's session, as s.
-const wordsFrom = ` FROM words JOIN turns t ON t.sid = (words.rowid >> 20) AND t.idx = (words.rowid & 1048575)
+// wordsFrom joins each row of the words table to its turn, as t, and the turn's session, as
+// s. Of the turn, a search takes its sid, idx, started_at and last_at, which turns_at holds:
+// a word most turns hold is otherwise a read of most of the index.
+const wordsFrom = ` FROM words JOIN turns t INDEXED BY turns_at ON t.sid = (words.rowid >> 20) AND t.idx = (words.rowid & 1048575)
 JOIN sessions s ON s.sid = t.sid`
 
 // wordsQuery is what a search asks of the words table: the rows an expression matches —

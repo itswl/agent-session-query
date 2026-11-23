@@ -159,7 +159,9 @@ and the next command rebuilds it from the stores.
   followed as it is written, a hundred-megabyte one is not re-read on every append.
 - **A report reads its window.** What a digest adds up over the turns of a week — tool calls,
   failures, when — is in an index of its own, because a turn's row holds its text: a month of
-  turns read for four numbers each would be most of the file.
+  turns read for four numbers each would be most of the file. So are which turn each hit of a
+  search is and when it was, for search and `files` alike: a word most turns hold is counted
+  and ranked without a turn's text being read, until the page shown is.
 - **Long text is kept twice.** A turn holds a preview of each long output — the head and, larger,
   the tail, since the end of an output is where a command says why it failed — and the whole text
   sits beside it, read only when asked for.

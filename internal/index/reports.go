@@ -291,6 +291,11 @@ const (
 	ByTime    = "time"
 )
 
+// filesFrom joins each file a turn named to its session, as s, and its turn, as t, from
+// turns_at: the turns are counted and the page chosen from it, and only the page's turns
+// are read for their ask. A path most turns name is otherwise a read of most of the index.
+const filesFrom = ` FROM files x JOIN sessions s ON s.sid = x.sid JOIN turns t INDEXED BY turns_at ON t.sid = x.sid AND t.idx = x.idx WHERE `
+
 // Files lists the turns that named a file whose path contains path, newest first:
 // which sessions changed it, in which turn, and what was being asked there. With
 // changedOnly, the turns that merely read it are left out.
@@ -303,7 +308,7 @@ func (ix *Index) Files(ctx context.Context, f Filter, w Window, path string, cha
 	if changedOnly {
 		cond += ` AND x.changed = 1`
 	}
-	from := ` FROM files x JOIN sessions s ON s.sid = x.sid JOIN turns t ON t.sid = x.sid AND t.idx = x.idx WHERE ` + cond
+	from := filesFrom + cond
 	var total int
 	if err := ix.ro.QueryRowContext(ctx, `SELECT count(*)`+from, args...).Scan(&total); err != nil {
 		return nil, 0, err
@@ -312,8 +317,11 @@ func (ix *Index) Files(ctx context.Context, f Filter, w Window, path string, cha
 		p.Limit = 50
 	}
 	rows, err := ix.ro.QueryContext(ctx, `
-SELECT x.path, x.changed, s.source, s.id, s.title, s.cwd, x.idx, x.at, max(t.ended_at, t.last_at, x.at), json_extract(t.head, '$.ask')`+from+`
-ORDER BY x.at DESC, x.sid DESC, x.idx DESC LIMIT ? OFFSET ?`, append(args, p.Limit, p.Offset)...)
+SELECT x.path, x.changed, x.source, x.id, x.title, x.cwd, x.idx, x.at, max(t.ended_at, t.last_at, x.at), json_extract(t.head, '$.ask')
+FROM (SELECT x.sid, x.idx, x.path, x.changed, x.at, s.source, s.id, s.title, s.cwd`+from+`
+  ORDER BY x.at DESC, x.sid DESC, x.idx DESC LIMIT ? OFFSET ?) x
+JOIN turns t ON t.sid = x.sid AND t.idx = x.idx
+ORDER BY x.at DESC, x.sid DESC, x.idx DESC`, append(args, p.Limit, p.Offset)...)
 	if err != nil {
 		return nil, 0, err
 	}

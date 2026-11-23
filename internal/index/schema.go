@@ -130,6 +130,11 @@ CREATE TABLE IF NOT EXISTS turns (
   PRIMARY KEY (sid, idx)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS turns_started ON turns (started_at);
+-- What a search takes of each turn it finds: which it is and when, in the index itself. A
+-- common word is found in most turns, and each read from its row is a page or more of text
+-- for two numbers. Named by the queries that use it (see wordsFrom): the planner takes the
+-- table's own key for a lookup by sid and idx, whatever the row holds.
+CREATE INDEX IF NOT EXISTS turns_at ON turns (sid, idx, started_at, last_at);
 -- What a report adds up over the turns of a window, in the index itself. A turn's row
 -- holds its text, so a month of turns read for four numbers each is most of the file.
 CREATE INDEX IF NOT EXISTS turns_report ON turns (started_at, tools, failures, ended_at);

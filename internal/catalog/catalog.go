@@ -236,19 +236,25 @@ func (s *Set) Keep(folder string) {
 	defer s.mu.Unlock()
 	var own []index.Store
 	at := map[string]int{}
+	named := map[string]bool{}
 	for i, st := range s.stores {
 		switch {
 		case st.Name == st.Spec.Name && isKeeper(st.Source):
 			own = append(own, st)
 		case keep.IsKept(st.Source):
 			at[st.Name] = i
+		default:
+			named[st.Name] = true
 		}
 	}
 	for _, st := range own {
 		name := st.Name + "@" + keep.Label
 		dir := filepath.Join(folder, st.Name)
 		i, ok := at[name]
-		if ok && s.stores[i].Source.Location() == dir {
+		if named[name] || ok && s.stores[i].Source.Location() == dir {
+			// A store given that label by hand, in a process started before anything was
+			// kept, stays what it is: two stores of one name would each take the other's
+			// sessions out of the index. The next start refuses the label (validate).
 			continue
 		}
 		kept := index.Store{Name: name, Spec: st.Spec, Source: keep.Store(st.Spec.Open(dir), st.Source)}

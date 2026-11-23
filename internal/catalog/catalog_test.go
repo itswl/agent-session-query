@@ -105,3 +105,40 @@ func TestConfiguration(t *testing.T) {
 		t.Errorf("nothing set = %+v, %v", cfg, err)
 	}
 }
+
+// The copies asq keeps are read as a store of their own beside each CLI's that deletes its
+// sessions, and named again, from the folder named. A store a person labelled kept, in a
+// process started before anything was kept, stays the only one of that name.
+func TestKeptCopiesAreAStoreOfTheirOwn(t *testing.T) {
+	env := sources.Env{Home: "/home/me", Getenv: func(string) string { return "" }}
+	set, err := New(Config{Only: []string{"claude", "codex"}}, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Keep(filepath.Join("/k", "one"))
+	set.Keep(filepath.Join("/k", "two"))
+	where := map[string]string{}
+	for _, st := range set.All() {
+		where[st.Name] = st.Source.Location()
+	}
+	if got := strings.Join(set.Names(), " "); got != "claude codex claude@kept" || where["claude@kept"] != filepath.Join("/k", "two", "claude") {
+		t.Errorf("stores = %q, %v; want claude@kept once, in the folder named last", got, where)
+	}
+
+	set, err = New(Config{Only: []string{"claude"}, Paths: []Path{{Agent: "claude", Label: "kept", Dir: "/backup"}}}, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Keep("/k")
+	if got := strings.Join(set.Names(), " "); got != "claude claude@kept" {
+		t.Errorf("stores = %q; want the labelled store alone under its name", got)
+	}
+	for _, st := range set.All() {
+		if st.Name == "claude@kept" && st.Source.Location() != "/backup" {
+			t.Errorf("claude@kept is %s, want the store the person named", st.Source.Location())
+		}
+	}
+	if err := (Config{Paths: []Path{{Agent: "claude", Label: "kept", Dir: "/backup"}}, Kept: "/k"}).Validate(); err == nil {
+		t.Error("a store labelled kept is accepted while asq keeps copies")
+	}
+}

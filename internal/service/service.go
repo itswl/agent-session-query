@@ -306,14 +306,14 @@ func tail(path string, from int64, lines int) []string {
 type Status struct {
 	Manager    string `json:"manager"`
 	Definition string `json:"definition"`
-	SetUp      bool   `json:"set_up"`
-	Ours       bool   `json:"written_by_asq"`
+	SetUp      bool   `json:"setUp"`
+	Ours       bool   `json:"writtenByAsq"`
 	// This is the asq asking, by the path a service would run it by.
 	This    string   `json:"this"`
 	Command []string `json:"command,omitempty"`
 	Env     []string `json:"env,omitempty"` // the names
 	// Missing says the binary it runs is not there: removed, or moved.
-	Missing bool   `json:"binary_missing,omitempty"`
+	Missing bool   `json:"binaryMissing,omitempty"`
 	Loaded  bool   `json:"loaded"`
 	State   string `json:"state,omitempty"`
 	PID     int    `json:"pid,omitempty"`

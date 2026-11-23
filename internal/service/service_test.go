@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -773,5 +774,22 @@ func TestWindowsArguments(t *testing.T) {
 	}
 	if got := winSplit(`"C:\Program Files\asq\asq.exe" serve  --port 7920`); !reflect.DeepEqual(got, []string{`C:\Program Files\asq\asq.exe`, "serve", "--port", "7920"}) {
 		t.Errorf("%q", got)
+	}
+}
+
+// asq service status --json names its fields as every other answer asq gives does, in
+// camelCase, as the record's fields are named.
+func TestStatusNamesItsFieldsAsTheRecordDoes(t *testing.T) {
+	b, err := json.Marshal(Status{SetUp: true, Ours: true, Missing: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{`"setUp":true`, `"writtenByAsq":true`, `"binaryMissing":true`} {
+		if !bytes.Contains(b, []byte(name)) {
+			t.Errorf("status = %s, want %s in it", b, name)
+		}
+	}
+	if bytes.Contains(b, []byte("_")) {
+		t.Errorf("status = %s: a field is named in snake_case", b)
 	}
 }

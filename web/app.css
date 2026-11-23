@@ -284,7 +284,8 @@ div.row-main { position: relative; }
 [data-store="hermes"] { --store: #d4a017; }
 [data-store="openclaw"] { --store: #ef4444; }
 [data-store="copilot"] { --store: #65a30d; }
-.live { padding-left: 11px; color: var(--ok); background: radial-gradient(circle at 3.5px 50%, var(--ok) 3px, transparent 3.5px) no-repeat; }
+.live { color: var(--ok); }
+.live-dot { display: inline-block; width: 7px; height: 7px; margin-right: 4px; border-radius: 50%; background: var(--ok); vertical-align: middle; }
 /* Where a session's latest turn stands, past at work (.live): waiting on a call, which is
    named, and the person's turn */
 .standing { font-weight: 560; }

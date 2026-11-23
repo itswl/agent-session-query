@@ -250,7 +250,9 @@ wants of it. A comment line every 20 seconds keeps proxies from closing a quiet 
 
 `sync` speaks of a read worth waiting for: the first one, or a catch-up — eight or more
 transcripts still to read, two seconds in — which it then follows to its end, `done` moving
-toward `total`. The read that follows a session as it is written is not announced. On a machine
+toward `total`. The first `again` of `total`, when there are any, are sessions looked at again in
+the index — their words written anew, their failures judged anew, after an upgrade — and not
+transcripts: they come first. The read that follows a session as it is written is not announced. On a machine
 with an agent at work that happens every few seconds, its result is the `changes` event, and a
 status that said so each time would never hold still. A quiet stream still says when the stores
 were last read (`at`, `tookMs`), about every twenty seconds. `stores` is a few characters that

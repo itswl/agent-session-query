@@ -194,14 +194,28 @@ func open(ctx context.Context, c *command, io *streams) (*app.App, error) {
 			switch {
 			case st.Total == 0:
 			case live:
-				fmt.Fprintf(io.err, "\rreading %d of %d transcripts…", st.Done, st.Total)
+				fmt.Fprintf(io.err, "\r%s…", st.Progress())
 				said = true
 			case !said && time.Since(started) > 2*time.Second:
-				fmt.Fprintf(io.err, "asq: reading %d transcripts into the index…\n", st.Total)
+				fmt.Fprintf(io.err, "asq: %s…\n", firstRead(st))
 				said = true
 			}
 		}
 	}
+}
+
+// firstRead is what a first read has to do, said once where the line cannot be rewritten:
+// the transcripts it reads, and the sessions an upgrade looks at again in the index, which
+// are not transcripts.
+func firstRead(st index.SyncState) string {
+	read := st.Total - st.Again
+	switch {
+	case st.Again == 0:
+		return fmt.Sprintf("reading %d transcripts into the index", read)
+	case read == 0:
+		return fmt.Sprintf("looking again at %d sessions in the index", st.Again)
+	}
+	return fmt.Sprintf("reading %d transcripts into the index, and looking again at %d sessions in it", read, st.Again)
 }
 
 func isTerminal(w io.Writer) bool {

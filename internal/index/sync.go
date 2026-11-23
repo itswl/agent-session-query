@@ -23,17 +23,36 @@ type Store struct {
 
 // SyncState is where a sync stands, for whoever is waiting on one.
 type SyncState struct {
-	Running bool      `json:"running"`
-	Total   int       `json:"total,omitempty"` // transcripts this sync has to read
-	Done    int       `json:"done,omitempty"`  // of which read
-	At      time.Time `json:"at,omitzero"`     // when the last sync finished
-	Took    int64     `json:"tookMs,omitempty"`
+	Running bool `json:"running"`
+	Total   int  `json:"total,omitempty"` // transcripts this sync has to read, and Again
+	Done    int  `json:"done,omitempty"`  // of which done
+	// Again is how many of Total are sessions looked at again in the index alone — their
+	// words written anew, their failures judged anew — and not transcripts to read. They
+	// come first. See Progress.
+	Again int       `json:"again,omitempty"`
+	At    time.Time `json:"at,omitzero"` // when the last sync finished
+	Took  int64     `json:"tookMs,omitempty"`
 	// Stores names the condition the stores were last found in — which are there, which
 	// could not be read — in a few characters that change when it does. A reader that
 	// keeps a health report asks for a new one when this moves, and not otherwise.
 	Stores string `json:"stores,omitempty"`
 	// Began is when the sync in flight started.
 	Began time.Time `json:"-"`
+}
+
+// Progress says how far the sync in flight has got, in what it is at: the sessions it looks
+// at again in the index, then the transcripts it reads. An upgrade that judges a thousand
+// sessions' failures anew is not said to have a thousand more transcripts to read.
+func (s SyncState) Progress() string {
+	read := s.Total - s.Again
+	if s.Done < s.Again {
+		p := fmt.Sprintf("%d of %d sessions looked at again", s.Done, s.Again)
+		if read > 0 {
+			p += fmt.Sprintf(", %d transcripts to read", read)
+		}
+		return p
+	}
+	return fmt.Sprintf("%d of %d transcripts read", s.Done-s.Again, read)
 }
 
 // Change names a session a sync wrote.
@@ -278,7 +297,7 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 	}
 	found := hex.EncodeToString(condition.Sum(nil)[:5])
 	ix.setState(func(s *SyncState) {
-		s.Running, s.Total, s.Done, s.Began, s.Stores = true, stale+unjudged+len(jobs), 0, start, found
+		s.Running, s.Total, s.Again, s.Done, s.Began, s.Stores = true, stale+unjudged+len(jobs), stale+unjudged, 0, start, found
 	})
 
 	var firstErr error

@@ -181,6 +181,10 @@ func TestFailuresAreJudgedFromTheIndex(t *testing.T) {
 		t.Errorf("%d read to judge failures, want none", res.Read)
 	}
 	passed("judged from the index", true)
+	// and the session judged is not counted as a transcript read
+	if st := ix.State(); st.Total != 1 || st.Again != 1 {
+		t.Errorf("judging one session's failures is %d to do, %d of them sessions looked at again; want 1 and 1", st.Total, st.Again)
+	}
 
 	// An older asq deletes the second turn, then writes it again: the failure before it is
 	// judged again each time
@@ -304,5 +308,23 @@ func TestFailuresByCommandAndStillOpen(t *testing.T) {
 	none, err := ix.Failures(ctx, Filter{}, Window{Since: time.Unix(1790000000, 0).Add(time.Hour)}, FailureQuery{Open: true}, Page{})
 	if err != nil || none.Total != 0 || none.Outside != 4 {
 		t.Errorf("open after the sessions = %+v, %v; want none, and 4 outside", none, err)
+	}
+}
+
+// How far a sync has got is said in what it is at: the sessions an upgrade looks at again
+// in the index, which are not transcripts, and then the transcripts it reads.
+func TestSyncProgressTellsSessionsFromTranscripts(t *testing.T) {
+	for _, tc := range []struct {
+		st   SyncState
+		want string
+	}{
+		{SyncState{Total: 3795}, "0 of 3795 transcripts read"},
+		{SyncState{Total: 4905, Again: 1110, Done: 10}, "10 of 1110 sessions looked at again, 3795 transcripts to read"},
+		{SyncState{Total: 4905, Again: 1110, Done: 1200}, "90 of 3795 transcripts read"},
+		{SyncState{Total: 1110, Again: 1110, Done: 5}, "5 of 1110 sessions looked at again"},
+	} {
+		if got := tc.st.Progress(); got != tc.want {
+			t.Errorf("%+v = %q, want %q", tc.st, got, tc.want)
+		}
 	}
 }

@@ -293,9 +293,9 @@ func (s *Server) notes(ctx context.Context, at standing) []string {
 	var notes []string
 	if !at.fresh {
 		if at.behind > 0 {
-			notes = append(notes, fmt.Sprintf("The index is reading the history again for a newer reading of it (%d of %d transcripts): every session is here, but what changed in the last %s is not yet.", at.st.Done, at.st.Total, at.behind.Round(time.Second)))
+			notes = append(notes, fmt.Sprintf("The index is reading the history again for a newer reading of it (%s): every session is here, but what changed in the last %s is not yet.", at.st.Progress(), at.behind.Round(time.Second)))
 		} else if at.st.Running && at.st.Total > 0 {
-			notes = append(notes, fmt.Sprintf("The index is still reading the history (%d of %d transcripts): this answer covers what has been read so far.", at.st.Done, at.st.Total))
+			notes = append(notes, fmt.Sprintf("The index is still reading the history (%s): this answer covers what has been read so far.", at.st.Progress()))
 		} else {
 			notes = append(notes, "The index is still catching up: this answer may miss the last few seconds.")
 		}

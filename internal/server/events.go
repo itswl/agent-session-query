@@ -146,7 +146,7 @@ func tell(st index.SyncState, saying bool, now time.Time) index.SyncState {
 		st.Running = first || long
 	}
 	if !st.Running {
-		st.Total, st.Done = 0, 0
+		st.Total, st.Done, st.Again = 0, 0, 0
 	}
 	return st
 }

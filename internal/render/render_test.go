@@ -326,7 +326,7 @@ func TestBriefOfAStretch(t *testing.T) {
 	for _, want := range []string{"## The whole session\n", "- 30 turns: #1 → #30", "- Changed: 31 files — 31 code\n",
 		"  - shared.go (#30) · now: changed since — what turn 30 wrote is no longer all there\n", "  - … and 11 more, changed earlier\n",
 		"- Read: README.md\n", "- … only the latest 12 turns are detailed below", "## Turn 19\n", "## Turn 30\n",
-		"  - shared.go · now: changed since — what this turn wrote is no longer all there\n", "`--since all` the whole session"} {
+		"  - shared.go · now: changed since — what this turn wrote is no longer all there\n", "`--turn N` one turn, `--since <when>` everything after a moment.\n"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the whole session: no %q in\n%s", want, text)
 		}
@@ -402,7 +402,7 @@ func TestBriefKeepsToItsBudget(t *testing.T) {
 		if tc.o.MaxChars >= len(floor) && len(text) > tc.o.MaxChars {
 			t.Errorf("held to %d, a brief is %d:\n%s", tc.o.MaxChars, len(text), text)
 		}
-		if tc.o.All && !strings.Contains(text, state) || !strings.HasSuffix(text, "`--since all` the whole session.\n") {
+		if tc.o.All && !strings.Contains(text, state) || !strings.HasSuffix(text, "`--since <when>` everything after a moment.\n") {
 			t.Errorf("held to %d, a brief does not end with where things stand:\n%s", tc.o.MaxChars, text)
 		}
 		for _, want := range tc.want {

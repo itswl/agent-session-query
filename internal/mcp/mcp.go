@@ -51,7 +51,7 @@ const Instructions = "The session history of every agent CLI on the machine asq 
 	"- the user points at earlier work, or another agent's: \"how did we solve…\", \"did I do this before\", \"what did Codex change\" — search for what was said, sessions for what was worked on;\n" +
 	"- an error or an approach looks familiar — search for its words;\n" +
 	"- a command keeps failing — search for its error, and failures, which says where the same command later passed, and by command what is still open;\n" +
-	"- work is handed to another agent or machine — brief for one session (ref \"this\" is your own), pack for several;\n" +
+	"- work is handed to another agent or machine — brief for one session, whole (ref \"this\" is your own), pack for several;\n" +
 	"- the question is what was done or spent over a stretch of time — digest for the work, usage for the tokens.\n" +
 	"read opens a session by the ref every line of an answer starts with: the outline first, then ref#N for one turn, then seq for one step whole. " +
 	"files names the turns that read or changed a file; projects, the directories sessions ran in. Narrow with project, source or since rather than raising limit.\n" +

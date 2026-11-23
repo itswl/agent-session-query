@@ -195,11 +195,16 @@ command for the machine it came from. `show` and `brief` give that one as
 
 ## Handing over
 
-**`asq brief <ref>`** — a handoff brief, in Markdown: the session's turns in one line each, then
-for the latest turn what was asked, which files changed, the tool calls that failed, the tokens
-it took and how it ended, then where things stood at the end and how to dig deeper. It is
-extracted from the record, not written by a model — deterministic, instant, and unable to
-invent.
+**`asq brief <ref>`** — a handoff brief of the whole session, in Markdown: its turns in one line
+each; what it added up to — every file it changed, against the last of its turns that changed
+it, the tool calls, the tokens; its latest twelve turns spelled out, each with what was asked,
+which files changed, the tool calls that failed, the tokens it took and how it ended; then where
+things stood at the end and how to dig deeper. It is extracted from the record, not written by a
+model — deterministic, instant, and unable to invent.
+
+The whole session is what a handoff needs: a session whose last ask was "delete the scratch
+script" hands over, in its latest turn, only that, and not the fix made before it. The page's
+brief opens at the latest turn, with the whole session beside it ([The page](ui.md#a-session)).
 
 It says where things stand now, as `failures` and `files` do:
 
@@ -215,14 +220,13 @@ It says where things stand now, as `failures` and `files` do:
   *not looked at*, and the brief does not wait for the answer. Files beneath the session's
   directory are named relative to it.
 
-Which turns it spells out:
+Which turns it covers:
 
-- `--turn N` briefs another turn.
-- `--from N` briefs turn N and every turn after it; `--since 2h` everything after a moment;
-  `--since all` the whole session. Each opens with what the stretch adds up to — every file it
-  changed, against the last of its turns that changed it, the tool calls, the tokens — and then
-  spells out its latest twelve turns. This is the brief for handing the same session over a
-  second time, or whole.
+- `--turn N` briefs that turn alone, and so does a ref that ends `#N`.
+- `--from N` briefs turn N and every turn after it; `--since 2h` everything after a moment.
+  Each opens with what that stretch adds up to, as the whole session's brief does, and spells
+  out its latest twelve turns. This is the brief for handing the same session over a second
+  time.
 - With no ref it briefs the newest session here, [as `show` takes it](#reading).
 
 `--turn`, `--from`, `--since` and a ref's `#N` each choose the turns, so a brief takes one of

@@ -115,13 +115,14 @@ var tools = []tool{
 	{
 		name:  "brief",
 		title: "Handoff brief",
-		about: "A handoff brief of a session, as Markdown: what was asked, which files were changed and how each stands now, what failed and whether the same command passed later, and the agent's final answer — for the latest turn, one named, a turn and those after it, everything since a moment, or the whole session. " +
+		about: "A handoff brief of a session, as Markdown: what was asked, which files were changed and how each stands now, what failed and whether the same command passed later, and the agent's final answer. " +
+			"It covers the whole session — what it added up to, then its latest turns one by one — unless one of turn, from or since names a part of it, or the ref ends #N for that turn alone. " +
 			"Use it to pick up where another agent left off, or to hand a piece of work to someone else: ref \"this\" briefs your own session. It is extracted from the record, not summarized by a model.",
 		props: []prop{
 			pRef,
-			{"turn", "integer", "Brief this turn instead of the latest."},
+			{"turn", "integer", "Brief this turn alone."},
 			{"from", "integer", "Brief this turn and every turn after it."},
-			{"since", "string", "Brief every turn that ran after this moment: 2h, 2026-10-05T08:00 — or all, for the whole session."},
+			{"since", "string", "Brief every turn that ran after this moment: 2h, 2026-10-05T08:00. Without turn, from or since the brief is of the whole session."},
 			pChars,
 		},
 		need: []string{"ref"},
@@ -602,7 +603,7 @@ func runBrief(ctx context.Context, s *Server, a *args) (string, error) {
 	if turn == 0 && named > 0 {
 		turn = named
 	}
-	opts, err := app.BriefOf(turn, a.num("from", 0), a.str("since"))
+	opts, err := app.Handoff(turn, a.num("from", 0), a.str("since"))
 	if err != nil {
 		return "", err
 	}

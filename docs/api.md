@@ -89,7 +89,8 @@ asked for.
 **`GET /api/sessions/{source}/{id}/brief?turn=&from=&since=`** — `{"session", "brief"}`, the
 [handoff brief](cli.md#handing-over) as Markdown: of the latest turn, of `turn`, of turn `from`
 and every turn after it, of every turn after `since`, or with `since=all` of the whole session —
-one of the three, or `400`.
+one of the three, or `400`. With none it is of the latest turn, which is where the page's brief
+opens; the command line and MCP brief the whole session when none is named.
 Its failed calls say where the same command later passed, and its changed files how they stand
 now, as `failures` and `files` [have them](#reports).
 

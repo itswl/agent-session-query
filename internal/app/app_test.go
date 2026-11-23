@@ -284,6 +284,26 @@ func TestBriefOf(t *testing.T) {
 	}
 }
 
+// A handoff is of the whole session unless a part of it is named: its latest turn alone
+// leaves out how the session got where it ended.
+func TestHandoff(t *testing.T) {
+	if o, err := app.Handoff(0, 0, ""); err != nil || !o.All {
+		t.Errorf("nothing named = %+v, %v; want the whole session", o, err)
+	}
+	if o, err := app.Handoff(2, 0, ""); err != nil || o.All || o.Turn != 2 {
+		t.Errorf("turn 2 = %+v, %v", o, err)
+	}
+	if o, err := app.Handoff(0, 3, ""); err != nil || o.All || o.From != 3 {
+		t.Errorf("from 3 = %+v, %v", o, err)
+	}
+	if o, err := app.Handoff(0, 0, "2h"); err != nil || o.All || o.Since.IsZero() {
+		t.Errorf("since 2h = %+v, %v", o, err)
+	}
+	if _, err := app.Handoff(2, 0, "all"); err == nil {
+		t.Error("turn 2 and since all are taken together")
+	}
+}
+
 // An agent asking after its own session: the one its CLI names, when the index has it;
 // else the one most recently written to in the directory it asks from.
 func TestSelf(t *testing.T) {

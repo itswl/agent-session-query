@@ -237,6 +237,41 @@ func TestEveryToolAnswers(t *testing.T) {
 	}
 }
 
+// A brief hands a session over whole unless a part of it is named: the latest turn alone
+// would leave out how the session got where it ended — here the failed test and its fix.
+func TestBriefIsOfTheWholeSession(t *testing.T) {
+	s := server(t)
+	for _, tc := range []struct {
+		args     map[string]any
+		want     []string
+		whole    bool
+		withTurn bool
+	}{
+		{map[string]any{"ref": "aaaa1111"}, []string{"## The whole session", "## Turn 1\n", "go test ./...", "## Turn 2\n", "db/schema.sql (#2)"}, true, true},
+		{map[string]any{"ref": "aaaa1111#2"}, []string{"## Turn 2\n"}, false, false},
+		{map[string]any{"ref": "aaaa1111", "turn": 2}, []string{"## Turn 2\n"}, false, false},
+		{map[string]any{"ref": "aaaa1111", "from": 2}, []string{"## From turn 2", "## Turn 2\n"}, false, false},
+	} {
+		text, isErr := call(t, s, "brief", tc.args)
+		if isErr {
+			t.Fatalf("brief %v: %s", tc.args, text)
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(text, want) {
+				t.Errorf("brief %v: no %q in\n%s", tc.args, want, text)
+			}
+		}
+		if strings.Contains(text, "## The whole session") != tc.whole || strings.Contains(text, "## Turn 1\n") != tc.withTurn {
+			t.Errorf("brief %v covers the wrong turns:\n%s", tc.args, text)
+		}
+	}
+	for _, tool := range describe() {
+		if tool["name"] == "brief" && !strings.Contains(tool["description"].(string), "covers the whole session") {
+			t.Errorf("the brief's description does not say what it covers: %q", tool["description"])
+		}
+	}
+}
+
 func TestWhatGoesWrongIsToldToTheModel(t *testing.T) {
 	s := server(t)
 	for _, tc := range []struct {

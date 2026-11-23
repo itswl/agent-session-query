@@ -206,6 +206,18 @@ func BriefOf(turn, from int, since string) (render.BriefOptions, error) {
 	return o, nil
 }
 
+// Handoff is what a brief covers when it is handed to someone, as the command line and
+// the MCP tool hand it: what is named — a turn, the turn to start from, a moment — and
+// with none of them the whole session. A brief of the latest turn alone hands over
+// where the session ended without how it got there: its last ask may be "delete the
+// scratch script", and the fix made before it is not in it.
+func Handoff(turn, from int, since string) (render.BriefOptions, error) {
+	if turn == 0 && from == 0 && strings.TrimSpace(since) == "" {
+		since = "all"
+	}
+	return BriefOf(turn, from, since)
+}
+
 // Pack renders the sessions a query selects as one document: the most recent limit of
 // them, oldest first. It also says how many sessions the document holds.
 func (a *App) Pack(ctx context.Context, q Query, limit int, withTurns bool) (string, int, error) {

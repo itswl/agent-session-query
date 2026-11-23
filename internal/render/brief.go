@@ -477,7 +477,7 @@ func (p *BriefPlan) write(o BriefOptions, d detail) string {
 	}
 	if len(p.Detailed) > 0 {
 		n := p.Detailed[len(p.Detailed)-1]
-		fmt.Fprintf(&b, "\nDig deeper: `asq show %s#%d` reads a turn step by step (MCP: read with ref=\"%s#%d\"); `asq brief %s --since <when>` covers everything after a moment, `--since all` the whole session.\n",
+		fmt.Fprintf(&b, "\nDig deeper: `asq show %s#%d` reads a turn step by step (MCP: read with ref=\"%s#%d\"); `asq brief %s` covers the whole session, `--turn N` one turn, `--since <when>` everything after a moment.\n",
 			s.Ref, n, s.Ref, n, s.Ref)
 	}
 	return b.String()

@@ -799,7 +799,8 @@ func TestStatusNamesItsFieldsAsTheRecordDoes(t *testing.T) {
 // Find says what keeps asq serve running, and who set it up, from the definitions alone:
 // the service asq service install wrote, which asq service uninstall takes down; one made by
 // hand where install would write it, with the commands status gives for it; Homebrew's; and
-// one made by hand under another name, known by the binary it names.
+// one made by hand under another name, known by the binary it names or by asq and serve as
+// words — not dnsmasq's, whose --server has them as parts of words.
 func TestFind(t *testing.T) {
 	for _, goos := range []string{"darwin", "linux", "windows"} {
 		t.Run(goos, func(t *testing.T) {
@@ -839,26 +840,33 @@ func TestFind(t *testing.T) {
 				}
 				return path
 			}
-			var brew, other string
-			var otherDown []string
+			var brew, other, word string
+			var otherDown, wordDown []string
 			if goos == "darwin" {
 				dir := filepath.Join(f.m.Home, "Library", "LaunchAgents")
 				brew = put(filepath.Join(dir, "homebrew.mxcl.asq.plist"), "<string>/opt/homebrew/opt/asq/bin/asq</string><string>serve</string>")
 				other = put(filepath.Join(dir, "me.plist"), "<string>"+esc(s.Binary)+"</string>")
 				put(filepath.Join(dir, "unrelated.plist"), "<string>/usr/bin/true</string>")
+				put(filepath.Join(dir, "dnsmasq.plist"), "<string>/opt/homebrew/opt/dnsmasq/sbin/dnsmasq</string><string>--server=1.1.1.1</string>")
 				otherDown = []string{said("launchctl", "bootout", "gui/501", other), said("rm", other)}
+				word = put(filepath.Join(dir, "other.plist"), "<string>/usr/local/bin/asq</string><string>serve</string>")
+				wordDown = []string{said("launchctl", "bootout", "gui/501", word), said("rm", word)}
 			} else {
 				dir := filepath.Join(f.m.Config, "systemd", "user")
 				brew = put(filepath.Join(dir, "homebrew.asq.service"), "[Service]\nExecStart=/home/linuxbrew/.linuxbrew/opt/asq/bin/asq serve\n")
 				rel, _ := filepath.Rel(f.m.Home, s.Binary)
 				other = put(filepath.Join(dir, "me.service"), "[Service]\nExecStart=%h/"+filepath.ToSlash(rel)+"\n")
 				put(filepath.Join(dir, "unrelated.service"), "[Service]\nExecStart=/usr/bin/true\n")
+				put(filepath.Join(dir, "dnsmasq.service"), "[Service]\nExecStart=/usr/sbin/dnsmasq -k --server=1.1.1.1\n")
 				otherDown = []string{said("systemctl", "--user", "disable", "--now", "me.service"), said("rm", other), said("systemctl", "--user", "daemon-reload")}
+				word = put(filepath.Join(dir, "other.service"), "[Service]\nExecStart=/usr/local/bin/asq serve\n")
+				wordDown = []string{said("systemctl", "--user", "disable", "--now", "other.service"), said("rm", word), said("systemctl", "--user", "daemon-reload")}
 			}
 			want := []Found{
 				{By: ByHand, Definition: mg.where(), Down: mg.unloadSteps()},
 				{By: ByHomebrew, Definition: brew, Down: []string{BrewServicesStop}},
 				{By: ByHand, Definition: other, Down: otherDown},
+				{By: ByHand, Definition: word, Down: wordDown}, // another asq, serving
 			}
 			if got := f.m.Find(s.Binary); !reflect.DeepEqual(got, want) {
 				t.Errorf("found\n%+v\nwant\n%+v", got, want)

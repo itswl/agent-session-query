@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -480,9 +481,9 @@ type Found struct {
 // Find lists what is set up to keep asq serve running on this machine: the service asq
 // service install sets up — written by it or by hand —, Homebrew's, and a LaunchAgent or a
 // user unit set up by hand under another name, known by what such a file cannot help
-// naming: the binary self, as it is or as a plist or a unit writes it, or asq and serve.
-// It reads the definitions alone, as Listens does: the manager is not asked how a service
-// runs, nor the server whether it answers.
+// naming: the binary self, as it is or as a plist or a unit writes it, or asq and serve as
+// words. It reads the definitions alone, as Listens does: the manager is not asked how a
+// service runs, nor the server whether it answers.
 func (m *Machine) Find(self string) []Found {
 	mg, err := m.manager()
 	if err != nil {
@@ -511,7 +512,7 @@ func (m *Machine) Find(self string) []Found {
 			bytes.Contains(b, []byte("%h/"+filepath.ToSlash(rel))) {
 			return true
 		}
-		return bytes.Contains(b, []byte("asq")) && bytes.Contains(b, []byte("serve"))
+		return asqWord.Match(b) && serveWord.Match(b)
 	}
 	var files []string
 	switch m.OS {
@@ -542,6 +543,13 @@ func (m *Machine) Find(self string) []Found {
 	}
 	return found
 }
+
+// asq and serve as words, as a definition that runs asq serve names them: not the asq in
+// dnsmasq, nor the serve in its --server, which a LaunchAgent of its own is full of.
+var (
+	asqWord   = regexp.MustCompile(`\basq\b`)
+	serveWord = regexp.MustCompile(`\bserve\b`)
+)
 
 // Marked says whether asq service install wrote a definition.
 func Marked(def []byte) bool { return bytes.Contains(def, []byte(Mark)) }

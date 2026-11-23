@@ -277,7 +277,8 @@ var ErrNotFound = errors.New("no such session")
 // AmbiguousError says a reference fits more than one session.
 type AmbiguousError struct {
 	Ref     string
-	Matches []Session
+	Matches []Session // the first of them, a dozen at most
+	Total   int       // how many it fits
 }
 
 func (e *AmbiguousError) Error() string {
@@ -285,7 +286,11 @@ func (e *AmbiguousError) Error() string {
 	for _, m := range e.Matches {
 		refs = append(refs, m.Ref)
 	}
-	return fmt.Sprintf("%q fits %d sessions: %s", e.Ref, len(e.Matches), strings.Join(refs, ", "))
+	list := strings.Join(refs, ", ")
+	if more := e.Total - len(e.Matches); more > 0 {
+		list += fmt.Sprintf(", and %d more", more)
+	}
+	return fmt.Sprintf("%q fits %d sessions: %s", e.Ref, max(e.Total, len(e.Matches)), list)
 }
 
 // SplitRef takes a reference apart: "claude/3f2a9c#4" is the store claude, the id (or
@@ -329,9 +334,10 @@ func (ix *Index) Resolve(ctx context.Context, ref string, stores []string) (Sess
 		base = strings.Join(conds, " AND ") + " AND "
 	}
 	now := time.Now()
+	const shown = 12 // the sessions an ambiguous reference is answered with
 	find := func(cond string, extra ...any) ([]Session, error) {
 		rows, err := ix.ro.QueryContext(ctx, `SELECT `+sessionColumns+`, s.copy_of FROM sessions s WHERE `+base+cond+
-			` ORDER BY s.parent_session != '', s.updated_at DESC LIMIT 12`, append(append([]any{}, args...), extra...)...)
+			` ORDER BY s.parent_session != '', s.updated_at DESC LIMIT `+strconv.Itoa(shown), append(append([]any{}, args...), extra...)...)
 		if err != nil {
 			return nil, err
 		}
@@ -360,13 +366,11 @@ func (ix *Index) Resolve(ctx context.Context, ref string, stores []string) (Sess
 		{"substr(s.id, 1, ?) = ?", nil},
 		{"instr(s.path, ?) > 0", id},
 	} {
-		var found []Session
-		var err error
+		extra := []any{attempt.arg}
 		if attempt.arg == nil {
-			found, err = find(attempt.cond, len(id), id)
-		} else {
-			found, err = find(attempt.cond, attempt.arg)
+			extra = []any{len(id), id}
 		}
+		found, err := find(attempt.cond, extra...)
 		if err != nil {
 			return Session{}, err
 		}
@@ -380,7 +384,15 @@ func (ix *Index) Resolve(ctx context.Context, ref string, stores []string) (Sess
 		if found[0].Parent == nil && found[1].Parent != nil {
 			return found[0], nil
 		}
-		return Session{}, &AmbiguousError{Ref: ref, Matches: found}
+		// How many it fits, which may be more than are listed: a copy counted as the session
+		// it was folded into
+		var total int
+		err = ix.ro.QueryRowContext(ctx, `SELECT count(DISTINCT CASE WHEN s.copy_of != 0 THEN s.copy_of ELSE s.sid END) FROM sessions s WHERE `+base+attempt.cond,
+			append(append([]any{}, args...), extra...)...).Scan(&total)
+		if err != nil {
+			return Session{}, err
+		}
+		return Session{}, &AmbiguousError{Ref: ref, Matches: found, Total: total}
 	}
 	return Session{}, ErrNotFound
 }

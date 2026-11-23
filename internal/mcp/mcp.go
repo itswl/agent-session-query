@@ -308,7 +308,7 @@ func (s *Server) dispatch(ctx context.Context, method string, params json.RawMes
 		}
 		return map[string]any{
 			"protocolVersion": negotiate(p.ProtocolVersion),
-			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
+			"capabilities":    capabilities(),
 			"serverInfo":      map[string]any{"name": "asq", "title": "Agent session history", "version": app.Version},
 			"instructions":    Instructions,
 		}, nil
@@ -318,8 +318,18 @@ func (s *Server) dispatch(ctx context.Context, method string, params json.RawMes
 		return map[string]any{"tools": describe()}, nil
 	case "tools/call":
 		return s.call(ctx, params)
+	case "prompts/list":
+		return map[string]any{"prompts": listPrompts()}, nil
+	case "prompts/get":
+		return s.getPrompt(ctx, params)
 	}
 	return nil, &rpcError{Code: codeNoMethod, Message: "unknown method: " + method}
+}
+
+// capabilities are what this server offers: tools, and prompts, neither of which changes
+// while it runs.
+func capabilities() map[string]any {
+	return map[string]any{"tools": map[string]any{"listChanged": false}, "prompts": map[string]any{"listChanged": false}}
 }
 
 // negotiate picks the revision to speak: the client's, when this server knows it, and

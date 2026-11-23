@@ -214,7 +214,10 @@ over HTTP at `/mcp`.
 Ten read-only tools — `search`, `sessions`, `read`, `brief`, `pack`, `usage`, `failures`,
 `digest`, `files`, `projects` — return compact plain text rather than JSON, cut to a budget the
 caller can raise, with secret-shaped strings masked: what a model reads is paid for by the
-token, and leaves the machine with it. → [MCP](docs/mcp.md)
+token, and leaves the machine with it. Two prompts become slash commands in Claude Code, Gemini
+CLI and OpenCode. In Claude Code `/asq:handoff` puts the newest other session in the repository,
+from any CLI, into the conversation, briefed whole, for the agent to take over; `/asq:catchup`
+the last week's sessions there. → [MCP](docs/mcp.md)
 
 ## Traces
 

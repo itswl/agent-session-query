@@ -636,3 +636,129 @@ func TestServeStopsWhenAsked(t *testing.T) {
 		t.Fatal("asked to stop, and still waiting for its input")
 	}
 }
+
+// getPrompt runs prompts/get and returns the one message it gives, or the error.
+func getPrompt(t *testing.T, s *Server, name string, args map[string]any) (string, *rpcError) {
+	t.Helper()
+	params, _ := json.Marshal(map[string]any{"name": name, "arguments": args})
+	result, rpcErr := s.dispatch(t.Context(), "prompts/get", params)
+	if rpcErr != nil {
+		return "", rpcErr
+	}
+	raw, _ := json.Marshal(result)
+	var r struct {
+		Description string `json:"description"`
+		Messages    []struct {
+			Role    string `json:"role"`
+			Content struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(raw, &r); err != nil || len(r.Messages) != 1 || r.Messages[0].Role != "user" || r.Messages[0].Content.Type != "text" || r.Description == "" {
+		t.Fatalf("%s: result = %s", name, raw)
+	}
+	return r.Messages[0].Content.Text, nil
+}
+
+// A handoff and a catch-up are prompts a client makes slash commands of: the newest other
+// session here briefed whole, and the sessions here packed, each below the words that say
+// what to do with it and that it is evidence, not instructions.
+func TestPrompts(t *testing.T) {
+	s := withCodex(t)
+	var out bytes.Buffer
+	_ = s.Serve(t.Context(), strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}`+"\n"+`{"jsonrpc":"2.0","id":2,"method":"prompts/list"}`+"\n"), &out)
+	type listed struct {
+		ID     int `json:"id"`
+		Result struct {
+			Capabilities map[string]any `json:"capabilities"`
+			Prompts      []struct {
+				Name      string `json:"name"`
+				Arguments []struct {
+					Name     string `json:"name"`
+					Required bool   `json:"required"`
+				} `json:"arguments"`
+			} `json:"prompts"`
+		} `json:"result"`
+	}
+	byID := map[int]listed{} // each request runs on its own, and is answered when it is done
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		var r listed
+		if json.Unmarshal([]byte(line), &r) != nil {
+			t.Fatalf("not the protocol: %q", line)
+		}
+		byID[r.ID] = r
+	}
+	if byID[1].Result.Capabilities["prompts"] == nil {
+		t.Fatalf("initialize does not offer prompts: %s", out.String())
+	}
+	if p := byID[2].Result.Prompts; len(p) != 2 || p[0].Name != "handoff" || p[1].Name != "catchup" || len(p[0].Arguments) != 1 || p[0].Arguments[0].Required {
+		t.Fatalf("prompts/list = %s", out.String())
+	}
+
+	codex := "codex/" + codexThread
+	for _, tc := range []struct {
+		caller *Caller
+		prompt string
+		args   map[string]any
+		want   []string
+		not    []string
+	}{
+		{&Caller{Dirs: []string{"/work/alpha"}}, "handoff", nil, []string{handoffAsk, evidence,
+			"[claude/" + fixture.Alpha + ": the newest session in /work/alpha or below it — the directory this server was started in, other than this conversation.]",
+			"## The whole session", "## Turn 1\n", "## Turn 2\n", "## State at the end"}, nil},
+		// The conversation asking is not handed to itself: the newest other one, of any CLI
+		{&Caller{Session: fixture.Beta, Dirs: []string{"/work/beta"}, name: "claude-code"}, "handoff", nil,
+			[]string{"[" + codex + ": the newest session in /work/beta or below it", "pin the provider versions"}, []string{"rotate the deploy key"}},
+		{&Caller{Session: codexThread, Dirs: []string{"/work/beta"}, name: "claude-code"}, "handoff", nil,
+			[]string{"[" + codex + ": the newest session in /work/beta"}, nil},
+		{&Caller{Dirs: []string{"/work/beta"}}, "handoff", map[string]any{"session": "claude"},
+			[]string{"[claude/" + fixture.Beta + ": the newest claude session in /work/beta", "rotate the deploy key"}, []string{"pin the provider"}},
+		{&Caller{Dirs: []string{"/nowhere"}}, "handoff", map[string]any{"session": "bbbb2222"},
+			[]string{"[claude/" + fixture.Beta + ", as it was named.]", "rotate the deploy key", "[redacted]"}, []string{fixture.Secret}},
+		{&Caller{Dirs: []string{"/nowhere"}}, "handoff", map[string]any{"session": "aaaa1111#1"},
+			[]string{"## Turn 1\n", "fix the flaky test"}, []string{"## Turn 2\n", "## The whole session"}},
+		{nil, "handoff", nil, []string{"[claude/" + fixture.Alpha + ": the newest session in any directory: asq is not told which directory you work in over HTTP"}, nil},
+		{&Caller{Dirs: []string{"/work/alpha"}}, "catchup", nil, []string{catchupAsk, evidence,
+			"[The sessions in /work/alpha or below it — the directory this server was started in, since 7d.]", "# Session pack", "Fix flaky test", "- Asked: fix the flaky test"}, []string{"rotate"}},
+		{nil, "catchup", map[string]any{"project": "beta", "since": "30d"}, []string{`[The sessions in a directory whose path holds "beta", since 30d.]`, "rotate the deploy key", "pin the provider versions"}, []string{"Fix flaky test"}},
+	} {
+		s.Caller = tc.caller
+		text, rpcErr := getPrompt(t, s, tc.prompt, tc.args)
+		if rpcErr != nil {
+			t.Errorf("%s %v: %+v", tc.prompt, tc.args, rpcErr)
+			continue
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s %v: no %q in\n%s", tc.prompt, tc.args, want, text)
+			}
+		}
+		for _, not := range tc.not {
+			if strings.Contains(text, not) {
+				t.Errorf("%s %v: %q in\n%s", tc.prompt, tc.args, not, text)
+			}
+		}
+	}
+
+	for _, tc := range []struct {
+		caller *Caller
+		prompt string
+		args   map[string]any
+		want   string
+	}{
+		{&Caller{Session: fixture.Alpha, Dirs: []string{"/work/alpha"}, name: "claude-code"}, "handoff", nil, "no session other than this conversation ran in /work/alpha or below it"},
+		{&Caller{Dirs: []string{"/work/alpha"}}, "handoff", map[string]any{"session": "zzzz"}, "no such session"},
+		{&Caller{Dirs: []string{"/work/beta"}}, "catchup", map[string]any{"since": "1h"}, "no session ran in /work/beta or below it"},
+		{nil, "catchup", nil, `project ".": "." is the directory you work in`},
+		{&Caller{Dirs: []string{"/work/alpha"}}, "catchup", map[string]any{"since": "soon"}, "since: unreadable time"},
+		{&Caller{}, "handoff", map[string]any{"ref": "x"}, `handoff takes no argument "ref" (it takes: session)`},
+		{&Caller{}, "summarize", nil, "unknown prompt \"summarize\" (there are: handoff, catchup)"},
+	} {
+		s.Caller = tc.caller
+		if _, rpcErr := getPrompt(t, s, tc.prompt, tc.args); rpcErr == nil || rpcErr.Code != codeParams || !strings.Contains(rpcErr.Message, tc.want) {
+			t.Errorf("%s %v = %+v, want an error saying %q", tc.prompt, tc.args, rpcErr, tc.want)
+		}
+	}
+}

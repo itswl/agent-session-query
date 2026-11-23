@@ -121,6 +121,11 @@ receives one, because a reader will otherwise get them wrong:
 - **Do not summarise it away before handing it on.** A summary decides what matters before
   anyone knows what will be asked.
 
+A person can do either in one command where the client makes the server's prompts slash
+commands: `/asq:handoff` in Claude Code puts the newest other session in the repository into the
+conversation, briefed whole (`/asq:handoff codex` the newest Codex one), and `/asq:catchup` the
+last week's sessions there.
+
 When the receiver needs the transcript itself — to grep, to analyse with code — that is a file,
 not context: `asq export <ref> --format jsonl > session.jsonl` (one tagged object per line, for
 `jq`), or `--format md` to read. Write it to disk and query it there.

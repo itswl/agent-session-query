@@ -285,9 +285,7 @@ func (s *Server) run(ctx context.Context, t tool, given map[string]any, who aske
 		if err != nil {
 			return "", fmt.Errorf("project %q: %w", project, err)
 		}
-		if project != "." {
-			dir = filepath.Join(dir, filepath.FromSlash(project))
-		}
+		dir = joinDir(dir, project)
 		if a.dirs, err = s.App.Paths(ctx, []string{dir}, true); err != nil {
 			return "", err
 		}
@@ -336,8 +334,22 @@ func (s *Server) run(ctx context.Context, t tool, given map[string]any, who aske
 	return text, nil
 }
 
+// joinDir is the directory a project of ".", "./web" or ".." names from dir. "." is dir as
+// it was given: cleaned, it would be another spelling of it on Windows.
+func joinDir(dir, project string) string {
+	if project == "." {
+		return dir
+	}
+	return filepath.Join(dir, filepath.FromSlash(project))
+}
+
 // cut holds an answer to its budget, on a line boundary, and says what to do about it.
 func cut(text string, budget int) string {
+	return cutFor(text, budget, "Ask for less — fewer turns, a smaller limit, a narrower query — or raise max_chars.")
+}
+
+// cutFor is cut, with what to do about it said for what was asked.
+func cutFor(text string, budget int, advice string) string {
 	if len(text) <= budget {
 		return text
 	}
@@ -348,7 +360,7 @@ func cut(text string, budget int) string {
 	if nl := strings.LastIndexByte(text[:at], '\n'); nl > budget/2 {
 		at = nl
 	}
-	return text[:at] + fmt.Sprintf("\n\n[Cut here: %d more characters. Ask for less — fewer turns, a smaller limit, a narrower query — or raise max_chars.]", len(text)-at)
+	return text[:at] + fmt.Sprintf("\n\n[Cut here: %d more characters. %s]", len(text)-at, advice)
 }
 
 // style is how text is dressed for a model: plain, lines cut where a quote stops paying,

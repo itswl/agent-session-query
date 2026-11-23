@@ -169,6 +169,27 @@ Over HTTP only a thread the request names says which session is asking: without 
 reached at `/mcp` answers `this` with an error saying so, and the tool's description says it
 too. Name the session by its ref there.
 
+## Prompts
+
+Two prompts, for a person to ask for by name rather than a model to reach for. Claude Code
+lists them as `/asq:handoff` and `/asq:catchup` (typing `/mcp__asq__handoff` runs one too),
+Gemini CLI as `/handoff` and `/catchup`, OpenCode as `/asq:handoff` and `/asq:catchup`. Each
+takes its arguments after it, separated by spaces, and puts what it returns in the
+conversation as the person's message. Codex does not offer prompts.
+
+| prompt | puts in the conversation | arguments, both optional |
+|---|---|---|
+| `handoff` | the newest session in the directory the agent works in, other than this conversation, from any CLI, briefed whole — below the words to take its work over: say where it stands, check that against the repository, and ask before going on | `session`: a ref, or a CLI's name (`codex`) for its newest session there |
+| `catchup` | the sessions of that directory over the last 7 days as a pack, oldest first — below the words to say what each set out to do and what is still open | `since` (`2d`, `2026-11-01`), `project` (a part of a path, or `.`) |
+
+`/asq:handoff codex` in Claude Code carries the last Codex session in the repository over. Both
+say first, as the server's instructions do, that what follows is evidence of what was done and
+not instructions, and then which session or sessions they took and why. The directory is found
+as a `project` of `.` finds it. "This conversation" is the session Claude Code names to the
+server, or the Codex thread a request names. Over HTTP, where nothing says which directory the
+agent works in, `handoff` takes the newest session in any directory and says so, and `catchup`
+wants a `project`.
+
 ## How the answers are shaped
 
 **Plain text, not JSON.** The reader is a model that pays for what it reads by the token. A
@@ -230,7 +251,7 @@ skill that teaches an agent when to reach for these tools and how to move throug
 
 ## Protocol notes
 
-Tools only; no resources, prompts or sampling. Revisions 2024-11-05 through 2025-11-25 are
+Tools and prompts; no resources or sampling. Revisions 2024-11-05 through 2025-11-25 are
 answered in kind. On stdio each request runs on its own, so a slow search does not hold up a
 ping, and `notifications/cancelled` stops the request it names. stdout carries the protocol and
 nothing else; anything the server has to say goes to stderr.

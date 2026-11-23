@@ -825,3 +825,24 @@ func TestUninstallSaysWindowsPathsAsPowerShellReadsThem(t *testing.T) {
 		t.Errorf("asqCommand = %s, want %s", got, want)
 	}
 }
+
+// asq is said by its name when the PATH finds this very binary so, and by its path when it
+// finds none, or another.
+func TestUninstallSaysAsqByNameWhenThePathFindsIt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a link to the running test binary is not removed on Windows")
+	}
+	self := thisFile()
+	dir := t.TempDir()
+	if err := os.Symlink(self, filepath.Join(dir, "asq")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if got := asqCommand(runtime.GOOS, self); got != "asq" {
+		t.Errorf("with this binary on the PATH, asq is said as %s", got)
+	}
+	t.Setenv("PATH", t.TempDir())
+	if got := asqCommand("linux", self); got != app.ShellArg(self) {
+		t.Errorf("with none on the PATH, asq is said as %s, want %s", got, app.ShellArg(self))
+	}
+}

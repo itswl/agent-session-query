@@ -6,5 +6,5 @@ import "embed"
 
 // Files is the page, index.html at the root.
 //
-//go:embed index.html app.css app.js js fonts icons favicon.ico manifest.webmanifest
+//go:embed index.html app.css app.js js fonts icons favicon.ico manifest.webmanifest sw.js offline.html
 var Files embed.FS

@@ -1607,6 +1607,16 @@ func TestThePagesFilesAreNamedForWhatTheyAre(t *testing.T) {
 			t.Errorf("%s = %d: under a tag only the files are", p, rec.Code)
 		}
 	}
+	// The worker is a script at the root, where its scope is the whole page, asked for again
+	// each time; its page for when the server cannot be reached is a page under the policy
+	worker := call{path: "/sw.js?v=" + tag}.do(s)
+	if worker.Code != http.StatusOK || !strings.HasPrefix(worker.Header().Get("Content-Type"), "text/javascript") || worker.Header().Get("Cache-Control") != "no-cache" {
+		t.Errorf("the worker = %d %q %q", worker.Code, worker.Header().Get("Content-Type"), worker.Header().Get("Cache-Control"))
+	}
+	offline := call{path: "/offline.html"}.do(s)
+	if offline.Code != http.StatusOK || !strings.HasPrefix(offline.Header().Get("Content-Type"), "text/html") || offline.Header().Get("Content-Security-Policy") != pageCSP {
+		t.Errorf("the worker's page = %d %q", offline.Code, offline.Header().Get("Content-Type"))
+	}
 
 	// Any file that changes is a new set, under a new tag
 	files := fstest.MapFS{

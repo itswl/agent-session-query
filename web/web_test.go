@@ -69,7 +69,7 @@ var references = regexp.MustCompile(`(?:src|href)="([^"#]+)"|url\(["']?([^"')]+)
 // What the page's own files point at — scripts, styles, fonts, icons — is embedded too.
 func TestEveryReferenceResolves(t *testing.T) {
 	all := files(t)
-	for _, name := range []string{"index.html", "app.css", "manifest.webmanifest"} {
+	for _, name := range []string{"index.html", "app.css", "manifest.webmanifest", "offline.html"} {
 		body, ok := all[name]
 		if !ok {
 			t.Fatalf("%s is not embedded", name)
@@ -111,22 +111,25 @@ func TestNothingTurnsTextIntoMarkup(t *testing.T) {
 	}
 }
 
-// The page is served under a policy that allows no inline script and no inline style;
-// markup that needs either would work in no browser.
+// The page — and the worker's page for when the server cannot be reached — is served
+// under a policy that allows no inline script and no inline style; markup that needs
+// either would work in no browser.
 func TestThePageNeedsNothingInline(t *testing.T) {
-	html := files(t)["index.html"]
-	for _, bad := range []string{"<style", " style=", " onclick=", " onload=", " onerror="} {
-		if strings.Contains(strings.ToLower(html), bad) {
-			t.Errorf("index.html has %q", strings.TrimSpace(bad))
+	for _, name := range []string{"index.html", "offline.html"} {
+		html := files(t)[name]
+		for _, bad := range []string{"<style", " style=", " onclick=", " onload=", " onerror="} {
+			if strings.Contains(strings.ToLower(html), bad) {
+				t.Errorf("%s has %q", name, strings.TrimSpace(bad))
+			}
+		}
+		inline := regexp.MustCompile(`(?is)<script\b([^>]*)>(.*?)</script>`)
+		for _, m := range inline.FindAllStringSubmatch(html, -1) {
+			if !strings.Contains(m[1], "src=") || strings.TrimSpace(m[2]) != "" {
+				t.Errorf("%s has an inline script: %.60s", name, m[0])
+			}
 		}
 	}
-	inline := regexp.MustCompile(`(?is)<script\b([^>]*)>(.*?)</script>`)
-	for _, m := range inline.FindAllStringSubmatch(html, -1) {
-		if !strings.Contains(m[1], "src=") || strings.TrimSpace(m[2]) != "" {
-			t.Errorf("index.html has an inline script: %.60s", m[0])
-		}
-	}
-	if !strings.Contains(html, `type="module"`) {
+	if !strings.Contains(files(t)["index.html"], `type="module"`) {
 		t.Error("index.html loads no module")
 	}
 }

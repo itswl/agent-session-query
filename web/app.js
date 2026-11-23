@@ -67,6 +67,7 @@ const hashed = (s) => {
 };
 
 boot();
+keepAPageForWhenTheServerIsGone();
 
 async function boot() {
   onUnauthorized(showLogin);
@@ -314,4 +315,14 @@ function onKey(e) {
   } else if (view?.key?.(e)) {
     e.preventDefault();
   }
+}
+
+// A worker keeps a page of its own for when the server cannot be reached — the machine
+// asleep, a tunnel down — with a way to try again (see sw.js). It is named for this set of
+// the page's files, so that a new set brings a new one. Where workers are not allowed — a
+// page served over plain HTTP to another machine — there is none, and nothing else changes.
+function keepAPageForWhenTheServerIsGone() {
+  if (!('serviceWorker' in navigator)) return;
+  const tag = /^\/a\/([^/]+)\//.exec(new URL(import.meta.url).pathname)?.[1];
+  navigator.serviceWorker.register('/sw.js' + (tag ? '?v=' + encodeURIComponent(tag) : '')).catch(() => {});
 }

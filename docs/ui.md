@@ -234,6 +234,14 @@ changed, and on the name in the bar. A page left open while the server was upgra
 the page it was loaded with; it says so, and offers to reload. A server whose binary an upgrade
 replaced goes on with the old one until it is restarted; the page says that too.
 
+Opened when the server cannot be reached — the machine asleep, the tunnel to it down — the page,
+or the app installed from it, says so on a page of its own, with *Retry*, where it would show the
+browser's error or the tunnel's. A service worker keeps that page and what it is drawn with, and
+nothing else: no answer of the API, nothing of the record, so there is nothing to show until the
+server answers again. Each version of the page brings its own, and lets the last one go. A
+browser allows a service worker only over HTTPS or on this machine; a page served over plain HTTP
+to another one has none, and shows the browser's error.
+
 ## Quick, and quiet
 
 **Going from one view to another is not a wait.** Each view keeps what it was last answered for
@@ -253,8 +261,9 @@ way, since what it found is ranked rather than dated and cannot be brought up to
 Pointing at a view's link asks for it before the click lands. A picture drawn is drawn again from
 what the page has, so a turn refreshed as it is written does not fetch its pictures again. Nothing
 of this outlives the page, and all of it is dropped when the sign-in is lost. What the browser keeps longer is the theme;
-for the marks of what changed since you last looked, times; and for the tab's life, which notices
-were dismissed in it, as a hash of what they said: no answer, no text, no id.
+for the marks of what changed since you last looked, times; for the tab's life, which notices
+were dismissed in it, as a hash of what they said: no answer, no text, no id; and the service
+worker's page for when the server cannot be reached ([above](#dark-small-signed-in)).
 
 **The status says one of three things**: *up to date*; *reading 412 of 1,276…* while the index
 catches up — a first read, or many transcripts after a while away; *reconnecting…* if the

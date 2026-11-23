@@ -3,7 +3,6 @@ package transcript
 import (
 	"encoding/json"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/itswl/agent-session-query/internal/model"
@@ -104,15 +103,12 @@ func (w *Writer) Resume(m *Mark) {
 func (w *Writer) Resumed() bool { return w.resumed }
 
 // begins reports whether m begins a turn of its own, with nothing of the turn before in
-// it: what the first message of a read taken up at a mark must do.
+// it: what the first message of a read taken up at a mark must do. It asks as addUser
+// decides an ask: by the words, and by the files carried when there are none.
 func begins(m *Message) bool {
 	if m.Role != User || m.Injected || m.Queued || m.Inherited || len(m.Blocks) == 0 || m.Blocks[0].Type == Result {
 		return false
 	}
-	text := joinText(m.Blocks, Text)
-	if strings.TrimSpace(text) == "" {
-		return false
-	}
-	_, starts := AskOf(text)
+	_, starts := askOf(m.Blocks)
 	return starts
 }

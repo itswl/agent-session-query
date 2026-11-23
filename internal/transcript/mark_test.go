@@ -105,3 +105,42 @@ func TestAMarkWithNoTurnThereIsNotTakenUp(t *testing.T) {
 		}
 	}
 }
+
+// Whether a read taken up at a mark begins there is decided as a whole read decides that a
+// turn begins: by the words a message holds, and by the files it carried when it holds
+// none. A picture sent alone begins a turn, and is taken up at; CLI-written words do not,
+// whatever came with them.
+func TestAMarkBeginsWhereATurnDoes(t *testing.T) {
+	png := Embedded("image/png", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+	msgs := []Message{
+		user(0, "look at this"),
+		{Role: Assistant, At: at(1), Response: "r1", Blocks: []Block{TextOf("Looking.")}},
+		{Role: User, At: at(2), Blocks: []Block{AttachmentOf(png)}},
+		{Role: Assistant, At: at(3), Response: "r2", Blocks: []Block{TextOf("A dot.")}},
+	}
+	wholeTurns, wholeStats, wholeSession, mark, err := marking(t, nil, msgs...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mark == nil || mark.Turn != 2 {
+		t.Fatalf("the mark = %+v, want turn 2, which a picture sent alone began", mark)
+	}
+	turns, stats, session, _, err := marking(t, mark, msgs...)
+	if err != nil {
+		t.Fatalf("taken up at a picture sent alone: %v", err)
+	}
+	got, _ := json.Marshal(Collected{Session: session, Stats: stats, Turns: turns})
+	want, _ := json.Marshal(Collected{Session: wholeSession, Stats: wholeStats, Turns: wholeTurns[1:]})
+	if string(got) != string(want) {
+		t.Errorf("taken up at turn 2:\n%s\nwant:\n%s", got, want)
+	}
+
+	c := &Collector{}
+	w := New(c)
+	w.Resume(mark)
+	w.Add(Message{Role: User, At: at(2), Blocks: []Block{TextOf("<ide_selection>x := 1</ide_selection>"), AttachmentOf(png)}})
+	w.Add(user(3, "and this"))
+	if _, err := w.Finish(); !errors.Is(err, ErrNotTakenUp) {
+		t.Errorf("words the IDE wrapped, with a picture, where turn 2 began: %v, %d turns", err, len(c.Turns))
+	}
+}

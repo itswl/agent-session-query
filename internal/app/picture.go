@@ -27,9 +27,10 @@ type Picture struct {
 // transcript again — is at most heldPictures.
 const (
 	MaxPicture   = 8 << 20
-	heldPictures = 32 << 20
 	readPictures = 30 * time.Second // the longest a transcript is read for them
 )
+
+var heldPictures = 32 << 20 // a variable for the tests (see export_test.go)
 
 // Picture reads the nth file the item at seq carried, from the session's transcript: the
 // index keeps what each file is, not its bytes. Only a picture the transcript holds is
@@ -63,14 +64,26 @@ func (a *App) Picture(ctx context.Context, s *index.Session, seq, n int) (Pictur
 	if p, ok := a.pictures.get(key); ok {
 		return p, nil
 	}
-	turnKey := strconv.FormatInt(s.SID(), 10) + "#" + strconv.Itoa(turn)
-	if err := a.pictures.once(ctx, turnKey, func(ctx context.Context) error { return a.readPictures(ctx, s, turn, seq) }); err != nil {
-		return Picture{}, err
-	}
-	if p, ok := a.pictures.get(key); ok {
-		return p, nil
+	for {
+		ran, err := a.pictures.once(ctx, pictureTurn(s, turn), func(ctx context.Context) error { return a.readPictures(ctx, s, turn, seq, n) })
+		if err != nil {
+			return Picture{}, err
+		}
+		if p, ok := a.pictures.get(key); ok {
+			return p, nil
+		}
+		if ran {
+			break
+		}
+		// The read this waited for was another request's, and kept the pictures it could
+		// hold, which may not have been this one: this one is read for itself
 	}
 	return Picture{}, fmt.Errorf("%w: step %d's file %d is not in the transcript as it was when the transcript was read, or its bytes are not the picture it is said to be", index.ErrNotFound, seq, n)
+}
+
+// pictureTurn names a session's turn among the reads of the pictures under way.
+func pictureTurn(s *index.Session, turn int) string {
+	return strconv.FormatInt(s.SID(), 10) + "#" + strconv.Itoa(turn)
 }
 
 // Shown are the pictures Picture sends, and a page may show: by what the transcript says
@@ -78,27 +91,30 @@ func (a *App) Picture(ctx context.Context, s *index.Session, seq, n int) (Pictur
 var Shown = map[string]bool{"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true}
 
 // readPictures reads the session's transcript to the end of a turn and keeps the pictures
-// its items carry: the one asked for first, then the others as far as what is kept holds.
-func (a *App) readPictures(ctx context.Context, s *index.Session, turn, first int) error {
+// its items carry: the ones of the item asked for, then the others as far as what is kept
+// holds beside them — so that none of them pushes out the picture asked for.
+func (a *App) readPictures(ctx context.Context, s *index.Session, turn, first, n int) error {
 	turns, err := a.Index.Turns(ctx, s, index.TurnRange{First: turn, Last: turn})
 	if err != nil || len(turns) == 0 {
 		return err
 	}
 	want := map[int][]model.Attachment{} // what the index says each item carries
-	seqs, budget := []int{first}, heldPictures
+	sizes := map[int]int{}               // what of it would be kept, by item
 	for _, it := range turns[0].Items {
 		if len(it.Attachments) == 0 {
 			continue
 		}
 		want[it.Seq] = it.Attachments
-		size := 0
 		for _, att := range it.Attachments {
-			if att.Inline && att.Bytes <= MaxPicture {
-				size += att.Bytes
+			if att.Inline && Shown[att.Mime] && att.Bytes <= MaxPicture {
+				sizes[it.Seq] += att.Bytes
 			}
 		}
-		if it.Seq != first && size > 0 && size <= budget {
-			seqs, budget = append(seqs, it.Seq), budget-size
+	}
+	others, budget := []int{}, heldPictures-sizes[first]
+	for _, it := range turns[0].Items {
+		if size := sizes[it.Seq]; it.Seq != first && size > 0 && size <= budget {
+			others, budget = append(others, it.Seq), budget-size
 		}
 	}
 
@@ -128,7 +144,7 @@ func (a *App) readPictures(ctx context.Context, s *index.Session, turn, first in
 		}
 		return nil
 	}))
-	w.Keep(seqs...)
+	w.Keep(append(others, first)...)
 	err = store.Source.Read(reading, sources.Ref{Key: key}, w)
 	if _, ferr := w.Finish(); err == nil && !errors.Is(ferr, done) {
 		err = ferr
@@ -139,13 +155,24 @@ func (a *App) readPictures(ctx context.Context, s *index.Session, turn, first in
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	for seq, files := range w.Kept() {
-		recorded := want[seq]
+	// Kept last, the picture asked for is the last that what is kept lets go of
+	kept := w.Kept()
+	for _, seq := range append(others, first) {
+		files, recorded := kept[seq], want[seq]
 		if len(files) != len(recorded) {
 			continue // the transcript has moved on from what the index read: nothing of it is the item's
 		}
-		for i, f := range files {
-			was := recorded[i]
+		order := make([]int, 0, len(files))
+		for i := range files {
+			if seq != first || i != n {
+				order = append(order, i)
+			}
+		}
+		if seq == first && n < len(files) {
+			order = append(order, n)
+		}
+		for _, i := range order {
+			f, was := files[i], recorded[i]
 			if f.Mime != was.Mime || f.Size != was.Bytes || !was.Inline || f.Data == "" || f.Size > MaxPicture {
 				continue
 			}
@@ -221,17 +248,18 @@ func (c *pictures) put(key pictureKey, pic Picture) {
 	}
 }
 
-// once runs read for a turn, or waits for the read of it already under way. The read is
-// not the caller's to cancel — another may be waiting for it — and is bounded instead.
-func (c *pictures) once(ctx context.Context, turn string, read func(context.Context) error) error {
+// once runs read for a turn, or waits for the read of it already under way, and says
+// which: ran is false when the read was another's. The read is not the caller's to cancel
+// — another may be waiting for it — and is bounded instead.
+func (c *pictures) once(ctx context.Context, turn string, read func(context.Context) error) (ran bool, err error) {
 	c.mu.Lock()
 	if wait, ok := c.busy[turn]; ok {
 		c.mu.Unlock()
 		select {
 		case <-wait:
-			return nil
+			return false, nil
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, ctx.Err()
 		}
 	}
 	if c.busy == nil {
@@ -249,7 +277,7 @@ func (c *pictures) once(ctx context.Context, turn string, read func(context.Cont
 	bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), readPictures)
 	defer cancel()
 	if err := read(bounded); err != nil {
-		return fmt.Errorf("the transcript could not be read for its pictures: %w", err)
+		return true, fmt.Errorf("the transcript could not be read for its pictures: %w", err)
 	}
-	return nil
+	return true, nil
 }

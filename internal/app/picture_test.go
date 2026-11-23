@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/fixture"
@@ -96,5 +97,49 @@ func TestAPictureIsReadFromTheTranscript(t *testing.T) {
 	}
 	if _, err := fresh.Picture(ctx, &s2, ask.Seq, 0); !errors.Is(err, index.ErrNotFound) || !strings.Contains(err.Error(), "not in the transcript as it was") {
 		t.Errorf("a picture the transcript no longer holds as it was read: %v", err)
+	}
+}
+
+// Pictures a page asks for together are each sent. A turn's read keeps the pictures of the
+// step asked for — the one asked for last, so that what is kept lets it go last — and of
+// the others only what fits beside them; a request that waited for another's read, which
+// did not keep its picture, reads the turn for itself rather than say the picture is gone.
+func TestPicturesAskedForTogetherAreEachSent(t *testing.T) {
+	a, h := fixture.Open(t)
+	h.WritePictures(t)
+	ctx := t.Context()
+	if _, err := a.Sync(ctx, index.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	s, _, err := a.Resolve(ctx, "claude/"+fixture.Pictured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, err := a.Index.Turns(ctx, &s, index.TurnRange{First: 1, Last: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shot := turns[0].Items[1] // a PNG of 70 bytes and a GIF of 43
+	defer app.SetHeldPictures(100)()
+
+	// The screenshot's PNG with its GIF is more than is kept: the PNG asked for stays
+	if pic, err := a.Picture(ctx, &s, shot.Seq, 0); err != nil || pic.Type != "image/png" {
+		t.Errorf("the picture asked for, beside more than is kept = %q, %v", pic.Type, err)
+	}
+
+	// Another request reads the turn, and keeps nothing this one asks for
+	release := app.BusyPictures(a, &s, 1)
+	got := make(chan error, 1)
+	go func() {
+		pic, err := a.Picture(ctx, &s, shot.Seq, 1)
+		if err == nil && pic.Type != "image/gif" {
+			err = errors.New("sent as " + pic.Type)
+		}
+		got <- err
+	}()
+	time.Sleep(50 * time.Millisecond) // for the request to wait on the other read
+	release()
+	if err := <-got; err != nil {
+		t.Errorf("a picture the read waited for did not keep: %v", err)
 	}
 }

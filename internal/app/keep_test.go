@@ -420,3 +420,45 @@ func TestNothingIsCopiedIntoAStoreNorDeletedFromOne(t *testing.T) {
 		t.Errorf("the CLI's own transcript was deleted as its copy: %v", err)
 	}
 }
+
+// Where asq looked, when no store held a session, names the CLIs' stores and not the
+// folder of copies of a CLI nothing has been kept of yet, as the health report leaves it
+// out too; one that holds copies is a place sessions are found.
+func TestWhereAsqLookedLeavesOutAFolderOfCopiesNotMade(t *testing.T) {
+	ctx := t.Context()
+	state, nowhere := t.TempDir(), filepath.Join(t.TempDir(), "projects")
+	a, err := app.Open(app.Config{
+		IndexPath: filepath.Join(t.TempDir(), "index.db"),
+		Stores:    catalog.Config{Only: []string{"claude"}, Paths: []catalog.Path{{Agent: "claude", Dir: nowhere}}},
+		State:     state,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Close() })
+	if _, err := a.KeepAll(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	sync(t, a)
+	if !slices.ContainsFunc(a.Set.All(), func(st index.Store) bool { return st.Name == "claude@kept" }) {
+		t.Fatalf("claude@kept is not read once everything is kept: %v", a.Stores())
+	}
+	looked, err := a.NothingFound(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, l := range looked {
+		names = append(names, l.Source+" "+l.State())
+	}
+	if strings.Join(names, ", ") != "claude not there" {
+		t.Errorf("looked in %q; want the CLI's own store alone", names)
+	}
+	h, err := a.Health(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h.Stores) != len(looked) {
+		t.Errorf("health names %d stores, where asq looked %d", len(h.Stores), len(looked))
+	}
+}

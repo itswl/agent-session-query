@@ -311,6 +311,9 @@ func (a *App) NothingFound(ctx context.Context) ([]Looked, error) {
 	}
 	var looked []Looked
 	for _, st := range a.Set.All() {
+		if keep.IsKept(st.Source) && !st.Source.Exists() {
+			continue // nothing of that CLI has been kept: not a place a CLI's sessions were looked for
+		}
 		looked = append(looked, Looked{Source: st.Name, Location: st.Source.Location(), Found: st.Source.Exists(), Unread: unread[st.Name]})
 	}
 	return looked, nil

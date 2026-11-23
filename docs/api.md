@@ -210,10 +210,10 @@ event: sync
 data: {"running": true, "total": 1276, "done": 412, "stores": "5f0c1a9e2b"}
 ```
 
-`changes` names the sessions a sync wrote (`"gone": true` for one that was deleted), or says
-`{"all": true}` when more changed than is worth naming. The stream carries no content: a client
-that hears a session changed asks for what it wants of it. A comment line every 20 seconds keeps
-proxies from closing a quiet stream.
+`changes` names the sessions a sync changed — a turn, or where the latest turn stands — with
+`"gone": true` for one that was deleted, or says `{"all": true}` when more changed than is worth
+naming. The stream carries no content: a client that hears a session changed asks for what it
+wants of it. A comment line every 20 seconds keeps proxies from closing a quiet stream.
 
 `sync` speaks of a read worth waiting for: the first one, or a catch-up — eight or more
 transcripts still to read, two seconds in — which it then follows to its end, `done` moving

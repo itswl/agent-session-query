@@ -714,6 +714,17 @@ func (ix *Index) write(ctx context.Context, tx *sql.Tx, rd *reading) (sid int64,
 		if s.Parent != nil {
 			p = *s.Parent
 		}
+		// Where the latest turn stands is shown with the session, and can change while no
+		// turn does: a turn marked over adds nothing to it. A change to it is a change of
+		// the session, while it is recent enough to be shown (see liveFor)
+		var wasLive string
+		if err := tx.QueryRowContext(ctx, `SELECT live FROM sessions WHERE source = ? AND key = ?`, rd.source, rd.ref.Key).
+			Scan(&wasLive); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if wasLive != liveJSON && time.Since(s.UpdatedAt) < WaitingFor {
+			changed = true
+		}
 		err := tx.QueryRowContext(ctx, `
 INSERT INTO sessions (source, agent, key, stamp, reads, id, path, title, cwd, branch, model, version, platform,
   started_at, updated_at, archived, running, live_state, live,

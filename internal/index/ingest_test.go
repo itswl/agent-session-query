@@ -406,6 +406,60 @@ func TestWhereALatestTurnStandsIsKeptAndBelieved(t *testing.T) {
 	}
 }
 
+// ending is a store of one session whose CLI marks the end of every turn: answered, and
+// then, once over is set, marked over. n moves the stamp alone.
+type ending struct {
+	at   time.Time
+	over bool
+	n    int
+}
+
+func (ending) Location() string { return "test" }
+func (ending) Exists() bool     { return true }
+func (e ending) Scan(context.Context) ([]sources.Ref, error) {
+	return []sources.Ref{{Key: "k", Stamp: fmt.Sprint(e.over, e.n), ModTime: time.Now()}}, nil
+}
+func (e ending) Read(_ context.Context, _ sources.Ref, w *transcript.Writer) error {
+	w.S.ID, w.Tells = "ending", transcript.TellsByMarks
+	w.Add(transcript.Message{Role: transcript.User, At: e.at, Blocks: []transcript.Block{transcript.TextOf("summarise the build log")}})
+	w.Add(transcript.Message{Role: transcript.Assistant, At: e.at.Add(time.Second), Response: "r", Blocks: []transcript.Block{transcript.TextOf("The build is green.")}})
+	if e.over {
+		w.Add(transcript.Message{Role: transcript.System, At: e.at.Add(2 * time.Second), Ends: true})
+	}
+	return nil
+}
+
+// A turn marked over changes where the session stands and none of its turns. The change is
+// told as the session's, as one to a turn is, so that a page showing the session at work
+// learns that it is done; a session past being said to stand anywhere changes nothing shown.
+func TestATurnMarkedOverIsAChange(t *testing.T) {
+	for _, c := range []struct {
+		ago  time.Duration
+		told bool
+	}{{time.Minute, true}, {WaitingFor + time.Hour, false}} {
+		ix := openTemp(t)
+		at := time.Now().Add(-c.ago).Truncate(time.Second)
+		store := func(e ending) []Store {
+			e.at = at
+			return []Store{{Name: "codex", Spec: sources.Spec{Name: "codex", Reads: 1}, Source: e}}
+		}
+		if _, err := ix.Sync(context.Background(), store(ending{}), SyncOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		res, err := ix.Sync(context.Background(), store(ending{over: true}), SyncOptions{Force: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if told := len(res.Changes) == 1 && res.Changes[0].ID == "ending"; res.Read != 1 || told != c.told {
+			t.Errorf("written %s ago and marked over: read %d, changes %+v; want told %v", c.ago, res.Read, res.Changes, c.told)
+		}
+		// Read again with nothing moved, it is no change
+		if again, err := ix.Sync(context.Background(), store(ending{over: true, n: 1}), SyncOptions{Force: true}); err != nil || again.Read != 1 || len(again.Changes) != 0 {
+			t.Errorf("read again as it was: %+v (%v)", again, err)
+		}
+	}
+}
+
 // claudeRows is a Claude Code transcript of a few turns, as the CLI writes it: long
 // outputs, a failure, an edit, a prompt queued mid-turn, a skill set off by a slash
 // command, the title given and given again, and the cost the session closes with.

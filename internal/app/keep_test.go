@@ -1,6 +1,7 @@
 package app_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -460,5 +461,68 @@ func TestWhereAsqLookedLeavesOutAFolderOfCopiesNotMade(t *testing.T) {
 	}
 	if len(h.Stores) != len(looked) {
 		t.Errorf("health names %d stores, where asq looked %d", len(h.Stores), len(looked))
+	}
+}
+
+// A session asq kept after its CLI deleted it ran in a directory of this machine: given that
+// directory with its links resolved — --project . from a process with no PWD — the path it
+// was recorded by, through a link, is found as it was while the CLI still held the session.
+func TestAKeptSessionIsFoundThroughALink(t *testing.T) {
+	root := t.TempDir()
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(real, "proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Skipf("no symbolic link here: %v", err)
+	}
+	const id = "eeee5555-0000-4000-8000-000000000005"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	cwd, _ := json.Marshal(link)
+	text := `{"type":"user","uuid":"e-u","timestamp":"` + now + `","sessionId":"` + id + `","cwd":` + string(cwd) + `,"message":{"role":"user","content":"through the link"}}` + "\n" +
+		`{"type":"assistant","uuid":"e-a","timestamp":"` + now + `","sessionId":"` + id + `","message":{"id":"m-e","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"done"}]}}` + "\n"
+	store := filepath.Join(t.TempDir(), "claude")
+	path := filepath.Join(store, "-link", id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rested := time.Now().Add(-keep.Settle - time.Minute)
+	if err := os.Chtimes(path, rested, rested); err != nil {
+		t.Fatal(err)
+	}
+	cfg := fixture.History{Dir: store}.Config(t)
+	cfg.State = t.TempDir()
+	a, err := app.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Close() })
+	ctx := t.Context()
+	sync(t, a)
+	if copied, err := a.KeepAll(ctx, true); err != nil || copied.Transcripts != 1 {
+		t.Fatalf("keep all = %+v, %v", copied, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	sync(t, a)
+	paths, err := a.Paths(ctx, []string{dir}, true)
+	if err != nil || !slices.Contains(paths, link) {
+		t.Fatalf("the directory = %q, %v; want the link a kept session was recorded by", paths, err)
+	}
+	f, err := a.Filter(app.Query{Dirs: paths})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list, _, err := a.Index.Sessions(ctx, f, index.Page{Limit: 5}); err != nil || len(list) != 1 || list[0].Source != "claude@kept" {
+		t.Errorf("the sessions in the directory = %d, %v; want the kept one", len(list), err)
 	}
 }

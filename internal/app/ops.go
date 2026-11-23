@@ -138,10 +138,12 @@ func (a *App) Paths(ctx context.Context, dirs []string, below bool) ([]string, e
 	if len(reals) == 0 {
 		return out, nil
 	}
+	// A labelled store's paths are another machine's; the copies asq keeps are of this
+	// machine's own stores, and their paths are this machine's
 	var stores []string
-	for _, name := range a.Stores() {
-		if !strings.Contains(name, "@") { // a labelled store's paths are another machine's
-			stores = append(stores, name)
+	for _, st := range a.Set.All() {
+		if !strings.Contains(st.Name, "@") || keep.IsKept(st.Source) {
+			stores = append(stores, st.Name)
 		}
 	}
 	cwds, err := a.Index.Cwds(ctx, stores)

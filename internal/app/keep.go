@@ -152,14 +152,23 @@ func (a *App) KeepIn(dir string) error {
 		}
 	}
 	was, next := st.Folder(state), keep.Settings{Dir: dir}.Folder(state)
-	for _, store := range a.Set.All() {
-		if keep.IsKept(store.Source) {
+	// Copies are never written into a store, nor deleted from one: no CLI's folder of copies
+	// is in a store asq reads, or the store itself, or holds one
+	for _, spec := range catalog.All {
+		if _, ok := spec.Open("").(sources.Keeper); !ok {
 			continue
 		}
-		// Copies are never written into a store: a CLI's own would be written in, and any
-		// store would list them as sessions of its own
-		if rel, err := filepath.Rel(store.Source.Location(), next); err == nil && filepath.IsLocal(rel) {
-			return fmt.Errorf("%s is in the store %s, %s: asq writes nothing in a store; name a folder outside it", next, store.Name, store.Source.Location())
+		to := filepath.Join(next, spec.Name)
+		for _, store := range a.Set.All() {
+			if keep.IsKept(store.Source) {
+				continue
+			}
+			switch loc := store.Source.Location(); {
+			case beneath(to, loc):
+				return fmt.Errorf("%s, where the copies of %s would go, is the store %s or in it: asq writes nothing in a store; name a folder outside it", to, spec.Title, store.Name)
+			case beneath(loc, to):
+				return fmt.Errorf("%s, where the copies of %s would go, holds the store %s: asq writes nothing in a store; name another folder", to, spec.Title, store.Name)
+			}
 		}
 	}
 	if filepath.Clean(was) != filepath.Clean(next) {
@@ -172,6 +181,12 @@ func (a *App) KeepIn(dir string) error {
 		st.Dir = ""
 	}
 	return keep.Save(state, st)
+}
+
+// beneath reports whether path is dir or a path beneath it.
+func beneath(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && filepath.IsLocal(rel)
 }
 
 // Keeping is what keeping one session, or no longer keeping it, did.
@@ -238,8 +253,8 @@ func (a *App) dropCopy(ctx context.Context, st keep.Settings, s *index.Session) 
 			own, _ := keeper.Files(sources.Ref{Key: row.Key, Stamp: row.Stamp})
 			for _, path := range own {
 				rel, err := filepath.Rel(store.Source.Location(), path)
-				if err != nil || !filepath.IsLocal(rel) {
-					continue
+				if err != nil || !filepath.IsLocal(rel) || beneath(filepath.Join(to, rel), store.Source.Location()) {
+					continue // and never a file of the store's own, whatever folder the settings name
 				}
 				if err := os.Remove(filepath.Join(to, rel)); err != nil && !errors.Is(err, os.ErrNotExist) {
 					errs = errors.Join(errs, err)

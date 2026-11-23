@@ -287,7 +287,7 @@ too. Nothing is kept unless asked:
 | `asq keep --all` | a copy of every session of Claude Code and Gemini CLI: made now, and again once a session that changed has rested five minutes |
 | `asq keep <ref>` | a copy of one session and its subagents, made now and kept up the same way; `--drop <ref>` stops keeping it |
 | `asq keep --off` | no longer every session; what is kept stays, and so do the sessions kept one by one |
-| `asq keep --dir <folder>` | where the copies go: by default `kept` in the state directory (`ASQ_STATE`); never a folder in a store |
+| `asq keep --dir <folder>` | where the copies go, each CLI's in a folder of its name: by default `kept` in the state directory (`ASQ_STATE`); never one that would put them in a store |
 | `asq keep` | what is kept, where, and how much disk it takes |
 
 A copy is a session's files as its CLI wrote them, laid out as in the CLI's store, and is read as

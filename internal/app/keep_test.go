@@ -248,11 +248,13 @@ func TestKeepOneSession(t *testing.T) {
 }
 
 // The folder the copies go in can be named, but not while the one before holds copies:
-// they would no longer be read. Nor can a folder in a store: asq writes nothing there.
+// they would no longer be read. Nor can one that would put them in a store — a folder in
+// it, or the one above a store that is its CLI's folder of copies there: asq writes
+// nothing in a store.
 func TestKeepInAFolderOfOnesOwn(t *testing.T) {
 	a, h, kept := keeping(t)
 	ctx := t.Context()
-	for _, dir := range []string{h.Dir, filepath.Join(h.Dir, "-work-alpha", "kept")} {
+	for _, dir := range []string{h.Dir, filepath.Join(h.Dir, "-work-alpha", "kept"), filepath.Dir(h.Dir)} {
 		if err := a.KeepIn(dir); err == nil || !strings.Contains(err.Error(), "asq writes nothing in a store") {
 			t.Errorf("keep in %s = %v; want it refused", dir, err)
 		}
@@ -385,5 +387,25 @@ func TestWhatIsKeptIsCopiedAgainWhereItsCopyIsGone(t *testing.T) {
 	}
 	if _, err := os.Stat(betaCopy); err != nil {
 		t.Error(err)
+	}
+}
+
+// A folder of copies named by hand in the settings, and so never refused, has nothing of a
+// store deleted as a copy, though it is the store itself.
+func TestNothingOfAStoreIsDeletedAsACopy(t *testing.T) {
+	a, h, kept := keeping(t)
+	ctx := t.Context()
+	if err := keep.Save(filepath.Dir(filepath.Dir(kept)), keep.Settings{Dir: filepath.Dir(h.Dir)}); err != nil {
+		t.Fatal(err)
+	}
+	alpha, _, _ := a.Resolve(ctx, fixture.Alpha)
+	if _, err := a.KeepSession(ctx, &alpha, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.KeepSession(ctx, &alpha, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(h.Dir, "-work-alpha", fixture.Alpha+".jsonl")); err != nil {
+		t.Errorf("the CLI's own transcript was deleted as its copy: %v", err)
 	}
 }

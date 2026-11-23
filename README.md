@@ -109,6 +109,13 @@ Or take an archive from the [releases](https://github.com/itswl/agent-session-qu
 (amd64 and arm64 for all three systems), or run the container image
 `ghcr.io/itswl/agent-session-query` — see [Deploying](docs/deploy.md).
 
+Then:
+
+```sh
+asq doctor     # which stores were found, and whether each reads
+asq ls         # the first run indexes your history: about a minute per gigabyte
+```
+
 The checksums the installers check come from the same release as the archives: they catch a
 download gone wrong, not a release replaced. What says where a file came from is its build
 attestation — every archive, installer and image has one, signed by the release workflow, naming
@@ -117,13 +124,6 @@ the run and the commit that built it:
 ```sh
 gh attestation verify asq-darwin-arm64.tar.gz --repo itswl/agent-session-query
 gh attestation verify oci://ghcr.io/itswl/agent-session-query:latest --repo itswl/agent-session-query
-```
-
-Then:
-
-```sh
-asq doctor     # which stores were found, and whether each reads
-asq ls         # the first run indexes your history: about a minute per gigabyte
 ```
 
 ## Upgrading
@@ -157,6 +157,9 @@ rm -rf ~/Library/Caches/asq ~/.cache/asq     # the index, rebuilt when needed
 rm -rf "$HOME/Library/Application Support/asq" ~/.local/state/asq   # the state: the sign-in key, what a collector was sent, the copies asq keep made
 ```
 
+Installed with Homebrew or Scoop, `brew uninstall asq` or `scoop uninstall asq` takes the
+binary instead.
+
 On Windows, delete `%LOCALAPPDATA%\Programs\asq`, `%LocalAppData%\asq` and `%AppData%\asq`,
 and remove the `asq` entry from your user PATH. `ASQ_INDEX` or `ASQ_STATE` moved the last
 two elsewhere — remove them where you put them. A line added to the shell's rc for the
@@ -167,9 +170,9 @@ since. They are in the state directory, or the folder `asq keep --dir` named; `a
 which. Move them elsewhere first to keep them.
 
 If `asq serve` was kept running, take the service down before the binary —
-`asq service uninstall`; one set up by hand, the launchd agent, the systemd unit or the
-scheduled task, each named in [Deploying](docs/deploy.md); a container is `docker rm` and
-its `/data` volume.
+`asq service uninstall`, or `brew services stop asq`; one set up by hand, the launchd agent,
+the systemd unit or the scheduled task, each named in [Deploying](docs/deploy.md); a
+container is `docker rm` and its `/data` volume.
 
 ## Commands
 

@@ -101,6 +101,13 @@ go install github.com/itswl/agent-session-query/cmd/asq@latest
 也可以从 [releases](https://github.com/itswl/agent-session-query/releases) 直接下载压缩包（三个系统均提供
 amd64 与 arm64），或运行容器镜像 `ghcr.io/itswl/agent-session-query` —— 见 [部署](docs/deploy.md)。
 
+然后：
+
+```sh
+asq doctor     # 找到了哪些存储，各自是否能读
+asq ls         # 第一次运行会建索引：每 GB 历史大约一分钟
+```
+
 安装脚本核对的校验和与压缩包来自同一个 release：它能发现下载出错，发现不了整个 release 被替换。
 能说明文件来历的是构建证明（build attestation）——每个压缩包、安装脚本和镜像都有一份，由发布
 workflow 签名，写明构建它的那次运行和那个 commit：
@@ -108,13 +115,6 @@ workflow 签名，写明构建它的那次运行和那个 commit：
 ```sh
 gh attestation verify asq-darwin-arm64.tar.gz --repo itswl/agent-session-query
 gh attestation verify oci://ghcr.io/itswl/agent-session-query:latest --repo itswl/agent-session-query
-```
-
-然后：
-
-```sh
-asq doctor     # 找到了哪些存储，各自是否能读
-asq ls         # 第一次运行会建索引：每 GB 历史大约一分钟
 ```
 
 ## 升级
@@ -146,6 +146,8 @@ rm -rf ~/Library/Caches/asq ~/.cache/asq     # 索引，需要时会自动重建
 rm -rf "$HOME/Library/Application Support/asq" ~/.local/state/asq   # 状态：登录签名密钥、已发给 collector 的清单、asq keep 存下的副本
 ```
 
+用 Homebrew 或 Scoop 装的，二进制改用 `brew uninstall asq` 或 `scoop uninstall asq` 删除。
+
 Windows：删除 `%LOCALAPPDATA%\Programs\asq`、`%LocalAppData%\asq` 和 `%AppData%\asq`，并把
 用户 PATH 里的 `asq` 条目移除。若设过 `ASQ_INDEX` 或 `ASQ_STATE`，后两项在你说的地方，照那里
 删。为 PATH 加过的 shell rc 那一行也可以一并删掉。
@@ -153,9 +155,9 @@ Windows：删除 `%LOCALAPPDATA%\Programs\asq`、`%LocalAppData%\asq` 和 `%AppD
 `asq keep` 存下的副本（如果让它存过）是 CLI 删掉的会话仅剩的一份。它们在状态目录里，或者在
 `asq keep --dir` 指定的目录里；`asq keep` 会说是哪个。想留着就先挪走。
 
-若 `asq serve` 是常驻运行的，先停掉服务再删二进制——`asq service uninstall`；手工配置的
-launchd、systemd 或计划任务，按[部署](docs/deploy.md)里写的停；容器则是 `docker rm` 加它的
-`/data` 卷。
+若 `asq serve` 是常驻运行的，先停掉服务再删二进制——`asq service uninstall` 或
+`brew services stop asq`；手工配置的 launchd、systemd 或计划任务，按[部署](docs/deploy.md)里写的
+停；容器则是 `docker rm` 加它的 `/data` 卷。
 
 ## 命令
 

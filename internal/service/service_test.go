@@ -486,6 +486,25 @@ func TestTheDefinitionsKeepItRunning(t *testing.T) {
 	}
 }
 
+// systemd expands a specifier (%h, %u, %g …) in every one of these settings and a variable
+// ($HOME) in ExecStart: what is written doubles each, so that it reads as typed. Reading
+// the unit back cannot tell, since it leaves a specifier it does not know as it is.
+func TestTheUnitIsNotExpandedBySystemd(t *testing.T) {
+	m := &Machine{Home: t.TempDir(), Config: t.TempDir()}
+	s := Setup{Binary: "/opt/100%/asq", Args: []string{"serve", "--path", "claude=/srv/$HOME %h"},
+		Env: []Var{{"ASQ_TOKEN", "a$b%gc"}}, Writable: []string{"/c/50%u"}}
+	unit := string((&systemd{m: m}).render(s))
+	for _, want := range []string{
+		"\nExecStart=/opt/100%%/asq serve --path \"claude=/srv/$$HOME %%h\"\n",
+		"\nEnvironment=ASQ_TOKEN=a$b%%gc\n",
+		"\nReadWritePaths=/c/50%%u\n",
+	} {
+		if !strings.Contains(unit, want) {
+			t.Errorf("lacks %q:\n%s", want, unit)
+		}
+	}
+}
+
 func TestTheTaskIsGivenToSchtasksInUTF16(t *testing.T) {
 	f := newFake(t, "windows")
 	if _, err := f.m.Install(f.setup(), false); err != nil {

@@ -169,8 +169,9 @@ var tools = []tool{
 	{
 		name:  "digest",
 		title: "Digest of a stretch of work",
-		about: "What a stretch of work added up to, per project: sessions, turns, tool calls and failures, tokens, files changed by kind, models used. " +
-			"Covers the last 7 days unless since says otherwise. Use it for a standup, a weekly report, \"where did the time go\".",
+		about: "What a stretch of work added up to, per project: sessions, turns, tool calls and failures (and how many of those the same command passed later), tokens, files changed by kind, models used — " +
+			"then the project's latest sessions, each with its ref, when it was last at work, how its turns ended (✓, ✗N failed and how many passed later, ⚠ interrupted), its title and the last thing its agent said. " +
+			"Covers the last 7 days unless since says otherwise; the answer's first line says which moments that was, on the clock of the machine asq runs on. Use it for a standup, a weekly report, \"what did I do today\", \"where did the time go\".",
 		props: []prop{pSource, pProject, pBranch, pSince, pUntil, pChars},
 		run:   runDigest,
 	},
@@ -638,6 +639,7 @@ func runUsage(ctx context.Context, s *Server, a *args) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		render.Span(&b, w.Since, w.Until, style())
 		render.Usage(&b, "By "+by, rows, &total, style())
 		return b.String(), nil
 	}
@@ -645,6 +647,7 @@ func runUsage(ctx context.Context, s *Server, a *args) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	render.Span(&b, w.Since, w.Until, style())
 	render.UsageReport(&b, rep, q.Since == "" && q.Until == "", style())
 	return b.String(), nil
 }
@@ -695,7 +698,7 @@ func runDigest(ctx context.Context, s *Server, a *args) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	rep, err := s.App.Index.Digest(ctx, f, w)
+	rep, err := s.App.Digest(ctx, f, w)
 	if err != nil {
 		return "", err
 	}

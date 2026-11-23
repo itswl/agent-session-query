@@ -176,7 +176,9 @@ narrows to paths that contain what is typed; *Read or changed* adds the turns th
 ![Files](screenshots/files.png)
 
 **Digest** — the same window per project: sessions, turns, tool calls and failures — how many of
-them passed later — tokens, files changed by kind, which models and CLIs did the work.
+them passed later too — tokens, files changed by kind, which models and CLIs did the work; then
+the project's latest sessions, each opening it, with how its turns in the window ended and the
+last thing its agent said, and a link to the rest.
 
 ![Digest](screenshots/digest.png)
 

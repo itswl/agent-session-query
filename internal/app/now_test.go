@@ -316,6 +316,36 @@ func TestFilesSayHowTheyStandNow(t *testing.T) {
 	if err != nil || len(res.Hits) != 1 || res.Hits[0].Failed != 4 || res.Hits[0].PassedLater != 2 {
 		t.Errorf("hits = %+v, %v: want the first turn, its four failures, two passed later", res.Hits, err)
 	}
+
+	// And the digest, in all, for the project and for the session it names
+	digest, err := a.Digest(ctx, f, index.Window{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d index.Digest
+	var listed index.DigestSession
+	for _, p := range digest.Projects {
+		for _, e := range p.List {
+			if e.Ref == "claude/"+id {
+				d, listed = p, e
+			}
+		}
+	}
+	for name, got := range map[string]*int{"in all": digest.Total.PassedLater, "the project": d.PassedLater, "the session": listed.PassedLater} {
+		if got == nil || *got != 2 {
+			t.Errorf("digest, %s: passed later = %v, want 2 of the 4 failed", name, got)
+		}
+	}
+	if d.Failures != 4 || listed.Failures != 4 || listed.Ref != "claude/"+id || listed.Turns != 2 {
+		t.Errorf("digest's session = %+v", listed)
+	}
+	// More failures than a digest looks at: it says nothing of passing later, which is
+	// not none
+	defer func(n int) { digestLooks = n }(digestLooks)
+	digestLooks = 3
+	if many, err := a.Digest(ctx, f, index.Window{}); err != nil || many.Total.Failures != 4 || many.Total.PassedLater != nil {
+		t.Errorf("a digest of more failures than it looks at = %+v, %v; want no passed later", many.Total, err)
+	}
 }
 
 func itoa(i int) string {

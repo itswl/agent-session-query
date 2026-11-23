@@ -322,20 +322,39 @@ func hit(w io.Writer, n int, h index.Hit, st Style) {
 // command passed later — ✗ while one has not, ✓ once each has; that the person stopped it;
 // or, neither, ✓.
 func ending(h index.Hit, st Style) string {
+	return outcome(h.Failed, h.PassedLater, h.Interrupted, st)
+}
+
+// outcome says how work ended: the calls that failed, and how many of them the same command
+// passed later; that the person stopped it; or, neither, ✓.
+func outcome(failed, passedLater int, interrupted bool, st Style) string {
 	var parts []string
 	switch {
-	case h.Failed > h.PassedLater:
-		parts = append(parts, st.red("✗")+failedNote(st, h.Failed, h.PassedLater))
-	case h.Failed > 0:
-		parts = append(parts, st.green("✓")+" "+failedNote(st, h.Failed, h.PassedLater))
+	case failed > passedLater:
+		parts = append(parts, st.red("✗")+failedNote(st, failed, passedLater))
+	case failed > 0:
+		parts = append(parts, st.green("✓")+" "+failedNote(st, failed, passedLater))
 	}
-	if h.Interrupted {
+	if interrupted {
 		parts = append(parts, st.yellow("⚠ interrupted"))
 	}
 	if len(parts) == 0 {
 		return st.green("✓")
 	}
 	return strings.Join(parts, st.dim(" · "))
+}
+
+// passedOf is what follows "N failed": how many of them passed later, if any did.
+func passedOf(failed, passed int) string {
+	switch {
+	case passed <= 0:
+		return ""
+	case passed >= failed && failed == 1:
+		return ", passed later"
+	case passed >= failed:
+		return ", all passed later"
+	}
+	return ", " + strconv.Itoa(passed) + " passed later"
 }
 
 // quoted lists words in quotation marks: “a”, “b” or “c”.
@@ -1047,8 +1066,24 @@ func waitingLine(folder string) string {
 	return "now: not looked at — a look in " + folder + " is waiting (on a Mac, macOS asking whether asq may read it)"
 }
 
-// Digest prints what a window's work added up to, per project.
+// Span says which moments a report covers, on this machine's clock — what "today" or
+// "monday" was taken to mean, for a reader on another — or nothing, for all time.
+func Span(w io.Writer, since, until time.Time, st Style) {
+	at := func(t time.Time) string { return t.Local().Format("Mon 2006-01-02 15:04 -07:00") }
+	switch {
+	case !since.IsZero() && !until.IsZero():
+		fmt.Fprintln(w, st.dim(at(since)+" → "+at(until)))
+	case !since.IsZero():
+		fmt.Fprintln(w, st.dim("Since "+at(since)))
+	case !until.IsZero():
+		fmt.Fprintln(w, st.dim("Until "+at(until)))
+	}
+}
+
+// Digest prints what a window's work added up to, per project, and each project's latest
+// sessions with how they ended.
 func Digest(w io.Writer, rep index.DigestReport, st Style) {
+	Span(w, rep.Since, rep.Until, st)
 	if len(rep.Projects) == 0 {
 		fmt.Fprintln(w, "Nothing happened in that window.")
 		return
@@ -1079,6 +1114,19 @@ func Digest(w io.Writer, rep index.DigestReport, st Style) {
 		}
 		return strings.Join(parts, " · ")
 	}
+	// Each session by the shortest ref that tells it from the others listed, as ls names it
+	var listed []index.Session
+	for _, d := range rep.Projects {
+		for _, e := range d.List {
+			var s index.Session
+			s.Source, s.ID, _ = index.SplitRef(e.Ref)
+			listed = append(listed, s)
+		}
+	}
+	refs := map[string]string{}
+	for i, short := range ShortRefs(listed) {
+		refs[listed[i].Source+"/"+listed[i].ID] = short
+	}
 	fmt.Fprintf(w, "%s  %s\n", st.bold("Total"), line(rep.Total))
 	for _, d := range rep.Projects {
 		name := st.Path(d.Cwd)
@@ -1093,7 +1141,74 @@ func Digest(w io.Writer, rep index.DigestReport, st Style) {
 			fmt.Fprintf(w, "  %s %s\n", st.dim("models "), c)
 		}
 		fmt.Fprintf(w, "  %s %s · %s → %s\n", st.dim("with   "), counts(d.Sources, nil), shortTime(d.FirstAt), shortTime(d.LastAt))
+		for _, e := range d.List {
+			digestSession(w, e, refs[e.Ref], st)
+		}
+		if more := d.Sessions - len(d.List); more > 0 && len(d.List) > 0 {
+			fmt.Fprintln(w, st.dim("  … "+plural(more, "more session")+": "+moreSessions(d.Cwd, rep, st)))
+		}
 	}
+}
+
+// digestSession prints one session of a digest: where it was in the window and how it
+// ended there, what it was, and the last thing the agent said.
+func digestSession(w io.Writer, e index.DigestSession, ref string, st Style) {
+	facts := []string{shortTime(e.LastAt)}
+	if e.Turns > 0 {
+		facts = append(facts, plural(e.Turns, "turn"))
+	}
+	if e.Tools > 0 {
+		facts = append(facts, plural(e.Tools, "tool call"))
+	}
+	passed := 0
+	if e.PassedLater != nil {
+		passed = *e.PassedLater
+	}
+	fmt.Fprintf(w, "  %s  %s  %s\n", st.cyan(ref), st.dim(strings.Join(facts, " · ")), outcome(e.Failures, passed, e.Interrupted, st))
+	title := txt.OneLine(e.Title, 0)
+	if title == "" {
+		title = "(untitled)"
+	}
+	fmt.Fprintf(w, "    %s\n", st.fit(title, 4))
+	if e.Answer != "" {
+		fmt.Fprintf(w, "    %s %s\n", st.dim("→"), st.dim(st.fit(txt.OneLine(e.Answer, digestAnswer), 6)))
+	}
+}
+
+// digestAnswer is how much of each session's last answer a digest quotes: enough to say
+// what it concluded, for a page of sessions in an agent's budget.
+const digestAnswer = 160
+
+// moreSessions says how to list a project's sessions in the digest's window.
+func moreSessions(cwd string, rep index.DigestReport, st Style) string {
+	at := func(t time.Time) string { return t.Local().Format("2006-01-02T15:04") }
+	if st.Args {
+		args := []string{"project=" + strconv.Quote(cwd)}
+		if !rep.Since.IsZero() {
+			args = append(args, "since="+strconv.Quote(at(rep.Since)))
+		}
+		if !rep.Until.IsZero() {
+			args = append(args, "until="+strconv.Quote(at(rep.Until)))
+		}
+		return "sessions(" + strings.Join(args, ", ") + ")"
+	}
+	cmd := "asq ls --project " + quoteArg(cwd)
+	if !rep.Since.IsZero() {
+		cmd += " --since " + at(rep.Since)
+	}
+	if !rep.Until.IsZero() {
+		cmd += " --until " + at(rep.Until)
+	}
+	return cmd
+}
+
+// quoteArg puts a path in double quotes, which every shell takes, when it holds anything but
+// the plain characters of one: a space, as a rule.
+func quoteArg(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./~:\\") == "" {
+		return s
+	}
+	return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
 }
 
 // Files prints which turns touched a file, newest first.

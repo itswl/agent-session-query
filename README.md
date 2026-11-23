@@ -158,7 +158,7 @@ a container is `docker rm` and its `/data` volume.
 | `asq export <ref>` | a session whole — `--format md \| json \| jsonl \| html` |
 | `asq usage` | what the model calls consumed — `--by model \| day \| week \| month \| source \| project \| session` |
 | `asq failures [words]` | the tool calls that failed — `--open` for those whose command never passed later, `--by command`, `--tool Bash`, `--since`, or words their command or output holds |
-| `asq digest` | what a stretch of work added up to, per project |
+| `asq digest` | what a stretch of work added up to, per project, and the sessions behind it |
 | `asq files <path>` | the turns that touched a file — `--changed` |
 | `asq why <file>:<line>` | the session whose commit last changed a line, by `git blame`, which only reads |
 | `asq projects` | the directories sessions ran in |

@@ -617,6 +617,7 @@ func cmdUsage(ctx context.Context, args []string, io *streams) error {
 		if c.json {
 			return printJSON(io.out, map[string]any{"by": *by, "rows": rows, "total": total})
 		}
+		render.Span(io.out, w.Since, w.Until, st)
 		render.Usage(io.out, "By "+*by, rows, &total, st)
 		return nil
 	}
@@ -628,6 +629,7 @@ func cmdUsage(ctx context.Context, args []string, io *streams) error {
 	if c.json {
 		return printJSON(io.out, rep)
 	}
+	render.Span(io.out, w.Since, w.Until, st)
 	render.UsageReport(io.out, rep, c.q.Since == "" && c.q.Until == "", st)
 	return nil
 }
@@ -706,7 +708,7 @@ func cmdDigest(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return usageError{err}
 	}
-	rep, err := a.Index.Digest(ctx, f, w)
+	rep, err := a.Digest(ctx, f, w)
 	if err != nil {
 		return err
 	}

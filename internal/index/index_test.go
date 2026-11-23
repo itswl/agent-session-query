@@ -453,6 +453,35 @@ func TestReports(t *testing.T) {
 		if d.Cwd == "/work/alpha" && (d.Sessions != 1 || d.Turns != 2 || d.Models["claude-haiku-5"] != 1 || d.Changed["config"]+d.Changed["code"]+d.Changed["docs"]+d.Changed["test"] != 1) {
 			t.Errorf("alpha's digest = %+v", d)
 		}
+		// Each project names its sessions, with how their turns in the window went: the
+		// subagent's work in its session, the last turn's answer
+		if len(d.List) != 1 {
+			t.Errorf("%s lists %+v, want its one session", d.Cwd, d.List)
+			continue
+		}
+		e := d.List[0]
+		switch d.Cwd {
+		case "/work/alpha":
+			if e.Ref != "claude/"+fixture.Alpha || e.Title != "Fix flaky test" || e.Turns != 2 || e.Tools != 3 || e.Failures != 1 || e.Interrupted ||
+				!strings.HasPrefix(e.Answer, "索引已加上") || e.PassedLater != nil || !e.LastAt.After(e.FirstAt) {
+				t.Errorf("alpha in its digest = %+v", e)
+			}
+		case "/work/beta":
+			if e.Ref != "claude/"+fixture.Beta || e.Turns != 1 || !strings.HasPrefix(e.Answer, "Rotated.") {
+				t.Errorf("beta in its digest = %+v", e)
+			}
+		}
+	}
+	if !digest.Since.Equal(h.Now.Add(-7*24*time.Hour)) || !digest.Until.IsZero() || digest.Total.List != nil {
+		t.Errorf("digest's window = %v → %v, total's list %+v", digest.Since, digest.Until, digest.Total.List)
+	}
+	// A turn asked before the window is not the digest's, nor are its failures
+	calls, n, err := a.Index.DigestFailures(ctx, f, index.Window{Since: h.Now.Add(-7 * 24 * time.Hour)}, 10)
+	if err != nil || n != 1 || len(calls) != 1 || calls[0].Root != "claude/"+fixture.Alpha || calls[0].Session != "claude/"+fixture.Alpha || calls[0].Cwd != "/work/alpha" || calls[0].Turn != 1 {
+		t.Errorf("the digest's failed calls = %+v, %d, %v", calls, n, err)
+	}
+	if _, n, _ := a.Index.DigestFailures(ctx, f, index.Window{Since: h.Now.Add(-50 * time.Minute)}, 10); n != 0 {
+		t.Errorf("the digest's failed calls since alpha's first turn = %d, want none", n)
 	}
 
 	projects, err := a.Index.Projects(ctx, f)

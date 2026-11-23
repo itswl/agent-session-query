@@ -532,7 +532,7 @@ func (s *Server) handleDigest(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	rep, err := s.app.Index.Digest(r.Context(), f, win)
+	rep, err := s.app.Digest(r.Context(), f, win)
 	if err != nil {
 		s.fail(w, r, err)
 		return

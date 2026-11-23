@@ -45,7 +45,7 @@ Two ways to ask, the same answers either way:
 | "The exact message was …" | `search(query="\"exit status 1\"")` — quotes match a phrase as written; bare words match as prefixes and in their other forms; `-word` excludes |
 | "Which session made commit 3f9c2ab…?" | `search(query="3f9c2ab4e5f6…")` — a commit's id, as long as you have it, finds the turn whose `git commit` printed it |
 | "What was I working on?" / "…last week?" | `sessions(since="7d")`, with `project` / `source` / `branch` / `text` |
-| "…today?" / "…yesterday?" / "…since Monday?" | `since="today"`, `since="yesterday", until="today"`, `since="monday"` — midnight on the clock of the machine asq runs on |
+| "…today?" / "…yesterday?" / "…since Monday?" | `digest(since="today")`, `since="yesterday", until="today"`, `since="monday"` — midnight on the clock of the machine asq runs on, which the answer's first line names |
 | "Which of my agents are waiting on me?" / "Is it still running?" | `sessions(state="waiting,idle")`, or `state="working"`. A line says `working`, `waiting on <tool>: <command>` — a command still running or a permission prompt, which the record cannot tell apart — or `idle`, the agent done. Said for Claude Code, Codex, Gemini CLI and OpenCode, from what their transcripts say, not from a look at a process |
 | "What happened in that session?" | `read(ref="…")` — the outline: every turn's ask and how it ended, plus its subagents |
 | "What did it do in turn 4?" | `read(ref="…#4")` — step by step: replies, reasoning, each tool call and its outcome, numbered `[seq]` |
@@ -58,7 +58,7 @@ Two ways to ask, the same answers either way:
 | "Who changed this file, and why?" | `files(path="auth.go", changed=true)` — then `read` the turn |
 | "Which session wrote this line?" | `asq why auth.go:42` in a shell — git blame's commit, the turn that made it, the turns that name it. The MCP server does not have it |
 | "What keeps failing?" | `failures(by="command", since="7d")` — each command that failed, how often, in how many sessions, how many still open; `open=true` for only the ones whose command never passed later ("what is still broken?"); `tool="Bash"` or `query="ECONNREFUSED"` (words of the command or its output) to narrow. It looks at 7 days unless told; an answer of none says how many match before then — widen `since` before concluding it never failed |
-| "What did this week add up to?" | `digest(since="7d")` — per project: sessions, turns, failures, tokens, files changed |
+| "What did this week add up to?" / a standup | `digest(since="7d")` — per project: sessions, turns, failures and how many passed later, tokens, files changed; then its latest sessions, each with its ref, title, how it ended and its last answer |
 | "Where did the tokens go?" / "Which model is eating them?" | `usage()`, or `usage(by="model"\|"day"\|"week"\|"month"\|"project"\|"session")` — by session, each with its title and directory |
 | "Which repos have I used agents on?" | `projects()` |
 | "What did the subagents do?" | `read(ref="…")` lists them; each has a ref of its own to `read`. A search hit inside one says "subagent of …" |

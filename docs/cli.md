@@ -273,8 +273,18 @@ still open first, then those that failed most. `asq failures --by command --open
 still broken, and how often it broke.
 
 **`asq digest`** — the last 7 days (`--since`) per project: sessions, turns, tool calls,
-failures and how many of them passed later, tokens, files changed by kind (code / test / docs /
-config), models and CLIs used.
+failures and how many of them the same command passed later, tokens, files changed by kind
+(code / test / docs / config), models and CLIs used. Then the sessions behind the counts, the
+latest twelve of each project: the ref, when it was last at work in the window, its turns and
+tool calls there, how they ended (`✓`, `✗2 failed, 1 passed later`, `⚠ interrupted`), its
+title, and the last thing its agent said; a subagent's work is in the session it ran in. A
+project with more says how to list them. Passing later is judged as `failures` judges it, and
+only while the window holds no more than a thousand failed calls: past that the digest says
+how many failed and nothing more, rather than read the turns after each.
+
+The digest, and `usage` given `--since` or `--until`, open with the moments they cover on the
+clock of the machine `asq` runs on — `Since Mon 2026-11-23 00:00 +08:00` — which is what
+`today` was taken to mean.
 
 ## Serving
 

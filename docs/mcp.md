@@ -78,7 +78,7 @@ All ten only read. Each takes the selection arguments that make sense for it —
 | `pack` | Several sessions as one document, oldest first | `turns` |
 | `usage` | Tokens in and out, how many were reasoning, and the cache hit rate | `by` |
 | `failures` | The tool calls that failed, with the command and the end of the output — and where the same command passed later in the session; or by command, what keeps failing and what of it is still open. The last 7 days unless `since` says otherwise; an answer of none says how many match before then | `tool` (exact, or `prefix*`), `query` (words the command or output holds), `open` (only those whose command did not pass later), `by` (`command`) |
-| `digest` | What a stretch of work added up to, per project | |
+| `digest` | What a stretch of work added up to, per project, and the sessions behind it: each one's ref, title, how it ended and the last thing its agent said | |
 | `files` | Which turns read or changed a file, what was asked there, and whether the file is still as that turn left it | `path`, `changed` |
 | `projects` | The directories sessions ran in | |
 

@@ -661,3 +661,59 @@ func TestUsageBySessionNamesItsSessions(t *testing.T) {
 		t.Errorf("by project:\n%s", out.String())
 	}
 }
+
+// A digest names the sessions behind each project's counts, the latest first, each with how
+// it ended — the failures the same command passed later told from those it did not — and the
+// last thing its agent said; and it says which moments it covers, on this machine's clock.
+func TestDigestNamesItsSessions(t *testing.T) {
+	n := func(i int) *int { return &i }
+	since := time.Date(2026, 11, 23, 0, 0, 0, 0, time.Local)
+	rep := index.DigestReport{
+		Since: since,
+		Total: index.Digest{Sessions: 14, Turns: 20, Tools: 9, Failures: 3, PassedLater: n(2)},
+		Projects: []index.Digest{{
+			Cwd: "/home/u/work/api", Sessions: 14, Turns: 20, Tools: 9, Failures: 3, PassedLater: n(2),
+			List: []index.DigestSession{
+				{Ref: "claude/8a80b919-fbeb-4925-968b-46642528af23", Title: "Cap webhook retries", Turns: 2, Tools: 8, Failures: 2, PassedLater: n(1),
+					Answer: "Each retry now waits\ntwice as long.", LastAt: since.Add(10 * time.Hour)},
+				{Ref: "codex/0e9a1c2b-0000-4000-8000-000000000001", Turns: 1, Tools: 1, Failures: 1, PassedLater: n(1), Interrupted: true, LastAt: since.Add(9 * time.Hour)},
+			},
+		}},
+	}
+	var out bytes.Buffer
+	Digest(&out, rep, Style{Home: "/home/u"})
+	text := out.String()
+	for _, want := range []string{
+		"Since " + since.Format("Mon 2006-01-02 15:04 -07:00") + "\n",
+		"Total  14 sessions · 20 turns · 9 tool calls · 3 failed, 2 passed later\n",
+		"\n~/work/api\n",
+		"  claude/8a80b919  11-23 10:00 · 2 turns · 8 tool calls  ✗2 failed, 1 passed later\n    Cap webhook retries\n    → Each retry now waits twice as long.\n",
+		"  codex/0e9a1c2b  11-23 09:00 · 1 turn · 1 tool call  ✗1 failed, passed later · ⚠ interrupted\n    (untitled)\n",
+		"  … 12 more sessions: asq ls --project /home/u/work/api --since 2026-11-23T00:00\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("no %q in the digest:\n%s", want, text)
+		}
+	}
+	// An agent is told the tool and its arguments; failures not looked at say nothing of
+	// passing later, which is not none
+	rep.Total.PassedLater, rep.Projects[0].PassedLater, rep.Projects[0].List[0].PassedLater = nil, nil, nil
+	rep.Projects[0].Cwd = "/home/u/my work"
+	out.Reset()
+	Digest(&out, rep, Style{Args: true})
+	text = out.String()
+	for _, want := range []string{
+		"Total  14 sessions · 20 turns · 9 tool calls · 3 failed\n",
+		"  claude/8a80b919  11-23 10:00 · 2 turns · 8 tool calls  ✗2 failed\n",
+		`  … 12 more sessions: sessions(project="/home/u/my work", since="2026-11-23T00:00")` + "\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("no %q in the agent's digest:\n%s", want, text)
+		}
+	}
+	out.Reset()
+	Digest(&out, rep, Style{})
+	if !strings.Contains(out.String(), `asq ls --project "/home/u/my work" --since`) {
+		t.Errorf("a directory with a space, for a shell:\n%s", out.String())
+	}
+}

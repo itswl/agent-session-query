@@ -156,7 +156,8 @@ order to run them:
 
 1. what keeps `asq serve` running, taken down: `asq service uninstall` for the service it set
    up, while the binary is there to run it; `brew services stop asq` for Homebrew's; for one
-   set up by hand, found by what its plist, its unit or its task names, its manager's commands;
+   set up by hand — a LaunchAgent or a user unit that runs `asq serve`, or the task named
+   `asq` — its manager's commands;
 2. `asq uninstall` again, when there was a service, for the index it wrote until it stopped;
 3. the binary: `brew uninstall asq`, and `brew untap` when the tap is this repository, or
    `scoop uninstall asq`, for one they installed; otherwise `rm` where it is (`sudo`, when its

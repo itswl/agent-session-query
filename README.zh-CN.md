@@ -144,8 +144,8 @@ Windows 上正在运行的 `asq.exe` 无法被替换：先 `schtasks /end /tn as
 让 `asq keep` 存哪些会话的设置。其余的以命令的形式给出，按该运行的顺序：
 
 1. 先停掉让 `asq serve` 常驻的服务：它配置的服务用 `asq service uninstall`（趁二进制还在，
-   能运行它）；Homebrew 的服务用 `brew services stop asq`；手工配置的（按它的 plist、unit 或
-   计划任务指认了什么来找到）给出它的服务管理器自己的命令；
+   能运行它）；Homebrew 的服务用 `brew services stop asq`；手工配置的（运行 `asq serve` 的
+   LaunchAgent 或用户 unit，或名为 `asq` 的计划任务）给出它的服务管理器自己的命令；
 2. 有服务的话，再运行一次 `asq uninstall`，删掉服务停下之前又写下的索引；
 3. 最后是二进制：Homebrew 或 Scoop 装的，用 `brew uninstall asq`（tap 是本仓库的话再加
    `brew untap`）或 `scoop uninstall asq`；否则在它所在的位置 `rm`（目录不可写时带 `sudo`），

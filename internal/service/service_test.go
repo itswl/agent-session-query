@@ -799,8 +799,9 @@ func TestStatusNamesItsFieldsAsTheRecordDoes(t *testing.T) {
 // Find says what keeps asq serve running, and who set it up, from the definitions alone:
 // the service asq service install wrote, which asq service uninstall takes down; one made by
 // hand where install would write it, with the commands status gives for it; Homebrew's; and
-// one made by hand under another name, known by the binary it names or by asq and serve as
-// words — not dnsmasq's, whose --server has them as parts of words.
+// one made by hand under another name, known by the binary it names or by a program named
+// asq run as serve — not dnsmasq's, whose --server holds serve as part of a word, nor
+// another program's that serves from a folder named asq, or asq-something.
 func TestFind(t *testing.T) {
 	for _, goos := range []string{"darwin", "linux", "windows"} {
 		t.Run(goos, func(t *testing.T) {
@@ -848,8 +849,10 @@ func TestFind(t *testing.T) {
 				other = put(filepath.Join(dir, "me.plist"), "<string>"+esc(s.Binary)+"</string>")
 				put(filepath.Join(dir, "unrelated.plist"), "<string>/usr/bin/true</string>")
 				put(filepath.Join(dir, "dnsmasq.plist"), "<string>/opt/homebrew/opt/dnsmasq/sbin/dnsmasq</string><string>--server=1.1.1.1</string>")
+				put(filepath.Join(dir, "docs.plist"), "<string>/usr/local/bin/mkdocs</string><string>serve</string><string>-f</string><string>/Users/me/asq/mkdocs.yml</string>")
+				put(filepath.Join(dir, "web.plist"), "<string>/usr/local/bin/npx</string><string>vite</string><string>serve</string><string>/Users/me/asq-web</string>")
 				otherDown = []string{said("launchctl", "bootout", "gui/501", other), said("rm", other)}
-				word = put(filepath.Join(dir, "other.plist"), "<string>/usr/local/bin/asq</string><string>serve</string>")
+				word = put(filepath.Join(dir, "other.plist"), "<string>/usr/local/bin/asq</string>\n\t\t<string>serve</string>")
 				wordDown = []string{said("launchctl", "bootout", "gui/501", word), said("rm", word)}
 			} else {
 				dir := filepath.Join(f.m.Config, "systemd", "user")
@@ -858,8 +861,10 @@ func TestFind(t *testing.T) {
 				other = put(filepath.Join(dir, "me.service"), "[Service]\nExecStart=%h/"+filepath.ToSlash(rel)+"\n")
 				put(filepath.Join(dir, "unrelated.service"), "[Service]\nExecStart=/usr/bin/true\n")
 				put(filepath.Join(dir, "dnsmasq.service"), "[Service]\nExecStart=/usr/sbin/dnsmasq -k --server=1.1.1.1\n")
+				put(filepath.Join(dir, "docs.service"), "[Service]\nWorkingDirectory=/home/me/asq\nExecStart=/usr/bin/mkdocs serve\n")
+				put(filepath.Join(dir, "web.service"), "[Service]\nExecStart=/usr/bin/npx vite serve /home/me/asq-web\n")
 				otherDown = []string{said("systemctl", "--user", "disable", "--now", "me.service"), said("rm", other), said("systemctl", "--user", "daemon-reload")}
-				word = put(filepath.Join(dir, "other.service"), "[Service]\nExecStart=/usr/local/bin/asq serve\n")
+				word = put(filepath.Join(dir, "other.service"), "[Service]\nExecStart=\"/opt/my tools/asq\" serve --port 7920\n")
 				wordDown = []string{said("systemctl", "--user", "disable", "--now", "other.service"), said("rm", word), said("systemctl", "--user", "daemon-reload")}
 			}
 			want := []Found{

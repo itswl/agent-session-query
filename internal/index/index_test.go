@@ -518,6 +518,66 @@ func TestReports(t *testing.T) {
 	}
 }
 
+// A project's digest names its sessions the latest first, each ending as its last turn in
+// the window did: one the person stopped is interrupted, and before that stop it was not.
+func TestDigestListsTheLatestFirstAndHowEachEnded(t *testing.T) {
+	h := fixture.Write(t)
+	const gamma = "cccc3333-0000-4000-8000-000000000003"
+	at := func(ago time.Duration) string { return h.Now.Add(-ago).Format(time.RFC3339Nano) }
+	user := func(uuid string, ago time.Duration, content string) string {
+		return `{"type":"user","uuid":"` + uuid + `","timestamp":"` + at(ago) + `","sessionId":"` + gamma + `","cwd":"/work/alpha","message":{"role":"user","content":` + content + `}}`
+	}
+	said := func(uuid string, ago time.Duration, text string) string {
+		return `{"type":"assistant","uuid":"` + uuid + `","timestamp":"` + at(ago) + `","sessionId":"` + gamma +
+			`","message":{"id":"msg_` + uuid + `","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"` + text + `"}],"usage":{"input_tokens":1,"output_tokens":1}}}`
+	}
+	path := filepath.Join(h.Dir, "-work-alpha", gamma+".jsonl")
+	lines := []string{
+		user("g-u1", 20*time.Minute, `"first ask"`), said("g-a1", 19*time.Minute, "First answer."),
+		user("g-u2", 10*time.Minute, `"second ask"`), said("g-a2", 9*time.Minute, "Halfway."),
+		user("g-u3", 9*time.Minute-time.Second, `[{"type":"text","text":"[Request interrupted by user]"}]`),
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, err := app.Open(h.Config(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	ctx := context.Background()
+	if _, err := a.Sync(ctx, index.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	listOf := func(w index.Window) []index.DigestSession {
+		rep, err := a.Index.Digest(ctx, filter(a), w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range rep.Projects {
+			if d.Cwd == "/work/alpha" {
+				return d.List
+			}
+		}
+		return nil
+	}
+	list := listOf(index.Window{Since: h.Now.Add(-24 * time.Hour)})
+	if len(list) != 2 || list[0].Ref != "claude/"+gamma || list[1].Ref != "claude/"+fixture.Alpha {
+		t.Fatalf("alpha's sessions = %+v, want gamma, the latest, then alpha", list)
+	}
+	if g := list[0]; !g.Interrupted || g.Answer != "Halfway." || g.Turns != 2 {
+		t.Errorf("gamma = %+v, want its two turns, the last stopped after it said Halfway", g)
+	}
+	if list[1].Interrupted {
+		t.Errorf("alpha = %+v, which no one stopped", list[1])
+	}
+	// Before the stop, gamma's last turn in the window is its first, which ended well
+	list = listOf(index.Window{Since: h.Now.Add(-24 * time.Hour), Until: h.Now.Add(-15 * time.Minute)})
+	if len(list) != 2 || list[0].Ref != "claude/"+gamma || list[0].Interrupted || list[0].Answer != "First answer." || list[0].Turns != 1 {
+		t.Errorf("alpha's sessions until a quarter of an hour ago = %+v, want gamma's first turn", list)
+	}
+}
+
 func TestSyncFollowsTheStore(t *testing.T) {
 	h := fixture.Write(t)
 	a, err := app.Open(h.Config(t))

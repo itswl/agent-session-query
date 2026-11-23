@@ -759,6 +759,18 @@ RETURNING sid`,
 		if err != nil {
 			return err
 		}
+		// A session another store of its CLI holds — a backup, another machine's copy, what
+		// asq keeps — is a copy of the one the CLI's own store holds, when it does: link
+		// says so once the sync is done (see counts there), and it is said now, so that a
+		// first read does not count it twice until then. The CLI's own store is read first.
+		if rd.source != rd.agent && s.ID != "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE sessions SET copy_of = coalesce((
+  SELECT CASE WHEN o.copy_of > 0 THEN o.copy_of ELSE o.sid END FROM sessions o
+  WHERE o.id = ? AND o.source = ? AND o.parent_session = ? ORDER BY o.sid LIMIT 1), 0)
+WHERE sid = ? AND copy_of = 0`, s.ID, rd.agent, p.Session, sid); err != nil {
+				return err
+			}
+		}
 
 		// The turns before a mark the read was taken up at are as the index holds them
 		have := map[int]heldTurn{}

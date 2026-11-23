@@ -267,10 +267,16 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 	}
 
 	// What is new before what is only read better, and newest first: the sessions someone
-	// is most likely to ask about are there first
+	// is most likely to ask about are there first. A CLI's own stores come before the
+	// others of it, which may hold the same sessions: written after the one the CLI's own
+	// holds, a copy is folded into it at once (see write)
+	own := func(st Store) bool { return st.Name == st.Spec.Name }
 	sort.SliceStable(jobs, func(i, j int) bool {
 		if jobs[i].again != jobs[j].again {
 			return !jobs[i].again
+		}
+		if a, b := own(jobs[i].store), own(jobs[j].store); a != b {
+			return a
 		}
 		return jobs[i].ref.ModTime.After(jobs[j].ref.ModTime)
 	})

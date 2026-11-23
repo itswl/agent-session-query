@@ -422,6 +422,58 @@ func TestNothingIsCopiedIntoAStoreNorDeletedFromOne(t *testing.T) {
 	}
 }
 
+// A folder that names a store another way is the store all the same: through a symbolic
+// link to it, or in another case on a file system that ignores case. It is refused, a
+// folder named so by hand in the settings has nothing copied into the store, and nothing
+// of the store is deleted through it as a copy.
+func TestAStoreByAnotherNameIsTheStore(t *testing.T) {
+	a, h, kept := keeping(t)
+	ctx := t.Context()
+	state := filepath.Dir(filepath.Dir(kept))
+	alpha, _, _ := a.Resolve(ctx, fixture.Alpha)
+	transcript := filepath.Join(h.Dir, "-work-alpha", fixture.Alpha+".jsonl")
+	store, _ := os.Stat(h.Dir)
+	ways := map[string]string{} // how: the store, named so
+	link := filepath.Join(t.TempDir(), "claude")
+	if err := os.Symlink(h.Dir, link); err == nil {
+		ways["through a link"] = link
+	} else {
+		t.Logf("no symbolic link here: %v", err)
+	}
+	if upper := strings.ToUpper(h.Dir); upper != h.Dir {
+		if fi, err := os.Stat(upper); err == nil && os.SameFile(fi, store) {
+			ways["in another case"] = upper
+		}
+	}
+	if len(ways) == 0 {
+		t.Skip("no symbolic link here, and a file system that minds case")
+	}
+	for how, named := range ways {
+		if err := a.KeepIn(filepath.Join(named, "sub")); err == nil || !strings.Contains(err.Error(), "is the store claude or in it") {
+			t.Errorf("keep in the store %s = %v; want it refused", how, err)
+		}
+		if err := keep.Save(state, keep.Settings{Dir: filepath.Join(named, "-work-alpha")}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.KeepSession(ctx, &alpha, true); err == nil || !strings.Contains(err.Error(), "is the store claude or in it: nothing is copied there") {
+			t.Errorf("keep into the store %s = %v", how, err)
+		}
+		if _, err := os.Stat(filepath.Join(h.Dir, "-work-alpha", "claude")); !os.IsNotExist(err) {
+			t.Errorf("copied into the store %s: %v", how, err)
+		}
+		// The folder whose claude is the store: a copy's path there is its transcript's
+		if err := keep.Save(state, keep.Settings{Dir: filepath.Dir(named)}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.KeepSession(ctx, &alpha, false); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(transcript); err != nil {
+			t.Fatalf("the CLI's own transcript was deleted as its copy, the store named %s: %v", how, err)
+		}
+	}
+}
+
 // Where asq looked, when no store held a session, names the CLIs' stores and not the
 // folder of copies of a CLI nothing has been kept of yet, as the health report leaves it
 // out too; one that holds copies is a place sessions are found.

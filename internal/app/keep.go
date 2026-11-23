@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/itswl/agent-session-query/internal/catalog"
@@ -187,19 +188,59 @@ func (a *App) inStore(to string) string {
 			continue
 		}
 		switch loc := store.Source.Location(); {
-		case beneath(to, loc):
+		case within(to, loc):
 			return "is the store " + store.Name + " or in it"
-		case beneath(loc, to):
+		case within(loc, to):
 			return "holds the store " + store.Name
 		}
 	}
 	return ""
 }
 
-// beneath reports whether path is dir or a path beneath it.
+// beneath reports whether path is dir or a path beneath it, by their names.
 func beneath(path, dir string) bool {
 	rel, err := filepath.Rel(dir, path)
 	return err == nil && filepath.IsLocal(rel)
+}
+
+// within reports whether path is dir or a path beneath it as the file system has them, not
+// only by their names: through a symbolic link or a junction to either, and in another
+// case where the file system ignores it. Each folder of path that exists is compared with
+// dir by what it is (os.SameFile); where dir does not exist yet, with the deepest folder
+// of it that does, and the names beneath that in any case.
+func within(path, dir string) bool {
+	if beneath(path, dir) {
+		return true
+	}
+	var rest []string // the names of dir beneath its deepest folder there is
+	at, err := os.Stat(dir)
+	for d := filepath.Clean(dir); err != nil; {
+		up := filepath.Dir(d)
+		if up == d {
+			return false
+		}
+		rest = append([]string{filepath.Base(d)}, rest...)
+		d = up
+		at, err = os.Stat(d)
+	}
+	var below []string // the names of path beneath p
+	for p := filepath.Clean(path); ; {
+		if fi, err := os.Stat(p); err == nil && os.SameFile(fi, at) && len(below) >= len(rest) {
+			same := true
+			for i, name := range rest {
+				same = same && strings.EqualFold(name, below[i])
+			}
+			if same {
+				return true
+			}
+		}
+		up := filepath.Dir(p)
+		if up == p {
+			return false
+		}
+		below = append([]string{filepath.Base(p)}, below...)
+		p = up
+	}
 }
 
 // Keeping is what keeping one session, or no longer keeping it, did.
@@ -266,7 +307,7 @@ func (a *App) dropCopy(ctx context.Context, st keep.Settings, s *index.Session) 
 			own, _ := keeper.Files(sources.Ref{Key: row.Key, Stamp: row.Stamp})
 			for _, path := range own {
 				rel, err := filepath.Rel(store.Source.Location(), path)
-				if err != nil || !filepath.IsLocal(rel) || beneath(filepath.Join(to, rel), store.Source.Location()) {
+				if err != nil || !filepath.IsLocal(rel) || within(filepath.Join(to, rel), store.Source.Location()) {
 					continue // and never a file of the store's own, whatever folder the settings name
 				}
 				if err := os.Remove(filepath.Join(to, rel)); err != nil && !errors.Is(err, os.ErrNotExist) {

@@ -177,7 +177,7 @@ func keptHere(t *testing.T, home, folder string) []string {
 
 func removeCommand(folder string) string {
 	if runtime.GOOS == "windows" {
-		return "Remove-Item -Recurse -Force " + app.ShellArg(folder)
+		return "Remove-Item -Recurse -Force -LiteralPath " + app.ShellArg(folder)
 	}
 	return "rm -rf " + app.ShellArg(folder)
 }
@@ -460,7 +460,8 @@ func TestUninstallSaysNoServiceWhereThereIsNone(t *testing.T) {
 }
 
 // A binary a package manager installed is its to remove: brew uninstall, and untap when the
-// tap is this repository; scoop uninstall. Any other is a file to remove.
+// tap is this repository; scoop uninstall. Any other is a file to remove — on Windows with
+// the installer's folder, which holds it alone, and never a folder that holds more.
 func TestUninstallLeavesTheBinaryToItsPackageManager(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -477,6 +478,10 @@ func TestUninstallLeavesTheBinaryToItsPackageManager(t *testing.T) {
 	scoop := put(t, filepath.Join(root, "scoop", "apps", "asq", "1.6.0", "asq.exe"), "")
 	current := put(t, filepath.Join(root, "scoop", "apps", "asq", "current", "asq.exe"), "")
 	installed := put(t, filepath.Join(root, "Programs", "asq", "asq.exe"), "")
+	built := put(t, filepath.Join(root, "src", "asq", "asq.exe"), "") // in the checkout it was built in
+	put(t, filepath.Join(root, "src", "asq", "go.mod"), "module "+module+"\n")
+	beside := put(t, filepath.Join(root, "tools", "asq", "asq.exe"), "") // beside the copies asq keep made
+	put(t, filepath.Join(root, "tools", "asq", "kept", "claude", "p", "s.jsonl"), "{}\n")
 	plain := put(t, filepath.Join(root, "bin", "asq"), "")
 
 	check := func(goos, self string, want ...string) {
@@ -497,6 +502,8 @@ func TestUninstallLeavesTheBinaryToItsPackageManager(t *testing.T) {
 
 	check("windows", scoop, "scoop uninstall asq")
 	check("windows", current, "scoop uninstall asq")
-	check("windows", installed, "Remove-Item -Recurse -Force "+app.ShellArg(filepath.Dir(installed)))
+	check("windows", installed, "Remove-Item -Recurse -Force -LiteralPath "+app.ShellArg(filepath.Dir(installed)))
+	check("windows", built, "Remove-Item -Recurse -Force -LiteralPath "+app.ShellArg(built))
+	check("windows", beside, "Remove-Item -Recurse -Force -LiteralPath "+app.ShellArg(beside))
 	check("linux", plain, "rm "+app.ShellArg(plain))
 }

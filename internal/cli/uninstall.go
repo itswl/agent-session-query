@@ -203,9 +203,15 @@ func keptCopies(ctx context.Context, stores catalog.Config, folder, goos string)
 	}
 	l.Remove = "rm -rf " + app.ShellArg(folder)
 	if goos == "windows" {
-		l.Remove = "Remove-Item -Recurse -Force " + app.ShellArg(folder)
+		l.Remove = removeItem(folder)
 	}
 	return l
+}
+
+// removeItem is PowerShell's command that removes a file or a folder: by its name as it is,
+// which -Path would read as a pattern — a [ in it matching another folder's name.
+func removeItem(path string) string {
+	return "Remove-Item -Recurse -Force -LiteralPath " + app.ShellArg(path)
 }
 
 // tooWide says whether a state directory is not asq's to remove: the root an empty name
@@ -418,7 +424,9 @@ func asqCommand(goos, self string) string {
 // binaryCommands removes this very binary: by its package manager when one installed it —
 // Homebrew, and the tap it came from when that is this repository; Scoop —, or else the
 // file, by sudo when its directory is not this account's to write. On Windows the
-// installer puts the exe in a directory of its own, which goes with it.
+// installer puts the exe in a folder of its own, asq, which goes with it when it holds the
+// exe alone: one that holds more — a checkout it was built in, the copies asq keep made —
+// keeps the rest.
 func binaryCommands(goos, self string) []string {
 	if self == "" {
 		return nil
@@ -435,16 +443,22 @@ func binaryCommands(goos, self string) []string {
 	}
 	if goos == "windows" {
 		target := self
-		if filepath.Base(filepath.Dir(self)) == "asq" {
-			target = filepath.Dir(self)
+		if dir := filepath.Dir(self); strings.EqualFold(filepath.Base(dir), "asq") && holdsOnly(dir, filepath.Base(self)) {
+			target = dir
 		}
-		return []string{"Remove-Item -Recurse -Force " + app.ShellArg(target)}
+		return []string{removeItem(target)}
 	}
 	rm := "rm " + app.ShellArg(self)
 	if !canWrite(filepath.Dir(self)) {
 		rm = "sudo " + rm
 	}
 	return []string{rm}
+}
+
+// holdsOnly says whether a directory holds the file name and nothing else.
+func holdsOnly(dir, name string) bool {
+	entries, err := os.ReadDir(dir)
+	return err == nil && len(entries) == 1 && strings.EqualFold(entries[0].Name(), name)
 }
 
 // module is this repository's Go module, which a clone of it names in its go.mod.

@@ -160,7 +160,7 @@ order to run them:
 2. `asq uninstall` again, when there was a service, for the index it wrote until it stopped;
 3. the binary: `brew uninstall asq`, and `brew untap` when the tap is this repository, or
    `scoop uninstall asq`, for one they installed; otherwise `rm` where it is (`sudo`, when its
-   directory needs it), or its folder on Windows.
+   directory needs it), or on Windows `Remove-Item` of its folder when that holds nothing else.
 
 `asq uninstall --json` answers the same: `removed`, `left`, `run`. What it leaves:
 

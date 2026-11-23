@@ -149,7 +149,7 @@ Windows 上正在运行的 `asq.exe` 无法被替换：先 `schtasks /end /tn as
 2. 有服务的话，再运行一次 `asq uninstall`，删掉服务停下之前又写下的索引；
 3. 最后是二进制：Homebrew 或 Scoop 装的，用 `brew uninstall asq`（tap 是本仓库的话再加
    `brew untap`）或 `scoop uninstall asq`；否则在它所在的位置 `rm`（目录不可写时带 `sudo`），
-   Windows 上删它的目录。
+   Windows 上用 `Remove-Item`，目录里只有它时连目录一起删。
 
 `asq uninstall --json` 给出同样的内容：`removed`、`left`、`run`。它留下的有：
 

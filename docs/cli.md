@@ -432,9 +432,10 @@ for Homebrew's; for one set up by hand, found by what its plist, its unit or its
 manager's own commands. Then, when there was one, `asq uninstall` again, for the index the
 server wrote until it was down. Last the binary: `brew uninstall asq`, with `brew untap` when
 the tap is this repository, or `scoop uninstall asq`, for one they installed; otherwise `rm`,
-`sudo` when its directory is not this account's to write, or on Windows its folder. The CLIs'
-stores are never touched, nor the MCP servers and skills the agent CLIs were given, nor what a
-browser keeps of the page offline. `--json` answers `removed`, `left` and `run`.
+`sudo` when its directory is not this account's to write, or on Windows `Remove-Item` of its
+folder when that holds nothing else. The CLIs' stores are never touched, nor the MCP servers
+and skills the agent CLIs were given, nor what a browser keeps of the page offline. `--json`
+answers `removed`, `left` and `run`.
 
 ## Environment
 

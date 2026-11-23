@@ -292,11 +292,14 @@ func askOf(blocks []Block) (string, bool) {
 	return ask, ok
 }
 
-// attachmentsOf is every file a message's blocks carried, in order.
+// attachmentsOf is every file a message's words carried, in order: what a result in the
+// same message carried is that result's.
 func attachmentsOf(blocks []Block) []Attachment {
 	var out []Attachment
 	for _, b := range blocks {
-		out = append(out, b.Attachments...)
+		if b.Type == Text {
+			out = append(out, b.Attachments...)
+		}
 	}
 	return out
 }

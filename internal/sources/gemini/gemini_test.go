@@ -540,6 +540,9 @@ func TestFilesGoWithWhatCarriedThem(t *testing.T) {
 		`{"id":"u1","timestamp":"2026-11-02T09:00:01.000Z","type":"user","content":[{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}},{"fileData":{"mimeType":"application/pdf","fileUri":"/work/spec.pdf"}}]}`,
 		`{"id":"g1","timestamp":"2026-11-02T09:00:02.000Z","type":"gemini","content":"","model":"gemini-3-pro-preview","toolCalls":[{"id":"shot-1","name":"take_screenshot","args":{}}],"tokens":{"input":10,"output":2,"total":12}}`,
 		`{"id":"u2","timestamp":"2026-11-02T09:00:03.000Z","type":"user","content":[{"functionResponse":{"id":"shot-1","name":"take_screenshot","response":{"output":"Took it."}}},{"inlineData":{"mimeType":"image/jpeg","data":"/9j/4AAQ"}}]}`,
+		// a call and its response that carry no id
+		`{"id":"g1b","timestamp":"2026-11-02T09:00:03.500Z","type":"gemini","content":"","model":"gemini-3-pro-preview","toolCalls":[{"name":"read_file","args":{"file_path":"b.png"}}],"tokens":{"input":10,"output":2,"total":12}}`,
+		`{"id":"u2b","timestamp":"2026-11-02T09:00:03.700Z","type":"user","content":[{"functionResponse":{"name":"read_file","response":{"output":"Read it."}}},{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}}]}`,
 		`{"id":"g2","timestamp":"2026-11-02T09:00:04.000Z","type":"gemini","content":[{"text":"Here it is, redrawn."},{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}}],"model":"gemini-3-pro-image","tokens":{"input":20,"output":5,"total":25}}`,
 	)
 	s := sourcetest.One(t, Spec.Open(root))
@@ -548,7 +551,7 @@ func TestFilesGoWithWhatCarriedThem(t *testing.T) {
 	if turn.Ask != "[image · png · 8 bytes]\n[document · pdf · spec.pdf]" {
 		t.Errorf("a picture and a document sent alone ask %q", turn.Ask)
 	}
-	if tools := sourcetest.Tools(turn); len(tools) != 1 || tools[0].Output != "Took it.\n[image · jpeg · 6 bytes]" {
+	if tools := sourcetest.Tools(turn); len(tools) != 2 || tools[0].Output != "Took it.\n[image · jpeg · 6 bytes]" || tools[1].Output != "Read it.\n[image · png · 8 bytes]" {
 		t.Errorf("tools = %+v", tools)
 	}
 	if turn.Answer != "Here it is, redrawn.\n[image · png · 8 bytes]" {

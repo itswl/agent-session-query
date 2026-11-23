@@ -61,12 +61,14 @@ func TestAFileAMessageCarriedIsMarkedAndKeptApart(t *testing.T) {
 	shot := Embedded("image/png", pngData)
 	c := &Collector{}
 	w := New(c)
-	w.Keep(0, 1, 3)
+	w.Keep(0, 1, 5)
 	for _, m := range []Message{
 		{Role: User, At: at(0), Blocks: []Block{AttachmentOf(shot), TextOf("why is this button blue<runtime_info>T3</runtime_info>")}},
 		{Role: Assistant, At: at(1), Model: "m1", Blocks: []Block{CallOf("c1", "screenshot", nil)}},
 		{Role: User, At: at(2), Blocks: []Block{ResultOf("c1", "", "Took a screenshot", Outcome{Status: model.StatusOK}).With(Embedded("", gifData))}},
 		{Role: User, At: at(3), Blocks: []Block{AttachmentOf(Referenced("image/png", "/w/plot.png"))}},
+		{Role: Assistant, At: at(3), Model: "m1", Blocks: []Block{CallOf("c2", "screenshot", nil)}},
+		{Role: User, At: at(3), Blocks: []Block{ResultOf("c2", "", "again", Outcome{}).With(shot), TextOf("<system-reminder>a note</system-reminder>")}},
 		{Role: Assistant, At: at(4), Model: "m1", Blocks: []Block{TextOf("A plot.")}},
 	} {
 		w.Add(m)
@@ -89,6 +91,10 @@ func TestAFileAMessageCarriedIsMarkedAndKeptApart(t *testing.T) {
 	}
 	if stats.Turns != 2 || two.Ask != "[image · png · plot.png]" || !equal(two.Items[0].Attachments, []model.Attachment{{Mime: "image/png", Name: "/w/plot.png"}}) {
 		t.Errorf("%d turns, a picture sent alone: ask %q, %+v", stats.Turns, two.Ask, two.Items[0].Attachments)
+	}
+	// A result's picture is the result's, and not the words beside it in the same message
+	if again, note := two.Items[1], two.Items[2]; len(again.Attachments) != 1 || note.Kind != model.Context || len(note.Attachments) != 0 {
+		t.Errorf("the result carries %+v, the words beside it %+v", again.Attachments, note.Attachments)
 	}
 	kept := w.Kept()
 	if len(kept) != 2 || len(kept[0]) != 1 || kept[0][0].Data != pngData || len(kept[1]) != 1 || kept[1][0].Data != gifData {

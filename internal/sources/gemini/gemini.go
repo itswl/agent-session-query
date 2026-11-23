@@ -799,7 +799,9 @@ func (rd *reader) blocks(m *message) ([]transcript.Block, []answer) {
 		out = append(out, transcript.ThinkingOf(thoughts))
 	}
 	var listed *entries // the row's toolCalls, once a call part asks after them
-	responded := false  // a functionResponse came: the files after it are its tool's
+	// After a functionResponse, the files that follow are what its tool returned: they go
+	// with its result here, or with the answer the call was given in place (see returned)
+	responded, from := false, -1
 	var parts []any
 	switch content := m.Content.(type) {
 	case string:
@@ -838,11 +840,12 @@ func (rd *reader) blocks(m *message) ([]transcript.Block, []answer) {
 				continue
 			}
 			id := kit.Str(fr["id"])
-			responded = true
+			responded, from = true, -1
 			if id != "" && rd.answered[id] {
 				continue // already answered on the call itself
 			}
-			out = append(out, result(id, kit.Str(fr["name"]), kit.Map(fr["response"]), "", rd.statuses[id]).With(rd.files[id]...))
+			out = append(out, result(id, kit.Str(fr["name"]), kit.Map(fr["response"]), "", rd.statuses[id]))
+			from = len(out) - 1
 		case "functionCall":
 			// A call as the model's history holds it, in a row rewritten from that
 			// history. Where the row's toolCalls has it, that entry is the same call
@@ -872,8 +875,11 @@ func (rd *reader) blocks(m *message) ([]transcript.Block, []answer) {
 			// An image, a PDF or another file sent with the message, by value or by
 			// reference: no text, and marked where it came. One after a functionResponse
 			// is what that tool returned, and goes with its result (see returned)
-			if !responded {
+			switch {
+			case !responded:
 				out = append(out, transcript.AttachmentOf(fileOf(kind, entry)))
+			case from >= 0:
+				out[from] = out[from].With(fileOf(kind, entry))
 			}
 		case "":
 			// Nothing but what qualifies a part — a thought signature on its own — or
@@ -987,7 +993,8 @@ func fileOf(kind string, part map[string]any) transcript.Attachment {
 // returned is the files each tool's response carried, by the call it answers. Gemini CLI
 // sends what a tool returned beyond words — the picture read_file read — as parts after
 // the functionResponse, on the user row that hands the response to the model; and where
-// the call was answered in place, that row is not where its result is read from.
+// the call was answered in place, earlier, that row is not where its result is read from:
+// the answer takes them from here.
 func returned(msgs []*message) map[string][]transcript.Attachment {
 	files := map[string][]transcript.Attachment{}
 	for _, m := range msgs {

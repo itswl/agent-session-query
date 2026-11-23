@@ -113,6 +113,7 @@ func TestUninstallTakesWhatAsqWrote(t *testing.T) {
 		t.Fatalf("asq uninstall: exit %d\n%s", code, errs)
 	}
 	gone(t, index.DefaultPath())
+	gone(t, filepath.Dir(index.DefaultPath())) // asq's own folder, empty once the index went
 	gone(t, state)
 	there(t, store)
 	if !strings.Contains(said, "to finish, run:") {

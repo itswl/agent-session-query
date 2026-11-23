@@ -78,6 +78,14 @@ func cmdUninstall(ctx context.Context, args []string, io *streams) error {
 			}
 		}
 	}
+	if cfg.IndexPath == "" && os.Getenv("ASQ_INDEX") == "" {
+		// The folder of the index at the default path is asq's own, and goes once empty
+		if dir := filepath.Dir(path); filepath.Base(dir) == "asq" {
+			if info, err := os.Lstat(dir); err == nil && info.IsDir() {
+				os.Remove(dir)
+			}
+		}
+	}
 
 	m := newMachine(DefaultPort)
 	self := thisFile()

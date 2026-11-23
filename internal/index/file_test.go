@@ -206,6 +206,45 @@ func TestAProcessFollowsTheFileAtItsPath(t *testing.T) {
 	}
 }
 
+// Damage a process met in its file, when another asq has set that file aside and made a new
+// one already, was the old file's: the process follows the new one, and does not set it
+// aside in turn.
+func TestDamageOfAFileAlreadyReplacedIsNotSetAsideAgain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not move a file another program holds open")
+	}
+	path := filepath.Join(t.TempDir(), "index.db")
+	server := open(t, path)
+	syncMany(t, server, 3)
+
+	// The CLI found the file damaged, set it aside and made it anew
+	if err := Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	cli := open(t, path)
+	syncMany(t, cli, 3)
+
+	// The server's next question read the old file, and met the damage
+	bad := filepath.Join(t.TempDir(), "bad.db")
+	os.WriteFile(bad, []byte(strings.Repeat("x", 4096)), 0o600)
+	db, _ := sql.Open("sqlite", "file:"+filepath.ToSlash(bad))
+	_, damage := db.Exec(`SELECT * FROM sqlite_master`)
+	db.Close()
+	if !server.Damage(damage) {
+		t.Fatalf("%v is not taken for damage", damage)
+	}
+	res := syncMany(t, server, 3)
+	if !strings.Contains(res.Reopened, "replaced") {
+		t.Errorf("reopened = %q; want the new file followed", res.Reopened)
+	}
+	if _, err := os.Stat(path + ".damaged"); !os.IsNotExist(err) {
+		t.Errorf("the file the CLI made was set aside as damaged: %v", err)
+	}
+	if n := sessions(t, cli); n != 3 {
+		t.Errorf("the CLI's index holds %d sessions; want 3", n)
+	}
+}
+
 // bulky is a store of n sessions, each holding size bytes that do not compress.
 type bulky struct{ n, size int }
 

@@ -221,32 +221,40 @@ const damagedSuffix = ".damaged"
 // the file (asq index rm), made it anew (asq index rebuild), or set it aside as damaged;
 // a process that went on with the file it had open would go on alone, reading and writing
 // what no other asq sees, and keeping the space of a file nobody can name. A file this
-// process found damaged (see Damage) is set aside here. Either way every connection to the
-// old file is let go of — the idle ones now, those in use once they are done — and the file
-// at the path, made when there is none, is prepared and used from now on.
+// process found damaged (see Damage) is set aside here, if it is still the one at the path:
+// one another asq has set aside and made anew already was the damaged one. Either way every
+// connection to the old file is let go of — the idle ones now, those in use once they are
+// done — and the file at the path, made when there is none, is prepared and used from now
+// on.
 //
 // It runs as a sync begins, under syncMu: a sync is the one writer, and the one thing a
 // process that runs for long does regularly. It says what it did, or "" when nothing.
 func (ix *Index) follow() (string, error) {
 	var why string
 	damage := ix.damage.Swap(nil)
-	if damage == nil {
-		now, err := os.Stat(ix.path)
-		switch {
-		case err == nil && os.SameFile(now, ix.file):
+	now, err := os.Stat(ix.path)
+	switch {
+	case err == nil && os.SameFile(now, ix.file):
+		if damage == nil {
 			return "", nil
-		case err == nil:
-			why = "the index file was replaced, by another asq or by hand: using the new one"
-		case errors.Is(err, fs.ErrNotExist):
-			why = "the index file was removed: a new one is made in its place, from the stores"
-		default:
-			return "", err
 		}
+	case err == nil:
+		damage = nil // the old file's: the one at the path is another
+		why = "the index file was replaced, by another asq or by hand: using the new one"
+	case errors.Is(err, fs.ErrNotExist):
+		damage = nil
+		why = "the index file was removed: a new one is made in its place, from the stores"
+	case damage == nil:
+		return "", err
 	}
 	ix.rwGen.Add(1)
 	ix.roGen.Add(1)
 	letGo(ix.rw, rwIdle)
 	letGo(ix.ro, roIdle)
+	// A reader that opened the path between then and the damaged file being moved away
+	// would be of the new generation and on the old file: the readers' generation moves
+	// again once the new file is in place. The writer is this sync's alone.
+	defer ix.roGen.Add(1)
 	if damage != nil {
 		aside, err := setAside(ix.path)
 		if err != nil {

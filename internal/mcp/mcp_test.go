@@ -601,6 +601,13 @@ func TestTheRequestSaysWhoIsAsking(t *testing.T) {
 	if text, isErr := callAs("read", map[string]any{"ref": "this"}, thread); isErr || !strings.Contains(text, `[ref "this" is `+codex+"_"+rollout+":") || !strings.Contains(text, "pin them to a range instead") {
 		t.Errorf("this, in a reverted thread:\n%s", text)
 	}
+	// and a handoff from that thread is of another session, not of the rollout it goes on in
+	params, _ := json.Marshal(map[string]any{"name": "handoff", "_meta": thread})
+	result, rpcErr := s.dispatch(t.Context(), "prompts/get", params)
+	raw, _ := json.Marshal(result)
+	if rpcErr != nil || !strings.Contains(string(raw), "[claude/"+fixture.Beta+": the newest session in /work/beta or below it") || !strings.Contains(string(raw), "other than this conversation") {
+		t.Errorf("a handoff from a reverted thread = %+v\n%s", rpcErr, raw)
+	}
 }
 
 func TestOverHTTP(t *testing.T) {

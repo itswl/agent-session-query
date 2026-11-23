@@ -192,7 +192,10 @@ func (s *Server) handedOver(ctx context.Context, who asker, named string) (index
 	// This conversation is not handed to itself, when the client says which it is. When it
 	// does not, the newest session may be this one — one the person has typed in before
 	// asking — and the answer says so rather than that it is another
-	own := s.own(who)
+	own, err := s.own(ctx, who)
+	if err != nil {
+		return index.Session{}, 0, "", err
+	}
 	other, unsure := ", other than this conversation", ""
 	if len(own) == 0 {
 		other, unsure = "", " The client did not say which session this conversation is: if it is this one, name the session meant — by its ref, or a CLI's name."
@@ -211,18 +214,26 @@ func (s *Server) handedOver(ctx context.Context, who asker, named string) (index
 }
 
 // own is the sessions the conversation asking is known to be: the Codex thread its request
-// names, and the session Claude Code names to the server it started.
-func (s *Server) own(who asker) map[string]bool {
+// names — by its id, and as the session it is found to be, which for a thread reverted is
+// the rollout it goes on in — and the session Claude Code names to the server it started.
+func (s *Server) own(ctx context.Context, who asker) (map[string]bool, error) {
 	own := map[string]bool{}
 	if who.thread != "" {
 		own["codex/"+who.thread] = true
+		t, found, _, err := s.thread(ctx, who)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			own[t.Agent+"/"+t.ID] = true
+		}
 	}
 	if c := s.Caller; c != nil && c.Session != "" {
 		if _, claude := s.clientOf(who); claude {
 			own["claude/"+c.Session] = true
 		}
 	}
-	return own
+	return own, nil
 }
 
 // isSource reports whether a name is a CLI's, or a store's, rather than a session's ref.

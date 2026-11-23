@@ -995,21 +995,46 @@ func contentString(raw json.RawMessage) string {
 	return s
 }
 
-// reasoningText joins what a reasoning row shows. Either list is [{type, text}].
-func reasoningText(unread func(string), lists ...json.RawMessage) string {
+// reasoningText joins what a reasoning row shows: the summary's entries, then the content.
+// Either list is [{type, text}].
+func reasoningText(unread func(string), summary, content json.RawMessage) string {
 	var texts []string
-	for _, raw := range lists {
+	for i, raw := range []json.RawMessage{summary, content} {
 		var items []part
 		if json.Unmarshal(raw, &items) != nil {
 			continue
 		}
 		for _, item := range items {
-			if text := strings.TrimSpace(item.text(unread)); text != "" {
+			text := strings.TrimSpace(item.text(unread))
+			if i == 0 {
+				text = bareHeading(text)
+			}
+			if text != "" {
 				texts = append(texts, text)
 			}
 		}
 	}
 	return strings.Join(texts, "\n\n")
+}
+
+// bareHeading takes the bold off the heading a summary entry opens with. The API writes
+// each entry as a heading in Markdown's bold, "**Counting the log calls**", and what it
+// heads below it; a reader is shown the heading, not the asterisks around it. Bold
+// anywhere else, and a first line that only begins or ends in it, is left as written.
+func bareHeading(text string) string {
+	first, rest, more := strings.Cut(text, "\n")
+	inner, ok := strings.CutPrefix(strings.TrimSpace(first), "**")
+	if !ok {
+		return text
+	}
+	inner, ok = strings.CutSuffix(inner, "**")
+	if !ok || strings.TrimSpace(inner) == "" || strings.Contains(inner, "**") {
+		return text
+	}
+	if !more {
+		return inner
+	}
+	return inner + "\n" + rest
 }
 
 // arguments decodes a function call's arguments, which Codex writes as a JSON string.

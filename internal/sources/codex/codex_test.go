@@ -154,6 +154,10 @@ func TestToolRows(t *testing.T) {
 	if got := sourcetest.Kinds(one); got != "prompt thinking tool tool tool tool tool tool reply" {
 		t.Errorf("items = %s", got)
 	}
+	// The summary's heading is shown without the bold it is written in
+	if got := one.Items[1].Text; got != "Inspecting README" {
+		t.Errorf("thinking = %q", got)
+	}
 	tools := map[string]*model.Tool{}
 	for _, tool := range sourcetest.Tools(one) {
 		tools[kitFirst(tool.CallID, tool.Name)] = tool
@@ -201,6 +205,26 @@ func TestToolRows(t *testing.T) {
 	// No token_usage_record: the snapshot written after the response says what it cost
 	if want := (model.Usage{Input: 60, Output: 9, CacheRead: 40}); s.Stats.Usage != want || one.Usage != want {
 		t.Errorf("usage = %+v, turn 1's %+v, want %+v on the turn the response was made in", s.Stats.Usage, one.Usage, want)
+	}
+}
+
+// A summary entry opens with a heading in Markdown's bold, which is shown bare; bold
+// anywhere else, or a line that only starts or ends in it, is as it was written.
+func TestSummaryHeadings(t *testing.T) {
+	for in, want := range map[string]string{
+		"**Counting the log calls**":                   "Counting the log calls",
+		"**Passing the logger**\n\nThe handlers used…": "Passing the logger\n\nThe handlers used…",
+		"  **Padded**  \nbody":                         "Padded\nbody",
+		"**One** and **two**":                          "**One** and **two**",
+		"**Not closed\nbody":                           "**Not closed\nbody",
+		"Not opened**":                                 "Not opened**",
+		"****":                                         "****",
+		"plain words, then **bold**":                   "plain words, then **bold**",
+		"":                                             "",
+	} {
+		if got := bareHeading(in); got != want {
+			t.Errorf("bareHeading(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

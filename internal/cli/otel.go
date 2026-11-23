@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	goio "io"
 	"net/url"
 	"os"
 	"strings"
@@ -23,7 +24,7 @@ func cmdOTel(ctx context.Context, args []string, io *streams) error {
 	settle := c.fs.Duration("settle", 2*time.Minute, "leave a turn until it has been quiet this long")
 	every := c.fs.Duration("every", 0, "keep running, exporting this often (0: once)")
 	resend := c.fs.Bool("resend", false, "send every selected turn again, whatever was sent before")
-	dry := c.fs.Bool("dry-run", false, "print the OTLP requests instead of sending them")
+	dry := c.fs.Bool("dry-run", false, "print the OTLP requests instead of sending them: to a pipe or a file, or with --json; at a terminal, what they hold")
 	if _, err := c.parse(args); err != nil {
 		return err
 	}
@@ -63,13 +64,23 @@ func cmdOTel(ctx context.Context, args []string, io *streams) error {
 			return usageError{err}
 		}
 		opts := otel.Options{Endpoint: target, Headers: head, Level: level, Filter: f, Window: w, Settle: *settle, Resend: *resend}
+		// The requests are a line of JSON each, hundreds of kilobytes long: for a pipe, a
+		// file, or a terminal that asked for JSON. A terminal that did not is told what
+		// they hold, and how to read them
+		shown := !toTerminal(io.out) || c.json
 		if *dry {
 			opts.DryRun = io.out
+			if !shown {
+				opts.DryRun = goio.Discard
+			}
 		}
 		res, err := otel.Export(ctx, a.Index, opts)
 		defer c.lookedIn(io.err, err == nil && res.Turns+res.Current == 0)
 		if *dry {
 			fmt.Fprintf(io.err, "would send %s of %s as %s in %s\n", plural(res.Turns, "turn"), plural(res.Sessions, "transcript"), plural(res.Spans, "span"), plural(res.Requests, "request"))
+			if !shown && res.Requests > 0 {
+				fmt.Fprintln(io.err, "the requests are a line of JSON each: pipe them to jq or to a file to read them (asq otel --dry-run … | jq), or add --json to print them here")
+			}
 			return err
 		}
 		line := fmt.Sprintf("sent %s of %s as %s", plural(res.Turns, "turn"), plural(res.Sessions, "transcript"), plural(res.Spans, "span"))
@@ -102,6 +113,9 @@ func cmdOTel(ctx context.Context, args []string, io *streams) error {
 		*resend = false // only the first pass sends again what was sent
 	}
 }
+
+// toTerminal reports whether output goes to a terminal; a variable for the tests.
+var toTerminal = isTerminal
 
 // collector works out where spans go and what headers go with them: the flags first,
 // then the environment OpenTelemetry's own tools read, then Langfuse's.

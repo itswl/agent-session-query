@@ -91,7 +91,7 @@ down as sent; the next run picks up there.
 | `--settle 2m` | leave a turn until it has been quiet this long |
 | `--every 10m` | keep running, exporting this often |
 | `--resend` | send every selected turn again, whatever the ledger says |
-| `--dry-run` | print the OTLP requests to stdout instead of sending them |
+| `--dry-run` | print the OTLP requests to stdout instead of sending them, a line of JSON each; at a terminal, only what they hold, unless with `--json` |
 
 The endpoint and headers also come from the variables OpenTelemetry's own tools read —
 `OTEL_EXPORTER_OTLP_ENDPOINT` (or `…_TRACES_ENDPOINT`) and `OTEL_EXPORTER_OTLP_HEADERS`.
@@ -118,4 +118,7 @@ asq otel --dry-run --since 1d --content none | jq '.resourceSpans[].scopeSpans[]
 ```
 
 `--dry-run` neither sends nor writes the ledger. Run it at the level you intend to use before
-pointing `asq otel` at a collector someone else operates.
+pointing `asq otel` at a collector someone else operates. The requests go to a pipe or a file as
+they would to the collector, one line of JSON each and often hundreds of kilobytes; at a
+terminal it says only how many turns, spans and requests they hold, and how to read them —
+`--json` prints them there too.

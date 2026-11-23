@@ -146,7 +146,9 @@ opens with a line in brackets that says which session it took, and why:
 
 - Codex names, in each tool call its model makes, the thread the call was made in
   (`_meta.threadId`), and that thread is the one, when the index has it — over stdio and over
-  HTTP alike. One the index does not have is named in the line in brackets, and what follows
+  HTTP alike. Of a thread reverted it is the rollout the thread goes on in
+  ([`codex/<thread>_<rollout>`](sources.md#what-each-adapter-reads)), the session the agent
+  is writing. One the index does not have is named in the line in brackets, and what follows
   decides.
 - Claude Code sets `CLAUDE_CODE_SESSION_ID` in the stdio MCP servers it starts, and that session
   is the one, when the index has it. The variable is the id the server was started with, and it

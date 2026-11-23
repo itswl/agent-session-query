@@ -175,10 +175,15 @@ func TestUninstallJSON(t *testing.T) {
 }
 
 // A state dir that is a home, or holds one — an ASQ_STATE pointed too wide — is refused, not
-// removed, and said as left.
+// removed, and said as left: named as it is, with a separator after it, or in other letters
+// where the file system does not tell them apart.
 func TestUninstallRefusesAHomeForState(t *testing.T) {
 	home, _ := uninstallHome(t, runtime.GOOS, nil)
-	for _, state := range []string{home, filepath.Dir(home)} {
+	states := []string{home, filepath.Dir(home), home + string(filepath.Separator)}
+	if upper := strings.ToUpper(home); upper != home && exists(upper) {
+		states = append(states, upper)
+	}
+	for _, state := range states {
 		t.Setenv("ASQ_STATE", state)
 		out, errs, code := runAsq("uninstall")
 		if code != 0 {

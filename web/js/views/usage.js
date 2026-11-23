@@ -2,7 +2,7 @@
 // in the window chosen.
 
 import { h, mark, skeleton, errorBox, stale, choices } from '../dom.js';
-import { api, qs, last } from '../api.js';
+import { api, qs, last, sessionHref } from '../api.js';
 import { coalesce } from '../live.js';
 import * as f from '../format.js';
 import { WINDOWS, windowOf, label, span } from '../windows.js';
@@ -64,6 +64,10 @@ export function mount(main, route, ctx) {
       section('By store', span(since), table(r.bySource, r.total, 'Store', (k) => h('span', { class: 'store' }, mark(k), k))),
       // a project's sessions, in the window its row is of
       section('By project', span(since), table(r.byProject, r.total, 'Project', (k) => (k ? h('a', { href: '/' + qs({ project: k, since: since === 'all' ? '' : since }), title: k }, f.shortPath(k)) : '(no directory)'))),
+      // a subagent's tokens are the session's it ran in
+      r.bySession && section('By session', span(since), table(r.bySession, r.total, 'Session', (k, row) => [
+        h('a', { href: sessionHref(k), title: k }, row.title || k),
+        row.cwd && h('span', { class: 'dim', title: row.cwd }, ' · ' + f.shortPath(row.cwd))])),
     );
   }
 
@@ -135,18 +139,20 @@ const HEAD_TITLES = {
   Reasoning: 'The part of the output that was reasoning',
 };
 
+// A table of sessions has no column of how many sessions each row is: one
 function table(rows, total, keyLabel, keyCell) {
+  const counted = keyLabel !== 'Session';
   const n = (v) => h('td', { class: 'n', title: f.num(v) }, f.tokens(v));
   // Reasoning is the part of the output that was thinking, where the provider said so:
   // nothing recorded is a dash, not a zero
   const reasoning = (v) => (v > 0 ? n(v) : h('td', { class: 'n dim', title: 'Not recorded' }, '—'));
   const row = (r, head) => h('tr', null, head,
-    h('td', { class: 'n' }, f.num(r.sessions)), h('td', { class: 'n' }, f.num(r.calls)),
+    counted && h('td', { class: 'n' }, f.num(r.sessions)), h('td', { class: 'n' }, f.num(r.calls)),
     n(r.usage?.input), n(r.usage?.output), reasoning(r.usage?.reasoning), n(r.usage?.cacheRead), n(r.usage?.cacheWrite), n(r.total),
     h('td', { class: 'n' }, f.pct(r.cacheHit)));
   return h('div', { class: 'table-wrap' }, h('table', null,
-    h('thead', null, h('tr', null, [keyLabel, 'Sessions', 'Calls', 'New input', 'Output', 'Reasoning', 'Cache read', 'Cache write', 'Total', 'Cache hit']
-      .map((c, i) => h('th', { scope: 'col', class: i ? 'n' : null, title: HEAD_TITLES[c] }, c)))),
-    h('tbody', null, rows.map((r) => row(r, h('th', { scope: 'row' }, keyCell(r.key))))),
+    h('thead', null, h('tr', null, [keyLabel, counted && 'Sessions', 'Calls', 'New input', 'Output', 'Reasoning', 'Cache read', 'Cache write', 'Total', 'Cache hit']
+      .filter(Boolean).map((c, i) => h('th', { scope: 'col', class: i ? 'n' : null, title: HEAD_TITLES[c] }, c)))),
+    h('tbody', null, rows.map((r) => row(r, h('th', { scope: 'row' }, keyCell(r.key, r))))),
     h('tfoot', null, row(total, h('th', { scope: 'row' }, 'Total', rows.length >= 12 && h('span', { class: 'dim' }, ' · with those not listed'))))));
 }

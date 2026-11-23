@@ -52,7 +52,10 @@ func reportFilter(f Filter) Filter {
 // fill in the rest. What it carries instead is the share of the prompt served from
 // cache, which every CLI records and which says what a price would.
 type UsageRow struct {
-	Key string `json:"key"` // the model, the day, the store or the directory
+	Key string `json:"key"` // the model, the day, the store, the directory or the session's ref
+	// Title and Cwd name a session, in a row of one: what a ref alone does not say
+	Title string `json:"title,omitempty"`
+	Cwd   string `json:"cwd,omitempty"`
 	// Sessions the calls were made in; a subagent's count toward the session it ran in
 	Sessions int         `json:"sessions"`
 	Calls    int         `json:"calls"`
@@ -71,8 +74,13 @@ const (
 	ByAll     = ""
 )
 
+// rootOf is the session a transcript's work counts toward: the one it ran in, for a
+// subagent's, and its own for any other.
+const rootOf = `CASE WHEN s.root_sid > 0 THEN s.root_sid ELSE s.sid END`
+
 // Usage sums what the model calls in a window consumed, grouped by a dimension. Days
-// are the local calendar's; the largest groups come first, days in order.
+// are the local calendar's; the largest groups come first, days in order. By session, a
+// subagent's calls are the session's it ran in, and a row names its session.
 func (ix *Index) Usage(ctx context.Context, f Filter, w Window, by string, limit int) ([]UsageRow, error) {
 	_, offset := time.Now().Zone()
 	key := map[string]string{
@@ -80,7 +88,7 @@ func (ix *Index) Usage(ctx context.Context, f Filter, w Window, by string, limit
 		ByDay:     "strftime('%Y-%m-%d', (u.at / 1000) + " + itoa(offset) + ", 'unixepoch')",
 		BySource:  "s.source",
 		ByProject: "s.cwd",
-		BySession: "s.source || '/' || s.id",
+		BySession: "coalesce(r.source || '/' || r.id, s.source || '/' || s.id)",
 		ByAll:     "''",
 	}[by]
 	if key == "" {
@@ -92,9 +100,13 @@ func (ix *Index) Usage(ctx context.Context, f Filter, w Window, by string, limit
 	if by == ByDay {
 		order = "1"
 	}
+	named, root := "'', ''", ""
+	if by == BySession {
+		named, root = "coalesce(r.title, s.title), coalesce(r.cwd, s.cwd)", ` LEFT JOIN sessions r ON r.sid = `+rootOf
+	}
 	// A subagent's calls are its session's: the sessions counted are the ones people had
-	q := `SELECT ` + key + ` AS k, count(DISTINCT CASE WHEN s.root_sid > 0 THEN s.root_sid ELSE s.sid END), sum(u.calls), sum(u.tok_in), sum(u.tok_out), sum(u.tok_cr), sum(u.tok_cw), sum(u.tok_think)
-FROM usage u JOIN sessions s ON s.sid = u.sid WHERE ` + where + ` AND ` + when + ` GROUP BY k ORDER BY ` + order
+	q := `SELECT ` + key + ` AS k, ` + named + `, count(DISTINCT ` + rootOf + `), sum(u.calls), sum(u.tok_in), sum(u.tok_out), sum(u.tok_cr), sum(u.tok_cw), sum(u.tok_think)
+FROM usage u JOIN sessions s ON s.sid = u.sid` + root + ` WHERE ` + where + ` AND ` + when + ` GROUP BY k ORDER BY ` + order
 	args = append(args, whenArgs...)
 	if limit > 0 {
 		q += ` LIMIT ?`
@@ -108,7 +120,7 @@ FROM usage u JOIN sessions s ON s.sid = u.sid WHERE ` + where + ` AND ` + when +
 	out := []UsageRow{}
 	for rows.Next() {
 		var r UsageRow
-		if err := rows.Scan(&r.Key, &r.Sessions, &r.Calls, &r.Usage.Input, &r.Usage.Output, &r.Usage.CacheRead, &r.Usage.CacheWrite, &r.Usage.Reasoning); err != nil {
+		if err := rows.Scan(&r.Key, &r.Title, &r.Cwd, &r.Sessions, &r.Calls, &r.Usage.Input, &r.Usage.Output, &r.Usage.CacheRead, &r.Usage.CacheWrite, &r.Usage.Reasoning); err != nil {
 			return nil, err
 		}
 		r.Total, r.CacheHit = r.Usage.Total(), r.Usage.CacheHit()
@@ -707,6 +719,7 @@ type UsageReport struct {
 	ByDay     []UsageRow `json:"byDay"`
 	BySource  []UsageRow `json:"bySource"`
 	ByProject []UsageRow `json:"byProject"`
+	BySession []UsageRow `json:"bySession"`
 }
 
 // UsageSummary answers what was consumed. The windows roll — 24h, 7d, 30d, all, the ones
@@ -757,7 +770,10 @@ func (ix *Index) UsageSummary(ctx context.Context, f Filter, w Window) (UsageRep
 	if rep.BySource, err = ix.Usage(ctx, f, w, BySource, 0); err != nil {
 		return rep, err
 	}
-	rep.ByProject, err = ix.Usage(ctx, f, w, ByProject, 12)
+	if rep.ByProject, err = ix.Usage(ctx, f, w, ByProject, 12); err != nil {
+		return rep, err
+	}
+	rep.BySession, err = ix.Usage(ctx, f, w, BySession, 12)
 	return rep, err
 }
 

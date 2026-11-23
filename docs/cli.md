@@ -232,10 +232,11 @@ nothing in it claims to be what is true now.
 
 ## Measuring
 
-**`asq usage`** — rolling windows (24h, 7d, 30d, all), then model, source and project
+**`asq usage`** — rolling windows (24h, 7d, 30d, all), then model, source, project and session
 breakdowns: calls, the prompt (`in`), the output, how much of the output was reasoning, total
 tokens and cache hit rate. `--by model|day|source|project|session` prints one breakdown,
-`--since` bounds it. Token counts are in [one shape](model.md#usage-one-shape) across CLIs. A
+`--since` bounds it. A session is named as `ls` names it, with its title and directory beneath
+its figures; a subagent's calls are counted in the session it ran in. Token counts are in [one shape](model.md#usage-one-shape) across CLIs. A
 dash under `reasoning` means the provider did not say, which is not the same as none.
 
 The report is in tokens, not money. `asq` holds no price list, and the costs some CLIs work out

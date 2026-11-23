@@ -59,7 +59,7 @@ Two ways to ask, the same answers either way:
 | "Which session wrote this line?" | `asq why auth.go:42` in a shell — git blame's commit, the turn that made it, the turns that name it. The MCP server does not have it |
 | "What keeps failing?" | `failures(by="command", since="7d")` — each command that failed, how often, in how many sessions, how many still open; `open=true` for only the ones whose command never passed later ("what is still broken?"); `tool="Bash"` or `query="ECONNREFUSED"` (words of the command or its output) to narrow. It looks at 7 days unless told; an answer of none says how many match before then — widen `since` before concluding it never failed |
 | "What did this week add up to?" | `digest(since="7d")` — per project: sessions, turns, failures, tokens, files changed |
-| "Where did the tokens go?" / "Which model is eating them?" | `usage()`, or `usage(by="model"\|"day"\|"project"\|"session")` |
+| "Where did the tokens go?" / "Which model is eating them?" | `usage()`, or `usage(by="model"\|"day"\|"project"\|"session")` — by session, each with its title and directory |
 | "Which repos have I used agents on?" | `projects()` |
 | "What did the subagents do?" | `read(ref="…")` lists them; each has a ref of its own to `read`. A search hit inside one says "subagent of …" |
 

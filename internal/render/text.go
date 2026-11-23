@@ -724,9 +724,10 @@ func Usage(w io.Writer, title string, rows []index.UsageRow, total *index.UsageR
 		fmt.Fprintln(w, "  nothing recorded")
 		return
 	}
+	keys := usageKeys(rows, st)
 	width := 8
-	for _, r := range rows {
-		width = max(width, len([]rune(st.Path(r.Key))))
+	for _, k := range keys {
+		width = max(width, len([]rune(k)))
 	}
 	width = min(width, 48)
 	// reasoning is the part of out that was thinking, where the provider said: a dash is
@@ -740,16 +741,45 @@ func Usage(w io.Writer, title string, rows []index.UsageRow, total *index.UsageR
 		return fmt.Sprintf("  %-*s %8d %9s %9s %9s %9s %5.0f%%", width+len(key)-len([]rune(key)), key, r.Calls,
 			txt.Tokens(r.Usage.Prompt()), txt.Tokens(r.Usage.Output), reasoning, txt.Tokens(r.Usage.Total()), 100*r.Usage.CacheHit())
 	}
-	for _, r := range rows {
-		key := txt.Truncate(st.Path(r.Key), width, "…")
+	for i, r := range rows {
+		key := txt.Truncate(keys[i], width, "…")
 		if key == "" {
 			key = "(none)"
 		}
 		fmt.Fprintln(w, line(key, r))
+		// A session is its ref, as ls prints it, and beneath the figures what it was
+		if r.Title != "" || r.Cwd != "" {
+			what := []string{}
+			for _, part := range []string{txt.OneLine(r.Title, 0), st.Path(r.Cwd)} {
+				if part != "" {
+					what = append(what, part)
+				}
+			}
+			fmt.Fprintf(w, "    %s\n", st.dim(st.fit(strings.Join(what, " · "), 4)))
+		}
 	}
 	if total != nil && len(rows) > 1 {
 		fmt.Fprintln(w, st.dim(line("total", *total)))
 	}
+}
+
+// usageKeys is how each row of a usage table is named: a directory with the home as ~, and
+// a session by the shortest ref that tells it from the others listed, as ls names it.
+func usageKeys(rows []index.UsageRow, st Style) []string {
+	keys := make([]string, len(rows))
+	var sessions []index.Session
+	for i, r := range rows {
+		keys[i] = st.Path(r.Key)
+		if r.Title != "" || r.Cwd != "" {
+			var s index.Session
+			s.Source, s.ID, _ = index.SplitRef(r.Key)
+			sessions = append(sessions, s)
+		}
+	}
+	if len(sessions) == len(rows) {
+		keys = ShortRefs(sessions)
+	}
+	return keys
 }
 
 // UsageReport prints the whole answer to "what did this cost": the rolling windows,
@@ -764,6 +794,8 @@ func UsageReport(w io.Writer, rep index.UsageReport, rolling bool, st Style) {
 	Usage(w, "By source", rep.BySource, &rep.Total, st)
 	fmt.Fprintln(w)
 	Usage(w, "By project", rep.ByProject, &rep.Total, st)
+	fmt.Fprintln(w)
+	Usage(w, "By session", rep.BySession, &rep.Total, st)
 }
 
 // Cost is a session's own cost as its CLI worked it out: "$1.84", and "<$0.01" for one

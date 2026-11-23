@@ -143,8 +143,8 @@ var tools = []tool{
 	{
 		name:  "usage",
 		title: "Token usage",
-		about: "What the model calls consumed — calls, input, output and total tokens, cache hit rate, cost where the CLI recorded one. " +
-			"Without by: rolling windows (24h, 7d, 30d, all), then by model, source and project.",
+		about: "What the model calls consumed — calls, the prompt (in), output and total tokens, how much of the output was reasoning, and the cache hit rate. " +
+			"Without by: rolling windows (24h, 7d, 30d, all), then by model, source, project and session — a session by its ref, title and directory, its subagents' calls in it. Use it for \"where did the tokens go\", \"which session ate them\".",
 		props: []prop{
 			{"by", "string", "One breakdown instead of the summary: model, day, source, project or session."},
 			pSource, pProject, pBranch, pSince, pUntil, pLimit, pChars,

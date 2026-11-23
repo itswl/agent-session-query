@@ -627,3 +627,37 @@ func TestWhy(t *testing.T) {
 		t.Errorf("not committed:\n%s", text)
 	}
 }
+
+// By session, a row is the session as ls names it — the shortest ref that tells it from the
+// others listed — with what it was beneath its figures: a ref alone says nothing a reader can
+// recognise.
+func TestUsageBySessionNamesItsSessions(t *testing.T) {
+	rows := []index.UsageRow{
+		{Key: "claude/8a80b919-fbeb-4925-968b-46642528af23", Title: "Cap webhook retries", Cwd: "/home/u/work/billing-api", Sessions: 1, Calls: 11, Usage: model.Usage{Input: 400, Output: 39, CacheRead: 4000}},
+		{Key: "codex/rollout-2026-11-23T10-00-00-0e9a1c2b", Title: "", Cwd: "/home/u/work/infra", Sessions: 1, Calls: 2, Usage: model.Usage{Input: 50, Output: 10}},
+	}
+	var out bytes.Buffer
+	Usage(&out, "By session", rows, &index.UsageRow{Key: "total", Calls: 13}, Style{Home: "/home/u"})
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != 7 {
+		t.Fatalf("by session:\n%s", out.String())
+	}
+	if f := strings.Fields(lines[2]); f[0] != "claude/8a80b919" || f[1] != "11" {
+		t.Errorf("a session's row = %q, want its short ref and its figures", lines[2])
+	}
+	if got := strings.TrimSpace(lines[3]); got != "Cap webhook retries · ~/work/billing-api" {
+		t.Errorf("beneath it = %q, want its title and directory", got)
+	}
+	if f := strings.Fields(lines[4]); f[0] != "codex/rollout-2026-11-" {
+		t.Errorf("a ref past its store's word = %q", lines[4])
+	}
+	if got := strings.TrimSpace(lines[5]); got != "~/work/infra" {
+		t.Errorf("a session with no title = %q, want its directory", got)
+	}
+	// Any other grouping is one line a row, its key whole
+	out.Reset()
+	Usage(&out, "By project", []index.UsageRow{{Key: "/home/u/work/infra", Calls: 2}}, nil, Style{Home: "/home/u"})
+	if lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n"); len(lines) != 3 || strings.Fields(lines[2])[0] != "~/work/infra" {
+		t.Errorf("by project:\n%s", out.String())
+	}
+}

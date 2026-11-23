@@ -166,7 +166,7 @@ a match archived sessions alone hold, and one confined to a `session` never has 
 
 | | |
 |---|---|
-| `GET /api/usage` | `{"total", "windows", "byModel", "byDay", "bySource", "byProject"}` — the rolling windows are 24h, 7d, 30d, all; `byDay` is the last 30 days — or, when `until` is in the past, the days from `since` to `until`, or the 30 before `until` with no `since`; the rest cover `since` and `until` |
+| `GET /api/usage` | `{"total", "windows", "byModel", "byDay", "bySource", "byProject", "bySession"}` — the rolling windows are 24h, 7d, 30d, all; `byDay` is the last 30 days — or, when `until` is in the past, the days from `since` to `until`, or the 30 before `until` with no `since`; the rest cover `since` and `until` |
 | `GET /api/usage?by=model\|day\|source\|project\|session` | `{"by", "rows", "total"}` |
 | `GET /api/failures?tool=&q=&open=1` | `{"failures", "total", "open", "passedLater", "byTool"}` — the last 7 days unless `since` says otherwise. `tool` names one tool exactly (`Bash` is not `bash`), or with a trailing `*` by how its name begins; `q` keeps the calls whose command or the end of whose output holds each of its words, in any case (`"a phrase"` as written, `-word` not there); `open=1` keeps the calls whose command did not pass later. `open` and `passedLater` count the calls that match by whether it did, whichever `open` asks for; `byTool` counts every tool of the window whichever is asked for; when none in the window match, `outside` is how many match outside it |
 | `GET /api/failures?by=command` | `{"commands", "total", "open", "passedLater", "byTool"}` — the same calls by the command that failed, the commands with calls still open first, then those that failed most: each `{"command", "count", "open", "sessions", "last"}`, `command` the program and subcommand (`go test`), or for a tool that runs none `tool` instead, and `last` the latest failure, as `failures` has them. `total` counts the commands |
@@ -216,7 +216,8 @@ machine's), and a session whose directory is not here have none.
 
 All take the list's filters. A usage row is
 `{"key", "sessions", "calls", "usage": {"input", "output", "cacheRead", "cacheWrite", "reasoning"}, "total", "cacheHit"}`
-(a subagent's calls count toward the session it ran in). It carries no cost — a cost is a
+(a subagent's calls count toward the session it ran in); by session, `key` is the session's ref
+and the row has its `title` and `cwd` too. It carries no cost — a cost is a
 session's own, in its `stats.costUsd` where the CLI recorded one, and [is not summed](cli.md#measuring);
 `total` beside the rows is the whole they are parts of, which a list cut to its largest groups
 does not add up to.

@@ -350,6 +350,17 @@ func TestReports(t *testing.T) {
 	if len(day) != 1 || day[0].Usage.Input != 175 {
 		t.Errorf("the last day = %+v, want alpha and its agent only", day)
 	}
+	// By session, a subagent's calls are the session's it ran in, and a row names it
+	bySession, err := a.Index.Usage(ctx, f, index.Window{}, index.BySession, 0)
+	if err != nil || len(bySession) != 2 {
+		t.Fatalf("by session = %+v, %v: want alpha, its subagent's calls in it, and beta", bySession, err)
+	}
+	if r := bySession[0]; r.Key != "claude/"+fixture.Alpha || r.Title != "Fix flaky test" || r.Cwd != "/work/alpha" || r.Calls != 6 || r.Sessions != 1 {
+		t.Errorf("alpha by session = %+v", r)
+	}
+	if r := bySession[1]; r.Key != "claude/"+fixture.Beta || r.Cwd != "/work/beta" || r.Title == "" || r.Calls != 2 {
+		t.Errorf("beta by session = %+v", r)
+	}
 	if _, err := a.Index.Usage(ctx, f, index.Window{}, "colour", 0); err == nil {
 		t.Error("an unknown grouping is an error, not a silent total")
 	}
@@ -360,6 +371,9 @@ func TestReports(t *testing.T) {
 	}
 	if err != nil || strings.Join(keys, " ") != "24h 7d 30d all" || rep.Windows[0].Usage.Input != 175 || rep.Windows[3].Usage.Input != 285 || rep.Total.Usage != want {
 		t.Errorf("summary = %+v, %v: the windows every view offers, %v", rep, err, keys)
+	}
+	if len(rep.BySession) != 2 || rep.BySession[0].Title != "Fix flaky test" {
+		t.Errorf("summary by session = %+v", rep.BySession)
 	}
 	// The breakdowns cover the window asked for; the days are the last thirty whichever it is
 	day1, err := a.Index.UsageSummary(ctx, f, index.Window{Since: h.Now.Add(-24 * time.Hour)})
@@ -594,10 +608,13 @@ func TestWhatASessionRecordedBeyondItsResponses(t *testing.T) {
 	if last := turns[0]; last.Usage != (model.Usage{Input: 110, Output: 25}) {
 		t.Errorf("beta's turn = %+v, want what its own responses carried", last.Usage)
 	}
-	// One counter short of covering alpha's responses: the responses stand
+	// One counter short of covering alpha's responses: the responses stand. The table
+	// counts its subagent's in it, as the session it ran in
 	alpha, _ := a.Index.Resolve(ctx, fixture.Alpha, a.Stores())
-	if alpha.Stats.Usage != alphaSum || rows[fixture.Alpha].Usage != alphaSum {
-		t.Errorf("alpha = %+v, in the table %+v; want %+v", alpha.Stats.Usage, rows[fixture.Alpha].Usage, alphaSum)
+	withAgent := alphaSum
+	withAgent.Add(model.Usage{Input: 5, Output: 7})
+	if alpha.Stats.Usage != alphaSum || rows[fixture.Alpha].Usage != withAgent {
+		t.Errorf("alpha = %+v, in the table %+v; want %+v, and %+v with its subagent's", alpha.Stats.Usage, rows[fixture.Alpha].Usage, alphaSum, withAgent)
 	}
 	total, _ := a.Index.UsageTotal(ctx, filter(a), index.Window{})
 	want := alphaSum

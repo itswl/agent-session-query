@@ -283,9 +283,10 @@ still broken, and how often it broke.
 failures and how many of them the same command passed later, tokens, files changed by kind
 (code / test / docs / config), models and CLIs used. Then the sessions behind the counts, the
 latest twelve of each project: the ref, when it was last at work in the window, its turns and
-tool calls there, how they ended (`✓`, `✗2 failed, 1 passed later`, `⚠ interrupted`), its
-title, and the last thing its agent said; a subagent's work is in the session it ran in. A
-project with more says how to list them. Passing later is judged as `failures` judges it.
+tool calls there, how they ended as a search's hit says it (`✓`, `✗2 failed, 1 passed later`,
+`✓ 1 failed, passed later`, `⚠ interrupted`), its title, and the last thing its agent said; a
+subagent's work is in the session it ran in. A project with more says how to list them.
+Passing later is judged as `failures` judges it.
 
 It says how long agents worked, as `usage` counts it, and on how many days, in all, per project
 and per session, and draws when: a row for each weekday, Monday first, and a mark for each hour

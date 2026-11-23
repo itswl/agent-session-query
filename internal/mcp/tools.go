@@ -171,7 +171,7 @@ var tools = []tool{
 		title: "Digest of a stretch of work",
 		about: "What a stretch of work added up to, per project: sessions, turns, tool calls and failures (and how many of those the same command passed later), tokens, files changed by kind, models used, " +
 			"and how long agents worked and on how many days, with a grid of when by weekday and hour; " +
-			"then each project's latest sessions — as many as max_chars leaves room for, the same number for each — with its ref, when it was last at work, how its turns ended (✓, ✗N failed and how many passed later, ⚠ interrupted), its title and the last thing its agent said. " +
+			"then each project's latest sessions — as many as max_chars leaves room for, the same number for each — with its ref, when it was last at work, how its turns ended (✓; ✗N failed, and how many of those passed later; ✓ 1 failed, passed later once each did; ⚠ interrupted), its title and the last thing its agent said. " +
 			"Covers the last 7 days unless since says otherwise; the answer's first line says which moments that was, on the clock of the machine asq runs on. Use it for a standup, a weekly report, \"what did I do today\", \"where did the time go\".",
 		props: []prop{pSource, pProject, pBranch, pSince, pUntil, pChars},
 		run:   runDigest,

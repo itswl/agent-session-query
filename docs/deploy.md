@@ -167,6 +167,14 @@ beyond this machine, set `ASQ_TOKEN` first: a definition that holds it is its ow
 - If the server does not answer, install says so and exits 1 — under launchd, quoting what the
   server wrote to its log meanwhile.
 
+**Installed with Homebrew**, `brew services start asq` is the other way: Homebrew's own
+LaunchAgent or systemd unit, which runs `asq serve` with no settings — loopback, port 7717, no
+token, none of the shell's variables. For any of those, use `asq service install`, which runs
+Homebrew's `asq` by the path that outlives an upgrade (`…/opt/asq/bin/asq`). Not both: install
+refuses to set up a second service while Homebrew's is there, and status names it. Scoop has no
+services; `asq service install` runs Scoop's `asq` by its `current` directory, and the task is
+stopped for an upgrade as below.
+
 What it writes for each system, and how to set it up by hand:
 
 **Linux — a systemd user service**
@@ -254,10 +262,12 @@ launchctl bootout "gui/$(id -u)/io.github.itswl.asq"          # stop and unload
 - macOS keeps the answer across upgrades: the released binaries are all signed with one
   certificate, as `io.github.itswl.asq` (`codesign -d -r- ~/.local/bin/asq` shows it), and it
   remembers the answer against that and against the binary's path — so install upgrades where
-  the first one went, as the installers do when run again. A binary built from source is not
-  signed so, and is asked again after each build. macOS asks about `asq` itself only when
-  launchd runs it, as here; run from a terminal or by an agent's app, it asks about that app,
-  and remembers it for that app.
+  the first one went, as the installers do when run again. Homebrew does not: it keeps each
+  version in a directory of its own (`Cellar/asq/<version>`), and the path that counts is the
+  file's, not that of a link to it, so under Homebrew a folder macOS guards is asked about again
+  after each `brew upgrade`. A binary built from source is not signed so, and is asked again
+  after each build. macOS asks about `asq` itself only when launchd runs it, as here; run from a
+  terminal or by an agent's app, it asks about that app, and remembers it for that app.
 
 **Windows — a scheduled task at logon**
 

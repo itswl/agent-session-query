@@ -86,6 +86,19 @@ curl -fsSL https://raw.githubusercontent.com/itswl/agent-session-query/main/inst
 irm https://raw.githubusercontent.com/itswl/agent-session-query/main/install.ps1 | iex
 ```
 
+**Homebrew** (macOS and Linux) and **Scoop** (Windows), with this repository as the tap and the
+bucket — `brew upgrade` and `scoop update asq` then follow the releases:
+
+```sh
+brew tap itswl/asq https://github.com/itswl/agent-session-query
+brew install itswl/asq/asq
+```
+
+```powershell
+scoop bucket add asq https://github.com/itswl/agent-session-query
+scoop install asq/asq
+```
+
 **With Go** (1.26 or newer; no cgo, no other toolchain):
 
 ```sh

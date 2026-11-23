@@ -345,7 +345,8 @@ written and run, with `ASQ_TOKEN`'s value left out. `status`, or `asq service` a
 definition there is and whose, what it runs, whether the manager holds it and it answers, and
 where its log is; `uninstall` stops it and removes the definition. One `asq` did not write is
 neither replaced nor removed without `--force`, and status gives the commands that take it down
-by hand. Install refuses a port something else answers on, and to run as root. `--json` answers
+by hand. Install refuses a port something else answers on, a second service beside the one
+`brew services` set up, and to run as root. `--json` answers
 what was planned, done or found. See [Deploying](deploy.md#keeping-it-running).
 
 **`asq mcp`** — an MCP server on stdio. See [MCP](mcp.md).

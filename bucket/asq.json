@@ -1,0 +1,18 @@
+{
+    "version": "1.5.0",
+    "description": "Search, read and hand over the session history of every agent CLI",
+    "homepage": "https://github.com/itswl/agent-session-query",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/itswl/agent-session-query/releases/download/v1.5.0/asq-windows-amd64.zip",
+            "hash": "0b0f17207a1a02fa834bce9196b643da0b264315cc7c2b2cf40c83c68e9d8888"
+        },
+        "arm64": {
+            "url": "https://github.com/itswl/agent-session-query/releases/download/v1.5.0/asq-windows-arm64.zip",
+            "hash": "ad92b52d469af3919af290f28ca3c10a98dae3567df93e5e01814c266a0b6201"
+        }
+    },
+    "bin": "asq.exe",
+    "notes": "asq service install keeps asq serve running. While it runs, scoop update asq cannot replace asq.exe: schtasks /end /tn asq before, schtasks /run /tn asq after."
+}

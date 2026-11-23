@@ -68,6 +68,13 @@ jobs:
       - name: Installer syntax
         run: sh -n install.sh
 
+      # The formula and the manifest Homebrew and Scoop read from this repository: what the
+      # script release.yml writes them with writes for the release they name
+      - name: Formula and manifest
+        run: |
+          python3 scripts/package_managers.py --check
+          ruby -c Formula/asq.rb
+
       - name: go vet
         env:
           CGO_ENABLED: '0'

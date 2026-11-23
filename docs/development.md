@@ -261,6 +261,18 @@ pushed to the registry beside it. `SHA256SUMS` comes from the same release and c
 `gh attestation verify <file> --repo itswl/agent-session-query` can. Signing for macOS, below,
 is apart from it and unchanged by it.
 
+### Homebrew and Scoop
+
+This repository is a Homebrew tap and a Scoop bucket: `Formula/asq.rb` and `bucket/asq.json`
+name the latest release, its archives and their checksums, and `brew upgrade` and
+`scoop update` see a release once main names it. Neither is edited by hand.
+`scripts/package_managers.py vX.Y.Z SHA256SUMS` writes both, and the release's last job runs it
+with the `SHA256SUMS` just published and commits the two files to main through the API, as the
+workflow's own commit. When main does not take that commit — protected, or moved meanwhile —
+the job fails and says to run the script by hand and commit what it writes. CI runs
+`scripts/package_managers.py --check`: each file is what the script writes for the release they
+both name.
+
 ### Signing for macOS
 
 macOS remembers whether a program may read a folder it guards — Documents, Desktop, Downloads,

@@ -337,3 +337,52 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --notes-file release-notes.md \
             dist/asq-*.tar.gz dist/asq-*.zip dist/SHA256SUMS dist/install.sh dist/install.ps1
+
+  # Homebrew and Scoop read this repository as a tap and a bucket, and install what
+  # Formula/asq.rb and bucket/asq.json on main name. They are written anew here from the
+  # SHA256SUMS just published and committed to main through the API, as the workflow's own
+  # commit. A job of its own, after the release: a main that does not take the commit costs
+  # the release nothing, and the job fails saying what to run by hand.
+  package-managers:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Formula and manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --pattern SHA256SUMS --dir "$RUNNER_TEMP"
+          python3 scripts/package_managers.py "$GITHUB_REF_NAME" "$RUNNER_TEMP/SHA256SUMS"
+
+      - name: Commit to main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- Formula bucket; then
+            echo "Formula/asq.rb and bucket/asq.json already name $GITHUB_REF_NAME"
+            exit 0
+          fi
+          git="repos/$GITHUB_REPOSITORY/git"
+          parent=$(gh api "$git/ref/heads/main" --jq .object.sha)
+          base=$(gh api "$git/commits/$parent" --jq .tree.sha)
+          tree=$(jq -n --arg base "$base" --rawfile formula Formula/asq.rb --rawfile manifest bucket/asq.json \
+            '{base_tree: $base, tree: [
+               {path: "Formula/asq.rb", mode: "100644", type: "blob", content: $formula},
+               {path: "bucket/asq.json", mode: "100644", type: "blob", content: $manifest}]}' |
+            gh api "$git/trees" --input - --jq .sha)
+          commit=$(jq -n --arg tree "$tree" --arg parent "$parent" --arg message "dist: Homebrew and Scoop install $GITHUB_REF_NAME" \
+            '{message: $message, tree: $tree, parents: [$parent]}' |
+            gh api "$git/commits" --input - --jq .sha)
+          # A fast-forward or nothing: a main that moved meanwhile is not overwritten
+          if ! gh api -X PATCH "$git/refs/heads/main" -f sha="$commit" -F force=false > /dev/null; then
+            echo "::error::main did not take the commit. By hand: python3 scripts/package_managers.py $GITHUB_REF_NAME SHA256SUMS, with the release's SHA256SUMS, then commit Formula/asq.rb and bucket/asq.json"
+            exit 1
+          fi
+          echo "committed $commit to main"

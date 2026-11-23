@@ -79,6 +79,19 @@ curl -fsSL https://raw.githubusercontent.com/itswl/agent-session-query/main/inst
 irm https://raw.githubusercontent.com/itswl/agent-session-query/main/install.ps1 | iex
 ```
 
+**Homebrew**（macOS 与 Linux）和 **Scoop**（Windows），以本仓库作为 tap 和 bucket——之后
+`brew upgrade` 与 `scoop update asq` 会跟上每次发布：
+
+```sh
+brew tap itswl/asq https://github.com/itswl/agent-session-query
+brew install itswl/asq/asq
+```
+
+```powershell
+scoop bucket add asq https://github.com/itswl/agent-session-query
+scoop install asq/asq
+```
+
 **用 Go**（1.26 及以上；无 cgo，不需要其他工具链）：
 
 ```sh

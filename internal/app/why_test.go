@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -94,6 +95,12 @@ func TestWhy(t *testing.T) {
 	const madeIt, namedIt = "cccc3333-0000-4000-8000-000000000003", "dddd4444-0000-4000-8000-000000000004"
 	claudeSession(t, h, madeIt, repo, "trim the titles, then commit", printed, "Committed.")
 	claudeSession(t, h, namedIt, repo, "what was the last commit?", "commit "+full+"\nAuthor: test", "It trims titles.")
+	// A commit whose hooks printed pages before git's line, and whose list of files ran on
+	// after it: the line is in the part of the output a turn keeps no preview of
+	const madeLoudly = "eeee5555-0000-4000-8000-000000000005"
+	claudeSession(t, h, madeLoudly, repo, "commit it, hooks and all",
+		strings.Repeat("pre-commit: checking formatting of the package ... ok\n", 40)+printed+"\n"+
+			strings.Repeat(" create mode 100644 testdata/titles/case.txt\n", 120), "Committed; the hooks passed.")
 	a, err := app.Open(h.Config(t))
 	if err != nil {
 		t.Fatal(err)
@@ -111,8 +118,13 @@ func TestWhy(t *testing.T) {
 	if why.Commit != full || why.Subject != "Trim the title before it is stored" || why.Text != "\treturn strings.TrimSpace(s)" || why.At.IsZero() {
 		t.Errorf("blame = %+v", why.Blame)
 	}
-	if len(why.Made) != 1 || !strings.HasPrefix(why.Made[0].Ref, "claude/"+madeIt+"#1") {
-		t.Errorf("made = %+v", why.Made)
+	var made []string
+	for _, h := range why.Made {
+		made = append(made, h.Ref)
+	}
+	slices.Sort(made)
+	if want := []string{"claude/" + madeIt + "#1", "claude/" + madeLoudly + "#1"}; !slices.Equal(made, want) {
+		t.Errorf("made = %q, want %q", made, want)
 	}
 	if len(why.Mentioned) != 1 || !strings.HasPrefix(why.Mentioned[0].Ref, "claude/"+namedIt+"#1") {
 		t.Errorf("mentioned = %+v", why.Mentioned)

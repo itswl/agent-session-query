@@ -47,6 +47,7 @@ func TestMatchExpression(t *testing.T) {
 		"f# -c++":           `("f") NOT "c"`, // … excluded as well
 		"node.js":           `"node js"*`,    // … and what ends in a word still begins others
 		"retry.":            `("retry" OR "retri" OR "ǂretri")`,
+		"retr* -lib*":       `(("retr"* OR "ǂretr")) NOT "lib"*`, // … but a * that it begins others
 		"!!!":               ``,
 	} {
 		if got := ParseQuery(in).match(); got != want {

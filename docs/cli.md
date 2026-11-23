@@ -71,7 +71,8 @@ word by its stem, Porter's, as SQLite's FTS5 has it: `logs` finds `log` and `log
 (`session_query`), one with digits in it, and words in other scripts match as written. An
 excluded word is excluded as typed, by how a word begins: `-windows` leaves in a turn that says
 only `window`. What is typed after a word says that it ends there: `c++` finds the word *c* —
-the index holds no `+` — and not every word that begins with c.
+the index holds no `+` — and not every word that begins with c; a `*` says the opposite, and
+`retr*` finds what `retr` does.
 
 The session's title is searched with its first turn, so a word of it finds the session once,
 there: `webhook retries` finds the session titled *Cap webhook retries* at its first turn,

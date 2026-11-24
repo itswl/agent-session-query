@@ -53,6 +53,11 @@ export const later = (n, p = 0) => (!p ? '' : p < n ? `, ${num(p)} passed later`
 // open is how many of those the same command did not pass later: what is still to see to.
 export const open = (x) => Math.max((x.failures || 0) - (x.passedLater || 0), 0);
 
+// wentWrong says whether a turn is one to go back to: it has a failed call the same command
+// did not pass later, or its work ended on an error. The server says the second of no turn
+// the agent is at.
+export const wentWrong = (t) => open(t) > 0 || !!t.error;
+
 // passedTitle is what a count of failures says on hover.
 export const passedTitle = 'Calls that failed, and how many of them the same command passed later, in that turn or the three after';
 

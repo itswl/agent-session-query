@@ -122,6 +122,12 @@ func TestFormat(t *testing.T) {
 		{"stopped", []any{"turnStatus", map[string]any{"interrupted": true}}, []any{"interrupted", "interrupted", ""}},
 		{"failed, and passed later", []any{"turnStatus", map[string]any{"failures": 1, "passedLater": 1}}, []any{"passed", "1 failed call, passed later", ""}},
 		{"fine", []any{"turnStatus", map[string]any{}}, []any{"fine", "fine", ""}},
+
+		// The turns x goes to: a failed call still open, or work that ended on an error
+		{"a call still failing", []any{"wentWrong", map[string]any{"failures": 2, "passedLater": 1}}, true},
+		{"an error it ended on", []any{"wentWrong", map[string]any{"error": "quota"}}, true},
+		{"failures all passed later", []any{"wentWrong", map[string]any{"failures": 1, "passedLater": 1}}, false},
+		{"stopped, nothing failed", []any{"wentWrong", map[string]any{"interrupted": true}}, false},
 	}
 	calls := make([][]any, len(cases))
 	for i, tc := range cases {

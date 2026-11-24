@@ -443,19 +443,20 @@ export function mount(main, route, ctx) {
   }
 
   // toFailed goes to the next failed turn after the one in view, or before it, round from
-  // the end to the start: one with a failure the same command did not pass later
+  // the end to the start: one with a failure the same command did not pass later, or one
+  // whose work ended on an error
   function toFailed(d) {
     const n = v.recs.length;
     const from = current();
     for (let k = 1; k <= n; k++) {
       const i = (((from + d * k) % n) + n) % n;
-      if (f.open(v.recs[i].t) > 0) return jump(i);
+      if (f.wentWrong(v.recs[i].t)) return jump(i);
     }
   }
 
   function renderNav() {
     whereOf.textContent = v.recs.length ? '/ ' + v.recs.at(-1).t.index : '';
-    failBtn.hidden = !v.recs.some((r) => f.open(r.t) > 0);
+    failBtn.hidden = !v.recs.some((r) => f.wentWrong(r.t));
     renderWhere();
   }
 

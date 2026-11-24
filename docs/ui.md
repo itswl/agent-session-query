@@ -139,7 +139,8 @@ the head is the title and the first line of facts, and *Details* opens the rest:
 totals, the command that reopens it, the subagents. A row stays at the top while the session is
 read: back to the list or report it was opened from (or to the sessions list), the turn in
 view — type another number to go to that turn — the next failed turn (one with a failure the
-same command did not pass later), find, the top, and the newest turn.
+same command did not pass later, or one whose work ended on an error), find, the top, and the
+newest turn.
 
 ## Reports
 
@@ -225,7 +226,7 @@ say for themselves which stores did it — narrowed to one, they would have noth
 | `e` | expand every step of the opened turns |
 | `g g` · `G` | top · bottom |
 | `12 G` | turn 12 of a session |
-| `x` `X` | next, previous failed turn — after the one in view, and round from the end; a turn whose failures all passed later is passed over |
+| `x` `X` | next, previous failed turn — after the one in view, and round from the end: one with a failed call still open, or one that ended on an error; a turn whose failures all passed later is passed over |
 | `f` | find in this session |
 | `Esc` | back to the list or report a session was opened from — or, with the find open, closes it |
 | `?` | search syntax and keys |

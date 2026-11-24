@@ -218,6 +218,11 @@ func TestAroundTheConversation(t *testing.T) {
 	if own.Name != "local_shell" || own.Command != "ls /missing" || own.Exit == nil || *own.Exit != 1 || own.Status != model.StatusError {
 		t.Errorf("the person's command = %+v", own)
 	}
+	// The command is the person's, not the agent going on past the error: the turn's work
+	// ended on it
+	if turn.Error != "You have hit the rate limit." {
+		t.Errorf("the turn ended on %q, want the rate limit's error", turn.Error)
+	}
 }
 
 // /fork copies the session's events as they were into a new log, behind a session.start

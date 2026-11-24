@@ -58,7 +58,7 @@ var Spec = sources.Spec{
 	// --resume takes a session's id (or a prefix of it, or its name) as the word after it,
 	// and finds the session in COPILOT_HOME from any directory
 	Resume: "copilot --resume",
-	Reads:  1,
+	Reads:  2,
 	Store:  "~/.copilot/session-state/<id>/events.jsonl",
 	// No Retention: Copilot CLI keeps a session until someone deletes it ("nothing expires
 	// them", copilot help sessions)
@@ -334,6 +334,9 @@ type call struct {
 	lane    string    // the subagent that made it, "" for the session's own agent
 	started time.Time // when it began to run
 	done    bool
+	// user says the person ran it themselves (a ! command): it and its result are no work
+	// of the agent's, and are written as the CLI's own rows (transcript.System)
+	user bool
 
 	// An abort ended the run the call was part of: when, and whether that abort was a
 	// fork's copy of its parent's
@@ -492,7 +495,8 @@ func (r *reader) line(raw []byte, linked bool) {
 	case "tool.user_requested":
 		// A tool the person ran themselves (a ! command): a call no response asked for
 		if c := r.request(d.ToolCallID, d.ToolName, d.Arguments, lane); c != nil {
-			add(transcript.Message{Role: transcript.ToolRole, Blocks: []transcript.Block{transcript.CallOf(d.ToolCallID, c.name, arguments(d.Arguments))}})
+			c.user = true
+			add(transcript.Message{Role: transcript.System, Blocks: []transcript.Block{transcript.CallOf(d.ToolCallID, c.name, arguments(d.Arguments))}})
 		}
 	case "tool.execution_start", "program.tool_execution_start":
 		// The call was asked for in a response; a tool that a program a call ran called
@@ -690,7 +694,11 @@ func (r *reader) complete(d *data, at time.Time, add func(transcript.Message)) {
 	if c != nil && !c.started.IsZero() && !at.IsZero() {
 		outcome.DurMs = model.DurMs(at.Sub(c.started).Milliseconds())
 	}
-	add(transcript.Message{Role: transcript.ToolRole, Blocks: []transcript.Block{transcript.ResultOf(d.ToolCallID, name, output, outcome)}})
+	role := transcript.ToolRole
+	if c != nil && c.user {
+		role = transcript.System // the result of a command the person ran is theirs too
+	}
+	add(transcript.Message{Role: role, Blocks: []transcript.Block{transcript.ResultOf(d.ToolCallID, name, output, outcome)}})
 }
 
 // closeCall takes a call off the list of those awaiting a result.

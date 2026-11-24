@@ -2,28 +2,28 @@
 class Asq < Formula
   desc "Search, read and hand over the session history of every agent CLI"
   homepage "https://github.com/itswl/agent-session-query"
-  version "1.6.0"
+  version "1.6.1"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/itswl/agent-session-query/releases/download/v1.6.0/asq-darwin-arm64.tar.gz"
-      sha256 "8b47eb218d79a49835a8771cd283d4e282186409fa553f98f2b61c9c26f38d29"
+      url "https://github.com/itswl/agent-session-query/releases/download/v1.6.1/asq-darwin-arm64.tar.gz"
+      sha256 "8217f9027bc53447c17e2e4d1cabfcfe5ad9b3de3b2726ef3c324be7c3c1764f"
     end
     on_intel do
-      url "https://github.com/itswl/agent-session-query/releases/download/v1.6.0/asq-darwin-amd64.tar.gz"
-      sha256 "921d08ef760f73c6005f150e64dbaae42bbdad5fdcc4998f1eee0d9a50a4edc9"
+      url "https://github.com/itswl/agent-session-query/releases/download/v1.6.1/asq-darwin-amd64.tar.gz"
+      sha256 "13993cfce7c7f87a2de86c57d6353f6a9a1346cbd0c24b98f5bbccc020d44d4b"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/itswl/agent-session-query/releases/download/v1.6.0/asq-linux-arm64.tar.gz"
-      sha256 "ea7f85276047c6dacc76cdad75ba3a90c4949f730c95ecaf5c584cf968e0262c"
+      url "https://github.com/itswl/agent-session-query/releases/download/v1.6.1/asq-linux-arm64.tar.gz"
+      sha256 "5783e1208277b29e94c8c592dc629c24c000fb7be295b64b4c73e26b2e1a43e6"
     end
     on_intel do
-      url "https://github.com/itswl/agent-session-query/releases/download/v1.6.0/asq-linux-amd64.tar.gz"
-      sha256 "c1c7566680ea3e69eb0a8c7e553eb3d6d600d559e66de58ee4f5f5d6cb398f7f"
+      url "https://github.com/itswl/agent-session-query/releases/download/v1.6.1/asq-linux-amd64.tar.gz"
+      sha256 "ee20db84c1f3f19234fb4146da2f68fd86566fb774402c97a9a80c7616383247"
     end
   end
 

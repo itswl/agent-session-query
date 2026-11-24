@@ -48,7 +48,7 @@ var Spec = sources.Spec{
 	Movable:    true,
 	Resume:     "claude --resume",
 	ResumeHere: true,
-	Reads:      4,
+	Reads:      5,
 	Store:      "~/.claude/projects/<project>/<session>.jsonl",
 	// Claude Code sweeps every project after a session starts; from v2.1.248 it keeps the
 	// sessions started or last continued in Claude Desktop or Cowork, unless
@@ -131,7 +131,8 @@ type row struct {
 	IsSidechain bool            `json:"isSidechain"`
 	IsMeta      bool            `json:"isMeta"`
 	IsCompact   bool            `json:"isCompactSummary"`
-	Content     json.RawMessage `json:"content"` // a system row's text
+	IsAPIError  bool            `json:"isApiErrorMessage"` // in the model's place, for a request that failed (see apiFailure)
+	Content     json.RawMessage `json:"content"`           // a system row's text
 
 	AITitle     string `json:"aiTitle"`
 	CustomTitle string `json:"customTitle"`
@@ -570,6 +571,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			if u := r.Message.Usage; u != nil && !inherited {
 				m.Usage = &model.Usage{Input: kit.Count(u.Input), Output: kit.Count(u.Output), CacheRead: kit.Count(u.CacheRead), CacheWrite: kit.Count(u.CacheWrite)}
 			}
+			apiFailure(&r, &m)
 			add(m, origin)
 		case "":
 			// A line that does not say what it is: no row this CLI writes
@@ -907,6 +909,31 @@ func parts(raw json.RawMessage) []part {
 	var list []part
 	_ = json.Unmarshal(raw, &list)
 	return list
+}
+
+// apiFailure makes an assistant row the CLI wrote in the model's place for a request that
+// failed — "API Error: 529 …", once its retries are spent — the error event it is, and the
+// mark that the turn is over: the error the turn ended on, not words of the model's, which
+// the CLI writes no more after. A row in the model's place is that, or a resumed session's
+// "No response requested.", which stays as it was. The CLI marks the failure on the row
+// (isApiErrorMessage); a row it did not mark is taken for one by its words. Either stays no
+// model call, and does not stretch the turn (see transcript.SyntheticModel).
+func apiFailure(r *row, m *transcript.Message) {
+	if r.Message.Model != transcript.SyntheticModel {
+		return
+	}
+	var words []string
+	for _, b := range m.Blocks {
+		if b.Type != transcript.Text {
+			return
+		}
+		words = append(words, b.Text)
+	}
+	text := strings.TrimSpace(strings.Join(words, "\n"))
+	if text == "" || !r.IsAPIError && !strings.HasPrefix(text, "API Error") {
+		return
+	}
+	m.Blocks, m.Ends = []transcript.Block{transcript.EventOf(model.EventError, text)}, true
 }
 
 func assistantBlocks(r *row, unread func(kind string)) []transcript.Block {

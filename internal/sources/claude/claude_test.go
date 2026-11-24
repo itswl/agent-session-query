@@ -785,6 +785,86 @@ func TestWhereTheLatestTurnStands(t *testing.T) {
 	}
 }
 
+// A request that failed once its retries were spent is written in the model's place, with
+// no model: the error the turn ended on, which marks it over, with no model call and no
+// answer. The CLI marks such a row isApiErrorMessage; one it did not mark is known by its
+// words. A resumed session's "No response requested.", in the model's place too, is no
+// error; a reply after an error goes on past it; and a fork's copy of one is the parent's.
+func TestARequestThatFailed(t *testing.T) {
+	const failure = `API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`
+	ask := userRow("u1", "2026-10-01T10:00:00Z", "deploy it")
+	call := assistantRow("a1", "2026-10-01T10:00:04Z", "msg_1", M{"input_tokens": 10, "output_tokens": 3}, M{"type": "text", "text": "Deploying now."})
+	call["message"].(M)["stop_reason"] = "tool_use"
+	inPlace := func(uuid, clock, text string, flagged bool) M {
+		r := M{"type": "assistant", "uuid": uuid, "timestamp": "2026-10-01T" + clock + "Z", "sessionId": "sess-1",
+			"message": M{"id": "msg-" + uuid, "role": "assistant", "model": transcript.SyntheticModel, "stop_reason": "stop_sequence",
+				"content": []M{{"type": "text", "text": text}}, "usage": M{"input_tokens": 0, "output_tokens": 0}}}
+		if flagged {
+			r["isApiErrorMessage"] = true
+		}
+		return r
+	}
+	reply := assistantRow("a3", "2026-10-01T10:01:00Z", "msg_3", M{"input_tokens": 10, "output_tokens": 3}, M{"type": "text", "text": "Deployed."})
+	for _, c := range []struct {
+		name   string
+		rows   []any
+		err    string
+		answer string
+		live   model.Live
+	}{
+		{"marked", []any{ask, call, inPlace("a2", "10:00:30", failure, true)}, failure, "Deploying now.", model.Live{State: model.LiveIdle, Since: on("10:00:30")}},
+		{"not marked", []any{ask, call, inPlace("a2", "10:00:30", "API Error: Connection error.", false)}, "API Error: Connection error.", "Deploying now.",
+			model.Live{State: model.LiveIdle, Since: on("10:00:30")}},
+		{"no response requested", []any{ask, call, inPlace("a2", "10:00:30", "No response requested.", false)}, "", "Deploying now.",
+			model.Live{State: model.LiveIdle, Since: on("10:00:30")}},
+		{"answered after it", []any{ask, call, inPlace("a2", "10:00:30", failure, true), reply}, "", "Deployed.", model.Live{State: model.LiveIdle, Since: on("10:01:00")}},
+	} {
+		root := t.TempDir()
+		sourcetest.Write(t, filepath.Join(root, "-work-proj", "sess-1.jsonl"), c.rows...)
+		s := sourcetest.One(t, Spec.Open(root))
+		sourcetest.NothingUnread(t, s)
+		turn := s.Turn(t, 1)
+		if turn.Error != c.err || turn.Answer != c.answer {
+			t.Errorf("%s: ended on %q, answer %q; want %q, %q", c.name, turn.Error, turn.Answer, c.err, c.answer)
+		}
+		if got := s.Session.Live; got == nil || *got != c.live {
+			t.Errorf("%s: live %+v, want %+v", c.name, got, c.live)
+		}
+		// The row in the model's place is no model call, and the turn's work ended before it
+		if wantCalls := 1 + strings.Count(c.name, "answered"); len(turn.Calls) != wantCalls {
+			t.Errorf("%s: %d model calls, want %d", c.name, len(turn.Calls), wantCalls)
+		}
+		if c.err != "" {
+			if !turn.EndedAt.Equal(on("10:00:04")) {
+				t.Errorf("%s: the turn ended %v, want at the model's last row", c.name, turn.EndedAt)
+			}
+			if last := turn.Items[len(turn.Items)-1]; last.Kind != model.Event || last.Event != model.EventError || last.Text != c.err {
+				t.Errorf("%s: last item %+v, want the error", c.name, last)
+			}
+		}
+	}
+
+	// A fork's copy of a failed request is the parent's: an error among the copied rows, and
+	// the fork's own turn ends on nothing of it
+	rows := forkRows()
+	copied := inPlace("p3", "09:00:05", failure, true)
+	copied["isSidechain"], copied["agentId"] = true, "fff"
+	rows = append(rows[:2], append([]any{copied}, rows[2:]...)...)
+	root := t.TempDir()
+	dir := filepath.Join(root, "proj", "sess-1", "subagents")
+	sourcetest.Write(t, filepath.Join(dir, "agent-fff.jsonl"), rows...)
+	sourcetest.Write(t, filepath.Join(dir, "agent-fff.meta.json"), M{"agentType": "fork", "toolUseId": "toolu_fork"})
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	zero, one := s.Turn(t, 0), s.Turn(t, 1)
+	if it := zero.Items[len(zero.Items)-1]; it.Event != model.EventError || !it.Inherited {
+		t.Errorf("the copied failure = %+v, want the parent's error", it)
+	}
+	if zero.Error != "" || one.Error != "" || one.Answer != "They pass." {
+		t.Errorf("the fork's turns ended on %q and %q, answer %q", zero.Error, one.Error, one.Answer)
+	}
+}
+
 // on is a moment of the day the tests' rows are dated.
 func on(clock string) time.Time {
 	t, _ := time.Parse(time.RFC3339, "2026-10-01T"+clock+"Z")

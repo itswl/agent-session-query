@@ -117,6 +117,11 @@ interrupted rather than an error — newer versions say which on the row, older 
 words Claude Code gives the model in its place. Like any interrupted call, it is still listed by
 `asq failures` and counted among a turn's failures. A call refused by a permission rule, a hook
 or auto mode is an error.
+A request to the model that failed once Claude Code stopped retrying it is written in the model's
+place, with no model (`<synthetic>`), as "API Error: 529 …": it is an `error` event, the error
+the turn ended on, and the turn is over — no model call, and no answer. Claude Code marks such a
+row (`isApiErrorMessage`); one it did not mark is known by its words. A resumed session's "No
+response requested.", written in the model's place too, is no error, and stays as it was.
 Claude Code deletes the transcripts of sessions not used for 30 days by default
 (`cleanupPeriodDays` in its `settings.json`, under `~/.claude` or `CLAUDE_CONFIG_DIR`); from
 v2.1.248 it keeps those of sessions started or last continued in Claude Desktop or Cowork, unless

@@ -56,6 +56,22 @@ export const open = (x) => Math.max((x.failures || 0) - (x.passedLater || 0), 0)
 // passedTitle is what a count of failures says on hover.
 export const passedTitle = 'Calls that failed, and how many of them the same command passed later, in that turn or the three after';
 
+// turnStatus is how a turn ended, as its head says it: the status it is drawn by, its words,
+// and what they say on hover. working is where the turn the agent is at stands — 'working',
+// 'waiting' — and '' for any other. A turn whose work ended on an error says so first, with
+// the error's first line, whatever else holds: it is how the turn ended, and says why one
+// also stopped did. The server says it of no turn the agent is at, which has not ended. One
+// whose failed calls the same command each passed later is not failed: they were steps of
+// the work, and it is said, muted.
+export function turnStatus(t, working = '') {
+  if (t.error && !working) return ['error', 'error: ' + firstLine(t.error, 80), firstLine(t.error, 300)];
+  if (open(t)) return ['failed', failed(t, true), ''];
+  if (working) return ['working', working, ''];
+  if (t.interrupted) return ['interrupted', 'interrupted', ''];
+  if (t.failures) return ['passed', failed(t, true), ''];
+  return ['fine', 'fine', ''];
+}
+
 // dur is a span of time, cut down as the command line cuts it, never rounded up: 23.6
 // seconds are 23s there and here.
 export function dur(ms) {

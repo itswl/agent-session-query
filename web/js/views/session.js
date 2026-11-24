@@ -11,7 +11,7 @@ import * as f from '../format.js';
 import { standing } from '../standing.js';
 
 const titleOf = (s) => s.title || f.firstLine(s.lastAsk, 120) || 'Untitled session';
-const sigOf = (t, at) => [t.endedAt, t.lastAt, t.steps, t.tools, t.failures, t.passedLater, t.interrupted, at, t.ask?.length, t.answer?.length, f.totalTokens(t.usage)].join('|');
+const sigOf = (t, at) => [t.endedAt, t.lastAt, t.steps, t.tools, t.failures, t.passedLater, t.interrupted, t.error, at, t.ask?.length, t.answer?.length, f.totalTokens(t.usage)].join('|');
 const atBottom = () => innerHeight + scrollY >= document.documentElement.scrollHeight - 120;
 const behavior = () => (reducedMotion() ? 'auto' : 'smooth');
 // A phone: the bar scrolls away, and the session keeps a row of its own at the top
@@ -270,10 +270,7 @@ export function mount(main, route, ctx) {
   function fillTurn(rec) {
     const t = rec.t;
     const zero = t.index === 0;
-    // A turn whose failures the same command each passed later is not marked failed: they
-    // were steps of the work, and it is said, muted
-    const working = atWork(t);
-    const [status, said] = f.open(t) ? ['failed', f.failed(t, true)] : working ? ['working', working] : t.interrupted ? ['interrupted', 'interrupted'] : t.failures ? ['passed', f.failed(t, true)] : ['fine', 'fine'];
+    const [status, said, why] = f.turnStatus(t, atWork(t));
     const took = f.when(t.endedAt) - f.when(t.startedAt);
     rec.toggle = h('button', { type: 'button', class: 't-toggle', 'aria-expanded': String(rec.open), 'aria-controls': rec.stepsEl.id },
       icon('chevron', 'chev'), h('span', null, toggleLabel(rec)));
@@ -294,7 +291,7 @@ export function mount(main, route, ctx) {
         h('a', { class: 't-num', href: '#' + t.index, title: 'Link to this turn' }, '#' + t.index),
         zero ? h('span', { class: 't-zero' }, 'Before the first ask') : time(t.startedAt, 'clock'),
         took > 0 && h('span', { class: 't-dur', title: 'From the ask to the last thing the agent did' }, f.dur(took)),
-        h('span', { class: 't-status', dataset: { status } }, status === 'fine' ? h('span', { class: 'sr' }, said) : said),
+        h('span', { class: 't-status', dataset: { status }, title: why || null }, status === 'fine' ? h('span', { class: 'sr' }, said) : said),
         rec.toggle),
       rec.askEl,
       (kinds.length || changed.length || tok) ? h('div', { class: 't-facts dots' },

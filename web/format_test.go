@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -108,6 +109,19 @@ func TestFormat(t *testing.T) {
 		{"minutes of work", []any{"work", 12 * 60_000}, "12m"},
 		{"hours of work", []any{"work", (38*60 + 20) * 60_000}, "38h 20m"},
 		{"no work", []any{"work", 0}, ""},
+
+		// How a turn ended, as its head says it: a turn whose work ended on an error says so
+		// with the error's first line, and the line whole on hover — not fine, not failed,
+		// which is for calls, and not interrupted when it was stopped too. The turn the agent
+		// is at says where it stands
+		{"a turn that ended on an error", []any{"turnStatus", map[string]any{"error": "402 Insufficient Balance (insufficient_balance)\n  at send (client.js:42)"}},
+			[]any{"error", "error: 402 Insufficient Balance (insufficient_balance)", "402 Insufficient Balance (insufficient_balance)"}},
+		{"an error, and stopped too", []any{"turnStatus", map[string]any{"error": "quota", "interrupted": true, "failures": 2}}, []any{"error", "error: quota", "quota"}},
+		{"an error, and the agent at it", []any{"turnStatus", map[string]any{"error": "quota"}, "working"}, []any{"working", "working", ""}},
+		{"calls that failed", []any{"turnStatus", map[string]any{"failures": 2, "passedLater": 1}}, []any{"failed", "2 failed calls, 1 passed later", ""}},
+		{"stopped", []any{"turnStatus", map[string]any{"interrupted": true}}, []any{"interrupted", "interrupted", ""}},
+		{"failed, and passed later", []any{"turnStatus", map[string]any{"failures": 1, "passedLater": 1}}, []any{"passed", "1 failed call, passed later", ""}},
+		{"fine", []any{"turnStatus", map[string]any{}}, []any{"fine", "fine", ""}},
 	}
 	calls := make([][]any, len(cases))
 	for i, tc := range cases {
@@ -138,7 +152,7 @@ func TestFormat(t *testing.T) {
 		t.Fatalf("node said %q (%v)", out, err)
 	}
 	for i, tc := range cases {
-		if got[i] != tc.want {
+		if !reflect.DeepEqual(got[i], tc.want) {
 			t.Errorf("%s: %s(%q) = %#v, want %#v", tc.name, tc.call[0], tc.call[1:], got[i], tc.want)
 		}
 	}

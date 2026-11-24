@@ -509,6 +509,7 @@ function hitRow(hit, query) {
         time(hit.at),
         hit.tools > 0 && h('span', null, f.plural(hit.tools, 'tool call')),
         hit.failures > 0 && h('span', { class: f.open(hit) ? 'bad' : null, title: f.passedTitle }, f.failed(hit)),
+        hit.error && h('span', { class: 'bad', title: f.firstLine(hit.error, 300) }, 'error'),
         hit.interrupted && h('span', { class: 'lacks' }, 'interrupted'),
         s.cwd && h('span', { class: 'path', title: s.cwd }, f.shortPath(s.cwd)))),
     matches.length > 0 && h('ul', { class: 'matches' }, matches.map((m) =>

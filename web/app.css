@@ -362,14 +362,14 @@ div.row-main { position: relative; }
   content: ""; position: absolute; left: 1px; top: 18px; width: 9px; height: 9px; border-radius: 50%;
   background: var(--bg); border: 2px solid var(--faint);
 }
-.turn[data-status="failed"]::before { background: var(--bad); border-color: var(--bad); }
+.turn[data-status="failed"]::before, .turn[data-status="error"]::before { background: var(--bad); border-color: var(--bad); }
 .turn[data-status="interrupted"]::before { border-color: var(--warn); }
 .turn.current::before { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .turn:focus-visible { outline-offset: 0; border-radius: 6px; }
 .turn.zero { opacity: .7; }
 .t-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-height: 28px; color: var(--muted); font-size: 12.5px; }
 .t-num { color: var(--text); font: 600 12.5px var(--mono); }
-.t-status[data-status="failed"] { color: var(--bad); }
+.t-status[data-status="failed"], .t-status[data-status="error"] { color: var(--bad); }
 .t-status[data-status="interrupted"] { color: var(--warn); }
 .t-toggle {
   display: inline-flex; align-items: center; gap: 4px; margin-left: auto; padding: 3px 8px 3px 4px;

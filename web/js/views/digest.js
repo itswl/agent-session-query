@@ -126,6 +126,7 @@ function session(e) {
       e.tools > 0 && h('span', null, f.plural(e.tools, 'tool call')),
       e.agentMs > 0 && h('span', { title: AGENT_TIME }, f.work(e.agentMs)),
       e.failures > 0 && h('span', { class: f.open(e) ? 'bad' : null, title: f.passedTitle }, f.failed(e)),
+      e.error && h('span', { class: 'bad', title: f.firstLine(e.error, 300) }, 'error'),
       e.interrupted && h('span', { class: 'warn' }, 'interrupted')),
     e.answer && h('span', { class: 'd-answer' }, f.firstLine(e.answer, 300)));
 }

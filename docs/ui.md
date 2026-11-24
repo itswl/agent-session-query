@@ -52,8 +52,9 @@ someone who always reads one project would find everything in it marked.
 Type in the box (`/` focuses it). Results are **turns**, best match first, each under its
 session's title with what was asked there and the lines the words were found in — a reply, the
 reasoning, a tool's input or its output — with the matches marked, the other forms of a word
-found (*retried* for retries) among them, and how many of its calls failed and how many of those
-passed later. The query syntax is the [command line's](cli.md#finding); `?` shows it. A search
+found (*retried* for retries) among them, how many of its calls failed and how many of those
+passed later, and whether its work ended on an *error* — its first line on hover — or the person
+stopped it. The query syntax is the [command line's](cli.md#finding); `?` shows it. A search
 keeps the list's filters, and from a report the project it is narrowed to. When no turn holds
 every word, a note above the results says so and names any word no turn holds, and the results
 are the turns that come closest, each saying which words it lacks. When the filters kept the
@@ -93,8 +94,12 @@ changed, tokens), and the answer. *3 files changed* opens the list of them, name
 session's directory, each a link to [Files](#reports) at that path, for how it stands now. A turn
 with failed calls says how many, in red, unless the same command passed later for each of them —
 in that turn or the three after it, [as failures judges it](api.md#reports) — when it says so,
-muted: those were steps of the work, not where it stands. The turn the agent is at says
-*working* or *waiting* while the session does, rather than how it ended. The head counts what
+muted: those were steps of the work, not where it stands. A turn whose work ended on an error
+— a provider that refused the call, a call to the model that failed — says *error* and the
+error's first line, in red, and the line whole on hover: before any calls that failed, and
+rather than *interrupted* when it was stopped too, since the error says why. One the person
+stopped says *interrupted*. The turn the agent is at says *working* or *waiting* while the
+session does, rather than how it ended. The head counts what
 *Passed later* beside what *Failed*. Only this outline is loaded up front — a long session is megabytes — and a
 turn's steps are fetched when it is opened.
 
@@ -182,7 +187,8 @@ narrows to paths that contain what is typed; *Read or changed* adds the turns th
 **Digest** — the same window per project: sessions, turns, tool calls and failures — how many of
 them passed later too — how long agents worked, tokens, files changed by kind, which models and
 CLIs did the work; then the project's latest sessions, each opening it, with how its turns in
-the window ended and the last thing its agent said, and a link to the rest. Above the projects,
+the window ended — its calls that failed, and whether its last turn ended on an *error* or was
+*interrupted* — and the last thing its agent said, and a link to the rest. Above the projects,
 *When agents worked* is the week by hour, on the clock of the machine `asq` runs on, each hour
 as dark as the time agents worked in it, and each day's time at the end of its row.
 

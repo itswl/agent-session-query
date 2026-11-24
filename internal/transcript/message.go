@@ -93,7 +93,7 @@ type Block struct {
 	After bool
 	// Routine, on an event, says the CLI writes it as a matter of course, in every session
 	// or every turn — how long a step took, the settings a session opened with — and the
-	// item is marked so (model.Item.Routine): not searched.
+	// item is marked so (model.Item.Routine): drawn quietly, and not searched.
 	Routine bool
 
 	// Attachments are the files a block carried: on a text block made by AttachmentOf,

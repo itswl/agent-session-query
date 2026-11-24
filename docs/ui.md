@@ -103,8 +103,9 @@ turn's steps are fetched when it is opened.
 Opened, a turn is its steps in order. A tool call is one row — the tool, what it was given, how
 it ended, how long it took — that opens to its input and output. Long output arrives as its head
 and tail; *Show all* fetches the rest. Reasoning and injected context are folded; a compaction or
-an interruption is a labelled divider; rows a forked agent copied from its parent are grouped
-and dimmed. A call that started a subagent links to it.
+an interruption is a labelled divider, and an event the CLI writes as a matter of course — a
+step's length, the settings a session opened with — a quiet one; rows a forked agent copied from
+its parent are grouped and dimmed. A call that started a subagent links to it.
 
 A picture pasted into the ask, or returned by a tool — a screenshot — is shown beneath it once
 the turn is opened, read from the transcript then, and opens whole in a tab of its own; the row

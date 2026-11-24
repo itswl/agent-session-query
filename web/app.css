@@ -417,6 +417,7 @@ div.row-main { position: relative; }
 .disc-body { padding: 2px 0 8px 20px; }
 .step.thinking .disc-body, .step.context .disc-body { color: var(--muted); font-size: 13px; }
 .step.event .tag { color: var(--warn); }
+.step.event.routine .tag { color: var(--faint); }
 .event-line, .step.event .disc { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .event-line::after, .step.event .disc::after { content: ""; flex: 1 0 24px; height: 1px; background: var(--line-strong); }
 .copied { opacity: .75; }

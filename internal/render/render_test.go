@@ -169,6 +169,30 @@ func TestTextIsPlainUnlessATerminalAsks(t *testing.T) {
 	}
 }
 
+// An event its CLI writes as a matter of course is said quietly, and one worth noticing
+// keeps the colour that says so: a turn's routine steps do not look like its failure.
+func TestARoutineEventIsSaidQuietly(t *testing.T) {
+	s, turns := hostile()
+	at := turns[0].StartedAt
+	turn := model.Turn{Index: 1, StartedAt: at, Ask: "summarise the README", Items: []model.Item{
+		{Seq: 0, Kind: model.Prompt, At: at, Text: "summarise the README"},
+		{Seq: 1, Kind: model.Event, At: at.Add(time.Second), Event: "error", Text: "402 Insufficient Balance"},
+		{Seq: 2, Kind: model.Event, At: at.Add(2 * time.Second), Event: "step", Text: "Step 1 · 2s", Routine: true},
+	}}
+	var plain, colour bytes.Buffer
+	Turn(&plain, s, &turn, TurnOptions{}, Style{})
+	Turn(&colour, s, &turn, TurnOptions{}, Style{Color: true})
+	for _, want := range []string{"event error 402 Insufficient Balance", "event step Step 1 · 2s"} {
+		if !strings.Contains(plain.String(), want) {
+			t.Errorf("no %q in\n%s", want, plain.String())
+		}
+	}
+	yellow, dim := "\x1b[33m", "\x1b[2m"
+	if out := colour.String(); !strings.Contains(out, yellow+"event error") || !strings.Contains(out, dim+"event step") || strings.Contains(out, yellow+"event step") {
+		t.Errorf("the error is to stand out and the step not:\n%q", out)
+	}
+}
+
 func TestShortRefs(t *testing.T) {
 	mk := func(source, id string) index.Session {
 		return index.Session{Session: model.Session{Source: source, ID: id}}

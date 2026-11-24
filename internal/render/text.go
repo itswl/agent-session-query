@@ -615,7 +615,14 @@ func item(w io.Writer, it *model.Item, o TurnOptions, st Style) {
 		}
 		fmt.Fprintf(w, "%s %s %s\n", at, st.dim("thinking"), st.dim(st.fit(txt.OneLine(it.Text, 0), 20)))
 	case model.Event:
-		fmt.Fprintf(w, "%s %s %s\n", at, st.yellow("event "+it.Event), st.fit(txt.OneLine(it.Text, 0), 20+len(it.Event)))
+		said := st.fit(txt.OneLine(it.Text, 0), 20+len(it.Event))
+		if it.Routine {
+			// Written as a matter of course, every step or every session: said quietly,
+			// apart from what is worth noticing
+			fmt.Fprintf(w, "%s %s %s\n", at, st.dim("event "+it.Event), st.dim(said))
+			return
+		}
+		fmt.Fprintf(w, "%s %s %s\n", at, st.yellow("event "+it.Event), said)
 	case model.ToolUse:
 		tool := it.Tool
 		what := tool.Command

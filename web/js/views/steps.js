@@ -45,6 +45,9 @@ function step(it, ctx) {
     case 'tool':
       return tool(it, ctx, props, seq);
     case 'event': {
+      // One the CLI writes as a matter of course — a step's length, the settings — is drawn
+      // quietly, apart from those worth noticing
+      if (it.routine) props.class += ' routine';
       const body = (it.text || '').trim();
       const label = [h('span', { class: 'tag' }, (it.event || 'event').replace(/_/g, ' ')), body && h('span', { class: 'gist' }, f.firstLine(body, 120))];
       const long = body.length > 120 || body.includes('\n');

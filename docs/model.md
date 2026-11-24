@@ -81,8 +81,8 @@ spent, and it is read as the fork's own.
 
 An event with `routine: true` is one its CLI writes as a matter of course, in every session or
 every turn — how long a step took, the settings a session opened with. It says how the work went
-on, not something that happened in it, and is not searched, where a word of it would find every
-session.
+on, not something that happened in it: it is drawn quietly, apart from the events worth noticing,
+and is not searched, where a word of it would find every session.
 
 ## Where a turn stands
 

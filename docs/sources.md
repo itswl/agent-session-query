@@ -193,7 +193,10 @@ setting is not. A request to a model other than the last request's is a `model_c
 A call to the model that failed, and a turn that ended in an error, are each an `error` event
 with what the provider said — once, where the turn's end repeats what its last failed call
 said. Like any CLI's error but Gemini CLI's, it does not mark the turn interrupted; a turn the
-harness says was stopped is. The prompt the harness takes from its inbox is written twice, as
+harness says was stopped is. A turn whose work ended on such an error — the step the harness
+writes after it is none of the work — says so, in the error's words
+([`error`](model.md#session--turn--item)); one whose failed call the harness made again, and
+had answered, does not. The prompt the harness takes from its inbox is written twice, as
 it enters the conversation and as the message after it, and is read once.
 
 **Gemini CLI** — per-project chat files, the project's directory from the `.project_root`
@@ -206,7 +209,7 @@ Gemini CLI writes of it, which its own session list shows, and its first ask unt
 a subagent's summary is the start of its conclusion, so a subagent is titled by the task it was
 given. An error Gemini CLI showed — a request refused for quota, a stream cut off — is an `error`
 event; one that came while the model owed an answer, with nothing from the model after it, ended
-the turn, which is marked interrupted. The row Gemini CLI writes in the model's place once such a
+the turn, which is marked interrupted and ended on that error. The row Gemini CLI writes in the model's place once such a
 turn is over ("The previous response was interrupted…") is not the model's, and is not read. An
 error that ended nothing does not move the turn's end. Resumed from the session's project
 directory, as Gemini CLI requires. Gemini CLI deletes a project's sessions not used for 30 days

@@ -415,8 +415,7 @@ any index an earlier version of `asq` left there, which `asq index` names. A ser
 server running meanwhile goes on with the new file at its next look at the stores; on Windows,
 which does not remove a file a program holds open, stop it first. A damaged index is set aside and made anew without being asked ([The index](model.md#the-index)). A
 new release that reads a CLI's files differently has that CLI's sessions read again by itself, at
-the first sync after the upgrade, and one that makes more of every CLI's turns has every session
-read again so; a rebuild is not needed for that. One that keeps a search's
+the first sync after the upgrade; a rebuild is not needed for that. One that keeps a search's
 words differently writes them again from what the index holds, at the first sync too, reading
 no transcript; until it is done a search finds what has been written so far. One that judges
 differently whether a failed command passed later judges every failure again the same way.

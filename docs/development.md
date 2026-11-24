@@ -161,12 +161,9 @@ One package and one line.
    was read with, and reads again, once, at the next sync, every session of the CLI an older
    reading made; without it, an index keeps what the older reading made of every session whose
    files have not moved. A session a newer reading made is left alone, so an older `asq` sharing
-   the index does not undo it.
-
-   A change to what the Writer makes of every CLI's messages — a turn's field now worked out, a
-   rule drawn elsewhere — raises `Reads` in `internal/transcript/writer.go` instead, not every
-   adapter's. A session's reading is its adapter's and the Writer's together, so either raised
-   has every session it covers read again, once: one adapter's, or every CLI's.
+   the index does not undo it. A change to the Writer reads sessions differently too: raise
+   `Reads` for each CLI whose sessions it makes another record of, and for no other — each
+   session read again is read whole.
 
    A change to *which* sessions the adapter lists — their keys: one file read as two sessions,
    or two as one — is not a new reading but a new index file (`schemaVersion` in

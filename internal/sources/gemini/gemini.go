@@ -55,7 +55,7 @@ var Spec = sources.Spec{
 	// A file with no metadata line goes by its own name (session-<time>-<id>), which is
 	// not an id --resume takes
 	Resumable: func(id string) bool { return !strings.HasPrefix(id, "session-") },
-	Reads:     4,
+	Reads:     5,
 	Store:     "~/.gemini/tmp/<project>/chats/session-*.jsonl",
 	// Gemini CLI sweeps the chats of the project it starts in, by the time each was last
 	// updated (packages/cli/src/utils/sessionCleanup.ts): a project it is not started in

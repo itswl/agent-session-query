@@ -58,7 +58,7 @@ var Spec = sources.Spec{
 	Movable: true,
 	// --session takes an id; pi's own --resume is an interactive picker
 	Resume: "pi --session",
-	Reads:  2,
+	Reads:  3,
 	Store:  "~/.pi/agent/sessions/<project>/<time>_<id>.jsonl",
 }
 

@@ -69,7 +69,7 @@ var Spec = sources.Spec{
 	Open:    func(location string) sources.Source { return &Source{root: location} },
 	Movable: true,
 	Resume:  "", // the harness has no by-id resume: its own Web UI owns resume
-	Reads:   2,
+	Reads:   3,
 	Store:   "~/.dsh/sessions/<project>/<session>/session.v<N>.jsonl[.zstd]",
 }
 

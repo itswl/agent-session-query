@@ -139,20 +139,25 @@ func TestATurnThatEndedOnAnError(t *testing.T) {
 	}
 }
 
-// An index an asq made before turns said their errors holds every session at its adapter's
-// reading alone, and each turn as that asq made it, without its error. The next sync reads
-// every session again, once — of every CLI, though no file moved and no adapter reads its
-// files differently — and the turn that ended on an error says so from then on.
-func TestEverySessionIsReadAgainForTheErrorsOfTurns(t *testing.T) {
+// An index an asq made before turns said their errors holds each turn as that asq made it,
+// without its error, read with its adapter's reading then. The adapters of the CLIs whose
+// errors are read as error events read differently now, and raise their reading: the next
+// sync reads their sessions again, once, though no file moved, and the turn that ended on an
+// error says so from then on. A CLI that writes no error event reads as it did, and its
+// sessions are not read again.
+func TestTheSessionsOfAReadingRaisedForErrorsAreReadAgain(t *testing.T) {
 	ix := openTemp(t)
 	ctx := context.Background()
-	stores := []Store{
-		{Name: "dsh", Spec: sources.Spec{Name: "dsh", Reads: 2}, Source: refusal{at: time.Now().Add(-time.Hour), over: true}},
-		{Name: "claude", Spec: sources.Spec{Name: "claude", Reads: 4}, Source: many{n: 3}},
+	stores := func(dsh int) []Store {
+		return []Store{
+			{Name: "dsh", Spec: sources.Spec{Name: "dsh", Reads: dsh}, Source: refusal{at: time.Now().Add(-time.Hour), over: true}},
+			{Name: "codex", Spec: sources.Spec{Name: "codex", Reads: 3}, Source: many{n: 3}},
+		}
 	}
+	reading := 2 // dsh's, before
 	sync := func() int {
 		t.Helper()
-		res, err := ix.Sync(ctx, stores, SyncOptions{})
+		res, err := ix.Sync(ctx, stores(reading), SyncOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -178,20 +183,16 @@ func TestEverySessionIsReadAgainForTheErrorsOfTurns(t *testing.T) {
 		t.Fatalf("the first sync read %d, want 4", n)
 	}
 
-	// As the asq before left them: the reading its adapter's alone
-	for _, st := range stores {
-		if _, err := ix.rw.Exec(`UPDATE sessions SET reads = ? WHERE source = ?`, st.Spec.Reads, st.Name); err != nil {
-			t.Fatal(err)
-		}
-	}
+	// As the asq before left them: its turns without their errors
 	if _, err := ix.rw.Exec(`UPDATE turns SET error = '', head = json_remove(head, '$.error'), hash = x'00', src = x'' WHERE error != ''`); err != nil {
 		t.Fatal(err)
 	}
 	if got := ended(); got != "" {
 		t.Fatalf("as the asq before left it, the turn ended on %q", got)
 	}
-	if n := sync(); n != 4 {
-		t.Errorf("after the upgrade, %d sessions read again, want every one of the 4", n)
+	reading = 3 // dsh's now
+	if n := sync(); n != 1 {
+		t.Errorf("after the upgrade, %d sessions read again, want dsh's one alone", n)
 	}
 	if got := ended(); got != refused {
 		t.Errorf("read again, the turn ended on %q, want %q", got, refused)

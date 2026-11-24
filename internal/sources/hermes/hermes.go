@@ -49,7 +49,7 @@ var Spec = sources.Spec{
 	// The store is a database and a directory beside it: no one path relocates it
 	Movable: false,
 	Resume:  "hermes --resume",
-	Reads:   1,
+	Reads:   2,
 	Store:   "~/.hermes/state.db (or ~/.hermes/sessions/sessions.json + <id>.jsonl)",
 }
 

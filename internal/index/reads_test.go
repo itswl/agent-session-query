@@ -146,14 +146,13 @@ func TestWhatIsNewIsReadBeforeWhatIsReadAgain(t *testing.T) {
 	if _, err := ix.Sync(ctx, store(1, gated{keys: []string{"0", "1", "2", "3"}, gate: open}), SyncOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	count := func(where string, args ...any) (n int) {
+	count := func(where string) (n int) {
 		t.Helper()
-		if err := ix.rw.QueryRow(`SELECT count(*) FROM sessions WHERE `+where, args...).Scan(&n); err != nil {
+		if err := ix.rw.QueryRow(`SELECT count(*) FROM sessions WHERE ` + where).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n
 	}
-	second := readingOf(sources.Spec{Reads: 2}) // the reading the second sync reads with
 
 	// Two sessions are new, and the four there were are to be read again: those wait
 	// at the gate until the sync has said it caught up
@@ -165,7 +164,7 @@ func TestWhatIsNewIsReadBeforeWhatIsReadAgain(t *testing.T) {
 	var atCatchUp struct{ sessions, older, told int }
 	caughtUp := func() {
 		calls++
-		atCatchUp.sessions, atCatchUp.older = count("1"), count("reads < ?", second)
+		atCatchUp.sessions, atCatchUp.older = count("1"), count("reads < 2")
 		for len(changes) > 0 {
 			<-changes
 			atCatchUp.told++
@@ -204,8 +203,8 @@ func TestWhatIsNewIsReadBeforeWhatIsReadAgain(t *testing.T) {
 	if atCatchUp.sessions != 6 || atCatchUp.older != 4 || atCatchUp.told != 2 {
 		t.Errorf("when it caught up: %d sessions, %d of an older reading, %d changes told; want 6, 4, 2", atCatchUp.sessions, atCatchUp.older, atCatchUp.told)
 	}
-	if res.Read != 6 || count("reads = ?", second) != 6 {
-		t.Errorf("after: %d read, %d of the new reading; want 6 and 6", res.Read, count("reads = ?", second))
+	if res.Read != 6 || count("reads = 2") != 6 {
+		t.Errorf("after: %d read, %d of the new reading; want 6 and 6", res.Read, count("reads = 2"))
 	}
 
 	// Nothing to read again: nothing to catch up to. All of it to read again: caught up
@@ -239,7 +238,7 @@ func TestWhatIsNewIsReadBeforeWhatIsReadAgain(t *testing.T) {
 // read again, once.
 func TestAnIndexFromBeforeReadingsGainsThem(t *testing.T) {
 	columns := []string{
-		"  reads      INTEGER NOT NULL DEFAULT 0,   -- the reading it was read with: its adapter's and the Writer's (readingOf)\n",
+		"  reads      INTEGER NOT NULL DEFAULT 0,   -- the adapter's reading it was read with (sources.Spec.Reads)\n",
 		"  reads_seq  INTEGER NOT NULL DEFAULT 0,   -- this asq's writes of the row: see readsTrigger\n",
 	}
 	before := schema // as an asq from before readings made it

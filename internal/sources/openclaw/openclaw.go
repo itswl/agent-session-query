@@ -62,7 +62,7 @@ var Spec = sources.Spec{
 	// rest is worse than none.
 	Resume: "",
 	// 3: a tool whose name ends in agents — OpenClaw's own subagents — is the agents' work
-	Reads: 4,
+	Reads: 5,
 	Store: "~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite",
 }
 

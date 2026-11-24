@@ -170,7 +170,9 @@ func idsOf(path string) (thread, rollout string) {
 // client's thread/name/set) and never writes the name into the rollout. The newest line
 // for a thread is its name, and a blank one — the name cleared — leaves it unnamed, as
 // Codex reads it for a thread (codex-rs rollout/src/session_index.rs, find_thread_name_by_id).
-// The file is read once per version of it.
+// The file is read once per version of it. Codex only appends to it, and an append moves
+// the size, so a fingerprint taken however soon after a write still moves with the next
+// (see kit.Still).
 func (s *Source) threadNames() map[string]string {
 	if filepath.Base(s.root) != "sessions" {
 		return nil // the index is beside the default sessions directory, in CODEX_HOME

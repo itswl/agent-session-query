@@ -231,6 +231,17 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 			case !ok, opts.Rebuild:
 				jobs = append(jobs, job{store: st, ref: ref})
 			case k.stamp != ref.Stamp && k.reads >= st.Spec.Reads:
+				// A stamp that has not moved is trusted here even when it was taken a moment
+				// after a write, which a database's fingerprint is not (see kit.Still): every
+				// transcript stamped by its size and time is one its CLI only appends to, and an
+				// append moves the size; a database's sessions are stamped from their rows. Left
+				// is a small file a CLI rewrites beside a transcript — Grok's summary.json and
+				// usage.json, Copilot's workspace.yaml, a Claude Code subagent's meta.json —
+				// rewritten at the same size twice within one tick, with a scan between: the
+				// session keeps what the first write made of it until it next changes. The rule
+				// here would read every session once more after it stops changing (Claude
+				// Code's whole: a mark is offered only for a stamp that moved), and one whose
+				// file is dated in the future at every sync.
 				wait := min(time.Duration(k.readMs*patience)*time.Millisecond, maxPatience)
 				if opts.Force || now.Sub(time.UnixMilli(k.readAt)) >= wait {
 					jobs = append(jobs, job{store: st, ref: ref, sid: k.sid})

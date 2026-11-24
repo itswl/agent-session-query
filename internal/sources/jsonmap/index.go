@@ -35,7 +35,7 @@ type Index struct {
 	Dir  string // where <session id>.jsonl is
 
 	mu      sync.Mutex
-	stamp   string
+	stamp   string // "" while records are only the last answer: see load
 	records []Entry
 	loaded  bool
 }
@@ -65,10 +65,12 @@ func (x *Index) Exists() bool { return kit.Exists(x.Path) }
 // read — truncated mid-write by the process that owns it, corrupt, not ours to open — is
 // an error, because a store that failed is not a store with nothing in it.
 //
-// The parsed file is kept until it changes. Which transcripts exist is asked again every
-// time, in one listing of the directory: a store that keeps no transcript beside its
-// index (Hermes with everything in its database: 518 records here and not one file)
-// would otherwise cost a stat per record on every scan.
+// The parsed file is kept until it changes — once it has been still long enough that a
+// change would move its fingerprint (see kit.Still), and parsed at every call until then.
+// Which transcripts exist is asked again every time, in one listing of the directory: a
+// store that keeps no transcript beside its index (Hermes with everything in its
+// database: 518 records here and not one file) would otherwise cost a stat per record on
+// every scan.
 func (x *Index) Entries() ([]Entry, error) {
 	records, err := x.load()
 	if err != nil || len(records) == 0 {
@@ -159,10 +161,16 @@ func candidates(e Entry) []string {
 }
 
 func (x *Index) load() ([]Entry, error) {
-	stamp, _ := kit.Stamp(x.Path)
+	stamp, mod := kit.Stamp(x.Path)
+	if !kit.Still(mod) {
+		// The CLI writes the whole file anew, at the same size when only a time in it
+		// moved: written a moment ago, it may be written again within the same tick and
+		// leave this fingerprint as it is (see kit.Still), which then matches nothing
+		stamp = ""
+	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	if x.loaded && x.stamp == stamp {
+	if x.loaded && stamp != "" && x.stamp == stamp {
 		return x.records, nil
 	}
 	records, err := readIndex(x.Path)

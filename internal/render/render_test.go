@@ -575,6 +575,89 @@ func TestAFailureThatPassedLaterIsNotAnOpenOne(t *testing.T) {
 	}
 }
 
+// A turn whose work ended on an error says so wherever it is shown, in the error's words:
+// a brief does not hand it over as cut off or still running, nor its session as standing
+// on an earlier answer. A line quotes the error's first line, cleaned; a brief, all of it.
+// A turn that ended on an error and was stopped too is said to have ended on the error
+// where one thing is said, and to be both where each is.
+func TestATurnThatEndedOnAnErrorSaysSo(t *testing.T) {
+	const refused = "402 Insufficient Balance (insufficient_balance)"
+	s, turns := hostile()
+	s.Stats.Failures, s.Stats.Turns = 0, 2
+	first := turns[0]
+	first.Failures, first.Items, first.Answer = 0, nil, "Deployed the API."
+	turn := first
+	turn.Index, turn.Answer, turn.Ask = 2, "", "now deploy the docs"
+	turn.StartedAt, turn.EndedAt = first.StartedAt.Add(time.Hour), first.EndedAt.Add(time.Hour)
+	turn.Error = "\x1b[31m" + refused + "\x1b[0m\n    at Client.send (client.js:42)"
+
+	brief, err := Brief(s, []model.Turn{first, turn}, BriefOptions{All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		" ✗ now deploy the docs · ended on an error: " + refused + "\n",
+		"## Turn 2 — ended on an error\n",
+		"- Ended: (no reply — the turn failed: " + refused + " at Client.send (client.js:42))\n",
+		"## State at the end\n\nThe latest turn, #2, failed: " + refused + " at Client.send (client.js:42)\n\nThe last thing the agent said, in #1:\n\nDeployed the API.\n",
+	} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("the brief of a turn that failed with no reply lacks %q:\n%s", want, brief)
+		}
+	}
+	if strings.Contains(brief, "interrupted or is still running") || strings.Contains(brief, "\x1b") {
+		t.Errorf("the brief of a turn that failed:\n%s", brief)
+	}
+
+	// It replied, then failed: the reply, then the failure, as they came
+	replied := turn
+	replied.Answer = "Running the deploy now."
+	brief, _ = Brief(s, []model.Turn{first, replied}, BriefOptions{})
+	for _, want := range []string{
+		"- Ended: Running the deploy now.\n- Then the turn failed: " + refused,
+		"The latest turn, #2, failed: " + refused + " at Client.send (client.js:42)\n\nThe last thing the agent said, in #2:\n\nRunning the deploy now.\n",
+	} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("the brief of a turn that replied and then failed lacks %q:\n%s", want, brief)
+		}
+	}
+
+	// Stopped too: where one thing is said, the error
+	both := turn
+	both.Interrupted = true
+	brief, _ = Brief(s, []model.Turn{first, both}, BriefOptions{})
+	if !strings.Contains(brief, "## Turn 2 — ended on an error\n") {
+		t.Errorf("the brief of a turn that failed and was stopped:\n%s", brief)
+	}
+	for _, format := range []string{FormatMarkdown, FormatHTML} {
+		if out, err := Export(s, []model.Turn{both}, format); err != nil || !strings.Contains(out, " — ended on an error") || strings.Contains(out, " — interrupted") {
+			t.Errorf("the %s export of a turn that failed and was stopped (%v):\n%s", format, err, out)
+		}
+	}
+
+	var outline, hits, head, digest bytes.Buffer
+	Outline(&outline, s, []model.Turn{turn}, nil, Style{})
+	if out := outline.String(); !strings.Contains(out, "  ✗  ") || !strings.Contains(out, "     ✗ error: "+refused+"\n") {
+		t.Errorf("the outline of a turn that failed:\n%s", out)
+	}
+	Hits(&hits, index.SearchResult{Hits: []index.Hit{{Session: *s, Turn: 1, Ref: s.Ref + "#1", Ask: "deploy", Error: turn.Error, Interrupted: true}}, Total: 1, Sessions: 1}, 0, Style{})
+	if out := hits.String(); !strings.Contains(out, "  ✗ error · ⚠ interrupted\n") || !strings.Contains(out, "   error  "+refused+"\n") {
+		t.Errorf("the hit of a turn that failed and was stopped:\n%s", out)
+	}
+	TurnHead(&head, s, &both, Style{})
+	if out := head.String(); !strings.Contains(out, " · ended on an error · interrupted\n") {
+		t.Errorf("the head of a turn that failed and was stopped: %s", out)
+	}
+	Digest(&digest, index.DigestReport{Projects: []index.Digest{{Cwd: "/w", Sessions: 1, List: []index.DigestSession{
+		{Ref: "dsh/session-recorded", Title: "Deploy", Turns: 1, Error: turn.Error, LastAt: turn.StartedAt}}}}}, Style{})
+	if out := digest.String(); !strings.Contains(out, "  ✗ error\n    Deploy\n    ✗ error: "+refused+"\n") {
+		t.Errorf("the digest of a session whose last turn failed:\n%s", out)
+	}
+	if pack := Pack([]PackEntry{{Session: *s, Turns: []model.Turn{turn}}}, 1, true); !strings.Contains(pack, "  The turn failed: "+refused+" at Client.send") {
+		t.Errorf("the pack of a turn that failed:\n%s", pack)
+	}
+}
+
 // Where a session's latest turn stands is said in its line of a list and in its outline:
 // the call it waits on by what it runs, cleaned like any other text from a transcript.
 func TestWhereALatestTurnStandsIsSaid(t *testing.T) {

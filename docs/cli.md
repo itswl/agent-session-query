@@ -79,10 +79,10 @@ once each has.
 **`asq search <query>`** — the turns that match, best first. Each hit shows the turn's ref and
 how the turn ended — `✓`, `✗2 failed` (with how many of those calls the same command passed
 later, in that turn or the three after it: `✗2 failed, 1 passed later`; once each has,
-`✓ 1 failed, passed later`), `⚠ interrupted` —
+`✓ 1 failed, passed later`), `✗ error` when its work ended on an error, `⚠ interrupted` —
 then the ask, the lines the words were found in, labelled with where (`reply`, `thinking`, a
-tool's `input`, `command` or `output`, the session's `title`), and the turn's `answer`: enough
-to tell which turn to open without opening each.
+tool's `input`, `command` or `output`, the session's `title`), the turn's `answer`, and the
+first line of the `error` it ended on: enough to tell which turn to open without opening each.
 
 | query | finds turns where |
 |---|---|
@@ -174,7 +174,7 @@ is said to be, with the `asq files` that names the turns that changed the file.
 
 | | |
 |---|---|
-| `asq show claude/3f2a` | the outline: where the latest turn stands, every turn's ask and how it ended — `✗2` for failed calls, `✓` with `1 failed, passed later` once the same command passed later for each — and the session's subagents |
+| `asq show claude/3f2a` | the outline: where the latest turn stands, every turn's ask and how it ended — `✗2` for failed calls, `✓` with `1 failed, passed later` once the same command passed later for each, `✗` and the first line of the error for a turn whose work ended on one, `⚠` for one the person stopped — and the session's subagents |
 | `asq show claude/3f2a#4` · `--turns 3-5` · `--turns last` · `--turns all` | those turns step by step, each step numbered `[seq]` |
 | `asq show claude/3f2a --seq 12` | one step whole: a tool call's full input and output |
 
@@ -211,8 +211,10 @@ command for the machine it came from. `show` and `brief` give that one as
 **`asq brief <ref>`** — a handoff brief of the whole session, in Markdown: its turns in one line
 each; what it added up to — every file it changed, against the last of its turns that changed
 it, the tool calls, the tokens; its latest twelve turns spelled out, each with what was asked,
-which files changed, the tool calls that failed, the tokens it took and how it ended; then where
-things stood at the end and how to dig deeper. It is extracted from the record, not written by a
+which files changed, the tool calls that failed, the tokens it took and how it ended — its
+answer, or, for a turn whose work ended on an error, that it failed and what the error said;
+then where things stood at the end, which for a session whose latest turn failed is that
+failure first, and how to dig deeper. It is extracted from the record, not written by a
 model — deterministic, instant, and unable to invent.
 
 The whole session is what a handoff needs: a session whose last ask was "delete the scratch
@@ -305,8 +307,8 @@ failures and how many of them the same command passed later, tokens, files chang
 (code / test / docs / config), models and CLIs used. Then the sessions behind the counts, the
 latest twelve of each project: the ref, when it was last at work in the window, its turns and
 tool calls there, how they ended as a search's hit says it (`✓`, `✗2 failed, 1 passed later`,
-`✓ 1 failed, passed later`, `⚠ interrupted`), its title, and the last thing its agent said; a
-subagent's work is in the session it ran in. A project with more says how to list them.
+`✓ 1 failed, passed later`, `✗ error`, `⚠ interrupted`), its title, the last thing its agent
+said, and the error its last turn there ended on; a subagent's work is in the session it ran in. A project with more says how to list them.
 Passing later is judged as `failures` judges it.
 
 It says how long agents worked, as `usage` counts it, and on how many days, in all, per project

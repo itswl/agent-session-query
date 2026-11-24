@@ -367,6 +367,9 @@ func (p *BriefPlan) write(o BriefOptions, d detail) string {
 					mark, note = "✗", fmt.Sprintf(" · %d failed", t.Failures)
 				}
 			}
+			if t.Error != "" {
+				mark, note = "✗", note+" · ended on an error: "+errorLine(t.Error, 80)
+			}
 			fmt.Fprintf(&b, "- #%d %s %s %s%s\n", t.Index, shortTime(t.StartedAt), mark, txt.OneLine(t.Ask, 100), note)
 		}
 	}
@@ -424,11 +427,7 @@ func (p *BriefPlan) write(o BriefOptions, d detail) string {
 
 	for _, i := range detailed {
 		t := p.byIndex[i]
-		head := "\n## Turn " + strconv.Itoa(t.Index)
-		if t.Interrupted {
-			head += " — interrupted"
-		}
-		b.WriteString(head + "\n\n")
+		b.WriteString("\n## Turn " + strconv.Itoa(t.Index) + endedNote(t) + "\n\n")
 		fmt.Fprintf(&b, "- Asked: %s\n", txt.Cap(t.Ask, d.ask))
 		if changed := changedOf(t); len(changed) > 0 {
 			changedHead(&b, changed)
@@ -455,21 +454,41 @@ func (p *BriefPlan) write(o BriefOptions, d detail) string {
 		if line := TokenLine(t.Usage); line != "" {
 			fmt.Fprintf(&b, "- Tokens: %s\n", line)
 		}
-		ended := "(no reply — the turn was interrupted or is still running)"
-		if t.Answer != "" {
-			ended = txt.Cap(t.Answer, d.answer)
+		// A turn that failed says so, in the error's words: with no reply, an agent handed the
+		// brief would take the work for cut off or still going. One that replied and then
+		// failed has the reply, and after it the failure, as they came
+		failed := txt.OneLine(t.Error, d.answer)
+		switch {
+		case t.Answer != "":
+			fmt.Fprintf(&b, "- Ended: %s\n", txt.Cap(t.Answer, d.answer))
+			if failed != "" {
+				fmt.Fprintf(&b, "- Then the turn failed: %s\n", failed)
+			}
+		case failed != "":
+			fmt.Fprintf(&b, "- Ended: (no reply — the turn failed: %s)\n", failed)
+		default:
+			b.WriteString("- Ended: (no reply — the turn was interrupted or is still running)\n")
 		}
-		fmt.Fprintf(&b, "- Ended: %s\n", ended)
 	}
 
 	if d.state {
 		b.WriteString("\n## State at the end\n\n")
 		state := "(nothing concluded — the agent said nothing in this session)"
+		said := -1
 		for i := len(real) - 1; i >= 0; i-- {
 			if real[i].Answer != "" {
-				state = txt.Cap(real[i].Answer, 400)
+				state, said = txt.Cap(real[i].Answer, 400), i
 				break
 			}
+		}
+		// A session whose latest turn failed stands there, whatever was said before it
+		if n := len(real); n > 0 && real[n-1].Error != "" {
+			last := &real[n-1]
+			failed := fmt.Sprintf("The latest turn, #%d, failed: %s", last.Index, txt.OneLine(last.Error, 400))
+			if said >= 0 {
+				failed += fmt.Sprintf("\n\nThe last thing the agent said, in #%d:\n\n%s", real[said].Index, state)
+			}
+			state = failed
 		}
 		b.WriteString(state + "\n")
 	} else {
@@ -793,6 +812,9 @@ func Pack(entries []PackEntry, matching int, withTurns bool) string {
 				fmt.Fprintf(&b, "- #%d Asked: %s\n", t.Index, txt.OneLine(t.Ask, 240))
 				if t.Answer != "" {
 					fmt.Fprintf(&b, "  Concluded: %s\n", txt.OneLine(t.Answer, 320))
+				}
+				if t.Error != "" {
+					fmt.Fprintf(&b, "  The turn failed: %s\n", txt.OneLine(t.Error, 320))
 				}
 			}
 			continue

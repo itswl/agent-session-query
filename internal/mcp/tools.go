@@ -60,7 +60,7 @@ var tools = []tool{
 		name:  "search",
 		title: "Search the history",
 		about: "Full-text search over every turn of every session: what was asked, what the agent replied and thought, the tools it called and what they printed, and the session's title, searched with its first turn. " +
-			"Returns the matching turns, best first, each with its ref (store/id#turn), how the turn ended (✓ no call failed, or each that did the same command passed later: ✓ 1 failed, passed later; ✗N failed, and how many of those passed later; ⚠ interrupted), the lines the words were found in, and the turn's final answer. " +
+			"Returns the matching turns, best first, each with its ref (store/id#turn), how the turn ended (✓ no call failed, or each that did the same command passed later: ✓ 1 failed, passed later; ✗N failed, and how many of those passed later; ✗ error, with the error the turn's work ended on; ⚠ interrupted), the lines the words were found in, and the turn's final answer. " +
 			"When no turn holds every word, it says which words no turn holds at all and returns the turns that hold the most of them, marked as partial matches, each with the words it lacks — " +
 			"and when the filters given left out turns that match whole, how many, and which filter to drop to see them. " +
 			"Use it for \"how did I solve this before\", \"where did that error come up\", \"which session touched X\". " +
@@ -114,7 +114,7 @@ var tools = []tool{
 	{
 		name:  "brief",
 		title: "Handoff brief",
-		about: "A handoff brief of a session, as Markdown: what was asked, which files were changed and how each stands now, what failed and whether the same command passed later, and the agent's final answer. " +
+		about: "A handoff brief of a session, as Markdown: what was asked, which files were changed and how each stands now, what failed and whether the same command passed later, and the agent's final answer, or the error a turn failed on. " +
 			"It covers the whole session — what it added up to, then its latest turns one by one — unless one of turn, from or since names a part of it, or the ref ends #N for that turn alone. " +
 			"Use it to pick up where another agent left off, or to hand a piece of work to someone else: ref \"this\" briefs your own session. It is extracted from the record, not summarized by a model.",
 		props: []prop{
@@ -171,7 +171,7 @@ var tools = []tool{
 		title: "Digest of a stretch of work",
 		about: "What a stretch of work added up to, per project: sessions, turns, tool calls and failures (and how many of those the same command passed later), tokens, files changed by kind, models used, " +
 			"and how long agents worked and on how many days, with a grid of when by weekday and hour; " +
-			"then each project's latest sessions — as many as max_chars leaves room for, the same number for each — with its ref, when it was last at work, how its turns ended (✓; ✗N failed, and how many of those passed later; ✓ 1 failed, passed later once each did; ⚠ interrupted), its title and the last thing its agent said. " +
+			"then each project's latest sessions — as many as max_chars leaves room for, the same number for each — with its ref, when it was last at work, how its turns ended (✓; ✗N failed, and how many of those passed later; ✓ 1 failed, passed later once each did; ✗ error, with the error its last turn ended on; ⚠ interrupted), its title and the last thing its agent said. " +
 			"Covers the last 7 days unless since says otherwise; the answer's first line says which moments that was, on the clock of the machine asq runs on. Use it for a standup, a weekly report, \"what did I do today\", \"where did the time go\".",
 		props: []prop{pSource, pProject, pBranch, pSince, pUntil, pChars},
 		run:   runDigest,

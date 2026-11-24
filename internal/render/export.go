@@ -88,6 +88,19 @@ func exportJSONL(s *index.Session, turns []model.Turn) (string, error) {
 	return b.String(), nil
 }
 
+// endedNote is what a turn's heading says of how it ended, when that is not as it should:
+// " — ended on an error", or " — interrupted". A turn that is both is said to have ended on
+// the error, which says why it stopped; the error itself is among its steps.
+func endedNote(t *model.Turn) string {
+	switch {
+	case t.Error != "":
+		return " — ended on an error"
+	case t.Interrupted:
+		return " — interrupted"
+	}
+	return ""
+}
+
 // header is the lines every export opens with.
 func header(s *index.Session, turns []model.Turn) []string {
 	lines := []string{"source " + s.Source + " · project " + orDash(s.Cwd)}
@@ -167,11 +180,7 @@ func exportMarkdown(s *index.Session, turns []model.Turn) string {
 		if t.Index == 0 {
 			b.WriteString("\n## Before the first ask\n")
 		} else {
-			fmt.Fprintf(&b, "\n## Turn %d — %s", t.Index, t.StartedAt.Local().Format("2006-01-02 15:04"))
-			if t.Interrupted {
-				b.WriteString(" — interrupted")
-			}
-			b.WriteString("\n")
+			fmt.Fprintf(&b, "\n## Turn %d — %s%s\n", t.Index, t.StartedAt.Local().Format("2006-01-02 15:04"), endedNote(t))
 		}
 		for j := range t.Items {
 			it := &t.Items[j]
@@ -252,11 +261,7 @@ func exportHTML(s *index.Session, turns []model.Turn) string {
 		if t.Index == 0 {
 			b.WriteString("<h2>Before the first ask</h2>\n")
 		} else {
-			note := ""
-			if t.Interrupted {
-				note = " — interrupted"
-			}
-			fmt.Fprintf(&b, "<h2>Turn %d · %s%s</h2>\n", t.Index, esc(t.StartedAt.Local().Format("2006-01-02 15:04")), note)
+			fmt.Fprintf(&b, "<h2>Turn %d · %s%s</h2>\n", t.Index, esc(t.StartedAt.Local().Format("2006-01-02 15:04")), endedNote(t))
 		}
 		for j := range t.Items {
 			it := &t.Items[j]

@@ -117,16 +117,24 @@ func stem(id string) int {
 }
 
 // marks is how a turn ended, in a mark: ✗ and how many calls failed, while the same command
-// has not passed later for each of them; ⚠ when the person stopped it; ✓ otherwise.
+// has not passed later for each of them; ✗ alone when its work ended on an error, which a
+// line of its own says; ⚠ when the person stopped it; ✓ otherwise.
 func marks(st Style, t *model.Turn) string {
 	switch {
 	case t.Failures > t.PassedLater:
 		return st.red("✗" + strconv.Itoa(t.Failures))
+	case t.Error != "":
+		return st.red("✗")
 	case t.Interrupted:
 		return st.yellow("⚠")
 	}
 	return st.green("✓")
 }
+
+// errorLine is the error a turn's work ended on, as a line quotes it: its first line,
+// cleaned, and cut to n characters (0: not cut). What follows the first line of an error is
+// mostly a trace.
+func errorLine(err string, n int) string { return txt.OneLine(txt.FirstLine(err), n) }
 
 // failedWords says how many calls failed, and how many of them the same command passed
 // later: "2 failed, 1 passed later".
@@ -316,24 +324,30 @@ func hit(w io.Writer, n int, h index.Hit, st Style) {
 	if answer != "" {
 		fmt.Fprintf(w, "   %s %s\n", st.dim("answer"), answer)
 	}
+	if h.Error != "" {
+		fmt.Fprintf(w, "   %s %s\n", st.dim("error "), st.red(st.fit(errorLine(h.Error, 0), 10)))
+	}
 }
 
 // ending says how a hit's turn ended: the calls that failed, and how many of them the same
-// command passed later — ✗ while one has not, ✓ once each has; that the person stopped it;
-// or, neither, ✓.
+// command passed later — ✗ while one has not, ✓ once each has; that its work ended on an
+// error; that the person stopped it; or, none of these, ✓.
 func ending(h index.Hit, st Style) string {
-	return outcome(h.Failed, h.PassedLater, h.Interrupted, st)
+	return outcome(h.Failed, h.PassedLater, h.Error != "", h.Interrupted, st)
 }
 
 // outcome says how work ended: the calls that failed, and how many of them the same command
-// passed later; that the person stopped it; or, neither, ✓.
-func outcome(failed, passedLater int, interrupted bool, st Style) string {
+// passed later; that it ended on an error; that the person stopped it; or, none of these, ✓.
+func outcome(failed, passedLater int, errored, interrupted bool, st Style) string {
 	var parts []string
 	switch {
 	case failed > passedLater:
 		parts = append(parts, st.red("✗")+failedNote(st, failed, passedLater))
 	case failed > 0:
 		parts = append(parts, st.green("✓")+" "+failedNote(st, failed, passedLater))
+	}
+	if errored {
+		parts = append(parts, st.red("✗ error"))
 	}
 	if interrupted {
 		parts = append(parts, st.yellow("⚠ interrupted"))
@@ -421,6 +435,9 @@ func Outline(w io.Writer, s *index.Session, turns []model.Turn, children []index
 		fmt.Fprintf(w, "     %s\n", st.fit(txt.OneLine(t.Ask, 0), 5))
 		if t.Answer != "" {
 			fmt.Fprintf(w, "     %s %s\n", st.dim("→"), st.dim(st.fit(txt.OneLine(t.Answer, 0), 7)))
+		}
+		if t.Error != "" {
+			fmt.Fprintf(w, "     %s %s\n", st.red("✗"), st.red(st.fit("error: "+errorLine(t.Error, 0), 7)))
 		}
 	}
 	if len(children) > 0 {
@@ -535,6 +552,9 @@ func TurnHead(w io.Writer, s *index.Session, t *model.Turn, st Style) {
 	}
 	if line := TokenLine(t.Usage); line != "" {
 		facts = append(facts, line)
+	}
+	if t.Error != "" {
+		facts = append(facts, "ended on an error")
 	}
 	if t.Interrupted {
 		facts = append(facts, "interrupted")
@@ -1199,7 +1219,8 @@ func digest(w io.Writer, rep index.DigestReport, st Style, most int) {
 }
 
 // digestSession prints one session of a digest: where it was in the window and how it
-// ended there, what it was, and the last thing the agent said.
+// ended there, what it was, the last thing the agent said, and the error its last turn
+// ended on.
 func digestSession(w io.Writer, e index.DigestSession, ref string, st Style) {
 	facts := []string{shortTime(e.LastAt)}
 	if e.Turns > 0 {
@@ -1211,7 +1232,7 @@ func digestSession(w io.Writer, e index.DigestSession, ref string, st Style) {
 	if e.AgentMs > 0 {
 		facts = append(facts, AgentTime(e.AgentMs))
 	}
-	fmt.Fprintf(w, "  %s  %s  %s\n", st.cyan(ref), st.dim(strings.Join(facts, " · ")), outcome(e.Failures, e.PassedLater, e.Interrupted, st))
+	fmt.Fprintf(w, "  %s  %s  %s\n", st.cyan(ref), st.dim(strings.Join(facts, " · ")), outcome(e.Failures, e.PassedLater, e.Error != "", e.Interrupted, st))
 	title := txt.OneLine(e.Title, 0)
 	if title == "" {
 		title = "(untitled)"
@@ -1219,6 +1240,9 @@ func digestSession(w io.Writer, e index.DigestSession, ref string, st Style) {
 	fmt.Fprintf(w, "    %s\n", st.fit(title, 4))
 	if e.Answer != "" {
 		fmt.Fprintf(w, "    %s %s\n", st.dim("→"), st.dim(st.fit(txt.OneLine(e.Answer, digestAnswer), 6)))
+	}
+	if e.Error != "" {
+		fmt.Fprintf(w, "    %s %s\n", st.red("✗"), st.red(st.fit("error: "+errorLine(e.Error, digestAnswer), 6)))
 	}
 }
 

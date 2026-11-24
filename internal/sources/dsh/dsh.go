@@ -295,6 +295,9 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			return true
 		}
 		h.settle()
+		if r.Type != "session" && r.Type != "header" {
+			h.onward = true
+		}
 		switch r.Type {
 		case "session", "header":
 			if !sawHeader {
@@ -409,7 +412,14 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		}
 		return true
 	})
-	h.settle() // a run of settings the transcript ends on, as a session that has only begun does
+	// A run of settings the transcript ends on is drawn too — but not the opening run of a
+	// session with nothing after it. The harness writes the settings as it opens a session,
+	// before anything is asked, and a session opened and left holds nothing: drawn, its run
+	// would make it a session with something in it, listed with those that have. Should it
+	// go on, the run is drawn then, at the place it would have had now, which nothing took
+	if h.onward {
+		h.settle()
+	}
 	// Set whatever the read ended on: a transcript damaged partway is kept as far as it
 	// went, and is still the session its header says it is
 	w.S.ID = kit.First(headerID, filepath.Base(dir))
@@ -477,6 +487,7 @@ type harness struct {
 	w *transcript.Writer
 
 	marked bool                 // a turn's bounds were written: so is the end of every turn
+	onward bool                 // a row other than the header and the settings was read
 	begun  map[string]time.Time // the steps begun and not yet ended, by turn and step
 
 	set, drawn [len(settings)]string // the settings as they stand, and as an event last said them

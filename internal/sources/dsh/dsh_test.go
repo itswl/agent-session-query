@@ -836,10 +836,17 @@ func TestATurnUnderWay(t *testing.T) {
 		t.Errorf("live = %+v, want waiting on the read", live)
 	}
 
-	// A session read before its first turn has begun: the settings it opens with are
-	// drawn all the same
-	s = readRows(t, opening()[:3])
-	if got := events(s, "settings"); len(got) != 1 || got[0].Text != "Permissions workspace-write · sandbox workspace-write" {
+	// A session of nothing but its header and the settings it opens with is one opened and
+	// left before anything was asked: it holds nothing, as such a session of any CLI does,
+	// and is listed with them
+	s = readRows(t, opening()[:4])
+	sourcetest.NothingUnread(t, s)
+	if s.Stats.Items != 0 || s.Stats.Turns != 0 {
+		t.Errorf("%d items in %d turns: the settings alone are no conversation", s.Stats.Items, s.Stats.Turns)
+	}
+	// Once it goes on, its settings are drawn, at the place nothing took before
+	s = readRows(t, opening()[:5])
+	if got := events(s, "settings"); len(got) != 1 || got[0].Seq != 0 || got[0].Text != "Permissions workspace-write · sandbox workspace-write · approval ask" {
 		t.Errorf("settings = %+v", got)
 	}
 }

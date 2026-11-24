@@ -236,7 +236,15 @@ type Turn struct {
 	Ask    string `json:"ask,omitempty"`    // the person's words, without what a harness added
 	Answer string `json:"answer,omitempty"` // the last thing the agent said
 
+	// Interrupted says the turn was stopped before the agent was done: the person stopped it,
+	// or the CLI marked it stopped (transcript.Block.Stops).
 	Interrupted bool `json:"interrupted,omitempty"`
+	// Error is the error the agent's work ended on: the words of an error event (EventError)
+	// after which the agent did nothing more — no reply, no reasoning, no tool call or
+	// result. An error the work went on past, as a call the CLI made again and had
+	// answered, is no end. It is apart from Interrupted, and both can hold: an error that
+	// cut the turn off, which the CLI marks stopped, is the error it ended on too.
+	Error string `json:"error,omitempty"`
 
 	Tools     int            `json:"tools,omitempty"`     // tool calls
 	Failures  int            `json:"failures,omitempty"`  // of which failed or were interrupted
@@ -351,6 +359,10 @@ const (
 const (
 	EventCompaction  = "compaction"
 	EventInterrupted = "interrupted"
+	// EventError is an error the CLI recorded in the session: a call to the model that
+	// failed, a turn that ended in a provider's refusal. One the agent did nothing after is
+	// the error its turn ended on (Turn.Error).
+	EventError       = "error"
 	EventHookError   = "hook_error"
 	EventModelChange = "model_change"
 	// EventColdStorage is the adapter's own word on a session part of which its CLI moved

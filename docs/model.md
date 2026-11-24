@@ -40,7 +40,8 @@ output, a compaction summary) is not an ask and opens nothing.
 | `ask` | the person's words, without what a harness wrapped around them, then the mark of each file they sent with them |
 | `answer` | the last thing the agent said |
 | `startedAt`, `endedAt` | the ask, and the last thing the agent *did* — a notification dropped in hours later does not stretch the turn |
-| `interrupted` | it stopped before the agent was done: the person stopped it, or, in a Gemini CLI session, an error cut it off — an `error` event in the turn says which. Another CLI's error is an `error` event that marks nothing. A turn whose ask is the last thing written is interrupted too, except the session's latest while the session is said to be working or waiting: the agent is still answering it |
+| `interrupted` | it stopped before the agent was done: the person stopped it, or, in a Gemini CLI session, an error cut it off — an `error` event in the turn says which. A turn whose ask is the last thing written is interrupted too, except the session's latest while the session is said to be working or waiting: the agent is still answering it |
+| `error` | the error the agent's work ended on, in its words: an `error` event after which the agent did nothing more — no reply, no reasoning, no tool call or result. What is no work of the agent's counts neither way: a routine event, an error its CLI says came after the work, a change of model, a compaction, the person's stop, a fork's copy of its parent's row. An error the work went on past — a call to the model the CLI made again, and had answered — is not where the turn ended, and sets nothing. It is apart from `interrupted`, and both can hold: an error that cut a Gemini CLI turn off is both. Where one state is shown for a turn, it is the error, which says why |
 | `tools`, `failures`, `toolKinds` | tool calls, how many failed, and what they were for (`exec` `write` `read` `search` `net` `agent` `other`) |
 | `passedLater` | of the failures, how many the same command passed later, in this turn or the three after it — what the index judges, which no transcript says |
 | `files` | every file a tool named, and whether it was changed — a write counts only if it did not fail |
@@ -58,7 +59,7 @@ takes.
 | `reply` | the agent's words |
 | `thinking` | its reasoning, where the CLI kept it |
 | `tool` | **a tool call together with its result** |
-| `event` | something between the words: `compaction`, `interrupted`, `hook_error`, `model_change`, or a CLI's own |
+| `event` | something between the words: `compaction`, `interrupted`, `error`, `hook_error`, `model_change`, or a CLI's own |
 
 A picture, a document or a sound an item carried — pasted into a prompt, returned by a tool —
 holds no words, and is marked in the item's text where it came: `[image · png · 48 KB]` after

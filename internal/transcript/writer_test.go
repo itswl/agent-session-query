@@ -270,6 +270,67 @@ func TestAnEventThatStopsTheTurn(t *testing.T) {
 	}
 }
 
+// A turn ends on an error when the error is the last of the agent's work: nothing it said,
+// reasoned, called or had back came after. Events that are no work of the agent's — a
+// routine step, an error the CLI says came after the work, a change of model, a compaction,
+// the person's stop — neither end it nor go on past it, and a fork's copy of a row is the
+// parent's.
+func TestTheErrorATurnEndedOn(t *testing.T) {
+	const refused = "402 Insufficient Balance (insufficient_balance)"
+	failed := Message{Role: System, At: at(2), Blocks: []Block{EventOf(model.EventError, "  "+refused+"\n")}}
+	routine := EventOf("step", "Step 1 · 3s")
+	routine.Routine = true
+	after := EventOf(model.EventError, "a command typed later failed")
+	after.After = true
+	stops := EventOf(model.EventError, refused)
+	stops.Stops = true
+	system := func(sec int, blocks ...Block) Message { return Message{Role: System, At: at(sec), Blocks: blocks} }
+	assistant := func(sec int, blocks ...Block) Message { return Message{Role: Assistant, At: at(sec), Blocks: blocks} }
+
+	cases := []struct {
+		name        string
+		msgs        []Message
+		want        string
+		interrupted bool
+	}{
+		{"the error is the last thing", []Message{failed}, refused, false},
+		{"a routine step after it", []Message{failed, system(3, routine)}, refused, false},
+		{"events that are no work after it", []Message{failed, system(3, after), system(4, EventOf(model.EventModelChange, "m2")),
+			system(5, EventOf(model.EventCompaction, "summary"))}, refused, false},
+		{"a word typed meanwhile", []Message{failed, {Role: User, At: at(3), Queued: true, Blocks: []Block{TextOf("and the logs")}}}, refused, false},
+		{"a command the person ran beside it", []Message{failed, system(3, CallOf("p1", "shell", map[string]any{"command": "ls"}),
+			ResultOf("p1", "shell", "a b", Outcome{Status: model.StatusOK}))}, refused, false},
+		{"the CLI's words in the model's place", []Message{failed, {Role: Assistant, At: at(3), Model: SyntheticModel, Blocks: []Block{TextOf("API Error: 402")}}}, refused, false},
+		{"replied, then the error", []Message{assistant(1, TextOf("Running the tests."), EventOf(model.EventError, refused))}, refused, false},
+		{"a reply after it", []Message{failed, assistant(3, TextOf("It builds the image."))}, "", false},
+		{"reasoning after it", []Message{failed, assistant(3, ThinkingOf("try another way"))}, "", false},
+		{"a call after it", []Message{failed, assistant(3, CallOf("c1", "Bash", map[string]any{"command": "make"}))}, "", false},
+		{"a result after it", []Message{assistant(1, CallOf("c1", "Bash", map[string]any{"command": "make"})), failed,
+			{Role: ToolRole, At: at(3), Blocks: []Block{ResultOf("c1", "", "ok", Outcome{Status: model.StatusOK})}}}, "", false},
+		{"an error the CLI says came after the work", []Message{assistant(1, TextOf("Done.")), system(2, after)}, "", false},
+		{"a fork's copy of an error", []Message{assistant(1, TextOf("Done.")), {Role: System, At: at(2), Inherited: true, Blocks: []Block{EventOf(model.EventError, refused)}}}, "", false},
+		{"an error that said nothing", []Message{system(2, EventOf(model.EventError, " "))}, noMessage, false},
+		{"an error that cut the turn off", []Message{assistant(1, CallOf("c1", "Bash", nil)), system(2, stops)}, refused, true},
+		{"the person's stop after it", []Message{failed, system(3, EventOf(model.EventInterrupted, "Interrupted"))}, refused, true},
+		{"the person's stop alone", []Message{assistant(1, TextOf("Looking.")), system(3, EventOf(model.EventInterrupted, "Interrupted"))}, "", true},
+	}
+	for _, tc := range cases {
+		got := collect(t, append([]Message{user(0, "deploy it")}, tc.msgs...)...)
+		turn := got.Turns[0]
+		if turn.Error != tc.want || turn.Interrupted != tc.interrupted {
+			t.Errorf("%s: error %q, interrupted %v; want %q, %v", tc.name, turn.Error, turn.Interrupted, tc.want, tc.interrupted)
+		}
+	}
+
+	// The answer stays the last thing the agent said, though an error came after it; and
+	// what precedes the first ask ends on nothing
+	got := collect(t, system(0, EventOf(model.EventError, "no credentials")), user(1, "deploy it"),
+		assistant(2, TextOf("Running the tests."), EventOf(model.EventError, refused)), user(3, "again"), assistant(4, TextOf("Deployed.")))
+	if zero, one, two := got.Turns[0], got.Turns[1], got.Turns[2]; zero.Error != "" || one.Error != refused || one.Answer != "Running the tests." || two.Error != "" {
+		t.Errorf("turn 0 error %q; turn 1 error %q answer %q; turn 2 error %q", zero.Error, one.Error, one.Answer, two.Error)
+	}
+}
+
 // An event that came once the work was done — the person taking the thread back an hour
 // later — is the turn's last row, not the end of its work.
 func TestAnEventAfterTheWork(t *testing.T) {

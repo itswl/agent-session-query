@@ -702,6 +702,15 @@ func anErrorThatEndedTheTurn(t *testing.T, closed bool) {
 	if got := sourcetest.Kinds(three); got != "prompt reply event" || three.Interrupted || three.Answer != "The test is fixed." {
 		t.Errorf("turn 3 = %s, interrupted %v: the error after the answer ended nothing", got, three.Interrupted)
 	}
+	// The error that cut a turn off is the one it ended on; the one after an answer is not
+	for _, turn := range []model.Turn{one, two} {
+		if !strings.HasPrefix(turn.Error, "[API Error: Quota exceeded") {
+			t.Errorf("turn %d ended on %q, want the quota's error", turn.Index, turn.Error)
+		}
+	}
+	if three.Error != "" {
+		t.Errorf("turn 3 ended on %q: the error came after its answer", three.Error)
+	}
 	// The turn ended with its answer: an error shown after it does not stretch it
 	if !three.EndedAt.Equal(time.Date(2026, 11, 3, 10, 0, 3, 0, time.UTC)) || !three.LastAt.Equal(time.Date(2026, 11, 3, 10, 0, 20, 0, time.UTC)) {
 		t.Errorf("turn 3 ended %v, last %v: the answer is its end, the error its last row", three.EndedAt, three.LastAt)

@@ -721,7 +721,8 @@ func TestACompletedTurnAsTheHarnessRecordsIt(t *testing.T) {
 
 // TestAFailedTurnAsTheHarnessRecordsIt: the call that failed is an error event, saying what
 // failed; the turn's end, which says the same again, adds no second one; and the turn is
-// over, failed, which no CLI's error but Gemini CLI's marks as interrupted.
+// over, failed: it ended on that error, the step after it being no work of the agent's,
+// and is not interrupted, which no CLI's error but Gemini CLI's marks it.
 func TestAFailedTurnAsTheHarnessRecordsIt(t *testing.T) {
 	s := readRows(t, failedRows())
 	sourcetest.NothingUnread(t, s)
@@ -745,6 +746,9 @@ func TestAFailedTurnAsTheHarnessRecordsIt(t *testing.T) {
 	}
 	if turn.Answer != "" || turn.Interrupted || turn.Failures != 0 || s.Stats.Calls != 0 {
 		t.Errorf("answer %q interrupted %v failures %d calls %d", turn.Answer, turn.Interrupted, turn.Failures, s.Stats.Calls)
+	}
+	if turn.Error != failureText {
+		t.Errorf("the turn ended on %q, want the error", turn.Error)
 	}
 	if live := s.Session.Live; live == nil || live.State != model.LiveIdle || !live.Since.Equal(failed) {
 		t.Errorf("live = %+v, want idle since the turn's end", live)
@@ -784,6 +788,9 @@ func TestAFailedCallTriedAgain(t *testing.T) {
 	ended := start.Add(17 * time.Second)
 	if turn.Answer != "It builds the image and pushes it." || turn.Interrupted || turn.Failures != 0 || s.Stats.Calls != 1 {
 		t.Errorf("answer %q interrupted %v failures %d calls %d", turn.Answer, turn.Interrupted, turn.Failures, s.Stats.Calls)
+	}
+	if turn.Error != "" {
+		t.Errorf("the turn ended on %q: the call made again was answered", turn.Error)
 	}
 	if !turn.EndedAt.Equal(ended) {
 		t.Errorf("the turn ended %s, want at the step's end", turn.EndedAt)

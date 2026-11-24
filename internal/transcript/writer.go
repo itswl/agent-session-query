@@ -338,6 +338,9 @@ func (w *Writer) addAssistant(m Message) {
 			default:
 				w.live.said(m.At, in)
 			}
+			if !m.Inherited && !synthetic {
+				cur.wentOn()
+			}
 		case Thinking:
 			if b.Text == "" {
 				continue
@@ -345,6 +348,9 @@ func (w *Writer) addAssistant(m Message) {
 			w.push(cur, model.Item{Kind: model.Thinking, At: m.At, ID: m.ID, Text: b.Text, Call: call, Inherited: m.Inherited})
 			if live {
 				w.live.work(m.At, in)
+			}
+			if !m.Inherited {
+				cur.wentOn()
 			}
 		case Call:
 			w.pushCall(cur, m, b, call)
@@ -492,6 +498,7 @@ func (w *Writer) pushCall(cur *turn, m Message, b Block, call int) {
 	}
 	if m.Role != System { // a command the person ran beside the conversation is not the agent's
 		w.live.call(idx, m.At, w.liveIn(m))
+		cur.wentOn()
 	}
 	cur.t.Tools++
 	cur.t.ToolKinds[tool.Kind]++
@@ -566,6 +573,7 @@ func (w *Writer) settle(cur *turn, m Message, b Block) {
 	}
 	if m.Role != System {
 		w.live.result(idx, tool.Status, m.At, w.liveIn(m))
+		cur.wentOn()
 	}
 	if tool.Failed() {
 		cur.t.Failures++
@@ -599,7 +607,24 @@ func (w *Writer) pushEvent(cur *turn, m Message, b Block) {
 		cur.t.Interrupted = true
 		w.live.end(m.At)
 	}
+	// An error is where the agent's work ended until the agent does something more (see
+	// wentOn). One the CLI says is not where the work got to (After) is not, nor a copy of
+	// the parent's; and no other event — a step's length, a change of model, the person's
+	// stop — is work of the agent's, to end it or to go on past an error
+	if kind == model.EventError && !m.Inherited && !b.After && !b.Routine {
+		cur.t.Error = strings.TrimSpace(b.Text)
+		if cur.t.Error == "" {
+			cur.t.Error = noMessage
+		}
+	}
 }
+
+// noMessage is the error a turn ended on when the CLI recorded the error without words.
+const noMessage = "no message was recorded"
+
+// wentOn notes that the agent did something more — said something, reasoned, called a tool
+// or had a result back: an error before it is not where its work ended.
+func (t *turn) wentOn() { t.t.Error = "" }
 
 func (w *Writer) push(cur *turn, item model.Item) int {
 	item.Seq = w.seq
@@ -675,6 +700,9 @@ func (w *Writer) flush() {
 	// work (index.Session.UnderWay), as it is written and not as it was read
 	if t.Index > 0 && cur.lastWasAsk {
 		t.Interrupted = true
+	}
+	if t.Index == 0 {
+		t.Error = "" // what precedes the first ask is no exchange, and ends on nothing
 	}
 	if t.Index > 0 && t.EndedAt.IsZero() {
 		t.EndedAt = t.StartedAt

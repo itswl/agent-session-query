@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS turns (
   tools      INTEGER NOT NULL DEFAULT 0,
   failures   INTEGER NOT NULL DEFAULT 0,
   interrupted INTEGER NOT NULL DEFAULT 0,
+  error      TEXT NOT NULL DEFAULT '',     -- the error its work ended on, as its head has it
   hash       BLOB NOT NULL,
   head       TEXT NOT NULL,
   body       BLOB NOT NULL,

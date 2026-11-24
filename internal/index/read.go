@@ -33,7 +33,7 @@ func (ix *Index) Outline(ctx context.Context, s *Session) ([]model.Turn, error) 
 			return nil, err
 		}
 		t.Steps, t.PassedLater = steps, passed[t.Index]
-		t.Interrupted = t.Interrupted && !s.UnderWay(t.Index)
+		s.notEnded(&t)
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -81,7 +81,7 @@ func (ix *Index) Turns(ctx context.Context, s *Session, r TurnRange) ([]model.Tu
 		if err != nil {
 			return nil, err
 		}
-		t.Interrupted = t.Interrupted && !s.UnderWay(t.Index)
+		s.notEnded(&t)
 		out = append(out, t)
 	}
 	if err := rows.Err(); err != nil {

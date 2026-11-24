@@ -294,6 +294,7 @@ func prepare(rw *sql.DB) error {
 		{"sessions", "live", "TEXT NOT NULL DEFAULT ''"},
 		{"sessions", "mark", "TEXT NOT NULL DEFAULT ''"},
 		{"sessions", "kept", "TEXT NOT NULL DEFAULT ''"},
+		{"turns", "error", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := addColumn(rw, col[0], col[1], col[2]); err != nil {
 			return err

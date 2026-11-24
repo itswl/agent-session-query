@@ -22,14 +22,16 @@ type Hit struct {
 	At      time.Time `json:"at,omitzero"`
 	Ask     string    `json:"ask,omitempty"`
 	Answer  string    `json:"answer,omitempty"`
-	// How the turn ended: its tool calls, how many of them failed or were interrupted, and
-	// whether the person stopped it. PassedLater is how many of those failed calls were
-	// followed, in that turn or the three after it, by the same command succeeding (see
-	// Failure.Later); the program fills it in (see app.Search).
-	Tools       int  `json:"tools,omitempty"`
-	Failed      int  `json:"failures,omitempty"`
-	PassedLater int  `json:"passedLater,omitempty"`
-	Interrupted bool `json:"interrupted,omitempty"`
+	// How the turn ended: its tool calls, how many of them failed or were interrupted,
+	// whether the person stopped it, and the error its work ended on (model.Turn.Error).
+	// PassedLater is how many of those failed calls were followed, in that turn or the three
+	// after it, by the same command succeeding (see Failure.Later); the program fills it in
+	// (see app.Search).
+	Tools       int    `json:"tools,omitempty"`
+	Failed      int    `json:"failures,omitempty"`
+	PassedLater int    `json:"passedLater,omitempty"`
+	Interrupted bool   `json:"interrupted,omitempty"`
+	Error       string `json:"error,omitempty"`
 	// Lacks are the words of the query the turn does not hold, as typed: set on the hits
 	// of a search no turn matched whole (see SearchResult.Partial).
 	Lacks []string `json:"lacks,omitempty"`
@@ -389,7 +391,7 @@ func (ix *Index) hits(ctx context.Context, cands []cand, q Query, o SearchOption
 		}
 		out = append(out, Hit{
 			Session: s, Turn: c.idx, Ref: s.Ref + "#" + itoa(c.idx), At: fromMs(c.at),
-			Ask: t.Ask, Answer: t.Answer, Tools: t.Tools, Failed: t.Failures, Interrupted: t.Interrupted,
+			Ask: t.Ask, Answer: t.Answer, Tools: t.Tools, Failed: t.Failures, Interrupted: t.Interrupted, Error: t.Error,
 			Lacks:   lacking,
 			Matches: ix.matches(ctx, &s, title, t, q, held), Score: c.score,
 		})

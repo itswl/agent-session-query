@@ -601,10 +601,11 @@ type DigestSession struct {
 	Failures    int   `json:"failures"`
 	PassedLater int   `json:"passedLater"` // as Digest.PassedLater
 	AgentMs     int64 `json:"agentMs"`
-	// Interrupted and Answer are of its last turn in the window: whether the person
-	// stopped it — not the turn the agent is at (see Session.UnderWay) — and the last thing
-	// the agent said
+	// Interrupted, Error and Answer are of its last turn in the window: whether the person
+	// stopped it and the error its work ended on — neither of the turn the agent is at (see
+	// Session.UnderWay) — and the last thing the agent said
 	Interrupted bool      `json:"interrupted,omitempty"`
+	Error       string    `json:"error,omitempty"`
 	Answer      string    `json:"answer,omitempty"`
 	FirstAt     time.Time `json:"firstAt,omitzero"`
 	LastAt      time.Time `json:"lastAt,omitzero"`
@@ -827,15 +828,17 @@ WHERE t.idx > 0 AND `+where+` AND `+when+` GROUP BY s.cwd, root ORDER BY 9 DESC,
 		return err
 	}
 	// How each ended: its last turn in the window, read for its answer alone. The turn the
-	// agent is at is not over, and was not stopped (see Session.UnderWay)
+	// agent is at is not over: it was not stopped, nor has it ended on an error (see
+	// Session.UnderWay)
 	under, underArgs := underWay(time.Now())
 	for _, l := range listed {
 		d := &l.d.List[l.i]
 		var answer *string
-		var stopped int
-		err := ix.ro.QueryRowContext(ctx, `SELECT json_extract(t.head, '$.answer'), t.interrupted AND NOT `+under+`
+		var stopped, at bool
+		var failed string
+		err := ix.ro.QueryRowContext(ctx, `SELECT json_extract(t.head, '$.answer'), t.interrupted, t.error, `+under+`
 FROM turns t JOIN sessions s ON s.sid = t.sid WHERE t.sid = ? AND t.idx > 0 AND `+when+` ORDER BY t.idx DESC LIMIT 1`,
-			append(append(append([]any{}, underArgs...), d.sid), whenArgs...)...).Scan(&answer, &stopped)
+			append(append(append([]any{}, underArgs...), d.sid), whenArgs...)...).Scan(&answer, &stopped, &failed, &at)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			continue // a session whose subagents alone worked in the window
@@ -845,7 +848,9 @@ FROM turns t JOIN sessions s ON s.sid = t.sid WHERE t.sid = ? AND t.idx > 0 AND 
 		if answer != nil {
 			d.Answer = *answer
 		}
-		d.Interrupted = stopped != 0
+		if !at {
+			d.Interrupted, d.Error = stopped, failed
+		}
 	}
 	return nil
 }

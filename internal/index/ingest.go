@@ -33,8 +33,9 @@ const (
 	inputInline  = 4 << 10  // a tool's arguments, as JSON
 	inputString  = 512      // one string inside them
 	textInline   = 32 << 10 // words and reasoning: what a turn is read for
-	askInHead    = 2000     // characters of the ask and the answer a turn's head carries
+	askInHead    = 2000     // characters of the ask, the answer and the error a turn's head carries
 	answerInHead = 4000
+	errorInHead  = 2000
 	// What the words table reads of one tool call. Past this an output is a log, and its
 	// head and tail are where the searchable part is.
 	outputWords = 32 << 10
@@ -73,6 +74,7 @@ type turnRow struct {
 	firstSeq, items            int
 	tools, failures            int
 	interrupted                bool
+	error                      string // the error its work ended on, as its head has it
 	hash                       []byte
 	src                        []byte // names what the rows are made from: see turnRow
 	same                       bool   // the index holds these rows already, and none was made
@@ -458,6 +460,8 @@ func (ix *Index) turnRow(rd *reading, t *model.Turn, held *heldTurn) turnRow {
 	head.Items, head.Calls = nil, nil
 	head.Ask = txt.Truncate(head.Ask, askInHead, "…")
 	head.Answer = txt.Truncate(head.Answer, answerInHead, "…")
+	head.Error = txt.Truncate(head.Error, errorInHead, "…")
+	row.error = head.Error
 	headJSON, _ := json.Marshal(head)
 	if t.Index > 0 {
 		rd.lastAsk = head.Ask
@@ -994,9 +998,9 @@ func putTurnWords(ctx context.Context, tx *sql.Tx, id int64, t *turnRow, title s
 
 func insertTurn(ctx context.Context, tx *sql.Tx, sid int64, t *turnRow) error {
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO turns (sid, idx, started_at, ended_at, last_at, first_seq, items, tools, failures, interrupted, hash, head, body, src)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sid, t.idx, t.startedAt, t.endedAt, t.lastAt, t.firstSeq, t.items, t.tools, t.failures, b2i(t.interrupted),
+INSERT INTO turns (sid, idx, started_at, ended_at, last_at, first_seq, items, tools, failures, interrupted, error, hash, head, body, src)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		sid, t.idx, t.startedAt, t.endedAt, t.lastAt, t.firstSeq, t.items, t.tools, t.failures, b2i(t.interrupted), t.error,
 		t.hash, t.head, t.body, t.src); err != nil {
 		return err
 	}

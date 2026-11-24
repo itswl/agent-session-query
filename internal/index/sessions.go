@@ -52,10 +52,20 @@ func liveFor(state string) time.Duration {
 // UnderWay reports whether turn idx is the one a session's agent is at: its latest, while the
 // session is said to be working or waiting (Live). A turn whose ask is the last thing written
 // is read as one the person stopped before the agent wrote anything (see transcript.Writer),
-// and the turn the agent is answering now is that too until its first row comes. It is not
-// said to be interrupted while the session stands so, and is once it no longer does.
+// and the turn the agent is answering now is that too until its first row comes. Nor has a
+// turn that came to an error ended on it while its CLI may make the failed call again, as
+// the CLIs that retry do. Such a turn is said to be neither while the session stands so,
+// and is once it no longer does (see notEnded).
 func (s *Session) UnderWay(idx int) bool {
 	return idx > 0 && idx == s.Stats.Turns && s.Live != nil && (s.Live.State == model.LiveWorking || s.Live.State == model.LiveWaiting)
+}
+
+// notEnded clears how a turn ended, as the transcript was read, when it is the one the
+// agent is at (UnderWay): it has not ended, interrupted or on an error, yet.
+func (s *Session) notEnded(t *model.Turn) {
+	if s.UnderWay(t.Index) {
+		t.Interrupted, t.Error = false, ""
+	}
 }
 
 // underWay is UnderWay in SQL, of turn t of session s, as of now, and its arguments.

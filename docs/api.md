@@ -62,8 +62,11 @@ absent, and `state` does not find the session.
 **`GET /api/sessions/{source}/{id}`** — one session: `{"session", "turns", "agents", "above"}`,
 the session with `active` and `live` as in the list.
 `turns` is the **outline** — every turn without its items, each saying how many `steps` it
-holds, and of its `failures` how many `passedLater`; an ask or an answer longer than a couple of thousand characters is cut here and whole in
-the turn itself. `agents` is the subagent sessions directly beneath it, and `above` — for a
+holds, of its `failures` how many `passedLater`, and whether it was `interrupted` or ended on
+an `error`, in the error's words ([the record](model.md#session--turn--item)) — neither of the
+turn an agent is still at, the latest of a session said to be working or waiting; an ask, an
+answer or an error longer than a couple of thousand characters is cut here and whole in the
+turn itself. `agents` is the subagent sessions directly beneath it, and `above` — for a
 subagent's transcript — the transcripts it sits beneath, the session it ran in first. `{id}` may
 be any unambiguous start of the id.
 
@@ -133,9 +136,9 @@ to mark.
 
 How the turn ended: `failures` is its calls that failed or were interrupted, `passedLater` how
 many of those were followed — in that turn or the three after it — by the same command
-succeeding ([as failures judge it](#reports)), and `interrupted` says the person stopped it —
-never of the turn an agent is still answering, the latest of a session said to be working or
-waiting.
+succeeding ([as failures judge it](#reports)), `interrupted` says the person stopped it, and
+`error` is the error its work ended on — neither of the turn an agent is still answering, the
+latest of a session said to be working or waiting.
 
 When no turn holds every word, the answer is the turns that hold the most of them, and says so:
 
@@ -174,7 +177,7 @@ a match archived sessions alone hold, and one confined to a `session` never has 
 | `GET /api/usage?by=model\|day\|week\|month\|source\|project\|session` | `{"by", "rows", "total"}` — days, weeks (keyed by the Monday each begins on) and months in order, the latest `limit` of them; the rest largest first |
 | `GET /api/failures?tool=&q=&open=1` | `{"failures", "total", "open", "passedLater", "byTool"}` — the last 7 days unless `since` says otherwise. `tool` names one tool exactly (`Bash` is not `bash`), or with a trailing `*` by how its name begins; `q` keeps the calls whose command or the end of whose output holds each of its words, in any case (`"a phrase"` as written, `-word` not there); `open=1` keeps the calls whose command did not pass later. `open` and `passedLater` count the calls that match by whether it did, whichever `open` asks for; `byTool` counts every tool of the window whichever is asked for; when none in the window match, `outside` is how many match outside it |
 | `GET /api/failures?by=command` | `{"commands", "total", "open", "passedLater", "byTool"}` — the same calls by the command that failed, the commands with calls still open first, then those that failed most: each `{"command", "count", "open", "sessions", "last"}`, `command` the program and subcommand (`go test`), or for a tool that runs none `tool` instead, and `last` the latest failure, as `failures` has them. `total` counts the commands |
-| `GET /api/digest` | `{"since", "until", "projects", "total"}` — likewise; `since` and `until` are the window on the server's clock. A project's `list` is its latest twelve sessions — `{"ref", "title", "turns", "tools", "failures", "passedLater", "interrupted", "answer", "firstAt", "lastAt"}`, a subagent's work in the session it ran in, `interrupted` and `answer` of its last turn in the window. `passedLater`, there, in a project and in the total, is how many of the failures the same command passed later, as below. `agentMs` — in a session of the list, a project and the total — is how long agents worked, and `days`, in a project and the total, on how many days of the server's calendar a turn was asked. `when` is when they worked: seven rows of 24 hours, Monday and midnight first, of milliseconds on the server's clock |
+| `GET /api/digest` | `{"since", "until", "projects", "total"}` — likewise; `since` and `until` are the window on the server's clock. A project's `list` is its latest twelve sessions — `{"ref", "title", "turns", "tools", "failures", "passedLater", "interrupted", "error", "answer", "firstAt", "lastAt"}`, a subagent's work in the session it ran in, `interrupted`, `error` and `answer` of its last turn in the window. `passedLater`, there, in a project and in the total, is how many of the failures the same command passed later, as below. `agentMs` — in a session of the list, a project and the total — is how long agents worked, and `days`, in a project and the total, on how many days of the server's calendar a turn was asked. `when` is when they worked: seven rows of 24 hours, Monday and midnight first, of milliseconds on the server's clock |
 | `GET /api/files?path=&changed=1` | `{"files", "total"}` — each file with `now`, how it stands against what that turn left (below); `waiting` instead names the folder a look at it is waiting in, as macOS asks on the Mac whether `asq` may read it |
 | `GET /api/projects` | `{"projects"}` |
 | `GET /api/pack?turns=1` | `{"pack", "sessions"}` — Markdown |

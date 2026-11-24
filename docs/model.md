@@ -195,7 +195,11 @@ and the next command rebuilds it from the stores.
 - **Sync is by fingerprint.** Each adapter lists its sessions with a stamp that moves when the
   content may have (size and modification time for a file; a row's own counters for a
   database). A session whose stamp has not moved is not read. Checking a store of a thousand
-  transcripts that did not change costs a thousand `stat` calls.
+  transcripts that did not change costs a thousand `stat` calls. A database is listed again
+  when one of its files has moved, and at every look while any of them was written less than
+  three seconds before: a filesystem's clock moves in ticks — a few milliseconds on Linux, two
+  seconds on FAT — and a page rewritten in place within the tick of the write before leaves
+  the file's size and time as they were.
 - **Only changed turns are rewritten.** Each turn has a hash of its content; a transcript that
   grew by one turn writes one turn. Nor are the others made again: their words and their
   compressed text, most of what reading a turn costs, are kept as the index holds them, so

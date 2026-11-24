@@ -113,22 +113,29 @@ func StampDB(path string) (string, time.Time) {
 // Snapshot remembers one answer read from a database at a fingerprint of it, so a store
 // that has not changed a byte is not queried again. Only a successful read is kept, and
 // the fingerprint is the one taken before the read: a write landing mid-read moves it,
-// and the next call reads again.
+// and the next call reads again. A write landing in the same tick of the filesystem's
+// clock as the one before does not — a page rewritten in place keeps the file's size —
+// so a fingerprint is trusted only once the database has been still (see Still).
 type Snapshot[T any] struct {
 	mu    sync.Mutex
-	stamp string
+	stamp string // "" while the value is only the last answer, served for no fingerprint
 	value T
 	ok    bool
 }
 
 // Load returns the remembered value while path's fingerprint holds, and reads otherwise.
-// A read that fails returns its error together with the last value that was read, if
-// there was one: a database locked for a moment is a reason to say so, not to forget
-// what it said a moment ago.
+// A fingerprint taken while the database was not yet still holds nothing, moved or not:
+// what is read under it is returned, and kept only as the last answer, and the next call
+// reads again. A read that fails returns its error together with the last value that was
+// read, if there was one: a database locked for a moment is a reason to say so, not to
+// forget what it said a moment ago.
 func (s *Snapshot[T]) Load(path string, read func() (T, error)) (T, error) {
-	stamp, _ := StampDB(path)
+	stamp, mod := StampDB(path)
+	if !Still(mod) {
+		stamp = "" // no fingerprint is empty: this one matches nothing
+	}
 	s.mu.Lock()
-	if s.ok && s.stamp == stamp {
+	if s.ok && stamp != "" && s.stamp == stamp {
 		value := s.value
 		s.mu.Unlock()
 		return value, nil

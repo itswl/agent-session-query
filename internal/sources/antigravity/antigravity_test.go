@@ -292,17 +292,23 @@ func TestStamps(t *testing.T) {
 }
 
 // The index is read once per version of the database, not once per conversation or per
-// scan: a database whose fingerprint has not moved is not opened.
+// scan: a database whose fingerprint has not moved since it was still is not opened.
 func TestIndexIsReadOncePerFingerprint(t *testing.T) {
 	root := newFixture(t, true)
 	src := Spec.Open(root)
+	// Written an hour ago: a fingerprint taken now stands for what is read under it (see
+	// kit.Still)
+	db := filepath.Join(root, "antigravity-cli", "conversation_summaries.db")
+	hourAgo := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(db, hourAgo, hourAgo); err != nil {
+		t.Fatal(err)
+	}
 	if got := sourcetest.ByID(t, sourcetest.All(t, src), "sess-1").Session.Title; got != "Build fix" {
 		t.Fatalf("title = %q", got)
 	}
 
 	// Rewrite the title at the same length and put the modification time back: nothing
 	// about the file says it changed, so what was read stands
-	db := filepath.Join(root, "antigravity-cli", "conversation_summaries.db")
 	info, err := os.Stat(db)
 	if err != nil {
 		t.Fatal(err)

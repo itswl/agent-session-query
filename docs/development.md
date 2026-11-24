@@ -81,8 +81,13 @@ One package and one line.
 
    A `Ref` is a key that stays the same from scan to scan (a path, a row id) and a *stamp* that
    moves whenever the content may have (`kit.Stamp(path)` for a file: size and modification
-   time). A session whose stamp has not moved is not read again — get the stamp right and the
-   adapter is incremental for free.
+   time, which every append moves). A session whose stamp has not moved is not read again —
+   get the stamp right and the adapter is incremental for free. A file rewritten in place, as
+   a database's pages are, can keep both: written twice within one tick of the filesystem's
+   clock at the same size. So a database's sessions are stamped from what their rows say, and
+   the query that lists them is kept in a `kit.Snapshot`, which asks again whenever the
+   database's files move, and every time until they have been still for longer than any tick
+   (`kit.Still`).
 
    In `Read`, set `w.S.ID`, `Cwd`, `Title`, `Model`… as far as the CLI records them, then for
    each row:

@@ -143,6 +143,84 @@ func TestStampMovesWithTheFile(t *testing.T) {
 	}
 }
 
+// A filesystem whose clock moves in coarse ticks (tmpfs) gives a write in place at the
+// same size the modification time of the write before: the fingerprint holds through a
+// change. While the store was written too recently for that to be ruled out, the Snapshot
+// reads again each time; once it has been still for longer, what it remembers stands.
+func TestSnapshotTrustsAFingerprintOnceTheStoreIsStill(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	os.WriteFile(path, []byte("one"), 0o644)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := info.ModTime()
+	// rewrite changes the file at its size and puts its time back: nothing about it says so
+	rewrite := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+		if now, _ := os.Stat(path); now.Size() != info.Size() || !now.ModTime().Equal(at) {
+			t.Fatalf("the rewrite left %d bytes at %v", now.Size(), now.ModTime())
+		}
+	}
+	var s Snapshot[string]
+	reads := 0
+	load := func() string {
+		t.Helper()
+		got, err := s.Load(path, func() (string, error) {
+			reads++
+			b, err := os.ReadFile(path)
+			return string(b), err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	clock := func(now time.Time) {
+		Now = func() time.Time { return now }
+	}
+	t.Cleanup(func() { Now = time.Now })
+
+	// Written a moment ago: every load reads, and sees the change the fingerprint hides
+	clock(at.Add(time.Second))
+	if got := load(); got != "one" {
+		t.Fatalf("first load = %q", got)
+	}
+	rewrite("two")
+	if got := load(); got != "two" || reads != 2 {
+		t.Errorf("a store written a second ago, changed at its size and time: %q after %d reads, want what it holds now", got, reads)
+	}
+
+	// The same, with the file's time ahead of the clock: a clock behind the file server's
+	clock(at.Add(-time.Minute))
+	rewrite("six")
+	if got := load(); got != "six" || reads != 3 {
+		t.Errorf("a store dated a minute ahead, changed at its size and time: %q after %d reads", got, reads)
+	}
+
+	// Still for an hour: the read under this fingerprint is remembered, and a change that
+	// leaves the fingerprint as it is cannot have happened since — it would have moved it
+	clock(at.Add(time.Hour))
+	if got := load(); got != "six" || reads != 4 {
+		t.Errorf("first load once still = %q after %d reads: what was read before it is only the last answer", got, reads)
+	}
+	rewrite("ten")
+	if got := load(); got != "six" || reads != 4 {
+		t.Errorf("an unmoved fingerprint of a still store: %q after %d reads, want the remembered answer and no read", got, reads)
+	}
+	// … and a fingerprint that moves is read again
+	os.WriteFile(path, []byte("eleven"), 0o644)
+	if got := load(); got != "eleven" || reads != 5 {
+		t.Errorf("a store that grew: %q after %d reads", got, reads)
+	}
+}
+
 func TestDSNEscapesWhatAURIWouldRead(t *testing.T) {
 	for path, want := range map[string]string{
 		"/home/me/.hermes/state.db":  "file:/home/me/.hermes/state.db?",

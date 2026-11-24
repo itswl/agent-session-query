@@ -2,8 +2,8 @@
 // how to move through it — the MCP tools, or the command line where there is no server. It
 // is built into the binary, and asq skill prints it, so that any agent whose CLI reads
 // skills can be given it wherever asq is installed. In this repository
-// .claude/skills/agent-sessions/SKILL.md is the same text, for Claude Code sessions opened
-// here; a test keeps the two one.
+// .agents/skills/agent-sessions/SKILL.md is the same text, for the agents that read a
+// repository's .agents/skills; a test keeps the two one.
 package skill
 
 import _ "embed"

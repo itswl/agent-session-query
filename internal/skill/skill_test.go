@@ -8,16 +8,16 @@ import (
 	"testing"
 )
 
-// The skill a Claude Code session opened in this repository reads is the one the binary
-// prints: an edit to one is an edit to both.
+// The skill an agent opened in this repository reads is the one the binary prints: an edit
+// to one is an edit to both.
 func TestTheRepositoryCopyIsTheSame(t *testing.T) {
-	repo, err := os.ReadFile(filepath.Join("..", "..", ".claude", "skills", Name, "SKILL.md"))
+	repo, err := os.ReadFile(filepath.Join("..", "..", ".agents", "skills", Name, "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	unix := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") } // as a checkout on Windows may write either
 	if unix(string(repo)) != unix(Text) {
-		t.Errorf("internal/skill/SKILL.md and .claude/skills/%s/SKILL.md differ: they are one skill, and both are edited", Name)
+		t.Errorf("internal/skill/SKILL.md and .agents/skills/%s/SKILL.md differ: they are one skill, and both are edited", Name)
 	}
 }
 

@@ -287,8 +287,8 @@ Gemini CLI also reads `~/.gemini/skills`, Pi `~/.pi/agent/skills` and OpenCode
 `~/.config/opencode/skills`; a repository's own `.claude/skills` or `.agents/skills` holds a
 skill for that repository alone. asq writes none of them itself, as it writes nothing where a CLI
 keeps its files. What it prints is the skill of the release it is: save it again after an
-upgrade. In this repository it is [`.claude/skills/agent-sessions`](../.claude/skills/agent-sessions/SKILL.md),
-for Claude Code sessions opened here.
+upgrade. In this repository it is [`.agents/skills/agent-sessions`](../.agents/skills/agent-sessions/SKILL.md),
+for the agents opened here that read a repository's `.agents/skills`.
 
 ## Protocol notes
 

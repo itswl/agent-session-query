@@ -40,8 +40,8 @@ internal/txt            cleaning and cutting text
 ```
 
 The skill is in two places — `internal/skill/SKILL.md`, which the binary carries, and
-`.claude/skills/agent-sessions/SKILL.md`, which Claude Code reads in this repository — and a test
-fails when they differ: edit both.
+`.agents/skills/agent-sessions/SKILL.md`, which the agents that read a repository's `.agents/skills`
+find here — and a test fails when they differ: edit both.
 
 The three faces — `cli`, `server`, `mcp` — are thin on purpose. Each parses its own kind of
 request, calls the same `app` and `index` operations, and renders the answer its own way. A new

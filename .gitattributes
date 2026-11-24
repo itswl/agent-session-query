@@ -1,5 +1,5 @@
 # Files built into the binary are the same bytes on every system: a Windows checkout
 # would otherwise give them CRLF line ends, and the skill asq prints would differ by OS
 internal/skill/SKILL.md text eol=lf
-.claude/skills/agent-sessions/SKILL.md text eol=lf
+.agents/skills/agent-sessions/SKILL.md text eol=lf
 web/** text=auto eol=lf

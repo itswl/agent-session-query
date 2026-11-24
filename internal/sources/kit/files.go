@@ -56,9 +56,10 @@ func StampInfo(info os.FileInfo) string {
 // is, any later write lands in a later tick, and moves it. A tick can be as short as a
 // nanosecond (APFS); it is a few milliseconds on Linux whatever the filesystem keeps (the
 // kernel stamps from a clock that moves once a jiffy: this is how tmpfs ties), a second on
-// ext3 and HFS+, and two on FAT and exFAT. The third second is for a clock that runs a little ahead of a file
-// server's, which makes a write look older than it is. A clock behind the server's makes
-// one look as if it had not happened yet, and such a file is not still either.
+// ext3 and HFS+, and two on FAT and exFAT. The third second is for a clock that runs a
+// little ahead of a file server's, which makes a write look older than it is. A clock
+// behind the server's makes one look as if it had not happened yet, and such a file is not
+// still either.
 const still = 3 * time.Second
 
 // Now is the clock a fingerprint's age is judged by; a test swaps it to move a write

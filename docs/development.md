@@ -163,6 +163,11 @@ One package and one line.
    files have not moved. A session a newer reading made is left alone, so an older `asq` sharing
    the index does not undo it.
 
+   A change to what the Writer makes of every CLI's messages — a turn's field now worked out, a
+   rule drawn elsewhere — raises `Reads` in `internal/transcript/writer.go` instead, not every
+   adapter's. A session's reading is its adapter's and the Writer's together, so either raised
+   has every session it covers read again, once: one adapter's, or every CLI's.
+
    A change to *which* sessions the adapter lists — their keys: one file read as two sessions,
    or two as one — is not a new reading but a new index file (`schemaVersion` in
    `internal/index/schema.go`). Each `asq` removes from the index what it does not list, so two

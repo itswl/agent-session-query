@@ -139,6 +139,68 @@ func TestATurnThatEndedOnAnError(t *testing.T) {
 	}
 }
 
+// An index an asq made before turns said their errors holds every session at its adapter's
+// reading alone, and each turn as that asq made it, without its error. The next sync reads
+// every session again, once — of every CLI, though no file moved and no adapter reads its
+// files differently — and the turn that ended on an error says so from then on.
+func TestEverySessionIsReadAgainForTheErrorsOfTurns(t *testing.T) {
+	ix := openTemp(t)
+	ctx := context.Background()
+	stores := []Store{
+		{Name: "dsh", Spec: sources.Spec{Name: "dsh", Reads: 2}, Source: refusal{at: time.Now().Add(-time.Hour), over: true}},
+		{Name: "claude", Spec: sources.Spec{Name: "claude", Reads: 4}, Source: many{n: 3}},
+	}
+	sync := func() int {
+		t.Helper()
+		res, err := ix.Sync(ctx, stores, SyncOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Read
+	}
+	ended := func() string {
+		t.Helper()
+		s, err := ix.Resolve(ctx, "dsh/refused", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := ix.Outline(ctx, &s)
+		if err != nil || len(out) != 2 {
+			t.Fatalf("outline = %+v, %v", out, err)
+		}
+		var column string
+		if err := ix.rw.QueryRow(`SELECT error FROM turns WHERE sid = ? AND idx = 2`, s.sid).Scan(&column); err != nil || column != out[1].Error {
+			t.Errorf("the row holds %q (%v), the head %q", column, err, out[1].Error)
+		}
+		return out[1].Error
+	}
+	if n := sync(); n != 4 {
+		t.Fatalf("the first sync read %d, want 4", n)
+	}
+
+	// As the asq before left them: the reading its adapter's alone
+	for _, st := range stores {
+		if _, err := ix.rw.Exec(`UPDATE sessions SET reads = ? WHERE source = ?`, st.Spec.Reads, st.Name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ix.rw.Exec(`UPDATE turns SET error = '', head = json_remove(head, '$.error'), hash = x'00', src = x'' WHERE error != ''`); err != nil {
+		t.Fatal(err)
+	}
+	if got := ended(); got != "" {
+		t.Fatalf("as the asq before left it, the turn ended on %q", got)
+	}
+	if n := sync(); n != 4 {
+		t.Errorf("after the upgrade, %d sessions read again, want every one of the 4", n)
+	}
+	if got := ended(); got != refused {
+		t.Errorf("read again, the turn ended on %q, want %q", got, refused)
+	}
+	if n := sync(); n != 0 {
+		t.Errorf("and then %d, want none", n)
+	}
+}
+
 // An index an asq from before turns' errors made gains the column in place: a turn it holds
 // has none, and a turn written now has its own.
 func TestAnIndexFromBeforeTurnsErrorsGainsTheColumn(t *testing.T) {

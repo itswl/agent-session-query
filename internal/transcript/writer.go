@@ -14,6 +14,15 @@ import (
 // session was resumed.
 const SyntheticModel = "<synthetic>"
 
+// Reads is the version of what the Writer makes of the messages an adapter hands it, the
+// same for every CLI: raised by any change that would make another record of a session
+// already in an index — a turn's field now worked out, a rule drawn elsewhere. A session's
+// reading is its adapter's (sources.Spec.Reads) and this one together, and an index reads
+// again, once, every session of every CLI an older reading made.
+//
+// 1: the error a turn's work ended on (model.Turn.Error).
+const Reads = 1
+
 // Sink receives a session's turns as they are completed, in order.
 type Sink interface {
 	Turn(*model.Turn) error

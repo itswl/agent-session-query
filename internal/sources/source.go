@@ -109,6 +109,8 @@ type Spec struct {
 	// change would read a session already in an index differently — a record now read,
 	// a figure now bounded — it has every session the index holds of the CLI, read with
 	// an older one, read again at the next sync, so that an index does not keep what an
-	// older reading made of them. The index keeps each session's reading beside its stamp.
+	// older reading made of them. The index keeps each session's reading beside its stamp:
+	// this and the Writer's (transcript.Reads) together. A change to what the Writer makes
+	// of every CLI's messages raises that one instead.
 	Reads int
 }

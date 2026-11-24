@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   agent      TEXT NOT NULL,      -- the CLI: claude
   key        TEXT NOT NULL,      -- the transcript within the store
   stamp      TEXT NOT NULL,      -- the fingerprint it was read at
-  reads      INTEGER NOT NULL DEFAULT 0,   -- the adapter's reading it was read with (sources.Spec.Reads)
+  reads      INTEGER NOT NULL DEFAULT 0,   -- the reading it was read with: its adapter's and the Writer's (readingOf)
   reads_seq  INTEGER NOT NULL DEFAULT 0,   -- this asq's writes of the row: see readsTrigger
   kept       TEXT NOT NULL DEFAULT '',     -- the stamp its files were last copied at (internal/keep)
   id         TEXT NOT NULL,      -- the CLI's own session id

@@ -252,7 +252,7 @@ func TestAMarkIsTakenUpOnlyAsItWasLeft(t *testing.T) {
 		{"as it was left", ``, true},
 		{"the row written since by another asq", `UPDATE sessions SET stamp = 'another'`, false},
 		{"the row read since with another reading", `UPDATE sessions SET reads = reads + 1`, false},
-		{"a mark left by another reading", `UPDATE sessions SET mark = json_set(mark, '$.reads', 2)`, false},
+		{"a mark left by another reading", `UPDATE sessions SET mark = json_set(mark, '$.reads', json_extract(mark, '$.reads') + 1)`, false},
 		{"a mark of other rows", `UPDATE sessions SET mark = json_set(mark, '$.rows', 2)`, false},
 		{"a mark of another version", `UPDATE sessions SET mark = json_set(mark, '$.v', 2)`, false},
 	} {

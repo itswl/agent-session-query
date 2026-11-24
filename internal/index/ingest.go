@@ -43,11 +43,18 @@ const (
 	failureOut  = 600 // characters of a failed call's output the failures table keeps
 )
 
+// readingOf is the reading a CLI's sessions are read with now: its adapter's
+// (sources.Spec.Reads) and the Writer's (transcript.Reads), summed. Each only ever rises, so
+// the sum rises with either: a session an older reading made — of one adapter, or of every
+// CLI's turns — holds less than it, and is read again, once (see Index.sync). One a newer
+// asq read holds more, and is left to it.
+func readingOf(spec sources.Spec) int { return spec.Reads + transcript.Reads }
+
 // reading is one transcript as it was read, ready to be written.
 type reading struct {
 	source string
 	agent  string
-	reads  int  // the adapter's reading (sources.Spec.Reads)
+	reads  int  // the reading it was read with (readingOf)
 	again  bool // read only because that reading is newer than the index's
 	ref    sources.Ref
 	sess   model.Session
@@ -152,13 +159,13 @@ const markVersion = 1
 
 // storedMark is a session's mark as its row keeps it: where a read of its transcript can be
 // taken up again, and what it was made with. It is taken up only by a read that would make
-// what the read that left it made — the same adapter's reading, the same rows — and only
-// while the row is as that read wrote it: another asq that wrote the session since, older
-// or newer, wrote its stamp, and not the mark.
+// what the read that left it made — the same reading, the same rows — and only while the row
+// is as that read wrote it: another asq that wrote the session since, older or newer, wrote
+// its stamp, and not the mark.
 type storedMark struct {
 	Version int              `json:"v"`
 	Rows    int              `json:"rows"`  // rowsVersion
-	Reads   int              `json:"reads"` // the adapter's reading
+	Reads   int              `json:"reads"` // the reading (readingOf)
 	Stamp   string           `json:"stamp"` // the transcript's fingerprint, as it was read
 	Mark    *transcript.Mark `json:"mark"`
 }
@@ -188,7 +195,8 @@ func (ix *Index) heldSession(ctx context.Context, st Store, ref sources.Ref, sid
 	if json.Unmarshal([]byte(mark), &m) != nil || m.Mark == nil {
 		return h
 	}
-	if m.Version == markVersion && m.Rows == rowsVersion && m.Reads == st.Spec.Reads && reads == st.Spec.Reads &&
+	now := readingOf(st.Spec)
+	if m.Version == markVersion && m.Rows == rowsVersion && m.Reads == now && reads == now &&
 		m.Stamp == stamp && m.Stamp != ref.Stamp {
 		h.mark = m.Mark
 	}
@@ -260,7 +268,7 @@ func (ix *Index) read(ctx context.Context, st Store, ref sources.Ref, sid int64)
 // Writer as it was at the mark, and what of the turns after it was read before it failed,
 // which is no session the index should hold.
 func (ix *Index) readFrom(ctx context.Context, st Store, ref sources.Ref, sid int64, held heldSession) *reading {
-	rd := &reading{source: st.Name, agent: st.Spec.Name, reads: st.Spec.Reads, ref: ref}
+	rd := &reading{source: st.Name, agent: st.Spec.Name, reads: readingOf(st.Spec), ref: ref}
 	var w *transcript.Writer
 	var turns heldTurns
 	looked := false
@@ -301,7 +309,7 @@ func (ix *Index) readFrom(ctx context.Context, st Store, ref sources.Ref, sid in
 		rd.err = err.Error()
 	}
 	if m := w.Marked(); m != nil && err == nil {
-		b, err := json.Marshal(storedMark{Version: markVersion, Rows: rowsVersion, Reads: st.Spec.Reads, Stamp: ref.Stamp, Mark: m})
+		b, err := json.Marshal(storedMark{Version: markVersion, Rows: rowsVersion, Reads: rd.reads, Stamp: ref.Stamp, Mark: m})
 		if err == nil {
 			rd.mark = string(b)
 		}

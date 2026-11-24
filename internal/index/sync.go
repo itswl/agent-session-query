@@ -81,8 +81,8 @@ type SyncOptions struct {
 	Rebuild bool
 	// CaughtUp, when set, is called once the sync has read every transcript that is new
 	// or whose fingerprint moved, if it still has others to read: the ones read again only
-	// because their adapter now reads them differently (sources.Spec.Reads), which can be
-	// the whole history, and come last. The index is then as new as the stores, and what
+	// because they are now read differently (readingOf), which can be the whole history,
+	// and come last. The index is then as new as the stores, and what
 	// is left only reads it better. It is called at most once, and not when ctx ends first.
 	CaughtUp func()
 }
@@ -144,7 +144,7 @@ type job struct {
 	store Store
 	ref   sources.Ref
 	sid   int64 // the session's row, when the index holds it and may keep what it holds
-	again bool  // read only because the adapter's reading is newer than the index's
+	again bool  // read only because the reading is newer than the index's
 }
 
 // Sync brings the index in step with the stores: every transcript that is new or whose
@@ -224,13 +224,14 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 		}
 		res.Scanned += len(sc.refs)
 		seen := make(map[string]bool, len(sc.refs))
+		reads := readingOf(st.Spec)
 		for _, ref := range sc.refs {
 			seen[ref.Key] = true
 			k, ok := have[ref.Key]
 			switch {
 			case !ok, opts.Rebuild:
 				jobs = append(jobs, job{store: st, ref: ref})
-			case k.stamp != ref.Stamp && k.reads >= st.Spec.Reads:
+			case k.stamp != ref.Stamp && k.reads >= reads:
 				// A stamp that has not moved is trusted here even when it was taken a moment
 				// after a write, which a database's fingerprint is not (see kit.Still): every
 				// transcript stamped by its size and time is one its CLI only appends to, and an
@@ -246,11 +247,11 @@ ON CONFLICT (source) DO UPDATE SET location=excluded.location, error=excluded.er
 				if opts.Force || now.Sub(time.UnixMilli(k.readAt)) >= wait {
 					jobs = append(jobs, job{store: st, ref: ref, sid: k.sid})
 				}
-			case k.reads < st.Spec.Reads:
-				// Read with an older reading of the CLI's files (sources.Spec.Reads), or by an
-				// asq that keeps none (see readsTrigger): read again, once, after what is new. A
-				// session a newer reading stored is left to it, so that an older asq sharing
-				// the index does not undo a newer one's reading
+			case k.reads < reads:
+				// Read with an older reading — of the CLI's files, or of every CLI's turns
+				// (readingOf) — or by an asq that keeps none (see readsTrigger): read again,
+				// once, after what is new. A session a newer reading stored is left to it, so
+				// that an older asq sharing the index does not undo a newer one's reading
 				jobs = append(jobs, job{store: st, ref: ref, sid: k.sid, again: k.stamp == ref.Stamp})
 			}
 		}

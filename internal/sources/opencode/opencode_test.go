@@ -228,12 +228,36 @@ func TestV2(t *testing.T) {
 		t.Errorf("call = %+v usage %+v", call, call.Usage)
 	}
 	two := s.Turn(t, 2)
-	if two.Ask != "try again" || sourcetest.Kinds(two) != "prompt event" || two.Items[1].Text != "free limit reached" {
-		t.Errorf("turn 2 = %s %+v", sourcetest.Kinds(two), two.Items)
+	if two.Ask != "try again" || sourcetest.Kinds(two) != "prompt event" || two.Items[1].Text != "free limit reached" || two.Error != "free limit reached" {
+		t.Errorf("turn 2 = %s %+v, ended on %q", sourcetest.Kinds(two), two.Items, two.Error)
 	}
 	child := sourcetest.ByID(t, all, "ses_child")
 	if child.Session.Parent == nil || child.Session.Parent.Session != "ses_2" || child.Session.Parent.Type != "explore" {
 		t.Errorf("child parent = %+v", child.Session.Parent)
+	}
+}
+
+// A turn whose response the provider refused, then marked failed by a row that says no more:
+// the response's error says what went wrong, and is the error the turn ended on. The row's
+// words for a failure it does not describe stand only where nothing said what went wrong.
+func TestATurnThatFailedSaysWhy(t *testing.T) {
+	session := `INSERT INTO session_v2 VALUES ('ses_r', NULL, 'r', '/w/r', 'Refused', '2.3.1', 'build', NULL, 1790000000000, 1790000009000, NULL)`
+	rows := []string{schemaV2, session,
+		`INSERT INTO session_message VALUES ('r1', 'ses_r', 'user', 1, 1790000001000, 1790000001000, '{"text":"deploy it"}')`,
+		`INSERT INTO session_message VALUES ('r2', 'ses_r', 'assistant', 2, 1790000002000, 1790000002000,
+			'{"finish":"error","model":{"id":"m","providerID":"p"},"error":{"type":"api","message":"402 insufficient balance"},"content":[],"time":{"created":1790000002000}}')`,
+		`INSERT INTO session_message VALUES ('r3', 'ses_r', 'idle', 3, 1790000003000, 1790000003000, '{"outcome":"failed"}')`,
+		`INSERT INTO session_message VALUES ('r4', 'ses_r', 'user', 4, 1790000004000, 1790000004000, '{"text":"again"}')`,
+		`INSERT INTO session_message VALUES ('r5', 'ses_r', 'idle', 5, 1790000005000, 1790000005000, '{"outcome":"failed"}')`,
+	}
+	src, _ := build(t, rows...)
+	s := sourcetest.ByID(t, sourcetest.All(t, src), "ses_r")
+	one, two := s.Turn(t, 1), s.Turn(t, 2)
+	if got := sourcetest.Kinds(one); got != "prompt event" || one.Error != "402 insufficient balance" {
+		t.Errorf("turn 1 = %s, ended on %q; want the response's error alone", got, one.Error)
+	}
+	if got := sourcetest.Kinds(two); got != "prompt event" || two.Error != "The turn failed" {
+		t.Errorf("turn 2 = %s, ended on %q; want that it failed, which is all that was said", got, two.Error)
 	}
 }
 

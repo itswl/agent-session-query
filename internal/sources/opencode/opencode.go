@@ -55,7 +55,7 @@ var Spec = sources.Spec{
 	Open:    func(location string) sources.Source { return &Source{at: location} },
 	Movable: true,
 	Resume:  "opencode --session",
-	Reads:   2,
+	Reads:   3,
 	Store:   "~/.local/share/opencode/opencode.db",
 }
 
@@ -584,6 +584,7 @@ FROM session_message m JOIN session_v2 s ON s.id = m.session_id WHERE m.session_
 	}
 	defer rows.Close()
 	stopped := false // the turn in flight was already marked interrupted
+	failed := false  // and has an error of a response already, which says what went wrong
 	for rows.Next() {
 		var mid, kind, raw string
 		var created sql.NullInt64
@@ -608,7 +609,7 @@ FROM session_message m JOIN session_v2 s ON s.id = m.session_id WHERE m.session_
 
 		switch kind {
 		case "user":
-			stopped = false
+			stopped, failed = false, false
 			text := kit.Str(data["text"])
 			if text == "" {
 				text = kit.ContentText(data["content"])
@@ -635,6 +636,7 @@ FROM session_message m JOIN session_v2 s ON s.id = m.session_id WHERE m.session_
 					stopped = true
 				} else {
 					m.Blocks = append(m.Blocks, transcript.EventOf("error", errorText(e)))
+					failed = true
 				}
 			}
 			*msgs = append(*msgs, m)
@@ -699,12 +701,17 @@ FROM session_message m JOIN session_v2 s ON s.id = m.session_id WHERE m.session_
 					blocks = append(blocks, transcript.EventOf(model.EventInterrupted, "Interrupted"))
 				}
 			case "failed":
-				blocks = append(blocks, transcript.EventOf("error", kit.First(errorText(data["error"]), "The turn failed")))
+				// What went wrong, where the row says it; without it, that the turn failed,
+				// unless a response's error has said what went wrong already — said after it,
+				// the words that say nothing would be the error the turn ended on
+				if text := errorText(data["error"]); text != "" || !failed {
+					blocks = append(blocks, transcript.EventOf("error", kit.First(text, "The turn failed")))
+				}
 			case "succeeded":
 				// A turn that ended as it should: its last reply says so
 			}
 			*msgs = append(*msgs, transcript.Message{ID: mid, Role: transcript.System, At: at, Inherited: inherited, Ends: true, Blocks: blocks})
-			stopped = false
+			stopped, failed = false, false
 		default:
 			unread(unknown("row", kind))
 		}

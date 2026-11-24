@@ -302,6 +302,7 @@ func TestTheErrorATurnEndedOn(t *testing.T) {
 			ResultOf("p1", "shell", "a b", Outcome{Status: model.StatusOK}))}, refused, false},
 		{"the CLI's words in the model's place", []Message{failed, {Role: Assistant, At: at(3), Model: SyntheticModel, Blocks: []Block{TextOf("API Error: 402")}}}, refused, false},
 		{"replied, then the error", []Message{assistant(1, TextOf("Running the tests."), EventOf(model.EventError, refused))}, refused, false},
+		{"words and reasoning that say nothing after it", []Message{failed, assistant(3, TextOf(" \n"), ThinkingOf("\t"))}, refused, false},
 		{"a reply after it", []Message{failed, assistant(3, TextOf("It builds the image."))}, "", false},
 		{"reasoning after it", []Message{failed, assistant(3, ThinkingOf("try another way"))}, "", false},
 		{"a call after it", []Message{failed, assistant(3, CallOf("c1", "Bash", map[string]any{"command": "make"}))}, "", false},

@@ -338,8 +338,8 @@ func (w *Writer) addAssistant(m Message) {
 			default:
 				w.live.said(m.At, in)
 			}
-			if !m.Inherited && !synthetic {
-				cur.wentOn()
+			if !m.Inherited && !synthetic && strings.TrimSpace(b.Text) != "" {
+				cur.wentOn() // words that say nothing are no answer, and go on past nothing
 			}
 		case Thinking:
 			if b.Text == "" {
@@ -349,7 +349,7 @@ func (w *Writer) addAssistant(m Message) {
 			if live {
 				w.live.work(m.At, in)
 			}
-			if !m.Inherited {
+			if !m.Inherited && strings.TrimSpace(b.Text) != "" {
 				cur.wentOn()
 			}
 		case Call:

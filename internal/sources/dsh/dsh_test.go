@@ -617,13 +617,19 @@ const (
 
 func failureData() M { return M{"message": failureMessage, "code": failureCode} }
 
+// failedAttempt is the failed session's call to the model, which came to its failure
+// instead of a message.
+func failedAttempt() M {
+	return ev("assistant/attempt", 15, 13*time.Second, M{"turn": 1, "step": 1, "stream": []M{
+		{"type": "chunk", "time": ms(13 * time.Second), "chunk": M{"type": "finish", "reason": M{"kind": "error", "failure": failureData()}}}}})
+}
+
 // failedRows is the session recorded on the harness whose turn failed: its one call to the
 // model came to an attempt that failed instead of a message, and the turn ended in the
 // same error.
 func failedRows() []M {
 	return append(opening(),
-		ev("assistant/attempt", 15, 13*time.Second, M{"turn": 1, "step": 1, "stream": []M{
-			{"type": "chunk", "time": ms(13 * time.Second), "chunk": M{"type": "finish", "reason": M{"kind": "error", "failure": failureData()}}}}}),
+		failedAttempt(),
 		ev("step/end", 16, 13*time.Second, M{"turn": 1, "step": 1}),
 		ev("turn/end", 17, 13*time.Second, M{"turn": 1, "reason": M{"kind": "error", "error": failureData()}}),
 	)
@@ -740,6 +746,48 @@ func TestAFailedTurnAsTheHarnessRecordsIt(t *testing.T) {
 		t.Errorf("answer %q interrupted %v failures %d calls %d", turn.Answer, turn.Interrupted, turn.Failures, s.Stats.Calls)
 	}
 	if live := s.Session.Live; live == nil || live.State != model.LiveIdle || !live.Since.Equal(failed) {
+		t.Errorf("live = %+v, want idle since the turn's end", live)
+	}
+}
+
+// TestAFailedCallTriedAgain: a call to the model fails — a provider's passing error — and
+// the harness makes it again, which is answered. The failure is an error event where it
+// came, and only that: the turn goes on to its answer and ends as one that did, neither
+// failed nor interrupted, and the error is not where the turn stopped.
+func TestAFailedCallTriedAgain(t *testing.T) {
+	rows := append(opening(),
+		failedAttempt(),
+		M{"type": "assistant/message", "seq": 16, "time": ms(16 * time.Second), "surfaceOp": "append", "data": M{
+			"message": M{"id": "a1", "role": "assistant", "source": M{"kind": "model", "provider": "deepseek-official", "model": "deepseek-flash"},
+				"content": text("It builds the image and pushes it.")},
+			"usage": M{"inputTokens": 900, "outputTokens": 40}}},
+		ev("step/end", 17, 17*time.Second, M{"turn": 1, "step": 1}),
+		ev("turn/end", 18, 17*time.Second, M{"turn": 1, "reason": M{"kind": "completed"}}),
+	)
+	s := readRows(t, rows)
+	sourcetest.NothingUnread(t, s)
+	sourcetest.Invariants(t, s)
+	turn := s.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt context event reply event" {
+		t.Fatalf("items = %s", got)
+	}
+	if it := turn.Items[2]; it.Event != "error" || it.Text != failureText || !it.At.Equal(start.Add(13*time.Second)) {
+		t.Errorf("error = %+v", it)
+	}
+	if got := events(s, "error"); len(got) != 1 {
+		t.Errorf("errors = %+v: the turn that ended completed adds none", got)
+	}
+	if it := turn.Items[4]; it.Event != "step" || it.Text != "Step 1 · 7s" {
+		t.Errorf("step = %+v", it)
+	}
+	ended := start.Add(17 * time.Second)
+	if turn.Answer != "It builds the image and pushes it." || turn.Interrupted || turn.Failures != 0 || s.Stats.Calls != 1 {
+		t.Errorf("answer %q interrupted %v failures %d calls %d", turn.Answer, turn.Interrupted, turn.Failures, s.Stats.Calls)
+	}
+	if !turn.EndedAt.Equal(ended) {
+		t.Errorf("the turn ended %s, want at the step's end", turn.EndedAt)
+	}
+	if live := s.Session.Live; live == nil || live.State != model.LiveIdle || !live.Since.Equal(ended) {
 		t.Errorf("live = %+v, want idle since the turn's end", live)
 	}
 }

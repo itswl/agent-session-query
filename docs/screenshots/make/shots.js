@@ -12,9 +12,10 @@ async (page) => {
     await p.getByText('up to date').waitFor({ state: 'attached' });
   };
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto(BASE + '/');
   // No theme chosen before, and no look before: a browser that has seen this history
-  // would mark what changed since, and the pictures are of a first visit
+  // would mark what changed since, and the pictures are of a first visit. Cleared from a
+  // page of the server's that is not the page, which would write its look back as it left
+  await page.goto(BASE + '/healthz');
   await page.evaluate(() => localStorage.clear());
   const shot = async (url, file) => {
     await page.goto(BASE + url);

@@ -220,6 +220,14 @@ class Claude:
             'toolUseResult': {'durationMs': int((self.t - start).total_seconds() * 1000)}})
         self.fresh += tok(report) + 30
 
+    def api_error(self, text):
+        """The CLI giving up on the model, once its retries are spent: its words in the model's place."""
+        self.wait(25, 45)
+        self._row('assistant', {'message': {'id': uid(), 'type': 'message', 'role': 'assistant', 'model': '<synthetic>',
+                                            'content': [{'type': 'text', 'text': text}], 'stop_reason': 'stop_sequence',
+                                            'stop_sequence': '', 'usage': {'input_tokens': 0, 'output_tokens': 0}},
+                                'isApiErrorMessage': True})
+
     def reply(self, text, think=None):
         content = []
         if think:
@@ -1928,6 +1936,18 @@ s.bash('pnpm vitest run test/pages test/components test/charts', ' Test Files  1
 s.reply('Renamed in three places: the page heading, the nav link and the chart\'s accessible name. `SpendRow` in `src/api/types.ts` is left as it is, as asked. Tests pass.')
 s.save()
 put(DA, 'src/components/Nav.tsx', "export const links = [\n  { href: '/', label: 'Invoices' },\n  { href: '/usage', label: 'Usage' },\n];")
+
+# Today: a turn the model's provider turned away, which ends on that error. Drawn from the
+# generator's state and then put back, so that every session above keeps its ids and times
+before = rnd.getstate()
+s = Claude(UP, 'main', 'TestRetryAfter flakes on CI')
+s.ask('TestRetryAfter fails on CI about one run in ten. Find out why.', at=ago(47))
+s.bash('go test -run TestRetryAfter -count=50 ./internal/upload/',
+       '--- FAIL: TestRetryAfter (1.00s)\n    client_test.go:88: waited 998ms, want at least 1s\nFAIL\nFAIL\tuploader/internal/upload\t9.214s',
+       'Run the test fifty times', error=True, dur=9.3, think='Reproduce it first: fifty runs should catch one in ten.')
+s.api_error('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}')
+s.save()
+rnd.setstate(before)
 
 # ================================================================ the files on disk
 write_files()

@@ -236,8 +236,8 @@ under, and why, are in [The page](ui.md).
 The page's screenshots in `docs/screenshots/` are of a synthetic history: nothing in them is
 anyone's. `docs/screenshots/make/gen.py` writes it — a Claude Code store and a Codex store under
 `/tmp/demo`, and the projects they worked in under `/tmp/work`, both emptied first — with times
-relative to now, files whose modification times give the Files view each of its states, and
-failures that pass later. Then serve it and take the pictures:
+relative to now, files whose modification times give the Files view each of its states,
+failures that pass later, and a turn that ended on an error. Then serve it and take the pictures:
 
 ```sh
 python3 docs/screenshots/make/gen.py

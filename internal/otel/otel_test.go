@@ -17,6 +17,7 @@ import (
 	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/fixture"
 	"github.com/itswl/agent-session-query/internal/index"
+	"github.com/itswl/agent-session-query/internal/model"
 )
 
 type wireSpan struct {
@@ -177,6 +178,31 @@ func TestATurnBecomesATrace(t *testing.T) {
 	for _, s := range spans {
 		if s.ParentID != "" && !seen[s.ParentID] {
 			t.Errorf("%s hangs beneath a span that was not sent", s.Name)
+		}
+	}
+}
+
+// A turn whose work ended on an error is a trace that failed: tagged so, at the level of an
+// error, with what the error said where what was answered leaves too, and only that it
+// failed where no text of the conversation does.
+func TestATurnThatEndedOnAnErrorIsATraceThatFailed(t *testing.T) {
+	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	s := &index.Session{Session: model.Session{Source: "dsh", Agent: "dsh", ID: "session-recorded", Cwd: "/work/site"}, Ref: "dsh/session-recorded"}
+	turn := &model.Turn{Index: 1, StartedAt: at, EndedAt: at.Add(3 * time.Second), Ask: "deploy it", Interrupted: true,
+		Error: "402 Insufficient Balance (insufficient_balance)\n  at send (client.js:42)"}
+	for _, c := range []struct {
+		level  Level
+		status string
+	}{{LevelNone, "ended on an error"}, {LevelAsks, "402 Insufficient Balance (insufficient_balance)"}} {
+		root := spansOf(s, turn, place{group: s.ID}, c.level)[0]
+		attrs := map[string]any{}
+		for _, a := range root.Attrs {
+			attrs[a.Key] = a.Value
+		}
+		tags, _ := attrs["langfuse.trace.tags"].([]string)
+		if !root.Error || root.Status != c.status || attrs["langfuse.observation.level"] != "ERROR" || attrs["langfuse.observation.status_message"] != c.status ||
+			attrs["asq.error"] != true || strings.Join(tags, ",") != "dsh,project:site,error,interrupted" {
+			t.Errorf("level %d: error %v, status %q, attributes %+v", c.level, root.Error, root.Status, attrs)
 		}
 	}
 }

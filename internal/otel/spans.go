@@ -220,6 +220,9 @@ func spansOf(s *index.Session, t *model.Turn, p place, level Level) []Span {
 	if t.Failures > 0 {
 		tags = append(tags, "tool-failure")
 	}
+	if t.Error != "" {
+		tags = append(tags, "error")
+	}
 	if t.Interrupted {
 		tags = append(tags, "interrupted")
 	}
@@ -250,6 +253,15 @@ func spansOf(s *index.Session, t *model.Turn, p place, level Level) []Span {
 		root.Attrs = append(root.Attrs, Attr{"asq.interrupted", true})
 	}
 	switch {
+	case t.Error != "":
+		// The turn's work ended on an error: the trace failed. What the error said is the
+		// conversation's, and leaves with what was answered, in the answer's place
+		root.Error, root.Status = true, "ended on an error"
+		if level >= LevelAsks {
+			root.Status = txt.OneLine(txt.FirstLine(t.Error), 300)
+		}
+		root.Attrs = append(root.Attrs, Attr{"asq.error", true}, Attr{"langfuse.observation.level", "ERROR"},
+			Attr{"langfuse.observation.status_message", root.Status})
 	case t.Failures > 0:
 		root.Attrs = append(root.Attrs, Attr{"langfuse.observation.level", "WARNING"},
 			Attr{"langfuse.observation.status_message", fmt.Sprintf("%d of %d tool calls failed", t.Failures, t.Tools)})

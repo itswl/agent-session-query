@@ -42,6 +42,9 @@ turn                       the root: the ask, how long the work took, how it end
   reports those totals.
 - **A failed tool call** is a span with an error status; a turn with failures is marked
   `WARNING` and tagged `tool-failure`.
+- **A turn whose work ended on an error** ([the record](model.md#session--turn--item)) has a
+  root with an error status, marked `ERROR` and tagged `error`. Its status message is what the
+  error said, the first line of it, from `--content asks` on, and *ended on an error* below.
 
 ## How much leaves the machine
 
@@ -50,7 +53,7 @@ turn                       the root: the ask, how long the work took, how it end
 | | sent |
 |---|---|
 | `none` (default) | timings, models, token counts, tool names and how each ended, the project's directory *name*. **No text of the conversation.** A trace is named `claude turn 4` |
-| `asks` | also what the person asked and what the agent answered, on the turn's root; traces are named after the ask; the full working directory |
+| `asks` | also what the person asked and what the agent answered — or the error its work ended on — on the turn's root; traces are named after the ask; the full working directory |
 | `all` | also everything in between: reasoning, every tool's input and output, commands, file paths |
 
 At every level, secret-shaped strings are masked and terminal control sequences removed, and one
@@ -108,7 +111,7 @@ asq otel --content asks --every 10m
 
 Each turn is a trace, the model responses are generations with usage (and cost, where the CLI
 computed one — otherwise Langfuse prices it from the model name), and a session's traces are
-grouped under its id. Tags: the store, `project:<name>`, `subagent`, `tool-failure`,
+grouped under its id. Tags: the store, `project:<name>`, `subagent`, `tool-failure`, `error`,
 `interrupted`.
 
 ## Seeing what would be sent

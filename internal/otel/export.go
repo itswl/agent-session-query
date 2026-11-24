@@ -151,6 +151,12 @@ func Export(ctx context.Context, ix *index.Index, o Options) (Result, error) {
 			res.Current++
 			continue
 		}
+		// The turn the agent is at has not ended: how it ends — on an error, stopped — is
+		// not said of it yet, and a mark that it is over moves no hash, so what was sent
+		// now would stand. It is left for a later pass, as a turn still being written is
+		if sess.UnderWay(st.Index) {
+			continue
+		}
 		turns, err := ix.Turns(ctx, &sess, index.TurnRange{First: st.Index, Last: st.Index, Full: o.Level >= LevelAll})
 		if err != nil {
 			return res, err

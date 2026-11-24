@@ -18,6 +18,8 @@ import (
 	"github.com/itswl/agent-session-query/internal/fixture"
 	"github.com/itswl/agent-session-query/internal/index"
 	"github.com/itswl/agent-session-query/internal/model"
+	"github.com/itswl/agent-session-query/internal/sources"
+	"github.com/itswl/agent-session-query/internal/transcript"
 )
 
 type wireSpan struct {
@@ -350,10 +352,12 @@ func TestATurnIsSentOnce(t *testing.T) {
 		t.Errorf("second export = %+v: nothing changed, nothing to send", res)
 	}
 
-	// A session grows: its new turn is sent, and the turns that did not change are not
+	// A session grows: its new turn, answered, is sent, and the turns that did not change are
+	// not (one still being answered would wait: see TestATurnUnderWayWaits)
 	path := filepath.Join(h.Dir, "-work-beta", fixture.Beta+".jsonl")
 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 	f.WriteString(`{"type":"user","uuid":"b-u9","timestamp":"` + h.Now.Format(time.RFC3339) + `","sessionId":"` + fixture.Beta + `","cwd":"/work/beta","message":{"role":"user","content":"and tell the team"}}` + "\n")
+	f.WriteString(`{"type":"assistant","uuid":"b-a9","timestamp":"` + h.Now.Format(time.RFC3339) + `","sessionId":"` + fixture.Beta + `","cwd":"/work/beta","message":{"id":"msg_b9","role":"assistant","model":"claude-opus-5","stop_reason":"end_turn","content":[{"type":"text","text":"Told them."}],"usage":{"input_tokens":1,"output_tokens":2}}}` + "\n")
 	f.Close()
 	if _, err := a.Sync(ctx, index.SyncOptions{Force: true}); err != nil {
 		t.Fatal(err)
@@ -448,6 +452,60 @@ func TestATurnStillBeingWrittenWaits(t *testing.T) {
 	res, _ = Export(context.Background(), a.Index, Options{Filter: index.Filter{Stores: a.Stores(), Project: "beta"}, DryRun: io.Discard})
 	if res.Turns != 1 {
 		t.Errorf("one project = %+v", res)
+	}
+}
+
+// refusal is a store of one session whose one turn came to a provider's refusal at at. The
+// CLI marks every turn over, and has not marked this one: until long enough after at, the
+// session is said to be at work on it.
+type refusal struct{ at time.Time }
+
+func (refusal) Location() string { return "test" }
+func (refusal) Exists() bool     { return true }
+func (r refusal) Scan(context.Context) ([]sources.Ref, error) {
+	return []sources.Ref{{Key: "k", Stamp: "1", ModTime: r.at}}, nil
+}
+func (r refusal) Read(_ context.Context, _ sources.Ref, w *transcript.Writer) error {
+	w.S.ID, w.Tells = "refused", transcript.TellsByMarks
+	w.Add(transcript.Message{Role: transcript.User, At: r.at, Blocks: []transcript.Block{transcript.TextOf("deploy it")}})
+	w.Add(transcript.Message{Role: transcript.System, At: r.at.Add(time.Second), Blocks: []transcript.Block{transcript.EventOf(model.EventError, "402 Insufficient Balance")}})
+	return nil
+}
+
+// A turn the agent is at has not ended, and is not sent: sent, it would go out with nothing
+// of how it ended, and the mark that it is over, which moves no hash, would not send it
+// again. It goes once the session no longer stands so.
+func TestATurnUnderWayWaits(t *testing.T) {
+	ix, err := index.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ix.Close()
+	ctx := context.Background()
+	store := []index.Store{{Name: "dsh", Spec: sources.Spec{Name: "dsh", Reads: 1}, Source: refusal{at: time.Now().Add(-time.Minute)}}}
+	if _, err := ix.Sync(ctx, store, index.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	ledger := filepath.Join(t.TempDir(), "ledger.db")
+	c := newCollector(t)
+	opts := Options{Endpoint: c.URL, Ledger: ledger, Filter: index.Filter{}}
+	if res, err := Export(ctx, ix, opts); err != nil || res.Turns != 0 {
+		t.Fatalf("at work: %+v, %v; want nothing sent", res, err)
+	}
+
+	// The session past being said to be at work: the turn has ended, on its error
+	store[0].Source = refusal{at: time.Now().Add(-index.WorkingFor - time.Minute)}
+	store[0].Spec.Reads = 2
+	if _, err := ix.Sync(ctx, store, index.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Export(ctx, ix, opts)
+	if err != nil || res.Turns != 1 {
+		t.Fatalf("once it ended: %+v, %v; want the turn sent", res, err)
+	}
+	root := pick(t, decode(t, c.bodies...), "agent", "dsh turn 1")
+	if root.attr("langfuse.observation.level") != "ERROR" || root.attr("asq.error") != "true" {
+		t.Errorf("the turn sent = %+v", root.Attributes)
 	}
 }
 

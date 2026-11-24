@@ -77,7 +77,9 @@ lives with the program's state (`ASQ_STATE`; otherwise `$XDG_STATE_HOME/asq`,
 what they are, so it survives every rebuild.
 
 A turn still being written waits: `--settle` (default `2m`) holds a turn back until it has been
-quiet that long, so it is sent once, whole, rather than again with every row.
+quiet that long, so it is sent once, whole, rather than again with every row. So does the turn
+an agent is at, while its session is said to be working or waiting: how it ends — on an error,
+stopped — is not known yet, and is sent with it once it is.
 
 If the collector is down, the export stops with an error and what was not taken is not written
 down as sent; the next run picks up there.

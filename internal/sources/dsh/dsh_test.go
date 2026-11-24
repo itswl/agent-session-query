@@ -686,7 +686,8 @@ func TestACompletedTurnAsTheHarnessRecordsIt(t *testing.T) {
 	if got := sourcetest.Kinds(zero); got != "event" {
 		t.Fatalf("turn 0 = %s", got)
 	}
-	if it := zero.Items[0]; it.Event != "settings" || it.Text != "Permissions workspace-write · sandbox workspace-write · approval ask" || !it.At.Equal(start) {
+	// They are written in every session: routine, as each step is
+	if it := zero.Items[0]; it.Event != "settings" || it.Text != "Permissions workspace-write · sandbox workspace-write · approval ask" || !it.At.Equal(start) || !it.Routine {
 		t.Errorf("settings = %+v", it)
 	}
 
@@ -700,7 +701,7 @@ func TestACompletedTurnAsTheHarnessRecordsIt(t *testing.T) {
 	// The step is drawn where it ended, with how long it took; it is where the turn's work
 	// ended
 	stepEnd := start.Add(17 * time.Second)
-	if it := turn.Items[3]; it.Event != "step" || it.Text != "Step 1 · 7s" || !it.At.Equal(stepEnd) {
+	if it := turn.Items[3]; it.Event != "step" || it.Text != "Step 1 · 7s" || !it.At.Equal(stepEnd) || !it.Routine {
 		t.Errorf("step = %+v", it)
 	}
 	if !turn.EndedAt.Equal(stepEnd) {
@@ -733,7 +734,7 @@ func TestAFailedTurnAsTheHarnessRecordsIt(t *testing.T) {
 		t.Fatalf("items = %s", got)
 	}
 	failed := start.Add(13 * time.Second)
-	if it := turn.Items[2]; it.Event != "error" || it.Text != failureText || !it.At.Equal(failed) {
+	if it := turn.Items[2]; it.Event != "error" || it.Text != failureText || !it.At.Equal(failed) || it.Routine {
 		t.Errorf("error = %+v", it)
 	}
 	if it := turn.Items[3]; it.Event != "step" || it.Text != "Step 1 · 3s" {
@@ -832,7 +833,8 @@ func TestHarnessRowsOfALaterTurn(t *testing.T) {
 	if got := sourcetest.Kinds(first); got != "prompt context reply event event" {
 		t.Fatalf("turn 1 = %s", got)
 	}
-	if it := first.Items[4]; it.Event != "settings" || it.Text != "Sandbox workspace-write → read-only" {
+	// A change of setting is no matter of course, as the settings a session opens with are
+	if it := first.Items[4]; it.Event != "settings" || it.Text != "Sandbox workspace-write → read-only" || it.Routine {
 		t.Errorf("the change = %+v", it)
 	}
 	if !first.EndedAt.Equal(start.Add(17 * time.Second)) {
@@ -846,7 +848,7 @@ func TestHarnessRowsOfALaterTurn(t *testing.T) {
 	if got := sourcetest.Kinds(turn); got != "prompt event tool event reply event" {
 		t.Fatalf("turn 2 = %s", got)
 	}
-	if it := turn.Items[1]; it.Event != model.EventModelChange || it.Text != "deepseek-official/deepseek-pro" {
+	if it := turn.Items[1]; it.Event != model.EventModelChange || it.Text != "deepseek-official/deepseek-pro" || it.Routine {
 		t.Errorf("model change = %+v", it)
 	}
 	if got := events(s, model.EventModelChange); len(got) != 1 {

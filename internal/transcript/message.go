@@ -91,6 +91,10 @@ type Block struct {
 	// got to — something the person did between turns, an error the work went on past or
 	// that came once it was done — and does not move the turn's end.
 	After bool
+	// Routine, on an event, says the CLI writes it as a matter of course, in every session
+	// or every turn — how long a step took, the settings a session opened with — and the
+	// item is marked so (model.Item.Routine): not searched.
+	Routine bool
 
 	// Attachments are the files a block carried: on a text block made by AttachmentOf,
 	// the one it marks; on a result, what came back beside the output (see With).

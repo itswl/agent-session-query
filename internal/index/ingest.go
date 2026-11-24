@@ -509,9 +509,10 @@ func firstTime(a, b time.Time) time.Time {
 // turnWords is what a turn gives the words table, by column — ask, reply, thinking, tool,
 // output: what each side said, what was run and what came back, each column's words
 // followed by their stems. A fork's copy of its parent's rows is the parent's to be found
-// in, and injected context is the same text in every session. The items are whole: a turn
-// written again from the index (see Index.refill) has what the index keeps as a preview
-// read whole first, so that its words come out as they did.
+// in, and injected context is the same text in every session, as a routine event is in
+// every session or every turn of its CLI: a word of either would find them all. The items
+// are whole: a turn written again from the index (see Index.refill) has what the index
+// keeps as a preview read whole first, so that its words come out as they did.
 func turnWords(items []model.Item) [5]string {
 	var words [5]strings.Builder
 	for i := range items {
@@ -527,7 +528,9 @@ func turnWords(items []model.Item) [5]string {
 		case model.Thinking:
 			addWords(&words[2], it.Text, textInline)
 		case model.Event:
-			addWords(&words[2], it.Text, inputWords)
+			if !it.Routine {
+				addWords(&words[2], it.Text, inputWords)
+			}
 		case model.ToolUse:
 			tool := it.Tool
 			addWords(&words[3], tool.Name, 0)

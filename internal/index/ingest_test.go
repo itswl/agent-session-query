@@ -516,6 +516,58 @@ func TestATurnMarkedOverIsAChange(t *testing.T) {
 	}
 }
 
+// routineStore is a store of one session whose CLI writes, beside a failure worth finding,
+// an event it writes in every session: the settings it opened with.
+type routineStore struct{}
+
+func (routineStore) Location() string { return "test" }
+func (routineStore) Exists() bool     { return true }
+func (routineStore) Scan(context.Context) ([]sources.Ref, error) {
+	return []sources.Ref{{Key: "k", Stamp: "1", ModTime: time.Now()}}, nil
+}
+func (routineStore) Read(_ context.Context, _ sources.Ref, w *transcript.Writer) error {
+	w.S.ID = "routine"
+	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	settings := transcript.EventOf("settings", "Permissions workspace-write · sandbox workspace-write · approval ask")
+	settings.Routine = true
+	w.Add(transcript.Message{Role: transcript.User, At: at, Blocks: []transcript.Block{transcript.TextOf("deploy the site")}})
+	w.Add(transcript.Message{Role: transcript.System, At: at.Add(time.Second), Blocks: []transcript.Block{settings}})
+	w.Add(transcript.Message{Role: transcript.System, At: at.Add(2 * time.Second), Blocks: []transcript.Block{transcript.EventOf("error", "quota exceeded in the sandbox")}})
+	return nil
+}
+
+// A routine event is not searched: a word only it says finds nothing, and a turn found by a
+// word it shares with what is worth finding is shown where that is, not at the routine
+// event. Its CLI writes it in every session, and a word of it would find them all.
+func TestARoutineEventIsNotSearched(t *testing.T) {
+	ix := openTemp(t)
+	if _, err := ix.Sync(context.Background(), []Store{{Name: "dsh", Spec: sources.Spec{Name: "dsh", Reads: 1}, Source: routineStore{}}}, SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	search := func(q string) SearchResult {
+		t.Helper()
+		res, err := ix.Search(context.Background(), ParseQuery(q), Filter{}, SearchOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	if res := search("approval"); res.Total != 0 || len(res.Hits) != 0 {
+		t.Errorf("approval found %d turns: only the routine event says it", res.Total)
+	}
+	res := search("sandbox")
+	if res.Total != 1 || len(res.Hits) != 1 {
+		t.Fatalf("sandbox found %d turns, want the one whose error says it", res.Total)
+	}
+	var seqs []int
+	for _, m := range res.Hits[0].Matches {
+		seqs = append(seqs, m.Seq)
+	}
+	if !slices.Equal(seqs, []int{2}) {
+		t.Errorf("matched at %v, want at the error alone (2), not the routine event (1)", seqs)
+	}
+}
+
 // claudeRows is a Claude Code transcript of a few turns, as the CLI writes it: long
 // outputs, a failure, an edit, a prompt queued mid-turn, a turn a screenshot pasted alone
 // began and a screenshot a tool returned, a skill set off by a slash command, the title

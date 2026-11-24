@@ -79,6 +79,11 @@ counted nowhere: its tokens were the parent's. That holds for as long as the row
 there to be counted. With the parent deleted, the copy is the only record left of what was
 spent, and it is read as the fork's own.
 
+An event with `routine: true` is one its CLI writes as a matter of course, in every session or
+every turn — how long a step took, the settings a session opened with. It says how the work went
+on, not something that happened in it, and is not searched, where a word of it would find every
+session.
+
 ## Where a turn stands
 
 A session's `live` says what its transcript's last rows say of the latest turn, for the CLIs

@@ -318,6 +318,11 @@ type Item struct {
 
 	Tool  *Tool  `json:"tool,omitempty"`
 	Event string `json:"event,omitempty"` // the event's kind
+	// Routine marks an event its CLI writes as a matter of course, in every session or
+	// every turn — how long a step took, the settings a session opened with. It says how
+	// the work went on, not something that happened in it, and is not searched, where a
+	// word of it would find every session.
+	Routine bool `json:"routine,omitempty"`
 
 	// Attachments are the files the item carried — a picture pasted into a prompt, a
 	// screenshot a tool returned — each marked in its text where it came.

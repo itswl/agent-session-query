@@ -286,6 +286,30 @@ func TestAnEventAfterTheWork(t *testing.T) {
 	}
 }
 
+// An event the CLI writes as a matter of course is marked so on its item, for what draws
+// and searches the record; one that is not stays unmarked. Being routine changes nothing
+// of the turn: the step is work, and ends it where it came.
+func TestARoutineEvent(t *testing.T) {
+	routine := EventOf("step", "Step 1 · 2s")
+	routine.Routine = true
+	got := collect(t,
+		user(0, "name it"),
+		Message{Role: Assistant, At: at(1), Blocks: []Block{TextOf("relay")}},
+		Message{Role: System, At: at(2), Blocks: []Block{routine}},
+		Message{Role: System, At: at(3), Blocks: []Block{EventOf("error", "quota")}},
+	)
+	turn := got.Turns[0]
+	if got := turn.Items[2]; got.Event != "step" || !got.Routine {
+		t.Errorf("step = %+v, want routine", got)
+	}
+	if got := turn.Items[3]; got.Event != "error" || got.Routine {
+		t.Errorf("error = %+v, want not routine", got)
+	}
+	if !turn.EndedAt.Equal(at(3)) || turn.Interrupted {
+		t.Errorf("ended %v, interrupted %v", turn.EndedAt, turn.Interrupted)
+	}
+}
+
 func TestQueuedPromptOpensNoTurn(t *testing.T) {
 	got := collect(t,
 		user(0, "first"),

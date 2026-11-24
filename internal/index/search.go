@@ -622,7 +622,9 @@ func (ix *Index) matches(ctx context.Context, s *Session, title string, t *model
 		case model.Reply:
 			fields = append(fields, field{kind: it.Kind, seq: it.Seq, text: it.Text, column: "reply"})
 		case model.Thinking, model.Event:
-			fields = append(fields, field{kind: it.Kind, seq: it.Seq, text: it.Text, column: "thinking"})
+			if !it.Routine { // not searched (see turnWords)
+				fields = append(fields, field{kind: it.Kind, seq: it.Seq, text: it.Text, column: "thinking"})
+			}
 		case model.ToolUse:
 			tool := it.Tool
 			if tool.Command != "" {

@@ -594,7 +594,7 @@ func (w *Writer) pushEvent(cur *turn, m Message, b Block) {
 	if kind == "" {
 		kind = "event"
 	}
-	w.push(cur, model.Item{Kind: model.Event, At: m.At, ID: m.ID, Event: kind, Text: b.Text, Inherited: m.Inherited})
+	w.push(cur, model.Item{Kind: model.Event, At: m.At, ID: m.ID, Event: kind, Text: b.Text, Inherited: m.Inherited, Routine: b.Routine})
 	if (kind == model.EventInterrupted || b.Stops) && !m.Inherited {
 		cur.t.Interrupted = true
 		w.live.end(m.At)

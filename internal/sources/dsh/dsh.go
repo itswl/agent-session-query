@@ -515,13 +515,15 @@ func (h *harness) setting(i int, raw json.RawMessage, at time.Time) {
 // value the first time, and after that the ones that changed, from what to what. A run
 // that changed nothing — the harness writing them all again as they were — draws nothing.
 // A setting is something the person chose, not work of the agent's: it does not move
-// where the turn's work ended.
+// where the turn's work ended. The settings a session opens with are routine, written in
+// every session; a change of them, like a change of model, is not.
 func (h *harness) settle() {
 	if !h.pending {
 		return
 	}
 	h.pending = false
 	var parts []string
+	changed := false
 	for i, s := range settings {
 		switch now, was := h.set[i], h.drawn[i]; {
 		case now == was:
@@ -529,6 +531,7 @@ func (h *harness) settle() {
 			parts = append(parts, s.name+" "+now)
 		default:
 			parts = append(parts, s.name+" "+was+" → "+now)
+			changed = true
 		}
 	}
 	h.drawn = h.set
@@ -537,7 +540,7 @@ func (h *harness) settle() {
 	}
 	text := strings.Join(parts, " · ")
 	event := transcript.EventOf(eventSettings, strings.ToUpper(text[:1])+text[1:])
-	event.After = true
+	event.After, event.Routine = true, !changed
 	h.w.Add(transcript.Message{Role: transcript.System, At: h.setAt, Blocks: []transcript.Block{event}})
 }
 
@@ -559,7 +562,8 @@ func (h *harness) stepStarted(raw json.RawMessage, at time.Time) {
 // stepEnded draws a step, at its end: only then is how long it took known, and an event
 // is added where it falls among the rows. A step still under way draws nothing until it
 // ends — the session says it is at work meanwhile — and one that never ends, the harness
-// stopped in the middle of it, never does: its work is in the turn all the same.
+// stopped in the middle of it, never does: its work is in the turn all the same. Every
+// call to the model is a step, so the event is routine.
 func (h *harness) stepEnded(raw json.RawMessage, at time.Time) {
 	var s step
 	if !decode(raw, &s) {
@@ -575,7 +579,9 @@ func (h *harness) stepEnded(raw json.RawMessage, at time.Time) {
 			text += " · " + txt.Duration(time.Duration(ms)*time.Millisecond)
 		}
 	}
-	h.w.Add(transcript.Message{Role: transcript.System, At: at, Blocks: []transcript.Block{transcript.EventOf(eventStep, text)}})
+	event := transcript.EventOf(eventStep, text)
+	event.Routine = true
+	h.w.Add(transcript.Message{Role: transcript.System, At: at, Blocks: []transcript.Block{event}})
 }
 
 // request reads which model a request was made to. The first names the model the session

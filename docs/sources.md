@@ -187,13 +187,14 @@ own work beside the conversation, and some of it is read as events. Each step �
 model and the tools it asked for — is a `step` event where it ended, saying how long it took
 (`Step 2 · 7s`); a step still under way, or one the harness never finished, has none. The
 permissions, sandbox and approval policy a session runs with are a `settings` event before
-its first ask, and another wherever one of them changes, from what to what. A request to a
-model other than the last request's is a `model_change` event. A call to the model that
-failed, and a turn that ended in an error, are each an `error` event with what the provider
-said — once, where the turn's end repeats what its last failed call said. Like any CLI's error
-but Gemini CLI's, it does not mark the turn interrupted; a turn the harness says was stopped
-is. The prompt the harness takes from its inbox is written twice, as it enters the
-conversation and as the message after it, and is read once.
+its first ask, and another wherever one of them changes, from what to what. The steps, and the
+settings a session opens with, are [routine](model.md#session--turn--item) events; a change of
+setting is not. A request to a model other than the last request's is a `model_change` event.
+A call to the model that failed, and a turn that ended in an error, are each an `error` event
+with what the provider said — once, where the turn's end repeats what its last failed call
+said. Like any CLI's error but Gemini CLI's, it does not mark the turn interrupted; a turn the
+harness says was stopped is. The prompt the harness takes from its inbox is written twice, as
+it enters the conversation and as the message after it, and is read once.
 
 **Gemini CLI** — per-project chat files, the project's directory from the `.project_root`
 beside them, and subagents (`chats/<session>/<agent>.jsonl`) as sessions beneath the one that

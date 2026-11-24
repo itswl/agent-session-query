@@ -230,7 +230,7 @@ export function mount(main, route, ctx) {
     const state = v.route.query.get('state');
     if (state) {
       return empty(state === NEEDS_YOU ? 'Nothing is waiting on you.' : 'No agent is at work.',
-        'Where an agent stands is said for Claude Code, Codex, Gemini CLI and OpenCode, by what their transcripts say: at work for ten minutes after they were last written, waiting or done for a day.', clear);
+        'Where an agent stands is said for Claude Code, Codex, Gemini CLI, OpenCode and DeepSeek Harness, by what their transcripts say: at work for ten minutes after they were last written, waiting or done for a day.', clear);
     }
     return empty(filtered ? 'No sessions match these filters.' : 'No sessions yet.',
       warned ? `${f.plural(warned, 'store')} could not be read — see the notice above. This list may be incomplete.` : null,

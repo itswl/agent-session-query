@@ -182,7 +182,18 @@ failed inside a script is a failure. pi keeps no output of theirs, only a failed
 newest is read, a half-written last frame and all. The session's title is the harness's own
 (the one a model wrote, once there is one). A command's exit code is not on its result — the
 harness marks a result an error only when the tool itself broke — but on the job that ran it,
-and is read from there: `ls` of a missing directory is a failed call.
+and is read from there: `ls` of a missing directory is a failed call. The harness writes its
+own work beside the conversation, and some of it is read as events. Each step — a call to the
+model and the tools it asked for — is a `step` event where it ended, saying how long it took
+(`Step 2 · 7s`); a step still under way, or one the harness never finished, has none. The
+permissions, sandbox and approval policy a session runs with are a `settings` event before
+its first ask, and another wherever one of them changes, from what to what. A request to a
+model other than the last request's is a `model_change` event. A call to the model that
+failed, and a turn that ended in an error, are each an `error` event with what the provider
+said — once, where the turn's end repeats what its last failed call said. Like any CLI's error
+but Gemini CLI's, it does not mark the turn interrupted; a turn the harness says was stopped
+is. The prompt the harness takes from its inbox is written twice, as it enters the
+conversation and as the message after it, and is read once.
 
 **Gemini CLI** — per-project chat files, the project's directory from the `.project_root`
 beside them, and subagents (`chats/<session>/<agent>.jsonl`) as sessions beneath the one that
@@ -286,6 +297,9 @@ Whether an agent is at work, waiting on a call, or done and waiting for the pers
 - **OpenCode** 2.x writes a row as each turn ends, and a turn without it is in flight. 1.x
   writes none: the last response says where the turn stands, by how it finished and whether
   it has.
+- **DeepSeek Harness** writes `turn/start` and `turn/end` around every turn, and a turn
+  without its end is in flight: working, or waiting on a call it made that has no result
+  yet. A transcript that writes neither says nothing of where its turn stands.
 
 The other CLIs' turns are not read this way: their sessions are marked *live* by when they
 were last written alone.

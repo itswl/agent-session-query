@@ -23,6 +23,8 @@ var zstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
 func FuzzRead(f *testing.F) {
 	f.Add(encode(f, transcriptRows()))
 	f.Add(encode(f, currentRows()))
+	f.Add(encode(f, completedRows()))
+	f.Add(encode(f, failedRows()))
 	f.Add(append(frames(f, encode(f, transcriptRows()), 97), halfFrame(f)...))
 	f.Add(encode(f, []M{
 		headerRow("dsh-ctx", "/w"),

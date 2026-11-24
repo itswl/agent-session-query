@@ -538,6 +538,371 @@ func TestWhatTheCurrentHarnessWrites(t *testing.T) {
 	if s.Stats.Usage != want || s.Stats.Calls != 2 || turn.Failures != 1 {
 		t.Errorf("usage = %+v in %d calls, %d failed; want %+v in 2, 1 failed", s.Stats.Usage, s.Stats.Calls, turn.Failures, want)
 	}
+	// The turn's end is written, and the next move is the person's
+	if live := s.Session.Live; live == nil || live.State != model.LiveIdle || !live.Since.Equal(start.Add(3*time.Second)) {
+		t.Errorf("live = %+v, want idle since the turn's end", live)
+	}
+}
+
+// ev is a row the harness writes of its own work: everything it writes past the header has
+// a type, a seq, a time and data.
+func ev(typ string, seq int, at time.Duration, data M) M {
+	return M{"type": typ, "seq": seq, "time": ms(at), "data": data}
+}
+
+// promptID is the id the harness gave the prompt of the recorded sessions: the inbox's
+// splice puts it in, and the user/message after it writes it again.
+const promptID = "6f1c2a9e-3b7d-4e21-9a58-0c4d2e7b1f63"
+
+const recordedAsk = "what does the deploy script do?"
+
+// opening is how both sessions recorded on the harness begin — their rows in order, in the
+// shapes they were written, with values of the test's own — up to where the one went on to
+// an answer and the other to a failure: the header, the settings the session
+// runs with, the prompt spliced in from the inbox and the inbox emptied, the turn's and its
+// first step's start, the system prompt, the prompt written again as a user/message with
+// the runtime context after it, the request made, and the title the harness gives the
+// session while a model writes a better one.
+func opening() []M {
+	prompt := text(recordedAsk)
+	return []M{
+		{"type": "session", "version": 4, "id": "session-recorded", "cwd": "/w/proj", "createdAt": ms(0)},
+		ev("permission/preset", 1, 0, M{"preset": "workspace-write"}),
+		ev("sandbox/mode", 2, 0, M{"mode": "workspace-write"}),
+		ev("approval/policy", 3, 0, M{"policy": "ask"}),
+		ev("agent/inbox/spliced", 4, 10*time.Second, M{"target": "next-turn", "start": 0,
+			"inserted": []M{{"id": promptID, "role": "user", "source": M{"kind": "user"}, "content": prompt}}}),
+		ev("turn/start", 5, 10*time.Second, M{"turn": 1}),
+		ev("agent/inbox/spliced", 6, 10*time.Second, M{"target": "next-turn", "start": 0, "removedCount": 1, "inserted": []M{}}),
+		ev("step/start", 7, 10*time.Second, M{"turn": 1, "step": 1}),
+		{"type": "system/message", "seq": 8, "time": ms(10 * time.Second), "surfaceOp": "append",
+			"data": M{"message": M{"role": "system", "content": text("the system prompt"), "source": M{"kind": "system-prompt"}, "id": "sys"}}},
+		{"type": "user/message", "seq": 9, "time": ms(10 * time.Second), "surfaceOp": "append",
+			"data": M{"id": promptID, "role": "user", "source": M{"kind": "user"}, "content": prompt}},
+		{"type": "user/message", "seq": 10, "time": ms(10 * time.Second), "surfaceOp": "append",
+			"data": M{"id": "ctx", "role": "user", "source": M{"kind": "runtime-context", "form": "snapshot"}, "content": text("Current working directory: /w/proj")}},
+		ev("request/header", 11, 10*time.Second, M{"reason": "initial", "header": M{
+			"config":          M{"provider": "deepseek-official", "model": "deepseek-flash", "maxTokens": 32768, "reasoningEffort": "high"},
+			"adapterDefaults": M{"reasoningEffort": false, "maxTokens": false},
+			"tools":           []M{{"name": "read", "description": "Read a file.", "parameters": M{"type": "object"}}}}}),
+		ev("request/context", 12, 10*time.Second, M{"provider": "deepseek-official", "model": "deepseek-flash", "contextWindow": 1000000}),
+		ev("session/title", 13, 10*time.Second, M{"title": "what does the deploy", "source": M{"kind": "fallback"}}),
+		ev("session/title-llm-request", 14, 10*time.Second, M{"titleProvider": "deepseek-official", "messageSeqs": []int{9},
+			"route": M{"provider": "deepseek-official", "model": "deepseek-flash"}, "system": "Give the conversation a short title.",
+			"messages": []M{{"role": "user", "content": prompt}}, "maxTokens": 64, "reasoningEffort": "low"}),
+	}
+}
+
+// completedRows is the session recorded on the harness whose turn was answered.
+func completedRows() []M {
+	return append(opening(),
+		ev("session-log-deepseek/delivery-accepted", 15, 11*time.Second, M{"sessionId": "session-recorded", "sessionFormatVersion": 4, "throughSeq": 14}),
+		ev("session/title", 16, 12*time.Second, M{"title": "What the deploy script does", "source": M{"kind": "provider"}}),
+		ev("session-log-deepseek/delivery-accepted", 17, 12*time.Second, M{"sessionId": "session-recorded", "sessionFormatVersion": 4, "throughSeq": 16}),
+		M{"type": "assistant/message", "seq": 18, "time": ms(16 * time.Second), "surfaceOp": "append", "data": M{
+			"message": M{"id": "a1", "role": "assistant", "source": M{"kind": "model", "provider": "deepseek-official", "model": "deepseek-flash"},
+				"content": text("It builds the image and pushes it.")},
+			"usage": M{"inputTokens": 900, "outputTokens": 40, "cacheReadTokens": 0, "cacheWriteTokens": 0, "totalTokens": 940}}},
+		ev("step/end", 19, 17*time.Second, M{"turn": 1, "step": 1}),
+		ev("turn/end", 20, 17*time.Second, M{"turn": 1, "reason": M{"kind": "completed"}}),
+	)
+}
+
+// The failure both of the failed session's rows carry
+const (
+	failureMessage = "402 Insufficient Balance: the account has no credit left for this request."
+	failureCode    = "insufficient_balance"
+	failureText    = failureMessage + " (" + failureCode + ")"
+)
+
+func failureData() M { return M{"message": failureMessage, "code": failureCode} }
+
+// failedRows is the session recorded on the harness whose turn failed: its one call to the
+// model came to an attempt that failed instead of a message, and the turn ended in the
+// same error.
+func failedRows() []M {
+	return append(opening(),
+		ev("assistant/attempt", 15, 13*time.Second, M{"turn": 1, "step": 1, "stream": []M{
+			{"type": "chunk", "time": ms(13 * time.Second), "chunk": M{"type": "finish", "reason": M{"kind": "error", "failure": failureData()}}}}}),
+		ev("step/end", 16, 13*time.Second, M{"turn": 1, "step": 1}),
+		ev("turn/end", 17, 13*time.Second, M{"turn": 1, "reason": M{"kind": "error", "error": failureData()}}),
+	)
+}
+
+// events is a session's events of a kind, every turn's, in order.
+func events(s sourcetest.Session, kind string) []model.Item {
+	var out []model.Item
+	for _, turn := range s.Turns {
+		for _, it := range turn.Items {
+			if it.Kind == model.Event && it.Event == kind {
+				out = append(out, it)
+			}
+		}
+	}
+	return out
+}
+
+func prompts(s sourcetest.Session) int {
+	n := 0
+	for _, turn := range s.Turns {
+		for _, it := range turn.Items {
+			if it.Kind == model.Prompt {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func readRows(t *testing.T, rows []M) sourcetest.Session {
+	t.Helper()
+	root := t.TempDir()
+	put(t, filepath.Join(root, "project", "session-recorded", "session.v4.jsonl.zstd"), frames(t, encode(t, rows), 300))
+	return sourcetest.One(t, Spec.Open(root))
+}
+
+// TestACompletedTurnAsTheHarnessRecordsIt: of every row the harness writes, none is left
+// not understood; its settings, and the step its turn took, are events; the prompt the
+// inbox spliced in is read once; and the turn's end says it is over.
+func TestACompletedTurnAsTheHarnessRecordsIt(t *testing.T) {
+	s := readRows(t, completedRows())
+	sourcetest.NothingUnread(t, s)
+	sourcetest.Invariants(t, s)
+	if s.Session.Title != "What the deploy script does" || s.Session.Cwd != "/w/proj" || s.Stats.Turns != 1 {
+		t.Fatalf("session = %+v, %d turns", s.Session, s.Stats.Turns)
+	}
+	if n := prompts(s); n != 1 {
+		t.Errorf("%d prompts: the splice that put the prompt in is not the prompt a second time", n)
+	}
+
+	// The settings come before the first ask, as one event
+	zero := s.Turn(t, 0)
+	if got := sourcetest.Kinds(zero); got != "event" {
+		t.Fatalf("turn 0 = %s", got)
+	}
+	if it := zero.Items[0]; it.Event != "settings" || it.Text != "Permissions workspace-write · sandbox workspace-write · approval ask" || !it.At.Equal(start) {
+		t.Errorf("settings = %+v", it)
+	}
+
+	turn := s.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt context reply event" {
+		t.Fatalf("items = %s", got)
+	}
+	if turn.Ask != recordedAsk || turn.Answer != "It builds the image and pushes it." || turn.Interrupted {
+		t.Errorf("ask %q answer %q interrupted %v", turn.Ask, turn.Answer, turn.Interrupted)
+	}
+	// The step is drawn where it ended, with how long it took; it is where the turn's work
+	// ended
+	stepEnd := start.Add(17 * time.Second)
+	if it := turn.Items[3]; it.Event != "step" || it.Text != "Step 1 · 7s" || !it.At.Equal(stepEnd) {
+		t.Errorf("step = %+v", it)
+	}
+	if !turn.EndedAt.Equal(stepEnd) {
+		t.Errorf("the turn ended %s, want at the step's end", turn.EndedAt)
+	}
+	// The first request names the model the session began with, which is no change
+	if got := events(s, model.EventModelChange); len(got) != 0 {
+		t.Errorf("model changes = %+v", got)
+	}
+	if live := s.Session.Live; live == nil || live.State != model.LiveIdle || !live.Since.Equal(stepEnd) {
+		t.Errorf("live = %+v, want idle since the turn's end", live)
+	}
+	if s.Stats.Usage != (model.Usage{Input: 900, Output: 40}) || s.Stats.Calls != 1 {
+		t.Errorf("usage = %+v in %d calls", s.Stats.Usage, s.Stats.Calls)
+	}
+}
+
+// TestAFailedTurnAsTheHarnessRecordsIt: the call that failed is an error event, saying what
+// failed; the turn's end, which says the same again, adds no second one; and the turn is
+// over, failed, which no CLI's error but Gemini CLI's marks as interrupted.
+func TestAFailedTurnAsTheHarnessRecordsIt(t *testing.T) {
+	s := readRows(t, failedRows())
+	sourcetest.NothingUnread(t, s)
+	sourcetest.Invariants(t, s)
+	if s.Stats.Turns != 1 || prompts(s) != 1 {
+		t.Fatalf("%d turns, %d prompts", s.Stats.Turns, prompts(s))
+	}
+	turn := s.Turn(t, 1)
+	if got := sourcetest.Kinds(turn); got != "prompt context event event" {
+		t.Fatalf("items = %s", got)
+	}
+	failed := start.Add(13 * time.Second)
+	if it := turn.Items[2]; it.Event != "error" || it.Text != failureText || !it.At.Equal(failed) {
+		t.Errorf("error = %+v", it)
+	}
+	if it := turn.Items[3]; it.Event != "step" || it.Text != "Step 1 · 3s" {
+		t.Errorf("step = %+v", it)
+	}
+	if got := events(s, "error"); len(got) != 1 {
+		t.Errorf("errors = %+v: the turn's end says what the attempt said", got)
+	}
+	if turn.Answer != "" || turn.Interrupted || turn.Failures != 0 || s.Stats.Calls != 0 {
+		t.Errorf("answer %q interrupted %v failures %d calls %d", turn.Answer, turn.Interrupted, turn.Failures, s.Stats.Calls)
+	}
+	if live := s.Session.Live; live == nil || live.State != model.LiveIdle || !live.Since.Equal(failed) {
+		t.Errorf("live = %+v, want idle since the turn's end", live)
+	}
+}
+
+// TestHarnessRowsOfALaterTurn: the person changes a setting and the model between turns.
+// The change of setting is an event that names it, at the end of the turn before, which
+// it does not stretch; settings written again as they were draw nothing; the model is a
+// model change in the turn whose request went to it, and a request to the same model is
+// none; and each step of a turn that called a tool is an event of its own.
+func TestHarnessRowsOfALaterTurn(t *testing.T) {
+	second := func(at time.Duration) time.Duration { return 30*time.Second + at }
+	rows := append(completedRows(),
+		ev("permission/preset", 21, second(0), M{"preset": "workspace-write"}),
+		ev("sandbox/mode", 22, second(0), M{"mode": "read-only", "note": "a field the adapter does not read"}),
+		ev("approval/policy", 23, second(0), M{"policy": "ask"}),
+		ev("turn/start", 24, second(5*time.Second), M{"turn": 2}),
+		ev("step/start", 25, second(5*time.Second), M{"turn": 2, "step": 1}),
+		userRow("u2", second(5*time.Second), text("now run it")),
+		ev("request/context", 27, second(5*time.Second), M{"provider": "deepseek-official", "model": "deepseek-pro", "contextWindow": 1000000, "systemPromptUpdate": "the system prompt, updated"}),
+		M{"type": "assistant/message", "seq": 28, "time": ms(second(6 * time.Second)), "data": M{
+			"message": M{"id": "a2", "source": M{"kind": "model", "model": "deepseek-pro"},
+				"content": []M{{"type": "tool-call", "id": "c1", "name": "bash", "arguments": `{"command": "./deploy.sh"}`}}},
+			"usage": M{"inputTokens": 10, "outputTokens": 5}}},
+		resultRow("r1", "c1", second(8*time.Second), false, text("pushed")),
+		ev("step/end", 30, second(8*time.Second), M{"turn": 2, "step": 1}),
+		ev("step/start", 31, second(8*time.Second), M{"turn": 2, "step": 2}),
+		ev("request/context", 32, second(8*time.Second), M{"provider": "deepseek-official", "model": "deepseek-pro", "contextWindow": 1000000}),
+		M{"type": "assistant/message", "seq": 33, "time": ms(second(9 * time.Second)), "data": M{
+			"message": M{"id": "a3", "source": M{"kind": "model", "model": "deepseek-pro"}, "content": text("Deployed.")},
+			"usage":   M{"inputTokens": 20, "outputTokens": 3}}},
+		ev("step/end", 34, second(70*time.Second), M{"turn": 2, "step": 2}),
+		// The settings again, as they stand: nothing changed, and nothing is drawn
+		ev("sandbox/mode", 35, second(70*time.Second), M{"mode": "read-only"}),
+		ev("approval/policy", 36, second(70*time.Second), M{"policy": "ask"}),
+		ev("turn/end", 37, second(70*time.Second), M{"turn": 2, "reason": M{"kind": "completed"}}),
+	)
+	s := readRows(t, rows)
+	sourcetest.NothingUnread(t, s)
+	sourcetest.Invariants(t, s)
+
+	first := s.Turn(t, 1)
+	if got := sourcetest.Kinds(first); got != "prompt context reply event event" {
+		t.Fatalf("turn 1 = %s", got)
+	}
+	if it := first.Items[4]; it.Event != "settings" || it.Text != "Sandbox workspace-write → read-only" {
+		t.Errorf("the change = %+v", it)
+	}
+	if !first.EndedAt.Equal(start.Add(17 * time.Second)) {
+		t.Errorf("turn 1 ended %s: a setting the person changed after it is not its work", first.EndedAt)
+	}
+	if got := events(s, "settings"); len(got) != 2 {
+		t.Errorf("settings = %+v: the ones written again as they were draw nothing", got)
+	}
+
+	turn := s.Turn(t, 2)
+	if got := sourcetest.Kinds(turn); got != "prompt event tool event reply event" {
+		t.Fatalf("turn 2 = %s", got)
+	}
+	if it := turn.Items[1]; it.Event != model.EventModelChange || it.Text != "deepseek-official/deepseek-pro" {
+		t.Errorf("model change = %+v", it)
+	}
+	if got := events(s, model.EventModelChange); len(got) != 1 {
+		t.Errorf("model changes = %+v", got)
+	}
+	steps := events(s, "step")
+	if len(steps) != 3 || steps[1].Text != "Step 1 · 3s" || steps[2].Text != "Step 2 · 1m02s" {
+		t.Errorf("steps = %+v", steps)
+	}
+	if live := s.Session.Live; live == nil || live.State != model.LiveIdle {
+		t.Errorf("live = %+v", live)
+	}
+}
+
+// TestATurnUnderWay: a session read while the harness writes it. A step not yet ended draws
+// nothing — how long it takes is not known, and an event drawn now would be gone at the
+// next read, its place taken by the step's end — and the turn, its end not written, is in
+// flight: at work, and then waiting on the call it made.
+func TestATurnUnderWay(t *testing.T) {
+	s := readRows(t, opening())
+	sourcetest.NothingUnread(t, s)
+	if got := events(s, "step"); len(got) != 0 {
+		t.Errorf("steps = %+v: the step has not ended", got)
+	}
+	if live := s.Session.Live; live == nil || live.State != model.LiveWorking || !live.Since.Equal(start.Add(10*time.Second)) {
+		t.Errorf("live = %+v, want working since the ask", live)
+	}
+
+	rows := append(opening(), M{"type": "assistant/message", "seq": 15, "time": ms(12 * time.Second), "data": M{
+		"message": M{"id": "a1", "source": M{"kind": "model", "model": "deepseek-flash"},
+			"content": []M{{"type": "text", "text": "I'll read it."}, {"type": "tool-call", "id": "c1", "name": "read", "arguments": `{"file_path": "deploy.sh"}`}}},
+		"usage": M{"inputTokens": 10, "outputTokens": 5}}})
+	s = readRows(t, rows)
+	if live := s.Session.Live; live == nil || live.State != model.LiveWaiting || live.Tool != "read" {
+		t.Errorf("live = %+v, want waiting on the read", live)
+	}
+
+	// A session read before its first turn has begun: the settings it opens with are
+	// drawn all the same
+	s = readRows(t, opening()[:3])
+	if got := events(s, "settings"); len(got) != 1 || got[0].Text != "Permissions workspace-write · sandbox workspace-write" {
+		t.Errorf("settings = %+v", got)
+	}
+}
+
+// TestHowATurnEnds: what a turn's end says beside its being over.
+func TestHowATurnEnds(t *testing.T) {
+	attempt := func(seq int, kind, message string) M {
+		return ev("assistant/attempt", seq, 13*time.Second, M{"turn": 1, "step": 1, "stream": []M{
+			{"type": "chunk", "time": ms(12 * time.Second), "chunk": M{"type": "text-delta", "text": "partial"}},
+			{"type": "chunk", "time": ms(13 * time.Second), "chunk": M{"type": "finish", "reason": M{"kind": kind, "failure": M{"message": message}}}}}})
+	}
+	end := func(reason M) M { return ev("turn/end", 17, 14*time.Second, M{"turn": 1, "reason": reason}) }
+	cases := []struct {
+		name        string
+		rows        []M
+		errors      []string // the error events' texts
+		interrupted bool
+		unread      map[string]int
+	}{
+		{name: "an error no attempt said", rows: []M{end(M{"kind": "error", "error": M{"message": "the tool runner crashed"}})},
+			errors: []string{"the tool runner crashed"}},
+		{name: "an error other than the attempt's", rows: []M{attempt(15, "error", "timed out"), end(M{"kind": "error", "error": failureData()})},
+			errors: []string{"timed out", failureText}},
+		{name: "an error that says nothing", rows: []M{attempt(15, "error", ""), end(M{"kind": "error"})},
+			errors: []string{"The call to the model failed", "The turn failed"}},
+		{name: "an attempt that did not fail", rows: []M{attempt(15, "stop", ""), end(M{"kind": "completed"})}},
+		{name: "stopped", rows: []M{end(M{"kind": "aborted"})}, interrupted: true},
+		{name: "a reason of a kind not known", rows: []M{end(M{"kind": "max-steps"})}, unread: map[string]int{"reason:max-steps": 1}},
+		{name: "no reason", rows: []M{ev("turn/end", 17, 14*time.Second, M{"turn": 1})}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := readRows(t, append(opening(), c.rows...))
+			if !maps.Equal(s.Unread, c.unread) {
+				t.Errorf("unread = %v, want %v", s.Unread, c.unread)
+			}
+			var got []string
+			for _, it := range events(s, "error") {
+				got = append(got, it.Text)
+			}
+			if !slices.Equal(got, c.errors) {
+				t.Errorf("errors = %q, want %q", got, c.errors)
+			}
+			turn := s.Turn(t, 1)
+			if turn.Interrupted != c.interrupted || (len(events(s, model.EventInterrupted)) > 0) != c.interrupted {
+				t.Errorf("interrupted %v, events %+v", turn.Interrupted, events(s, model.EventInterrupted))
+			}
+			// However it ended, it is over
+			if live := s.Session.Live; live == nil || live.State != model.LiveIdle {
+				t.Errorf("live = %+v", live)
+			}
+		})
+	}
+}
+
+// TestATranscriptWithoutTurnBounds: a transcript that does not bound its turns says nothing
+// of where the latest stands that has been checked, and no state is made up for it.
+func TestATranscriptWithoutTurnBounds(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(sessionDir(root), "session.v4.jsonl"), encode(t, transcriptRows()))
+	if s := sourcetest.One(t, Spec.Open(root)); s.Session.Live != nil {
+		t.Errorf("live = %+v", s.Session.Live)
+	}
 }
 
 // A response with no words — the model answered with nothing, or only its reasoning was

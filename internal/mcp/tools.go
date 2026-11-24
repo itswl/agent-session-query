@@ -86,7 +86,7 @@ var tools = []tool{
 		props: []prop{
 			{"text", "string", "Only sessions whose title, id or directory contains this."},
 			pSource, pProject, pBranch, pSince, pUntil,
-			{"state", "string", "Only sessions whose latest turn stands so, by what their transcript says: working, waiting (on a tool call: a command running, or a permission prompt), idle (the agent is done and the person is to answer), or several, comma-separated. Said for Claude Code, Codex, Gemini CLI and OpenCode."},
+			{"state", "string", "Only sessions whose latest turn stands so, by what their transcript says: working, waiting (on a tool call: a command running, or a permission prompt), idle (the agent is done and the person is to answer), or several, comma-separated. Said for Claude Code, Codex, Gemini CLI, OpenCode and DeepSeek Harness."},
 			{"archived", "boolean", "Include sessions their CLI has archived."},
 			{"agents", "boolean", "Include subagents' transcripts as sessions of their own."},
 			pLimit, pOffset, pChars,

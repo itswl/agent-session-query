@@ -4,9 +4,28 @@
 //
 // A session is a directory, and the directory holds one transcript per rotating
 // generation: the highest N is the current one. The transcript is JSONL — a header row
-// (`session` or `header`, with the id, the cwd and when it was created), then events:
-// `user/message`, `assistant/message` and `tool/result`, each with `time` in epoch
-// milliseconds. Two things about it are not obvious:
+// (`session` or `header`, with the id, the cwd and when it was created), then events,
+// each with `time` in epoch milliseconds. The conversation is `user/message`,
+// `assistant/message` and `tool/result`, and how a command exited is on the `job/settled`
+// that ran it. Beside it the harness writes rows of its own work, which are read as
+// events of the turn they fall in:
+//
+//   - `step/start` and `step/end` bound each step — a call to the model and the tools it
+//     asked for — and a step that ended is a `step` event, at its end, saying how long it
+//     took.
+//   - `permission/preset`, `sandbox/mode` and `approval/policy` are the settings a session
+//     runs with, written as a run of rows: the first run is a `settings` event naming all
+//     three, and a later one is an event only where a value changed.
+//   - `request/context` names the model each request is made to: a model other than the
+//     last request's is a `model_change` event.
+//   - `assistant/attempt` is a call to the model that came to no message, and `turn/end`
+//     says how a turn ended: a call or a turn that failed is an `error` event, and a turn
+//     stopped before it was done is interrupted.
+//   - `turn/start` and `turn/end` bound every turn, so a turn without its end is in flight.
+//
+// The rest of the harness's rows say nothing a reader of the transcript was shown — the
+// system prompt, the request's tools, the title model's prompt, a log's receipts, a call
+// as it was run — and are passed over. Three things about the transcript are not obvious:
 //
 //   - A `.zstd` transcript is a chain of independently decodable frames, one appended per
 //     batch of events, and the last is often half-written. The frames are decoded in order,
@@ -15,6 +34,9 @@
 //   - A row with `surfaceOp.op == "replace"` is the model-visible replacement of earlier
 //     rows — a compaction — and not something a reader of the transcript was shown. It is
 //     skipped.
+//   - An `agent/inbox/spliced` row puts a prompt waiting in the harness's inbox into the
+//     conversation, and the prompt is then written again, under the same id, as the
+//     `user/message` after it. The splice is passed over, or the prompt would be read twice.
 package dsh
 
 import (
@@ -28,11 +50,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/sources"
 	"github.com/itswl/agent-session-query/internal/sources/kit"
 	"github.com/itswl/agent-session-query/internal/transcript"
+	"github.com/itswl/agent-session-query/internal/txt"
 )
 
 // Spec describes the DeepSeek Harness.
@@ -45,7 +69,7 @@ var Spec = sources.Spec{
 	Open:    func(location string) sources.Source { return &Source{root: location} },
 	Movable: true,
 	Resume:  "", // the harness has no by-id resume: its own Web UI owns resume
-	Reads:   1,
+	Reads:   2,
 	Store:   "~/.dsh/sessions/<project>/<session>/session.v<N>.jsonl[.zstd]",
 }
 
@@ -249,6 +273,7 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 	looked := map[string]bool{} // ids of messages whose content was looked at, added or not
 	jobs := map[string]ended{}  // by call id
 	title, titled := "", false  // the harness's own title; one a model wrote outranks the stopgap
+	h := &harness{w: w, begun: map[string]time.Time{}}
 	n := 0
 	// kit.Lines walks a .zstd transcript's chain of frames in order, hands over every line
 	// that was completed, and ends without an error where the half-written last frame
@@ -262,6 +287,14 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		if !decode(line, &r) {
 			return true
 		}
+		at := kit.Time(r.Time)
+		// The settings come as a run of rows, which is drawn as one event once a row of
+		// another kind ends it
+		if i, ok := settingOf[r.Type]; ok {
+			h.setting(i, r.Data, at)
+			return true
+		}
+		h.settle()
 		switch r.Type {
 		case "session", "header":
 			if !sawHeader {
@@ -305,8 +338,38 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			return true
 		case "job/registered":
 			return true // a job beginning; how it ended is its job/settled
-		case "turn/start", "turn/end":
-			return true // the harness's own turn bounds; a turn opens at each prompt anyway
+		case "turn/start":
+			// A turn opens at its prompt, a few rows on. What this row says is that the
+			// transcript bounds its turns, and so marks where each of them ends
+			h.marked = true
+			h.failedTurn, h.failed = "", ""
+			return true
+		case "turn/end":
+			h.turnEnded(r.Data, at)
+			return true
+		case "step/start":
+			h.stepStarted(r.Data, at)
+			return true
+		case "step/end":
+			h.stepEnded(r.Data, at)
+			return true
+		case "request/context":
+			h.request(r.Data, at)
+			return true
+		case "assistant/attempt":
+			h.attempted(r.Data, at)
+			return true
+		case "agent/inbox/spliced":
+			// A prompt taken from the harness's inbox into the conversation, or taken out of
+			// the inbox: what it puts in is written again as the user/message that follows,
+			// and is read there
+			return true
+		case "request/header":
+			return true // the tools and the configuration a request was made with
+		case "session/title-llm-request":
+			return true // the prompt the title model was given; the title is session/title
+		case "session-log-deepseek/delivery-accepted":
+			return true // a receipt for the rows a log took delivery of
 		default:
 			w.Unread(unknown("row", r.Type))
 			return true
@@ -346,10 +409,17 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		}
 		return true
 	})
+	h.settle() // a run of settings the transcript ends on, as a session that has only begun does
 	// Set whatever the read ended on: a transcript damaged partway is kept as far as it
 	// went, and is still the session its header says it is
 	w.S.ID = kit.First(headerID, filepath.Base(dir))
 	w.S.Title = title
+	// A harness that bounds its turns writes the end of every one, and a turn without it is
+	// in flight, whatever its last rows were. One that does not says nothing of it that has
+	// been checked against a real session, and is left to say nothing
+	if h.marked {
+		w.Tells = transcript.TellsByMarks
+	}
 	if err != nil {
 		return err
 	}
@@ -374,6 +444,243 @@ func unknown(what, kind string) string {
 		kind = "(untyped)"
 	}
 	return what + ":" + kind
+}
+
+// The events the harness's own rows are read as, beside the kinds every adapter shares.
+const (
+	eventStep     = "step"     // a call to the model and the tools it asked for, once it is over
+	eventSettings = "settings" // the permissions, sandbox and approval a session runs with
+	eventError    = "error"    // a call or a turn that failed: the kind the adapters give an error
+)
+
+// settings are the rows that each set one of the settings a session runs with: the name
+// an event gives it, and the field of the row's data that holds it.
+var settings = [...]struct{ row, name, field string }{
+	{"permission/preset", "permissions", "preset"},
+	{"sandbox/mode", "sandbox", "mode"},
+	{"approval/policy", "approval", "policy"},
+}
+
+// settingOf finds a row among the settings, by its type.
+var settingOf = func() map[string]int {
+	m := map[string]int{}
+	for i, s := range settings {
+		m[s.row] = i
+	}
+	return m
+}()
+
+// harness reads the rows the harness writes of its own work — its steps, its settings, the
+// requests it makes, how an attempt and a turn ended — and carries what they say from one
+// row to the next. What they come to is added to w as events.
+type harness struct {
+	w *transcript.Writer
+
+	marked bool                 // a turn's bounds were written: so is the end of every turn
+	begun  map[string]time.Time // the steps begun and not yet ended, by turn and step
+
+	set, drawn [len(settings)]string // the settings as they stand, and as an event last said them
+	setAt      time.Time             // when the run of settings not yet drawn was written
+	pending    bool                  // a run of settings is not drawn yet
+
+	model string // the model the latest request was made to
+
+	// The latest attempt that failed, of the turn being read: which turn, and what it said
+	failedTurn, failed string
+}
+
+// setting notes one of the settings. It is drawn with the rest of its run, by settle.
+func (h *harness) setting(i int, raw json.RawMessage, at time.Time) {
+	var data map[string]any
+	if !decode(raw, &data) {
+		return
+	}
+	if value := strings.TrimSpace(kit.Str(data[settings[i].field])); value != "" {
+		h.set[i], h.setAt, h.pending = value, at, true
+	}
+}
+
+// settle draws the run of settings written since the last was drawn, as one event: every
+// value the first time, and after that the ones that changed, from what to what. A run
+// that changed nothing — the harness writing them all again as they were — draws nothing.
+// A setting is something the person chose, not work of the agent's: it does not move
+// where the turn's work ended.
+func (h *harness) settle() {
+	if !h.pending {
+		return
+	}
+	h.pending = false
+	var parts []string
+	for i, s := range settings {
+		switch now, was := h.set[i], h.drawn[i]; {
+		case now == was:
+		case was == "":
+			parts = append(parts, s.name+" "+now)
+		default:
+			parts = append(parts, s.name+" "+was+" → "+now)
+		}
+	}
+	h.drawn = h.set
+	if len(parts) == 0 {
+		return
+	}
+	text := strings.Join(parts, " · ")
+	event := transcript.EventOf(eventSettings, strings.ToUpper(text[:1])+text[1:])
+	event.After = true
+	h.w.Add(transcript.Message{Role: transcript.System, At: h.setAt, Blocks: []transcript.Block{event}})
+}
+
+// step is a step/start or step/end row's data: which step of which turn.
+type step struct {
+	Turn any `json:"turn"`
+	Step any `json:"step"`
+}
+
+func (s *step) key() string { return kit.Text(s.Turn) + "/" + kit.Text(s.Step) }
+
+func (h *harness) stepStarted(raw json.RawMessage, at time.Time) {
+	var s step
+	if decode(raw, &s) && !at.IsZero() {
+		h.begun[s.key()] = at
+	}
+}
+
+// stepEnded draws a step, at its end: only then is how long it took known, and an event
+// is added where it falls among the rows. A step still under way draws nothing until it
+// ends — the session says it is at work meanwhile — and one that never ends, the harness
+// stopped in the middle of it, never does: its work is in the turn all the same.
+func (h *harness) stepEnded(raw json.RawMessage, at time.Time) {
+	var s step
+	if !decode(raw, &s) {
+		return
+	}
+	text := "Step"
+	if n := kit.Text(s.Step); n != "" {
+		text += " " + n
+	}
+	if from, ok := h.begun[s.key()]; ok {
+		delete(h.begun, s.key())
+		if ms := model.DurMs(at.Sub(from).Milliseconds()); ms > 0 {
+			text += " · " + txt.Duration(time.Duration(ms)*time.Millisecond)
+		}
+	}
+	h.w.Add(transcript.Message{Role: transcript.System, At: at, Blocks: []transcript.Block{transcript.EventOf(eventStep, text)}})
+}
+
+// request reads which model a request was made to. The first names the model the session
+// began with, which its replies name too, and draws nothing; one after it that names
+// another model is a model change, where that request was made.
+func (h *harness) request(raw json.RawMessage, at time.Time) {
+	var c struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if !decode(raw, &c) || c.Model == "" {
+		return
+	}
+	if h.model != "" && c.Model != h.model {
+		name := c.Model
+		if c.Provider != "" {
+			name = c.Provider + "/" + c.Model
+		}
+		h.w.Add(transcript.Message{Role: transcript.System, At: at, Blocks: []transcript.Block{transcript.EventOf(model.EventModelChange, name)}})
+	}
+	h.model = c.Model
+}
+
+// reason is how an attempt or a turn ended: its kind ("completed", "error"), and what
+// went wrong when it failed — an attempt's failure, a turn's error.
+type reason struct {
+	Kind    string  `json:"kind"`
+	Failure failure `json:"failure"`
+	Error   failure `json:"error"`
+}
+
+type failure struct {
+	Message string `json:"message"`
+	Code    any    `json:"code"`
+}
+
+// text is what a failure says: its message, and its code where the message does not hold
+// it.
+func (f *failure) text() string {
+	msg, code := strings.TrimSpace(f.Message), strings.TrimSpace(kit.Text(f.Code))
+	switch {
+	case code == "" || strings.Contains(msg, code):
+		return msg
+	case msg == "":
+		return code
+	}
+	return msg + " (" + code + ")"
+}
+
+// attempted reads an assistant/attempt: a call to the model as it streamed, which the
+// harness writes where the call came to no assistant/message. The last finish in its
+// stream says how it ended; one that failed is an error event, and one that ended any
+// other way draws nothing.
+func (h *harness) attempted(raw json.RawMessage, at time.Time) {
+	var a struct {
+		Turn   any `json:"turn"`
+		Stream []struct {
+			Chunk struct {
+				Type   string `json:"type"`
+				Reason reason `json:"reason"`
+			} `json:"chunk"`
+		} `json:"stream"`
+	}
+	if !decode(raw, &a) {
+		return
+	}
+	var end *reason
+	for i := range a.Stream {
+		if c := &a.Stream[i].Chunk; c.Type == "finish" {
+			end = &c.Reason
+		}
+	}
+	if end == nil || end.Kind != "error" {
+		return
+	}
+	text := kit.First(end.Failure.text(), end.Error.text(), "The call to the model failed")
+	h.failedTurn, h.failed = kit.Text(a.Turn), text
+	h.w.Add(transcript.Message{Role: transcript.System, At: at, Blocks: []transcript.Block{transcript.EventOf(eventError, text)}})
+}
+
+// turnEnded reads a turn/end: the turn is over, and the next move is the person's. A turn
+// that failed is an error event — unless the turn's last failed attempt said the same,
+// which the harness writes again here — and, like the error of every CLI but Gemini CLI,
+// does not mark the turn interrupted: that is for a turn stopped before it was done, as
+// one the person stopped is. A reason of a kind not known ends the turn all the same, and
+// is counted as not understood.
+func (h *harness) turnEnded(raw json.RawMessage, at time.Time) {
+	h.marked = true
+	var e struct {
+		Turn   any    `json:"turn"`
+		Reason reason `json:"reason"`
+	}
+	decode(raw, &e)
+	m := transcript.Message{Role: transcript.System, At: at, Ends: true}
+	switch kind := e.Reason.Kind; {
+	case kind == "" || kind == "completed":
+	case kind == "error":
+		text := kit.First(e.Reason.Error.text(), e.Reason.Failure.text(), "The turn failed")
+		if text != h.failed || kit.Text(e.Turn) != h.failedTurn {
+			m.Blocks = []transcript.Block{transcript.EventOf(eventError, text)}
+		}
+	case stopped(kind):
+		m.Blocks = []transcript.Block{transcript.EventOf(model.EventInterrupted, "Turn "+kind)}
+	default:
+		h.w.Unread(unknown("reason", kind))
+	}
+	h.failedTurn, h.failed = "", ""
+	h.w.Add(m)
+}
+
+// stopped reports whether a turn's end says it was stopped before it was done. The turns
+// recorded so far ended completed or in an error, and none was stopped: a kind is taken by
+// the words a harness would stop a turn with, however it spells them.
+func stopped(kind string) bool {
+	kind = strings.ToLower(kind)
+	return strings.Contains(kind, "abort") || strings.Contains(kind, "cancel") || strings.Contains(kind, "interrupt")
 }
 
 // messageOf turns an event into what the Writer takes; false for one with nothing to add.

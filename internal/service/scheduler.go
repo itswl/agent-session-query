@@ -173,11 +173,24 @@ func (t *scheduler) state() (bool, string, int) {
 	state := strings.ToLower(fields[len(fields)-min(2, len(fields))])
 	if len(fields) >= 2 && state != "running" {
 		// 0 is a clean end; 0x41301 is running and 0x41303 never run, which say nothing more
-		if code, err := strconv.ParseInt(fields[len(fields)-1], 10, 64); err == nil && code != 0 && code != 0x41301 && code != 0x41303 {
-			state += fmt.Sprintf(", last result 0x%X", uint32(code))
+		if code, ok := lastResult(fields[len(fields)-1]); ok && code != 0 && code != 0x41301 && code != 0x41303 {
+			state += fmt.Sprintf(", last result 0x%X", code)
 		}
 	}
 	return true, state, 0
+}
+
+// lastResult reads a task's last result: a 32-bit code, printed in decimal — unsigned as
+// PowerShell gives it, or signed, as an HRESULT handed over as an int reads. Anything else
+// is no result at all.
+func lastResult(s string) (uint32, bool) {
+	if u, err := strconv.ParseUint(s, 10, 32); err == nil {
+		return uint32(u), true
+	}
+	if n, err := strconv.ParseInt(s, 10, 32); err == nil {
+		return uint32(n), true
+	}
+	return 0, false
 }
 
 func (t *scheduler) unload() []string {

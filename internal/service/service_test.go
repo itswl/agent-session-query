@@ -919,3 +919,22 @@ func TestPackage(t *testing.T) {
 		}
 	}
 }
+
+func TestLastResult(t *testing.T) {
+	for in, want := range map[string]uint32{
+		"0":           0,
+		"267009":      0x41301,
+		"2147942402":  0x80070002, // as PowerShell prints it
+		"-2147024894": 0x80070002, // the same HRESULT read as a signed int
+		"4294967295":  0xFFFFFFFF,
+	} {
+		if got, ok := lastResult(in); !ok || got != want {
+			t.Errorf("lastResult(%q) = 0x%X, %v; want 0x%X", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"", "4294967296", "-2147483649", "0x41301", "Ready"} {
+		if got, ok := lastResult(in); ok {
+			t.Errorf("lastResult(%q) = 0x%X, true; want no result", in, got)
+		}
+	}
+}

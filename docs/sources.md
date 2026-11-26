@@ -235,7 +235,11 @@ whole-second time each line was written.
 
 **Antigravity** — the transcripts, and the summaries database that lists them. A model step's
 calls carry no ids; the steps that answer them follow their order. A command's exit code is in
-the step that answers it.
+the step that answers it. Since `agy` 1.5.17 a model step names its model — except a model the
+person brought themselves (`customModelsConfig` in the CLI's `settings.json`), which every such
+model is written as by one id. That step is named as `agy` lists the model, the label of the one
+custom model in the settings; where the settings hold none or several, it is `custom model
+(Gemini API)`.
 
 **GitHub Copilot CLI** — a directory per session: its event log, `events.jsonl`, and beside it
 `workspace.yaml`, which holds the session's name (one the person gave it, or the CLI's summary).

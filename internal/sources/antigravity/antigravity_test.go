@@ -186,6 +186,72 @@ func TestSteps(t *testing.T) {
 	}
 }
 
+// Since agy 1.5.17 a model step says which model answered; for a model the person brought
+// themselves it is one id for them all. The transcript cannot say which it was, so the step
+// is named as agy names the model — the label of the one custom model in the CLI's
+// settings, or its modelName where it has no label — and, where the settings do not say
+// (none, several, a conversation the IDE wrote), as what the step does say. A model Google
+// hosts is named as the step names it, and a step from before agy wrote the field has none.
+func TestAModelThePersonBrought(t *testing.T) {
+	root := t.TempDir()
+	writeSteps(t, root, "antigravity-cli", "cli",
+		`{"step_index":0,"type":"USER_INPUT","created_at":"2026-10-12T10:00:00Z","content":"<USER_REQUEST>fix the build</USER_REQUEST>"}`,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-12T10:00:03Z","content":"on it","model":"MODEL_GOOGLE_GEMINI_INTERNAL_BYOM","input_tokens":100,"output_tokens":12}`,
+		`{"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-12T10:00:04Z","content":"all set","model":"gemini-3-pro","input_tokens":5,"output_tokens":1}`,
+		`{"step_index":3,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-12T10:00:05Z","content":"and this too","model":"MODEL_GOOGLE_GEMINI_INTERNAL_BYOM","input_tokens":5,"output_tokens":1}`,
+	)
+	writeSteps(t, root, "antigravity", "ide",
+		`{"step_index":0,"type":"USER_INPUT","created_at":"2026-10-13T09:00:00Z","content":"explain the test harness"}`,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-13T09:00:05Z","content":"it runs fixtures","model":"MODEL_GOOGLE_GEMINI_INTERNAL_BYOM"}`,
+	)
+	settings := filepath.Join(root, "antigravity-cli", "settings.json")
+	models := func(t *testing.T) (cli, ide string) {
+		t.Helper()
+		all := sourcetest.All(t, Spec.Open(root))
+		sourcetest.NothingUnread(t, all...)
+		c, i := sourcetest.ByID(t, all, "cli"), sourcetest.ByID(t, all, "ide")
+		if len(c.Turns) != 1 || len(c.Turn(t, 1).Calls) != 3 {
+			t.Fatalf("the CLI's conversation = %d turns, calls %+v", len(c.Turns), c.Turn(t, 1).Calls)
+		}
+		return c.Session.Model, i.Session.Model
+	}
+	want := func(t *testing.T, step, cli, ide string) {
+		t.Helper()
+		gotCLI, gotIDE := models(t)
+		if gotCLI != cli || gotIDE != ide {
+			t.Errorf("%s: the CLI's session is on %q and the IDE's on %q, want %q and %q", step, gotCLI, gotIDE, cli, ide)
+		}
+	}
+
+	want(t, "without settings", broughtModel, broughtModel)
+	sourcetest.Write(t, settings, map[string]any{"customModelsConfig": map[string]any{"customModels": map[string]any{
+		"never-stuck": map[string]any{"maxTokens": 1000000, "modelName": "gemini-api://group/never-stuck", "label": "never-stuck (magpie)"},
+	}}})
+	want(t, "with one custom model", "never-stuck (magpie)", broughtModel)
+	all := sourcetest.All(t, Spec.Open(root))
+	calls := sourcetest.ByID(t, all, "cli").Turn(t, 1).Calls
+	if calls[0].Model != "never-stuck (magpie)" || calls[1].Model != "gemini-3-pro" || calls[2].Model != "never-stuck (magpie)" {
+		t.Errorf("calls = %+v: each step is named as it was answered", calls)
+	}
+
+	// A custom model with no label is named by its modelName
+	sourcetest.Write(t, settings, map[string]any{"customModelsConfig": map[string]any{"customModels": map[string]any{
+		"never-stuck": map[string]any{"modelName": "gemini-api://group/never-stuck"},
+	}}})
+	want(t, "with a label-less model", "gemini-api://group/never-stuck", broughtModel)
+
+	// Two: which one answered cannot be told
+	sourcetest.Write(t, settings, map[string]any{"customModelsConfig": map[string]any{"customModels": map[string]any{
+		"a": map[string]any{"label": "model a"},
+		"b": map[string]any{"label": "model b"},
+	}}})
+	want(t, "with two custom models", broughtModel, broughtModel)
+
+	// Not JSON, or not an object: the same as none
+	sourcetest.Write(t, settings, `{"customModelsConfig":`)
+	want(t, "with settings cut short", broughtModel, broughtModel)
+}
+
 // A model step that is not done carries provisional counters; only the finished ones are
 // counted. A cache write is its own counter.
 func TestOnlyFinishedStepsAreCounted(t *testing.T) {

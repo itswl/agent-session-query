@@ -16,6 +16,10 @@
 // (GENERIC) that follows in the order of the calls. Steps of agy's own — what it tells the
 // model between the person's words (SYSTEM_MESSAGE) — sit among them.
 //
+// Since agy 1.5.17 a model step says which model answered. For a model the person brought
+// themselves it says one id for them all (byom); which one it was is read from the CLI's
+// settings, as far as they say (see broughtModel).
+//
 // An API-key provider can run agy with a private --gemini_dir (cc-switch's profiles are the
 // common case); that directory has the same shape, and is what a --path points at.
 package antigravity
@@ -34,6 +38,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/itswl/agent-session-query/internal/model"
@@ -69,6 +74,12 @@ type brain struct {
 	dir  string // …/brain
 	db   string // …/conversation_summaries.db
 	sums kit.Snapshot[map[string]summary]
+}
+
+// holds says whether path is a conversation of this brain.
+func (b *brain) holds(path string) bool {
+	rel, err := filepath.Rel(b.dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 func open(dir string) *Source {
@@ -288,6 +299,38 @@ type step struct {
 // call is one tool call of a model step, waiting for the step that answers it.
 type call struct{ id, name string }
 
+// agy names the model that answered a step with an id of its own: gemini-3-pro for one
+// Google hosts, and for a model the person brought themselves — customModelsConfig in the
+// CLI's settings.json, whoever it is — one id for them all.
+const (
+	byom = "MODEL_GOOGLE_GEMINI_INTERNAL_BYOM"
+	// broughtModel is what such a step is called where the settings do not say which
+	// model it was
+	broughtModel = "custom model (Gemini API)"
+)
+
+// broughtModel names the model a step run on a brought model used, as well as the store can
+// say. The transcript names none — agy keeps the real one in a binary store of its own
+// (conversations/<id>.db), which is not read. What agy itself lists such a model under is
+// the label in settings.json: where exactly one custom model is configured, that is the
+// one; where there is none, or several, it cannot be told which, and the step is called
+// what it does say — a custom model, through the Gemini API. The settings are the CLI's:
+// a conversation the IDE wrote is not named from them.
+func (s *Source) broughtModel(transcript string) string {
+	settings := kit.ReadJSON(filepath.Join(s.dir, "antigravity-cli", "settings.json"))
+	models := kit.Map(kit.Map(settings["customModelsConfig"])["customModels"])
+	if !s.brains[0].holds(transcript) || len(models) != 1 {
+		return broughtModel
+	}
+	for _, v := range models {
+		m := kit.Map(v)
+		if name := strings.TrimSpace(kit.First(kit.Str(m["label"]), kit.Str(m["modelName"]))); name != "" {
+			return name
+		}
+	}
+	return broughtModel
+}
+
 // Read parses one conversation: the index's word on what it is called and where it was
 // held, then its steps in order.
 func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer) error {
@@ -344,6 +387,9 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 			}
 		}
 	}
+	// What a step run on a brought model is to be called, read from the settings once a
+	// step turns out to need it
+	var brought func() string
 
 	// The calls of the latest model step that no step has answered yet, first first: agy
 	// gives a call no id, and answers a step's calls one step each, in the order they were
@@ -370,6 +416,12 @@ func (s *Source) Read(ctx context.Context, ref sources.Ref, w *transcript.Writer
 		case "PLANNER_RESPONSE":
 			m.Role = transcript.Assistant
 			m.Model = st.Model
+			if st.Model == byom {
+				if brought == nil {
+					brought = sync.OnceValue(func() string { return s.broughtModel(ref.Key) })
+				}
+				m.Model = brought()
+			}
 			m.Usage = st.usage()
 			if thinking := kit.ContentText(st.Thinking); strings.TrimSpace(thinking) != "" {
 				m.Blocks = append(m.Blocks, transcript.ThinkingOf(thinking))

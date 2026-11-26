@@ -17,7 +17,8 @@ import (
 // generated session-events.d.ts), and every event in it validates against that schema; its
 // workspace.yaml files are what the yaml package's stringify — the one the CLI's
 // JavaScript writes workspace.yaml with — makes of their fields. It is not a recorded
-// session: no Copilot CLI was run to write it.
+// session: no Copilot CLI was run to write it. TestWhat115Writes is a session 1.0.115
+// recorded, trimmed.
 //
 //	…0001  a session: a failing command, an edit, a file the person would not have
 //	       created, words sent while the agent worked and then Ctrl+C, a subagent, a
@@ -717,5 +718,45 @@ func TestWhatIsNotAnEvent(t *testing.T) {
 	}
 	if s.Stats.Usage != (model.Usage{Output: 5}) {
 		t.Errorf("usage = %+v", s.Stats.Usage)
+	}
+}
+
+// A session as Copilot CLI 1.0.115 recorded it, trimmed to one turn: what 1.0.114 wrote,
+// and two events more — a record of the permission grants (URLs revoked) and the tools the
+// model was handed at the start of the turn, with the model and the surface it is on, a
+// model the person brought (BYOK) here. Both are bookkeeping and are passed over on
+// purpose; the conversation reads as 1.0.114's does.
+func TestWhat115Writes(t *testing.T) {
+	root := t.TempDir()
+	sourcetest.Write(t, filepath.Join(root, "s115", "events.jsonl"),
+		ev("e1", "session.start", "2026-11-25T14:38:16.886Z", M{"sessionId": "s115", "version": 1, "producer": "copilot-agent",
+			"copilotVersion": "1.0.115", "startTime": "2026-11-25T14:38:16.886Z", "selectedModel": "magpie/never-stuck", "context": M{"cwd": "/w/one"}}),
+		ev("e2", "session.context_changed", "2026-11-25T14:38:17.100Z", M{"cwd": "/w/one"}),
+		ev("e3", "session.permissions_changed", "2026-11-25T14:38:17.200Z", M{"previousAllowAllPermissions": false, "allowAllPermissions": true}),
+		ev("e4", "session.permission_grants_recorded", "2026-11-25T14:38:17.839Z", M{"urlsRevoked": true}),
+		ev("e5", "instruction.update", "2026-11-25T14:38:17.900Z", M{"content": "<system_reminder>…</system_reminder>", "authority": "runtime", "name": "sandbox-guidance"}),
+		ev("e6", "user.message", "2026-11-25T14:38:18.000Z", M{"content": "Reply with exactly: ok", "messageId": "u1", "delivery": "idle", "turnId": "0"}),
+		ev("e7", "system.message", "2026-11-25T14:38:18.100Z", M{"role": "system", "content": "You are the GitHub Copilot CLI."}),
+		ev("e8", "assistant.turn_start", "2026-11-25T14:38:18.200Z", M{"turnId": "0", "agentMode": "interactive"}),
+		ev("e9", "session.tool_baseline", "2026-11-25T14:38:18.300Z", M{"model": "never-stuck", "surface": "chat:byok:none:agent=",
+			"tools": []any{M{"name": "bash", "deferred": false}, M{"name": "view", "deferred": false}}}),
+		ev("e10", "session.usage_record", "2026-11-25T14:38:24.017Z", M{"apiCallIdFromUsageId": true, "usage": M{
+			"model": "never-stuck", "modelDisplayName": "magpie/never-stuck", "cost": 0.0, "duration": 5817, "inputTokens": 15270,
+			"outputTokens": 14, "reasoningTokens": 11, "timeToFirstTokenMs": 5400.7, "finishReason": "stop", "usageId": "2026112522382191b0d1309d9c4bdb"}}),
+		ev("e11", "assistant.message", "2026-11-25T14:38:24.020Z", M{"messageId": "m1", "model": "never-stuck", "content": "ok", "toolRequests": []any{},
+			"turnId": "0", "reasoningText": "Exactly ok.", "apiCallId": "2026112522382191b0d1309d9c4bdb"}),
+		ev("e12", "assistant.turn_end", "2026-11-25T14:38:24.100Z", M{"turnId": "0"}),
+		ev("e13", "session.usage_checkpoint", "2026-11-25T14:38:24.200Z", M{"totalNanoAiu": 0, "totalPremiumRequests": 0}),
+		ev("e14", "session.shutdown", "2026-11-25T14:38:24.300Z", M{"accountingSnapshot": M{"totalUserRequests": 1}}),
+	)
+	s := sourcetest.One(t, Spec.Open(root))
+	sourcetest.NothingUnread(t, s)
+	one := s.Turn(t, 1)
+	if s.Session.Version != "1.0.115" || s.Session.Model != "never-stuck" || one.Ask != "Reply with exactly: ok" || one.Answer != "ok" ||
+		sourcetest.Kinds(one) != "prompt thinking reply" || one.Error != "" {
+		t.Errorf("session = %+v, turn = %s %+v", s.Session, sourcetest.Kinds(one), one)
+	}
+	if call := one.Calls[0]; *call.Usage != (model.Usage{Input: 15270, Output: 14, Reasoning: 11}) || call.DurMs != 5817 || call.TTFTMs != 5400 {
+		t.Errorf("call = %+v usage %+v", call, call.Usage)
 	}
 }

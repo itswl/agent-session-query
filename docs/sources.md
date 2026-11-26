@@ -260,8 +260,9 @@ turned out to write things the earlier samples did not show; the tests keep trim
 what they wrote. Antigravity was run against a model of its own (an API key's), not one Google
 hosts, which may write its steps differently. GitHub Copilot CLI's adapter was written against
 Copilot CLI 1.0.114 from what that release ships — the schema of every event it writes, and the
-code that writes and reads them — and is tested with sessions written to that schema. It has not
-yet been checked against a session Copilot CLI recorded.
+code that writes and reads them — and is tested with sessions written to that schema; sessions
+1.0.114 and 1.0.115 recorded since, on a model brought by hand (BYOK), read whole, with the two
+events 1.0.115 added among those passed over on purpose.
 
 If a CLI changes how it writes, nothing fails. An adapter passes over a record it does not know —
 a new row type, a renamed block — and the session reads as less than it holds: a turn short, a

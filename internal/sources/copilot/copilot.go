@@ -10,7 +10,8 @@
 // and the type's data — the event stream the CLI's runtime hands its clients, less the
 // events it marks ephemeral (deltas, progress, the per-call usage report, title changes),
 // which never reach the file. The CLI ships the schema of every event
-// (schemas/session-events.schema.json); this reading follows the one of Copilot CLI 1.0.114.
+// (schemas/session-events.schema.json); this reading follows the one of Copilot CLI 1.0.114,
+// and what 1.0.115 was seen to add to a recorded log.
 //
 // A session opens with session.start (its id, the CLI's version, the model selected, the
 // directory and branch it ran in). A person's message is user.message; a model response is
@@ -822,9 +823,10 @@ func decode(raw []byte, v any) bool {
 	return err == nil || errors.As(err, &mismatch)
 }
 
-// passedOver are the events of Copilot CLI 1.0.114's schema that are read past on purpose.
-// The ephemeral ones among them never reach the log; they are named so that a log an
-// older or a newer CLI wrote them to reads as what it is.
+// passedOver are the events Copilot CLI writes that are read past on purpose: the schema
+// 1.0.114 ships, and beside it what 1.0.115 was since seen to write to a recorded log (it
+// ships no schema to read). The ephemeral ones among them never reach the log; they are
+// named so that a log an older or a newer CLI wrote them to reads as what it is.
 var passedOver = setOf(
 	// The agent loop's bookkeeping — each model call it makes is a turn_start and a
 	// turn_end of its own — and the live stream of what the events read here hold whole
@@ -837,15 +839,17 @@ var passedOver = setOf(
 	"tool.execution_progress tool.shell_output hook.start hook.progress sandbox.decision tool_search.activated",
 	"program.execution program.permission_requested external_tool.requested external_tool.completed mcp_app.tool_call_complete",
 	"subagent.started subagent.configured subagent.completed subagent.failed subagent.selected subagent.deselected",
-	// Permissions and questions asked and answered (permission.completed is read)
+	// Permissions and questions asked and answered (permission.completed is read), and the
+	// record 1.0.115 keeps of the grants — URLs revoked, and the like
 	"permission.requested permission.carriedForward permission.messageAuthorization permission.messageAuthorizationRead",
 	"permission.messageAuthorizationDegraded permission.assentDetected permission.contextualAuthorization",
-	"session.permission_recovery human_response.recorded user_input.requested user_input.completed",
+	"session.permission_recovery session.permission_grants_recorded human_response.recorded user_input.requested user_input.completed",
 	"elicitation.requested elicitation.completed sampling.requested sampling.completed exit_plan_mode.requested exit_plan_mode.completed",
 	// The prompt, and what the CLI puts in it: instructions, a skill's text
 	"system.message instruction.update instruction.update_delivery skill.invoked skill.invoked_ref",
 	"skill.context_delivered skill.context_delivered_ref",
-	// The session's settings and state, and the CLI's notices about them
+	// The session's settings and state, and the CLI's notices about them; the tools 1.0.115
+	// hands the model at the start of a turn, with the model and the surface it is on
 	"session.context_changed session.mode_changed session.mode_notice_delivered session.model_deselected",
 	"session.permissions_changed session.plan_changed session.workspace_file_changed session.session_limits_changed",
 	"session.remote_steerable_changed session.autopilot_objective_changed session.autopilot_stopped session.auto_mode_resolved",
@@ -871,7 +875,7 @@ var passedOver = setOf(
 	"session.managed_plugin_progress session.managed_settings_resolved session.managed_settings_enforced session.tools_updated",
 	"session.background_tasks_changed session.skills_loaded session.custom_agents_updated session.extensions_loaded",
 	"session.extensions.attachments_pushed session.canvas.opened session.canvas.registry_changed session.canvas.closed",
-	"session.canvas.unavailable workflow.run_updated workflow.run_started workflow.run_settled",
+	"session.canvas.unavailable workflow.run_updated workflow.run_started workflow.run_settled session.tool_baseline",
 )
 
 func setOf(lists ...string) map[string]bool {

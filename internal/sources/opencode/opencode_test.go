@@ -411,12 +411,14 @@ CREATE INDEX session_message_time_created_idx ON session_message (time_created);
 
 // session_part, as OpenCode 2.4 added it: a response's parts in rows of their own, each
 // under its message and its place in it.
-const schemaV24 = schemaV2 + `
+const sessionPart = `
 CREATE TABLE session_part (
 	message_id TEXT NOT NULL, session_id TEXT NOT NULL, ordinal INTEGER NOT NULL, type TEXT NOT NULL, call_id TEXT,
 	time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL,
 	PRIMARY KEY (message_id, ordinal));
 CREATE INDEX session_part_session_message_idx ON session_part (session_id, message_id, ordinal);`
+
+const schemaV24 = schemaV2 + sessionPart
 
 // A session and a fork of it, as OpenCode 2.3 writes them: the fork holds the parent's rows
 // under new ids with their seq, their time and their tokens as they were, then a notice,
@@ -525,6 +527,72 @@ func TestAForkCountsOnlyWhatItDidItself(t *testing.T) {
 	total.Add(fork.Stats.Usage)
 	if want := (model.Usage{Input: 390, Output: 40, CacheRead: 3500, Reasoning: 6}); total != want {
 		t.Errorf("both sessions spent %+v, want %+v", total, want)
+	}
+}
+
+// A fork 2.4 makes copies the parent's parts beside the copied rows as well, under the
+// copies' ids and the fork's own session (measured on 2.4.1): the fork shows the turns it
+// was made from with their steps, and still counts none of them twice.
+func TestAForkOf24CarriesThePartsBeside(t *testing.T) {
+	src, _ := build(t, schemaV2, schemaV23, sessionPart,
+		`INSERT INTO session_v2 (id, slug, directory, title, version, model, time_created, time_updated, cost, tokens_input, tokens_output, tokens_cache_read)
+			VALUES ('ses_p24', 'p', '/w/f', 'Probe', '2.4.1', '{"id":"m","providerID":"p"}', 1790000000000, 1790000005000, 0.001, 100, 10, 1000)`,
+		`INSERT INTO session_message VALUES ('p24_u1', 'ses_p24', 'user', 5, 1790000001000, 1790000001000, '{"text":"run ls","files":[]}')`,
+		`INSERT INTO session_message VALUES ('p24_a1', 'ses_p24', 'assistant', 6, 1790000002000, 1790000004000,
+			'{"agent":"build","finish":"tool-calls","cost":0.001,"model":{"id":"m","providerID":"p"},
+			  "time":{"created":1790000002000,"completed":1790000004000},
+			  "tokens":{"input":100,"output":10,"reasoning":0,"cache":{"read":1000,"write":0}},"content":[]}')`,
+		`INSERT INTO session_part VALUES ('p24_a1', 'ses_p24', 0, 'tool', 'call_1', 1790000002100, 1790000002300,
+			'{"type":"tool","id":"call_1","name":"shell","executed":false,"time":{"created":1790000002100,"ran":1790000002100,"completed":1790000002300},
+			  "state":{"status":"completed","input":{"command":"ls"},"content":[{"type":"text","text":"notes.txt"}],"metadata":{"exit":0}}}')`,
+		`INSERT INTO session_part VALUES ('p24_a1', 'ses_p24', 1, 'text', NULL, 1790000003500, 1790000003500, '{"type":"text","text":"One file."}')`,
+		`INSERT INTO session_message VALUES ('p24_i1', 'ses_p24', 'idle', 22, 1790000004100, 1790000004100, '{"outcome":"succeeded"}')`,
+		// The fork: the rows copied under new ids, and the parts with them
+		`INSERT INTO session_v2 (id, fork_session_id, fork_boundary, slug, directory, title, version, model, time_created, time_updated, cost, tokens_input, tokens_output, tokens_cache_read)
+			VALUES ('ses_f24', 'ses_p24', '{"type":"through","messageID":"p24_i1"}', 'f', '/w/f', 'Probe (fork #1)', '2.4.1', '{"id":"m","providerID":"p"}',
+			        1790000010000, 1790000012000, 0.0005, 40, 3, 500)`,
+		`INSERT INTO session_message SELECT 'f24_' || id, 'ses_f24', type, seq, time_created, time_updated, data FROM session_message WHERE session_id = 'ses_p24'`,
+		`INSERT INTO session_part SELECT 'f24_' || message_id, 'ses_f24', ordinal, type, call_id, time_created, time_updated, data FROM session_part WHERE session_id = 'ses_p24'`,
+		`INSERT INTO session_message VALUES ('f24_u2', 'ses_f24', 'user', 27, 1790000011000, 1790000011000, '{"text":"and now","files":[]}')`,
+		`INSERT INTO session_message VALUES ('f24_a2', 'ses_f24', 'assistant', 28, 1790000011100, 1790000011900,
+			'{"agent":"build","finish":"stop","cost":0.0005,"model":{"id":"m","providerID":"p"},
+			  "time":{"created":1790000011100,"completed":1790000011900},
+			  "tokens":{"input":40,"output":3,"reasoning":0,"cache":{"read":500,"write":0}},"content":[]}')`,
+		`INSERT INTO session_part VALUES ('f24_a2', 'ses_f24', 0, 'text', NULL, 1790000011900, 1790000011900, '{"type":"text","text":"forked"}')`,
+		`INSERT INTO session_message VALUES ('f24_i2', 'ses_f24', 'idle', 44, 1790000012000, 1790000012000, '{"outcome":"succeeded"}')`,
+	)
+	all := sourcetest.All(t, src)
+	sourcetest.NothingUnread(t, all...)
+	fork, parent := sourcetest.ByID(t, all, "ses_f24"), sourcetest.ByID(t, all, "ses_p24")
+	if parent.Stats.Turns != 1 || parent.Stats.Tools != 1 || parent.Turn(t, 1).Answer != "One file." {
+		t.Errorf("the parent = %+v", parent.Stats)
+	}
+	if fork.Stats.Turns != 1 || fork.Stats.Calls != 1 || fork.Stats.Tools != 0 {
+		t.Errorf("the fork's own work is one turn of one call: %+v", fork.Stats)
+	}
+	if want := (model.Usage{Input: 40, Output: 3, CacheRead: 500}); fork.Stats.Usage != want {
+		t.Errorf("the fork spent %+v, want its own call alone: %+v", fork.Stats.Usage, want)
+	}
+	// What it copied is there to read with its steps, marked as the parent's
+	before := fork.Turn(t, 0)
+	if got := sourcetest.Kinds(before); got != "prompt tool reply" {
+		t.Fatalf("before the fork's first ask = %s, want the copied turn with its tool and reply", got)
+	}
+	for i, it := range before.Items {
+		if !it.Inherited {
+			t.Errorf("item %d is not marked as the parent's: %+v", i, it)
+		}
+	}
+	if tools := sourcetest.Tools(before); len(tools) != 1 || tools[0].Command != "ls" || tools[0].Output != "notes.txt" {
+		t.Errorf("the copied tool = %+v", tools)
+	}
+	if one := fork.Turn(t, 1); one.Ask != "and now" || sourcetest.Kinds(one) != "prompt reply" || one.Answer != "forked" {
+		t.Errorf("the fork's own turn = %q, %s", one.Ask, sourcetest.Kinds(one))
+	}
+	total := parent.Stats.Usage
+	total.Add(fork.Stats.Usage)
+	if want := (model.Usage{Input: 140, Output: 13, CacheRead: 1500}); total != want {
+		t.Errorf("both sessions spent %+v, want %+v: every response once", total, want)
 	}
 }
 

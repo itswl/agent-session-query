@@ -261,13 +261,15 @@ Copilot CLI keeps every session until it is deleted.
 
 How far each adapter has been checked differs, and is worth knowing. Claude Code, Codex,
 OpenCode, Pi and Hermes were verified against real stores — some 1,300 transcripts in all —
-with their token totals matching independent sums exactly. OpenClaw (2026.11.3), DeepSeek
-Harness (0.2.2), Gemini CLI (0.68), Grok CLI (1.0.77) and Antigravity's `agy` (1.5.8) were
-verified against sessions run for the purpose on those releases — commands that failed, files
-written and edited, turns cancelled and killed, conversations resumed — and every one of them
-turned out to write things the earlier samples did not show; the tests keep trimmed copies of
-what they wrote. Antigravity was run against a model of its own (an API key's), not one Google
-hosts, which may write its steps differently. GitHub Copilot CLI's adapter was written against
+with their token totals matching independent sums exactly. OpenCode was checked again on 2.4.1,
+whose responses keep their parts in rows beside them, a fork included. OpenClaw (2026.11.3),
+DeepSeek Harness (0.2.2), Gemini CLI (0.68), Grok CLI (1.0.77) and Antigravity's `agy` (1.5.8,
+and 1.5.17 since) were verified against sessions run for the purpose on those releases —
+commands that failed, files written and edited, turns cancelled and killed, conversations
+resumed — and every one of them turned out to write things the earlier samples did not show;
+the tests keep trimmed copies of what they wrote. Antigravity was run against a model of its
+own — an API key's, and on 1.5.17 one brought by hand — not one Google hosts, which may write
+its steps differently. GitHub Copilot CLI's adapter was written against
 Copilot CLI 1.0.114 from what that release ships — the schema of every event it writes, and the
 code that writes and reads them — and is tested with sessions written to that schema; sessions
 1.0.114 and 1.0.115 recorded since, on a model brought by hand (BYOK), read whole, with the two

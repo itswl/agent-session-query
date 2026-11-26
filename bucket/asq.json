@@ -1,16 +1,16 @@
 {
-    "version": "1.6.3",
+    "version": "1.6.4",
     "description": "Search, read and hand over the session history of every agent CLI",
     "homepage": "https://github.com/itswl/agent-session-query",
     "license": "MIT",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/itswl/agent-session-query/releases/download/v1.6.3/asq-windows-amd64.zip",
-            "hash": "178eed48e2ccfcb7a68804bea3ec24026dcacb67cedb5f1507839568dd35c7c5"
+            "url": "https://github.com/itswl/agent-session-query/releases/download/v1.6.4/asq-windows-amd64.zip",
+            "hash": "9a0c191f04294bbe48e4181b8ace73e722988902b0f3d5ee79579cdb84d06f49"
         },
         "arm64": {
-            "url": "https://github.com/itswl/agent-session-query/releases/download/v1.6.3/asq-windows-arm64.zip",
-            "hash": "64f8d93d1b7f4d35b4507efd26191ec9b87d213ed6d0b8208414cb6fcfbfbdfc"
+            "url": "https://github.com/itswl/agent-session-query/releases/download/v1.6.4/asq-windows-arm64.zip",
+            "hash": "07539cd094831f6a19171ee27a22993821ffeb4bb5c222387372bfc3c0269b3e"
         }
     },
     "bin": "asq.exe",

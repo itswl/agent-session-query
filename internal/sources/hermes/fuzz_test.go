@@ -36,6 +36,10 @@ func FuzzRead(f *testing.F) {
 		{`"{\"model_only\": true}"`},
 		{`{"output":"syntax is ok","exit_code":0}`},
 		{`1790000004.5`},
+		// A failed turn's boundary: what its row keeps of the error, and its words, by which
+		// one written before the row was typed is known
+		{`{"error": "HTTP 401: bad key", "error_surface": {"layer": "auth", "code": "auth", "retryable": false}}`},
+		{partialNotice},
 		// The typed rows the same reader takes, which a transcript beside the index may hold too
 		{
 			`{"type":"session","id":"s","cwd":"/w/proj"}`,

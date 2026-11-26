@@ -157,7 +157,9 @@ thread, with `codex resume <thread>`.
 a non-zero exit is a failure whatever its status says. Reasoning is reported beside the output
 it is not part of, and is added to it. OpenCode's own totals for a session (2.3 and later) are
 the session's usage: they include the call that gave the session its title, which leaves no
-message. A fork is made by copying the parent's messages into a new session; the copies are
+message. Since 2.4 a response keeps its parts in rows of their own (`session_part`) instead of
+in its message, and a response is read the way it was written. A fork is made by copying the
+parent's messages into a new session; the copies are
 inherited — each response is counted once, by the oldest session that still holds it — and
 since deleting a session in OpenCode leaves its forks behind, a fork whose parent is gone keeps
 the whole conversation as its own.
@@ -165,7 +167,10 @@ the whole conversation as its own.
 **Hermes** — `state.db`, read in the order rows were written; sessions it hides are archived.
 Hermes keeps token counts per session, not per response: those totals are used as recorded, on
 the session's last turn. It records no outcome for a tool call, so a Hermes tool result has no
-status — which is not the same as success.
+status — which is not the same as success. A turn Hermes could not finish is closed by a row of
+its own in the model's seat, a notice and not the model's answer: it is read as the `error` the
+turn ended on, in the words of what went wrong that Hermes keeps beside it, or in the notice's
+own where it keeps none.
 
 **OpenClaw** — per-agent SQLite databases, and the older `sessions.json` layout. A large event
 is stored compressed and read all the same. Every counter a response carries is read as what it

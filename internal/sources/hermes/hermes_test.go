@@ -114,6 +114,71 @@ func TestDatabaseSession(t *testing.T) {
 	}
 }
 
+// A turn Hermes could not finish is closed by a row of its own in the model's seat: a
+// boundary, not the model's answer. Read as the answer, it made the turn look like one
+// that went well — a reader taking the last reply for the result got Hermes's notice for
+// it. It is the error the turn ended on instead: what the row keeps of what went wrong,
+// and where it keeps nothing, the notice itself, which says whether anything may have run.
+//
+// The row is typed failed_turn; one written before the kind existed is known by its words,
+// the whole of a notice and nothing else — a reply that quotes one is a reply.
+func TestAFailedTurnEndsOnTheBoundaryHermesClosesItWith(t *testing.T) {
+	calls := `'[{"id":"call_1","call_id":"call_1","type":"function","function":{"name":"terminal","arguments":"{\"command\":\"nginx -t\"}"}}]'`
+	src, _ := home(t, schema,
+		`INSERT INTO sessions (id, source, model, started_at) VALUES ('s1', 'tui', 'deepseek-chat', 1790000000)`,
+		// A tool ran before the failure: the turn did not complete, and some of it may have
+		msg("s1", "user", "deploy it", 1790000001, ""),
+		msg("s1", "assistant", "", 1790000002, `reasoning, tool_calls, finish_reason=>'check first', `+calls+`, 'tool_calls'`),
+		msg("s1", "tool", `{"output":"syntax is ok","exit_code":0}`, 1790000003, `tool_call_id, tool_name=>'call_1', 'terminal'`),
+		msg("s1", "assistant", partialNotice, 1790000004,
+			`display_kind, display_metadata=>'failed_turn', '{"error": "HTTP 401: bad key", "error_surface": {"layer": "auth", "retryable": false}}'`),
+		// Nothing ran, and the row says no more than that: the notice is the error
+		msg("s1", "user", "try again", 1790000010, ""),
+		msg("s1", "assistant", failedNotice, 1790000011, `display_kind=>'failed_turn'`),
+		// Written before the kind existed, with the metadata kept as JSON inside JSON
+		msg("s1", "user", "the nightly job", 1790000020, ""),
+		msg("s1", "assistant", automatedNotice, 1790000021, `display_metadata=>'"{\"error\": \"HTTP 500: upstream down\"}"'`),
+		// A reply that quotes a notice, and one that is a notice to the word
+		msg("s1", "user", "what does Hermes say when a turn fails?", 1790000030, ""),
+		msg("s1", "assistant", `It says “`+failedNotice+`”, and nothing was run.`, 1790000031, `finish_reason=>'stop'`),
+		msg("s1", "user", "and now, word for word?", 1790000040, ""),
+		msg("s1", "assistant", failedNotice+" ", 1790000041, ""),
+	)
+	s := sourcetest.One(t, src)
+	sourcetest.NothingUnread(t, s)
+	sourcetest.Invariants(t, s)
+	if s.Stats.Turns != 5 {
+		t.Fatalf("turns = %d, want 5", s.Stats.Turns)
+	}
+	one := s.Turn(t, 1)
+	if got := sourcetest.Kinds(one); got != "prompt thinking tool event" || one.Answer != "" || one.Error != "HTTP 401: bad key" || one.Interrupted {
+		t.Errorf("turn 1 = %s, answer %q, ended on %q; want the tool it ran, then the error the row keeps", got, one.Answer, one.Error)
+	}
+	if it := one.Items[3]; it.Event != model.EventError || it.Text != "HTTP 401: bad key" || it.At.Unix() != 1790000004 {
+		t.Errorf("the boundary = %+v", it)
+	}
+	// The response before the failure is the turn's one call; the boundary adds none
+	if tools := sourcetest.Tools(one); len(tools) != 1 || len(one.Calls) != 1 || one.Calls[0].Model != "deepseek-chat" {
+		t.Errorf("tools %d, calls %+v", len(tools), one.Calls)
+	}
+	two, three, four, five := s.Turn(t, 2), s.Turn(t, 3), s.Turn(t, 4), s.Turn(t, 5)
+	if got := sourcetest.Kinds(two); got != "prompt event" || two.Answer != "" || two.Error != failedNotice {
+		t.Errorf("turn 2 = %s, answer %q, ended on %q; want the notice, which is all the row says", got, two.Answer, two.Error)
+	}
+	if got := sourcetest.Kinds(three); got != "prompt event" || three.Answer != "" || three.Error != "HTTP 500: upstream down" {
+		t.Errorf("turn 3 = %s, answer %q, ended on %q; want the error kept in JSON inside JSON", got, three.Answer, three.Error)
+	}
+	if got := sourcetest.Kinds(four); got != "prompt reply" || four.Answer != `It says “`+failedNotice+`”, and nothing was run.` || four.Error != "" {
+		t.Errorf("turn 4 = %s, answer %q, error %q; a reply that quotes a notice is a reply", got, four.Answer, four.Error)
+	}
+	if got := sourcetest.Kinds(five); got != "prompt event" || five.Answer != "" || five.Error != failedNotice {
+		t.Errorf("turn 5 = %s, answer %q, ended on %q; the notice to the word is the boundary", got, five.Answer, five.Error)
+	}
+	if s.Session.Model != "deepseek-chat" {
+		t.Errorf("model = %q", s.Session.Model)
+	}
+}
+
 // Hermes shows live rows and the rows its compression folded away; compression also
 // re-inserts the head and tail of the conversation as live copies of archived originals,
 // with their original times, so timestamps regress and a message can be held twice.

@@ -453,6 +453,13 @@ FROM messages WHERE session_id = ?`+shown(cols)+` ORDER BY rowid`, id)
 				m.Blocks = []transcript.Block{transcript.TextOf(content.String)}
 			}
 		case "assistant":
+			if failedTurn(kind.String, content.String) {
+				// The row Hermes writes to close a turn that ended without a reply is not
+				// the model's answer: the turn ended on what it says went wrong
+				m.Role = transcript.System
+				m.Blocks = []transcript.Block{transcript.EventOf(model.EventError, turnFailure(meta.String, content.String))}
+				break
+			}
 			m.Role = transcript.Assistant
 			m.Model, m.Stop = sessionModel, finish.String
 			if flag(summaryV, 0) != 0 {
@@ -522,10 +529,15 @@ func timeKey(v any) string {
 }
 
 // modelOnly reads display_metadata.model_only, the mark on rows Hermes shows the model
-// but not the person. The column holds JSON, sometimes JSON-encoded twice.
+// but not the person.
 func modelOnly(raw string) bool {
+	return kit.Truthy(displayMeta(raw)["model_only"])
+}
+
+// displayMeta reads a row's display_metadata: JSON, sometimes JSON-encoded twice.
+func displayMeta(raw string) map[string]any {
 	if raw == "" {
-		return false
+		return nil
 	}
 	var decoded any = raw
 	for range 2 {
@@ -535,9 +547,48 @@ func modelOnly(raw string) bool {
 		}
 		var next any
 		if json.Unmarshal([]byte(text), &next) != nil {
-			return false
+			return nil
 		}
 		decoded = next
 	}
-	return kit.Truthy(kit.Map(decoded)["model_only"])
+	return kit.Map(decoded)
+}
+
+// The notices of agent/turn_failure_copy.py: what Hermes writes in the model's seat to
+// close a turn that ended without a reply of its own. The first says nothing was done and
+// the request can simply be sent again; the other two, that some of its actions may have
+// run and their effects should be checked before it is.
+const (
+	failedNotice    = "Your request was not processed. Send it again if you still want me to carry it out."
+	partialNotice   = "This turn did not complete. Some actions may already have run; verify their effects before resending."
+	automatedNotice = "An automated delivery was interrupted and was not run again. Some " +
+		"actions may already have run; verify their effects."
+)
+
+// failedTurn says whether an assistant row is that boundary. It is written with display_kind
+// failed_turn; one written before the kind existed is known by its words, the whole of one
+// notice and nothing else — as Hermes's own readers tell it — so a reply that quotes a
+// notice is a reply.
+func failedTurn(kind, content string) bool {
+	if kind == "failed_turn" {
+		return true
+	}
+	if kind != "" {
+		return false
+	}
+	switch strings.TrimSpace(content) {
+	case failedNotice, partialNotice, automatedNotice:
+		return true
+	}
+	return false
+}
+
+// turnFailure is what the boundary says went wrong: the error Hermes keeps on the row,
+// redacted before it is written, and failing that the notice itself, which says at least
+// whether anything may have run.
+func turnFailure(meta, content string) string {
+	if err := strings.TrimSpace(kit.Str(displayMeta(meta)["error"])); err != "" {
+		return err
+	}
+	return strings.TrimSpace(content)
 }

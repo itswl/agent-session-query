@@ -60,8 +60,9 @@ var Spec = sources.Spec{
 	Open:    func(location string) sources.Source { return &Source{at: location} },
 	Movable: true,
 	Resume:  "opencode --session",
-	Reads:   3,
-	Store:   "~/.local/share/opencode/opencode.db",
+	// 4: a response's parts kept beside it in session_part (2.4) are read
+	Reads: 4,
+	Store: "~/.local/share/opencode/opencode.db",
 }
 
 // dataDir is OpenCode's data directory: under XDG_DATA_HOME, or ~/.local/share, on every

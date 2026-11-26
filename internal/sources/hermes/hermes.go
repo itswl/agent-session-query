@@ -49,8 +49,9 @@ var Spec = sources.Spec{
 	// The store is a database and a directory beside it: no one path relocates it
 	Movable: false,
 	Resume:  "hermes --resume",
-	Reads:   2,
-	Store:   "~/.hermes/state.db (or ~/.hermes/sessions/sessions.json + <id>.jsonl)",
+	// 3: the row that closes a failed turn is the error its turn ended on, not a reply
+	Reads: 3,
+	Store: "~/.hermes/state.db (or ~/.hermes/sessions/sessions.json + <id>.jsonl)",
 }
 
 // Source is one Hermes home.

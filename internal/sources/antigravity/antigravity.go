@@ -59,7 +59,8 @@ var Spec = sources.Spec{
 	Movable: true,
 	Resume:  "agy --conversation",
 	// 3: a tool whose name ends in an agent — a browser_subagent — is the agents' work
-	Reads: 3,
+	// 4: a model the person brought is named from the CLI's settings
+	Reads: 4,
 	Store: "~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl (agy; the IDE's is antigravity/brain)",
 }
 

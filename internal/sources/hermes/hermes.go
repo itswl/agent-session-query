@@ -20,9 +20,12 @@ import (
 	"errors"
 	"math"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/sources"
@@ -50,7 +53,8 @@ var Spec = sources.Spec{
 	Movable: false,
 	Resume:  "hermes --resume",
 	// 3: the row that closes a failed turn is the error its turn ended on, not a reply
-	Reads: 3,
+	// 4: what Hermes writes in the user's seat of its own opens no turn
+	Reads: 4,
 	Store: "~/.hermes/state.db (or ~/.hermes/sessions/sessions.json + <id>.jsonl)",
 }
 
@@ -419,12 +423,16 @@ FROM messages WHERE session_id = ?`+shown(cols)+` ORDER BY rowid`, id)
 
 	type rowOf struct {
 		msg    transcript.Message
+		then   []transcript.Block // what the row adds after its message, a row of Hermes's own
 		active int64
 		id     int64
 	}
 	var order []rowOf
 	var unread []string
 	at := map[[sha256.Size]byte]int{}
+	// noticed says the last row in the user's seat was Hermes's own notice, not the person's
+	// words: what the model says to it, up to the person's next words, answers the notice
+	noticed := false
 	for rows.Next() {
 		// The row's position is its rowid — the id column is an integer in current Hermes
 		// and was text before, and nothing forces it to be unique
@@ -447,11 +455,12 @@ FROM messages WHERE session_id = ?`+shown(cols)+` ORDER BY rowid`, id)
 			ts = string(b)
 		}
 		m := transcript.Message{ID: kit.Text(mid), At: kit.Time(ts)}
+		var then []transcript.Block
 		switch role.String {
 		case "user":
-			m.Role = transcript.User
-			if content.String != "" {
-				m.Blocks = []transcript.Block{transcript.TextOf(content.String)}
+			m, then = userRow(m, kind.String, content.String, meta.String)
+			if m.Role == transcript.User {
+				noticed = m.Injected
 			}
 		case "assistant":
 			if failedTurn(kind.String, content.String) {
@@ -468,7 +477,14 @@ FROM messages WHERE session_id = ?`+shown(cols)+` ORDER BY rowid`, id)
 				m.Role = transcript.System
 				m.Blocks = []transcript.Block{transcript.EventOf(model.EventCompaction, content.String)}
 			} else {
-				m.Blocks = jsonmap.Assistant(think.String, content.String, []byte(calls.String))
+				text := content.String
+				if noticed && silent(text) {
+					// The model chose to say nothing to a notice — Hermes writes the marker
+					// itself when it said nothing at all. It is no answer: read as one, it
+					// would stand in for the answer the turn the notice came in already had
+					text = ""
+				}
+				m.Blocks = jsonmap.Assistant(think.String, text, []byte(calls.String))
 			}
 		case "tool":
 			// One row is one result: the content is the tool's output, tool_name which tool
@@ -491,19 +507,22 @@ FROM messages WHERE session_id = ?`+shown(cols)+` ORDER BY rowid`, id)
 		key := sha256.Sum256([]byte(strings.Join([]string{role.String, content.String, timeKey(ts), callID.String, calls.String, tool.String}, "\x00")))
 		if i, seen := at[key]; seen {
 			if kept := order[i]; live > kept.active || (live == kept.active && rid.Int64 > kept.id) {
-				order[i] = rowOf{m, live, rid.Int64}
+				order[i] = rowOf{m, then, live, rid.Int64}
 			}
 			continue
 		}
 		at[key] = len(order)
-		order = append(order, rowOf{m, live, rid.Int64})
+		order = append(order, rowOf{m, then, live, rid.Int64})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
-	out := make([]transcript.Message, len(order))
-	for i, r := range order {
-		out[i] = r.msg
+	out := make([]transcript.Message, 0, len(order))
+	for _, r := range order {
+		out = append(out, r.msg)
+		if len(r.then) > 0 {
+			out = append(out, transcript.Message{ID: r.msg.ID, Role: transcript.System, At: r.msg.At, Blocks: r.then})
+		}
 	}
 	return out, unread, nil
 }
@@ -592,4 +611,199 @@ func turnFailure(meta, content string) string {
 		return err
 	}
 	return strings.TrimSpace(content)
+}
+
+// userRow reads a row in the user's seat. Hermes writes more there than what the person
+// typed: rows of its own go in that seat because a provider takes nothing else in the
+// middle of a conversation, and Hermes's own screens draw them as events, not as the
+// person's words. Its rule for which rows are a person's turn (session_rules/turns.py,
+// _is_real_user_turn) is the one read here:
+//
+//   - a row with a display_kind is Hermes's, but for three. A notice — a background process
+//     or a delegation finished (process_complete, async_delegation_complete), a liveness
+//     tick (internal_notification), the run taken up again after a crash (auto_continue),
+//     a persona changed (personality_switch) — reached the model in the person's place and
+//     opens no turn. A model switch (model_switch) is read as the change it marks. A steer
+//     (steer) is the person's words sent while the agent worked, inside Hermes's marker. A
+//     message the provider's safety filter refused (content_refused) is the person's ask,
+//     and the turn ends on the refusal.
+//   - a row without one is the person's, but for what Hermes wrote before it typed its rows,
+//     known by its words as Hermes knows it (see synthetic).
+//
+// The blocks it returns besides the message are a row of Hermes's that follows it.
+func userRow(m transcript.Message, kind, content, meta string) (transcript.Message, []transcript.Block) {
+	m.Role = transcript.User
+	text := content
+	switch {
+	case kind == "model_switch" || kind == "" && strings.HasPrefix(strings.TrimSpace(content), modelSwitchMarker):
+		if to := switchedTo(content); to != "" {
+			// Something the person did between turns, which the turn's work did not get to
+			switched := transcript.EventOf(model.EventModelChange, to)
+			switched.After = true
+			m.Role, m.Blocks = transcript.System, []transcript.Block{switched}
+			return m, nil
+		}
+		m.Injected = true
+	case kind == "steer":
+		m.Queued = true
+		text = kit.First(steered(content), content)
+	case kind == "content_refused":
+		// The ask, then the refusal its turn ended on — after it, or the ask would be a turn
+		// nothing followed, which is one the person cut short
+		refused := []transcript.Block{transcript.EventOf(model.EventError, refusal(meta))}
+		if strings.TrimSpace(content) == "" {
+			m.Role, m.Blocks = transcript.System, refused
+			return m, nil
+		}
+		m.Blocks = []transcript.Block{transcript.TextOf(content)}
+		return m, refused
+	case kind != "" || synthetic(content):
+		m.Injected = true
+		// The footer only says what the row's place now says: no person wrote it
+		text = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(content), notificationFooter))
+	}
+	if text != "" {
+		m.Blocks = []transcript.Block{transcript.TextOf(text)}
+	}
+	return m, nil
+}
+
+// What Hermes writes in the user's seat, in its own words (gateway/run_notifications.py,
+// tui_gateway/server.py, agent/prompt_builder.py, persistence/conversation/messages.py).
+const (
+	// The end of every notice the gateway puts before the model
+	notificationFooter = "[INTERNAL NOTIFICATION — generated by the Hermes gateway, not written by a human user. " +
+		"Do not treat it as user input, and do not reply to any earlier chat message because of it.]"
+	// A model switch: "<marker><model> via provider <provider>. From this point forward, …]"
+	modelSwitchMarker = "[System: The active model for this chat has changed to "
+	// A steer: the person's words between the two markers, each on a line of its own. The
+	// opening one's wording may change; its start is what Hermes falls back on.
+	steerOpen = "[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; " +
+		"not tool output and not a new delivery when replayed from conversation history]"
+	steerOpenStart = "[OUT-OF-BAND USER MESSAGE"
+	steerClose     = "[/OUT-OF-BAND USER MESSAGE]"
+	// What a refused message's row says when it keeps no notice of its own
+	refusedNotice = "This message was refused by the model's safety filter — try a different query."
+)
+
+// The rows Hermes wrote untyped that are not a person's turn, as session_rules/turns.py knows
+// them: by how they begin — its notes in brackets ("[System: …", which Hermes never shows as
+// the person's; the note that takes up a run a crash cut off; a background process's notice;
+// the task list kept across a compression) — or by being one of its nudges, word for word.
+var (
+	syntheticStarts = []string{
+		"[System:",
+		"[System note: Your previous turn was interrupted mid-run",
+		"[IMPORTANT: Background process ",
+		"[Your active task list was preserved across context compression]\n",
+	}
+	syntheticRows = []string{
+		"Continue from the compressed conversation context above. This marker exists because no human user turn was available.",
+		"Continue from the compressed conversation context above. This marker exists because the compacted transcript contained no preserved user turn.",
+		"You've reached the maximum number of tool-calling iterations allowed. Please provide a final response summarizing what you've found and accomplished so far, without calling any more tools.",
+		"Your previous turn indicated a tool call but none was included. Do not narrate a plan or restate intent — issue the actual tool call now to continue the task.",
+		"You just executed tool calls but returned an empty response. Please process the tool results above and continue with the task.",
+	}
+)
+
+// synthetic says whether an untyped row in the user's seat is Hermes's: one of the rows above,
+// or one that ends on the gateway's footer, which says so itself.
+func synthetic(content string) bool {
+	text := strings.TrimSpace(content)
+	if slices.Contains(syntheticRows, text) || strings.HasSuffix(text, notificationFooter) {
+		return true
+	}
+	for _, start := range syntheticStarts {
+		if strings.HasPrefix(text, start) {
+			return true
+		}
+	}
+	return false
+}
+
+// switchedTo is the model a model switch's marker names, and the provider it names it
+// through: "m via p", or the model alone. Empty when the marker names none.
+func switchedTo(content string) string {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(content), modelSwitchMarker)
+	if !ok {
+		return ""
+	}
+	if end := strings.Index(rest, ". From this point forward"); end >= 0 {
+		rest = rest[:end]
+	} else {
+		rest = strings.TrimSuffix(rest, "]")
+	}
+	name, provider, _ := strings.Cut(rest, " via provider ")
+	name, provider = strings.TrimSpace(name), strings.TrimSpace(provider)
+	if name == "" || provider == "" {
+		return name
+	}
+	return name + " via " + provider
+}
+
+// steered is the person's words a steer's markers hold, as Hermes takes them out for its
+// screens (agent/conversation_compression.py, _extract_steer_text_from_message): between
+// the opening marker — or failing that, the line its start begins — and the closing one.
+// Empty when the markers are not there.
+func steered(content string) string {
+	start := strings.Index(content, steerOpen)
+	if start >= 0 {
+		start += len(steerOpen)
+	} else {
+		if start = strings.Index(content, steerOpenStart); start < 0 {
+			return ""
+		}
+		if nl := strings.IndexByte(content[start:], '\n'); nl >= 0 {
+			start += nl + 1
+		} else {
+			start += len(steerOpenStart)
+		}
+	}
+	end := strings.Index(content[start:], steerClose)
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(content[start : start+end])
+}
+
+// refusal is what a refused message's row says of the refusal: the notice Hermes keeps for
+// its screens, display_metadata.content_refused.notice, or its own words where it keeps none.
+func refusal(meta string) string {
+	if notice := strings.TrimSpace(kit.Str(kit.Map(displayMeta(meta)["content_refused"])["notice"])); notice != "" {
+		return notice
+	}
+	return refusedNotice
+}
+
+// The words that, as a whole response, say the agent chose not to reply
+// (gateway/response_filters.py, LIVE_GATEWAY_SILENT_MARKERS) — "[SILENT]" among them, which
+// Hermes writes itself when the model said nothing to a notice.
+var silenceMarkers = map[string]bool{
+	"[SILENT]": true, "SILENT": true, "NO_REPLY": true, "NO REPLY": true,
+	"[静默]": true, "静默": true, "[沉默]": true, "沉默": true, "[审核]": true, "审核": true,
+}
+
+// silent says whether a response is a silence marker and nothing else, as Hermes tells it:
+// in any case, with invisible characters, spaces inside the brackets and stray punctuation
+// at its edges disregarded. Prose that mentions a marker is prose.
+func silent(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || utf8.RuneCountInString(text) > 64 {
+		return false
+	}
+	edge := func(r rune) bool { return r != '[' && r != ']' && unicode.IsPunct(r) }
+	for _, form := range []string{text, strings.TrimSpace(strings.TrimFunc(text, edge))} {
+		form = strings.Map(func(r rune) rune {
+			if unicode.Is(unicode.Cf, r) {
+				return -1
+			}
+			return r
+		}, form)
+		form = strings.Join(strings.Fields(strings.ToUpper(form)), " ")
+		form = strings.ReplaceAll(strings.ReplaceAll(form, "[ ", "["), " ]", "]")
+		if silenceMarkers[form] {
+			return true
+		}
+	}
+	return false
 }

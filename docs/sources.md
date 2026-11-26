@@ -170,7 +170,12 @@ the session's last turn. It records no outcome for a tool call, so a Hermes tool
 status — which is not the same as success. A turn Hermes could not finish is closed by a row of
 its own in the model's seat, a notice and not the model's answer: it is read as the `error` the
 turn ended on, in the words of what went wrong that Hermes keeps beside it, or in the notice's
-own where it keeps none.
+own where it keeps none. Hermes writes rows of its own in the user's seat too, which open no
+turn: a background process or a delegation finished, a liveness tick, a run taken up again
+after a crash, its nudges and bracketed `[System: …]` notes are context; a model switch is a
+`model_change`; words sent with `/steer` are a prompt typed while the agent worked, without
+Hermes's markers; a message the safety filter refused is the turn's ask, ended on the refusal
+as its `error`. A silence marker (`[SILENT]`) answering one of Hermes's notices is no answer.
 
 **OpenClaw** — per-agent SQLite databases, and the older `sessions.json` layout. A large event
 is stored compressed and read all the same. Every counter a response carries is read as what it

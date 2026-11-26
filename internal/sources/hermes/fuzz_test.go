@@ -40,6 +40,13 @@ func FuzzRead(f *testing.F) {
 		// one written before the row was typed is known
 		{`{"error": "HTTP 401: bad key", "error_surface": {"layer": "auth", "code": "auth", "retryable": false}}`},
 		{partialNotice},
+		// What Hermes writes in the user's seat of its own: a notice and its footer, a model
+		// switch, a steer, a refusal's notice, the silence a notice may be answered with
+		{"[IMPORTANT: Background process proc_1 completed normally (exit code 0).\nCommand: make\nOutput:\nok]\n\n" + notificationFooter},
+		{modelSwitchMarker + "anthropic/claude-x.5 via provider openrouter. From this point forward, use this runtime metadata when answering questions about what model/provider is active.]"},
+		{steerOpen + "\nuse -race too\n" + steerClose},
+		{`{"content_refused": {"notice": "This message was refused by the model's safety filter."}}`},
+		{"[ silent ]"},
 		// The typed rows the same reader takes, which a transcript beside the index may hold too
 		{
 			`{"type":"session","id":"s","cwd":"/w/proj"}`,
@@ -83,6 +90,13 @@ func FuzzRead(f *testing.F) {
 			{`INSERT INTO messages (session_id, role, content, reasoning, tool_calls, timestamp) VALUES ('db', 'assistant', ?, ?, ?, 1790000002)`, []any{text, text, text}},
 			{`INSERT INTO messages (session_id, role, content, tool_call_id, tool_name, timestamp) VALUES ('db', 'tool', ?, 'call_1', 'terminal', 1790000003)`, []any{text}},
 			{`INSERT INTO messages (session_id, role, content, _compressed_summary, timestamp) VALUES ('db', 'assistant', ?, 1, ?)`, []any{text, text}},
+			// The user's seat as Hermes types it, each kind read from whatever the row holds,
+			// and a kind that is the input itself; then what answers them
+			{`INSERT INTO messages (session_id, role, content, display_kind, display_metadata, timestamp) VALUES
+				('db', 'user', ?, 'process_complete', ?, 1790000004), ('db', 'user', ?, 'model_switch', NULL, 1790000005),
+				('db', 'user', ?, 'steer', NULL, 1790000006), ('db', 'user', ?, 'content_refused', ?, 1790000007),
+				('db', 'user', ?, ?, ?, 1790000008)`, []any{text, text, text, text, text, text, text, text, text}},
+			{`INSERT INTO messages (session_id, role, content, timestamp) VALUES ('db', 'assistant', ?, 1790000009)`, []any{text}},
 		} {
 			if _, err := tx.Exec(stmt.sql, stmt.args...); err != nil {
 				t.Fatalf("%s: %v", stmt.sql, err)

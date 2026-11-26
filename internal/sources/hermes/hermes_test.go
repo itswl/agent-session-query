@@ -15,6 +15,7 @@ import (
 	"github.com/itswl/agent-session-query/internal/sources"
 	"github.com/itswl/agent-session-query/internal/sources/kit"
 	"github.com/itswl/agent-session-query/internal/sources/sourcetest"
+	"github.com/itswl/agent-session-query/internal/transcript"
 )
 
 // The current schema, reduced to the columns that are read.
@@ -176,6 +177,207 @@ func TestAFailedTurnEndsOnTheBoundaryHermesClosesItWith(t *testing.T) {
 	}
 	if s.Session.Model != "deepseek-chat" {
 		t.Errorf("model = %q", s.Session.Model)
+	}
+}
+
+// Hermes writes rows of its own in the user's seat — a provider takes nothing else in the
+// middle of a conversation — and its screens draw them as events, not as the person's
+// words: a background process finished, a liveness tick, the run taken up again after a
+// crash, the model switched, the person's words sent mid-turn (/steer), a message the
+// safety filter refused. Read as asks, each opened a turn: the person asked five times
+// and the session had ten turns, the first answered by a notice's turn.
+//
+// The rows are written as Hermes 0.23.4 writes them, its own builders run on a store of
+// its own: the words are Hermes's.
+func TestWhatHermesWritesInTheUsersSeatOpensNoTurn(t *testing.T) {
+	calls := func(id, command string) string {
+		return `'[{"id":"` + id + `","call_id":"` + id + `","type":"function","function":{"name":"terminal","arguments":"{\"command\":\"` + command + `\"}"}}]'`
+	}
+	footer := "\n\n" + notificationFooter
+	switched := func(model string) string {
+		return modelSwitchMarker + model + " via provider openrouter. From this point forward, use this runtime metadata when answering questions about what model/provider is active.]"
+	}
+	src, _ := home(t, schema,
+		`INSERT INTO sessions (id, source, model, started_at) VALUES ('s1', 'tui', 'm-a', 1790000000)`,
+		// A background build, and the notice that it finished, which the model answers
+		msg("s1", "user", "start the build", 1790000001, ""),
+		msg("s1", "assistant", "", 1790000002, `tool_calls, finish_reason=>`+calls("c1", "make")+`, 'tool_calls'`),
+		msg("s1", "tool", `{"output": "Background process started", "session_id": "proc_1"}`, 1790000003, `tool_call_id, tool_name=>'c1', 'terminal'`),
+		msg("s1", "assistant", "Started; I will report when it ends.", 1790000004, `finish_reason=>'stop'`),
+		msg("s1", "user", "[IMPORTANT: Background process proc_1 completed normally (exit code 0).\nCommand: make\nOutput:\nok]"+footer, 1790000005,
+			`display_kind, display_metadata=>'process_complete', '{"display_text": "Background Process Finished: make"}'`),
+		msg("s1", "assistant", "The build is done.", 1790000006, `finish_reason=>'stop'`),
+		// Two switches between turns: Hermes keeps the newest marker live, and sets the
+		// older one aside as it does what was undone
+		msg("s1", "user", switched("m-b"), 1790000007, `display_kind, active=>'model_switch', 0`),
+		msg("s1", "user", switched("anthropic/claude-x.5"), 1790000008, `display_kind=>'model_switch'`),
+		// The person's words sent while the agent worked, inside Hermes's markers
+		msg("s1", "user", "and the tests?", 1790000009, ""),
+		msg("s1", "assistant", "", 1790000010, `tool_calls, finish_reason=>`+calls("c2", "go test ./...")+`, 'tool_calls'`),
+		msg("s1", "tool", `{"output": "ok", "exit_code": 0}`, 1790000011, `tool_call_id, tool_name=>'c2', 'terminal'`),
+		msg("s1", "user", steerOpen+"\nuse -race too\n"+steerClose, 1790000012, `display_kind=>'steer'`),
+		msg("s1", "assistant", "Ran them with -race: all pass.", 1790000013, `finish_reason=>'stop'`),
+		// A liveness tick the model chose to say nothing to
+		msg("s1", "user", "[Background process proc_2 heartbeat #1 — still running after 1m (next in 60s when there is new output; you will also be told when it exits).\nCommand: sleep 100\nOutput since last heartbeat:\ntick]"+footer, 1790000014,
+			`display_kind, display_metadata=>'internal_notification', '{"display_text": "Background process still running"}'`),
+		msg("s1", "assistant", "[SILENT]", 1790000015, `finish_reason=>'stop'`),
+		// The app stopped mid-turn; the run taken up again on the next start
+		msg("s1", "user", "deploy it", 1790000016, ""),
+		msg("s1", "user", "[System note: Your previous turn was interrupted mid-run — the app or its backend process stopped before the turn could finish. Some of the work may already be complete; check the current state before redoing anything, then finish the task. The interrupted request was:]\n\ndeploy it", 1790000017,
+			`display_kind=>'auto_continue'`),
+		msg("s1", "assistant", "Deployed.", 1790000018, `finish_reason=>'stop'`),
+		// Refused by the safety filter: Hermes takes the turn out of the model's context and
+		// keeps the message on screen, with a notice
+		msg("s1", "user", "a question the filter refuses", 1790000019, `active, compacted, display_kind, display_metadata=>0, 1, 'content_refused', '{"content_refused": {"notice": "`+strings.ReplaceAll(refusedNotice, "'", "''")+`"}}'`),
+		msg("s1", "assistant", "I can't help with that.", 1790000020, `active, finish_reason=>0, 'content_filter'`),
+		msg("s1", "user", "last question", 1790000021, ""),
+		msg("s1", "assistant", "last answer", 1790000022, `finish_reason=>'stop'`),
+	)
+	s := sourcetest.One(t, src)
+	sourcetest.NothingUnread(t, s)
+	sourcetest.Invariants(t, s)
+	if s.Stats.Turns != 5 {
+		for _, turn := range s.Turns {
+			t.Logf("turn %d %q: %s", turn.Index, turn.Ask, sourcetest.Kinds(turn))
+		}
+		t.Fatalf("turns = %d, want the five the person asked", s.Stats.Turns)
+	}
+
+	one := s.Turn(t, 1)
+	if got := sourcetest.Kinds(one); got != "prompt tool reply context reply event" || one.Answer != "The build is done." || one.Interrupted {
+		t.Errorf("turn 1 = %s, answer %q; want the notice inside it, answered", got, one.Answer)
+	}
+	if it := one.Items[3]; it.Text != "[IMPORTANT: Background process proc_1 completed normally (exit code 0).\nCommand: make\nOutput:\nok]" {
+		t.Errorf("the notice = %q; want what the model read, less the footer that says no person wrote it", it.Text)
+	}
+	if it := one.Items[5]; it.Event != model.EventModelChange || it.Text != "anthropic/claude-x.5 via openrouter" {
+		t.Errorf("the switch = %+v; want the newest, as a change of model", it)
+	}
+	// The switch is the person's, between turns: the turn's work ended at its answer
+	if one.EndedAt.Unix() != 1790000006 {
+		t.Errorf("turn 1 ended %v", one.EndedAt)
+	}
+
+	two := s.Turn(t, 2)
+	if got := sourcetest.Kinds(two); got != "prompt tool prompt reply context" || two.Answer != "Ran them with -race: all pass." {
+		t.Errorf("turn 2 = %s, answer %q; want the steer inside it, and no silence for an answer", got, two.Answer)
+	}
+	if it := two.Items[2]; !it.Queued || it.Text != "use -race too" {
+		t.Errorf("the steer = %+v; want the person's words, typed while the agent worked", it)
+	}
+
+	three := s.Turn(t, 3)
+	if got := sourcetest.Kinds(three); got != "prompt context reply" || three.Answer != "Deployed." || three.Interrupted {
+		t.Errorf("turn 3 = %s, answer %q, interrupted %v; want the run taken up again, answered", got, three.Answer, three.Interrupted)
+	}
+
+	four := s.Turn(t, 4)
+	if got := sourcetest.Kinds(four); got != "prompt event" || four.Ask != "a question the filter refuses" || four.Error != refusedNotice || four.Interrupted {
+		t.Errorf("turn 4 = %s, ask %q, ended on %q, interrupted %v; want the ask, ended on the refusal", got, four.Ask, four.Error, four.Interrupted)
+	}
+
+	if five := s.Turn(t, 5); five.Ask != "last question" || five.Answer != "last answer" {
+		t.Errorf("turn 5 = %q → %q", five.Ask, five.Answer)
+	}
+}
+
+// What Hermes wrote in the user's seat before it typed its rows is known by its words, as
+// Hermes knows it: its notes in brackets ("[System: …", which it never shows as the
+// person's), a background process's notice, its nudges word for word, and anything that
+// ends on the gateway's footer. A kind this does not know is Hermes's too — Hermes's own
+// rule is that a typed row in that seat is not the person's, but for a steer. Everything
+// else is the person's: a scheduled job's prompt is its ask, whatever it begins with.
+func TestRowsHermesWroteUntypedAreKnownByTheirWords(t *testing.T) {
+	src, _ := home(t, schema,
+		`INSERT INTO sessions (id, source, started_at) VALUES ('s1', 'cron', 1790000000)`,
+		msg("s1", "user", "[IMPORTANT: You are running as a scheduled cron job. DELIVER what you find.]\n\ncheck the disks", 1790000001, ""),
+		msg("s1", "assistant", "Checking.", 1790000002, ""),
+		msg("s1", "user", "[System: Your previous response was truncated by the output length limit. Continue exactly where you left off. Do not restart or repeat prior text. Finish the answer directly.]", 1790000003, ""),
+		msg("s1", "assistant", "All disks under 80%.", 1790000004, ""),
+		msg("s1", "user", modelSwitchMarker+"m-b. From this point forward, use this runtime metadata when answering questions about what model/provider is active.]", 1790000005, ""),
+		msg("s1", "user", "what does [System: mean in a prompt?", 1790000006, ""),
+		msg("s1", "assistant", "It marks Hermes's own notes.", 1790000007, ""),
+		msg("s1", "user", "[IMPORTANT: Background process proc_9 completed normally (exit code 0).\nCommand: make\nOutput:\nok]", 1790000008, ""),
+		msg("s1", "user", "You just executed tool calls but returned an empty response. Please process the tool results above and continue with the task.", 1790000009, ""),
+		msg("s1", "user", "a notice of a gateway older than its kinds\n\n"+notificationFooter, 1790000010, ""),
+		msg("s1", "user", "a row of a kind from a later Hermes", 1790000011, `display_kind=>'room_digest'`),
+		msg("s1", "assistant", "Noted.", 1790000012, ""),
+	)
+	s := sourcetest.One(t, src)
+	sourcetest.NothingUnread(t, s)
+	sourcetest.Invariants(t, s)
+	if s.Stats.Turns != 2 {
+		for _, turn := range s.Turns {
+			t.Logf("turn %d %q: %s", turn.Index, turn.Ask, sourcetest.Kinds(turn))
+		}
+		t.Fatalf("turns = %d, want the job's and the person's question", s.Stats.Turns)
+	}
+	one, two := s.Turn(t, 1), s.Turn(t, 2)
+	if !strings.HasPrefix(one.Ask, "[IMPORTANT: You are running as a scheduled cron job.") || one.Answer != "All disks under 80%." {
+		t.Errorf("turn 1 = %q → %q; want the job's prompt, answered past the nudge", one.Ask, one.Answer)
+	}
+	if got := sourcetest.Kinds(one); got != "prompt reply context reply event" || one.Items[4].Text != "m-b" {
+		t.Errorf("turn 1 = %s %+v; want the nudge as context, then the switch to the model it names", got, one.Items)
+	}
+	if got := sourcetest.Kinds(two); got != "prompt reply context context context context reply" || two.Answer != "Noted." {
+		t.Errorf("turn 2 = %s, answer %q", got, two.Answer)
+	}
+	if it := two.Items[4]; it.Text != "a notice of a gateway older than its kinds" {
+		t.Errorf("the notice = %q", it.Text)
+	}
+}
+
+// A steer is the person's words between Hermes's markers. The opening one's wording may
+// change, and its start is enough; a row whose markers are not there is read whole.
+func TestASteerIsThePersonsWords(t *testing.T) {
+	for content, want := range map[string]string{
+		steerOpen + "\nuse -race too\n" + steerClose:                                                   "use -race too",
+		"[OUT-OF-BAND USER MESSAGE — reworded in a later Hermes]\nstop after the build\n" + steerClose: "stop after the build",
+		"use -race too":                      "use -race too",
+		steerOpen + "\nthe close never came": steerOpen + "\nthe close never came",
+	} {
+		m, then := userRow(transcript.Message{}, "steer", content, "")
+		if !m.Queued || then != nil || len(m.Blocks) != 1 || m.Blocks[0].Text != want {
+			t.Errorf("%q: %+v, want %q typed while the agent worked", content, m, want)
+		}
+	}
+}
+
+// A refused message's row keeps the notice Hermes shows beside it; one that keeps none
+// ends on Hermes's own words.
+func TestARefusalWithoutItsNotice(t *testing.T) {
+	m, then := userRow(transcript.Message{}, "content_refused", "a question", `{"content_refused": {}}`)
+	if m.Role != transcript.User || len(then) != 1 || then[0].Name != model.EventError || then[0].Text != refusedNotice {
+		t.Errorf("message %+v, then %+v", m, then)
+	}
+}
+
+// A response that is a silence marker and nothing else says the agent chose not to reply,
+// as Hermes tells it; prose that mentions one is prose.
+func TestSilence(t *testing.T) {
+	for text, want := range map[string]bool{
+		"[SILENT]": true, " [ silent ] ": true, "NO_REPLY.": true, "*no reply*": true, "​[SILENT]": true,
+		"[静默]": true, "沉默": true,
+		"": false, "[SILENT": false, "I will stay [SILENT] for now": false, "[SILENT] nothing new this tick": false,
+		"The build is done.": false, strings.Repeat("SILENT ", 20): false,
+	} {
+		if got := silent(text); got != want {
+			t.Errorf("silent(%q) = %v, want %v", text, got, want)
+		}
+	}
+}
+
+// Silence is no answer only to Hermes's notice: a scheduled job that answers its own prompt
+// with it said so, and that is its answer.
+func TestSilenceAnsweringTheAskIsTheAnswer(t *testing.T) {
+	src, _ := home(t, schema,
+		`INSERT INTO sessions (id, source, started_at) VALUES ('s1', 'cron', 1790000000)`,
+		msg("s1", "user", "report anything new", 1790000001, ""),
+		msg("s1", "assistant", "[SILENT]", 1790000002, ""),
+	)
+	s := sourcetest.One(t, src)
+	if one := s.Turn(t, 1); one.Answer != "[SILENT]" {
+		t.Errorf("answer = %q", one.Answer)
 	}
 }
 

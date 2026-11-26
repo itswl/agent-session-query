@@ -1,20 +1,25 @@
 // Package opencode reads OpenCode's sessions.
 //
-// Everything lives in one SQLite database, and its layout has changed once:
+// Everything lives in one SQLite database, and its layout has changed twice:
 //
 //	2.x   session_v2        one row per session: directory, title, model, version, times,
 //	                        parent_id for a session another one spawned, and for a
 //	                        fork the session it was made from
 //	      session_message   one row per message, ordered by seq, its parts inline in data
+//	2.4   session_part      one row per part of a response, ordered by ordinal: a response
+//	                        written since carries no parts inline in its row any more
 //	1.x   session, message, part
 //	                        the same, with a message's parts as rows of their own
 //
 // The layout is detected per database — 2.x when both of its tables exist; one alone is
 // a migration caught halfway, and the 1.x tables are still the truth then — and a
 // database that saw both lists the 1.x sessions that were never migrated beside the 2.x
-// ones, each read through the layout it lives in. For a long time only 1.x was read, so
-// a 2.x install listed nothing and said nothing: an empty store and a moved one answer
-// alike, which is why a schema that cannot be read is an error here and not zero sessions.
+// ones, each read through the layout it lives in. A session_part table is not a third
+// layout: a database that has one holds responses either way, those written before it
+// with their parts inline and those written after with them beside, and each message is
+// read the way it was written. For a long time only 1.x was read, so a 2.x install
+// listed nothing and said nothing: an empty store and a moved one answer alike, which is
+// why a schema that cannot be read is an error here and not zero sessions.
 package opencode
 
 import (
@@ -114,8 +119,9 @@ func hasV2(db *sql.DB) bool {
 // and its write-ahead log have not moved.
 //
 // A session's stamp is built from what its own rows say — when it and its newest message
-// were last written, and how many messages it has — so a message arriving in one session
-// leaves every other session's stamp where it was.
+// were last written, how many messages it has, and, where the database keeps a response's
+// parts in rows of their own, how many of those it has and when the newest was written —
+// so a message arriving in one session leaves every other session's stamp where it was.
 func (s *Source) Scan(ctx context.Context) ([]sources.Ref, error) {
 	path := s.path()
 	return s.list.Load(path, func() ([]sources.Ref, error) {
@@ -123,6 +129,16 @@ func (s *Source) Scan(ctx context.Context) ([]sources.Ref, error) {
 		err := kit.ReadDB(ctx, path, func(db *sql.DB) error {
 			refs = refs[:0]
 			v2 := hasV2(db)
+			// Since 2.4 a response's parts are rows beside it, written as the response
+			// streams and once more when a tool of its own finishes. They are part of what
+			// the stamp says: a message row is written once and for all before its last
+			// part, so without them a tool that finished after the row would stay as
+			// pending as the row last said.
+			beside := "0, 0"
+			if kit.HasTable(db, "session_part") {
+				beside = `(SELECT COUNT(*) FROM session_part p WHERE p.session_id = s.id),
+       (SELECT MAX(p.time_updated) FROM session_part p WHERE p.session_id = s.id)`
+			}
 			if v2 {
 				// time_updated on the session is not always moved by a new message; the
 				// messages' own times are
@@ -137,7 +153,8 @@ func (s *Source) Scan(ctx context.Context) ([]sources.Ref, error) {
 SELECT s.id, s.time_updated, s.time_created,
        (SELECT COUNT(*) FROM session_message m WHERE m.session_id = s.id),
        (SELECT MAX(m.time_updated) FROM session_message m WHERE m.session_id = s.id),
-       `+copies+`
+       `+copies+`,
+       `+beside+`
 FROM session_v2 s`); err != nil {
 					return err
 				}
@@ -152,7 +169,7 @@ FROM session_v2 s`); err != nil {
 SELECT s.id, s.time_updated, s.time_created,
        (SELECT COUNT(*) FROM part p WHERE p.session_id = s.id),
        (SELECT MAX(m.time_updated) FROM message m WHERE m.session_id = s.id),
-       0
+       0, 0, 0
 FROM session s`+unmigrated)
 			}
 			if !v2 {
@@ -172,17 +189,20 @@ func scan(ctx context.Context, db *sql.DB, path string, refs *[]sources.Ref, que
 	defer rows.Close()
 	for rows.Next() {
 		var id sql.NullString
-		var updated, created, count, last, copies sql.NullInt64
-		if err := rows.Scan(&id, &updated, &created, &count, &last, &copies); err != nil {
+		var updated, created, count, last, copies, parts, partLast sql.NullInt64
+		if err := rows.Scan(&id, &updated, &created, &count, &last, &copies, &parts, &partLast); err != nil {
 			return err
 		}
 		if id.String == "" {
 			continue
 		}
-		at := max(updated.Int64, last.Int64, created.Int64)
+		at := max(updated.Int64, last.Int64, created.Int64, partLast.Int64)
 		stamp := strconv.FormatInt(updated.Int64, 36) + "." + strconv.FormatInt(last.Int64, 36) + "." + strconv.FormatInt(count.Int64, 36)
 		if copies.Int64 > 0 {
 			stamp += ".copied" + strconv.FormatInt(copies.Int64, 36)
+		}
+		if parts.Int64 > 0 {
+			stamp += ".parts" + strconv.FormatInt(partLast.Int64, 36) + "." + strconv.FormatInt(parts.Int64, 36)
 		}
 		*refs = append(*refs, sources.Ref{Key: path + "#" + id.String, Stamp: stamp, ModTime: time.UnixMilli(at)})
 	}
@@ -562,15 +582,20 @@ func toolOutput(state map[string]any, unread func(kind string)) string {
 }
 
 // readV2 reads a 2.x session: one session_message row per message, ordered by seq, its
-// type the role, its parts inline under data.content. It reports whether the session is
-// in this layout at all; unread is told of every row and part it passed over not knowing
-// what it was.
+// type the role, its parts inline under data.content or — since 2.4 — in rows of their own
+// beside it (see partsBeside). It reports whether the session is in this layout at all;
+// unread is told of every row and part it passed over not knowing what it was.
 func readV2(ctx context.Context, db *sql.DB, id string, sess *model.Session, msgs *[]transcript.Message, unread func(kind string)) (bool, error) {
 	row, err := rowOf(ctx, db, `SELECT * FROM session_v2 WHERE id = ?`, id)
 	if err != nil || row == nil {
 		return false, err
 	}
 	sessionOf(row, sess)
+	// A read that cannot see the parts must not answer as if there were none
+	beside, err := partsBeside(ctx, db, id)
+	if err != nil {
+		return true, err
+	}
 
 	// A fork's rows are read each with whether it is a copy of a row counted elsewhere
 	query := `SELECT m.id, m.type, m.time_created, m.data, 0 FROM session_message m WHERE m.session_id = ? ORDER BY m.seq, m.rowid`
@@ -619,6 +644,11 @@ FROM session_message m JOIN session_v2 s ON s.id = m.session_id WHERE m.session_
 			}
 		case "assistant":
 			parts := kit.List(data["content"])
+			// Since 2.4 the parts are rows beside a row that carries none: a response is
+			// read the way it was written, whichever of the two it was
+			if own := beside[mid]; len(own) > 0 {
+				parts = own
+			}
 			var blocks []transcript.Block
 			for _, p := range parts {
 				blocks = append(blocks, blocksOf(kit.Map(p), unread)...)
@@ -717,6 +747,39 @@ FROM session_message m JOIN session_v2 s ON s.id = m.session_id WHERE m.session_
 		}
 	}
 	return true, rows.Err()
+}
+
+// partsBeside are the parts a session's responses keep in session_part, by the message
+// they belong to and in the order the CLI shows them (ordinal). nil when the database
+// keeps every response's parts inline in its row, as 2.4 and earlier do.
+//
+// A part belongs to the message it names, as in 1.x; session_id is only where they are
+// looked up by. Measured on the database this was written against: no message has parts
+// both ways — a response is one or the other — and only a response's have them.
+func partsBeside(ctx context.Context, db *sql.DB, session string) (map[string][]any, error) {
+	if !kit.HasTable(db, "session_part") {
+		return nil, nil
+	}
+	rows, err := db.QueryContext(ctx, `SELECT message_id, data FROM session_part WHERE session_id = ? ORDER BY message_id, ordinal`, session)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]any{}
+	for rows.Next() {
+		var mid, raw string
+		if rows.Scan(&mid, &raw) != nil {
+			continue
+		}
+		var part map[string]any
+		// A part that will not parse is passed over; the response that holds it and its
+		// other parts are still read
+		if json.Unmarshal([]byte(raw), &part) != nil || part == nil {
+			continue
+		}
+		out[mid] = append(out[mid], part)
+	}
+	return out, rows.Err()
 }
 
 // copied is the condition under which m, a row of the fork s, is a copy of a row that is

@@ -409,6 +409,15 @@ ALTER TABLE session_v2 ADD COLUMN tokens_cache_write INTEGER DEFAULT 0 NOT NULL;
 CREATE UNIQUE INDEX session_message_session_seq_idx ON session_message (session_id, seq);
 CREATE INDEX session_message_time_created_idx ON session_message (time_created);`
 
+// session_part, as OpenCode 2.4 added it: a response's parts in rows of their own, each
+// under its message and its place in it.
+const schemaV24 = schemaV2 + `
+CREATE TABLE session_part (
+	message_id TEXT NOT NULL, session_id TEXT NOT NULL, ordinal INTEGER NOT NULL, type TEXT NOT NULL, call_id TEXT,
+	time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL,
+	PRIMARY KEY (message_id, ordinal));
+CREATE INDEX session_part_session_message_idx ON session_part (session_id, message_id, ordinal);`
+
 // A session and a fork of it, as OpenCode 2.3 writes them: the fork holds the parent's rows
 // under new ids with their seq, their time and their tokens as they were, then a notice,
 // then what was asked of the fork. Each session row counts that session's own spending —
@@ -648,6 +657,114 @@ func TestWhatV2WritesBesideTheConversation(t *testing.T) {
 	one := s.Turn(t, 1)
 	if got := sourcetest.Kinds(one); got != "prompt context reply" || one.Items[1].Text != "Tag, then push the tag." || one.Answer != "Tagged." {
 		t.Errorf("turn 1 = %s %+v", got, one.Items)
+	}
+}
+
+// Since 2.4 a response keeps no parts in its row: the row says what the call was — model,
+// tokens, how it finished — with an empty content, and the parts are rows beside it in
+// session_part, written as the response streams. In one database a response written before
+// holds them inline and one written after beside it — a session's version is the OpenCode
+// that began it, not the one that wrote each response — and each is read the way it was
+// written, its parts in the order the CLI shows them (their ordinal, not the order the rows
+// stand in).
+func TestPartsKeptBesideTheResponse(t *testing.T) {
+	src, _ := build(t, schemaV24,
+		`INSERT INTO session_v2 VALUES ('ses_p', NULL, 'p', '/w/p', 'Config', '2.3.2', 'build',
+			'{"id":"m","providerID":"p"}', 1790000000000, 1790000012000, NULL)`,
+		`INSERT INTO session_message VALUES ('p1', 'ses_p', 'user', 1, 1790000001000, 1790000001000, '{"text":"where is the config read"}')`,
+		// written under 2.3, its parts where it wrote them
+		`INSERT INTO session_message VALUES ('p2', 'ses_p', 'assistant', 2, 1790000001500, 1790000001800,
+			'{"finish":"stop","model":{"id":"m","providerID":"p"},"content":[{"type":"text","text":"Before the upgrade."}],
+			  "time":{"created":1790000001500,"completed":1790000001800}}')`,
+		`INSERT INTO session_message VALUES ('p3', 'ses_p', 'idle', 3, 1790000001900, 1790000001900, '{"outcome":"succeeded"}')`,
+		`INSERT INTO session_message VALUES ('p4', 'ses_p', 'user', 4, 1790000002000, 1790000002000, '{"text":"and now"}')`,
+		`INSERT INTO session_message VALUES ('p5', 'ses_p', 'assistant', 5, 1790000002500, 1790000009000,
+			'{"agent":"build","finish":"tool-calls","cost":0.002,"model":{"id":"m","providerID":"p"},
+			  "time":{"created":1790000002500,"streamed":1790000002700,"completed":1790000009000},
+			  "tokens":{"input":200,"output":30,"reasoning":40,"cache":{"read":1000,"write":10}},"content":[]}')`,
+		`INSERT INTO session_part VALUES ('p5', 'ses_p', 2, 'text', NULL, 1790000008500, 1790000008500, '{"type":"text","text":"In config.go."}')`,
+		`INSERT INTO session_part VALUES ('p5', 'ses_p', 1, 'tool', 'call_00_a', 1790000003000, 1790000005200,
+			'{"type":"tool","id":"call_00_a","name":"shell","executed":false,"time":{"created":1790000003000,"ran":1790000003100,"completed":1790000005200},
+			  "state":{"status":"completed","input":{"command":"ls"},"content":[{"type":"text","text":"config.go"}],"metadata":{"status":"completed","truncated":false,"exit":0}}}')`,
+		`INSERT INTO session_part VALUES ('p5', 'ses_p', 0, 'reasoning', NULL, 1790000002600, 1790000002900,
+			'{"type":"reasoning","text":"look at the loader","time":{"created":1790000002600,"completed":1790000002900},"native":true}')`,
+		`INSERT INTO session_message VALUES ('p6', 'ses_p', 'idle', 6, 1790000009100, 1790000009100, '{"outcome":"succeeded"}')`,
+		`INSERT INTO session_message VALUES ('p7', 'ses_p', 'user', 7, 1790000010000, 1790000010000, '{"text":"and the schema"}')`,
+		`INSERT INTO session_message VALUES ('p8', 'ses_p', 'assistant', 8, 1790000011000, 1790000011200,
+			'{"finish":"stop","model":{"id":"m","providerID":"p"},"content":[],"time":{"created":1790000011000,"completed":1790000011200}}')`,
+		`INSERT INTO session_part VALUES ('p8', 'ses_p', 0, 'tool', 'call_00_b', 1790000011100, 1790000011150,
+			'{"type":"tool","id":"call_00_b","name":"read","executed":false,"time":{"created":1790000011100,"ran":1790000011100,"completed":1790000011150},
+			  "state":{"status":"error","input":{"path":"/w/p/schema.sql"},"error":"no such file"}}')`,
+		`INSERT INTO session_part VALUES ('p8', 'ses_p', 1, 'text', NULL, 1790000011200, 1790000011200, '{"type":"text","text":"There is none."}')`,
+		`INSERT INTO session_part VALUES ('p8', 'ses_p', 2, 'hologram', NULL, 1790000011200, 1790000011200, '{"type":"hologram"}')`,
+	)
+	s := sourcetest.One(t, src)
+	// A part beside is counted like one inline when it is of a kind this does not know
+	if want := map[string]int{"part:hologram": 1}; !reflect.DeepEqual(s.Unread, want) {
+		t.Errorf("unread = %v, want %v", s.Unread, want)
+	}
+	if got := sourcetest.Kinds(s.Turn(t, 1)); got != "prompt reply" {
+		t.Errorf("turn 1 = %s, want the response written before 2.4 with its inline parts", got)
+	}
+	two := s.Turn(t, 2)
+	if got := sourcetest.Kinds(two); got != "prompt thinking tool reply" || two.Items[1].Text != "look at the loader" || two.Answer != "In config.go." {
+		t.Errorf("turn 2 = %s %+v", got, two.Items)
+	}
+	tools := sourcetest.Tools(two)
+	if sh := tools[0]; sh.Name != "shell" || sh.Command != "ls" || sh.Output != "config.go" || sh.Status != model.StatusOK || *sh.Exit != 0 || sh.DurMs != 2100 {
+		t.Errorf("the tool kept beside = %+v", sh)
+	}
+	// What the call was is still said by the row the parts belong to
+	if call := two.Calls[0]; *call.Usage != (model.Usage{Input: 200, Output: 70, Reasoning: 40, CacheRead: 1000, CacheWrite: 10}) ||
+		call.CostUSD != 0.002 || call.DurMs != 6500 || call.TTFTMs != 200 || call.Stop != "tool-calls" {
+		t.Errorf("call = %+v usage %+v", call, call.Usage)
+	}
+	three := s.Turn(t, 3)
+	if got := sourcetest.Kinds(three); got != "prompt tool reply" || three.Answer != "There is none." {
+		t.Errorf("turn 3 = %s %+v", got, three.Items)
+	}
+	if rd := sourcetest.Tools(three)[0]; rd.Name != "read" || rd.Status != model.StatusError || rd.Output != "error: no such file" {
+		t.Errorf("the failed tool = %+v", rd)
+	}
+}
+
+// A tool kept beside its response is written a second time when it finishes, and its
+// response's row is not: the session's stamp says what the parts say too, so the turn is
+// read again and the tool is no longer pending. Parts arriving in another session leave
+// this one's stamp where it was.
+func TestAStampMovesWhenAPartBesideIsWritten(t *testing.T) {
+	src, path := build(t, schemaV24,
+		`INSERT INTO session_v2 VALUES ('ses_w', NULL, 'w', '/w/w', 'Wait', '2.4.1', 'build', NULL, 1790000000000, 1790000003000, NULL)`,
+		`INSERT INTO session_message VALUES ('w1', 'ses_w', 'user', 1, 1790000001000, 1790000001000, '{"text":"run it"}')`,
+		`INSERT INTO session_message VALUES ('w2', 'ses_w', 'assistant', 2, 1790000002000, 1790000002000,
+			'{"finish":"tool-calls","model":{"id":"m","providerID":"p"},"content":[],"time":{"created":1790000002000}}')`,
+		`INSERT INTO session_part VALUES ('w2', 'ses_w', 0, 'tool', 'call_1', 1790000003000, 1790000003000,
+			'{"type":"tool","id":"call_1","name":"shell","executed":false,"time":{"created":1790000003000},"state":{"status":"running","input":{"command":"sleep 9"}}}')`,
+		`INSERT INTO session_v2 VALUES ('ses_x', NULL, 'x', '/w/x', 'Other', '2.4.1', 'build', NULL, 1790000000000, 1790000001000, NULL)`,
+		`INSERT INTO session_message VALUES ('x1', 'ses_x', 'assistant', 1, 1790000001000, 1790000001000,
+			'{"finish":"stop","model":{"id":"m","providerID":"p"},"content":[],"time":{"created":1790000001000}}')`,
+	)
+	before, other := stampOf(t, src, "ses_w"), stampOf(t, src, "ses_x")
+	pending := sourcetest.Tools(sourcetest.ByID(t, sourcetest.All(t, src), "ses_w").Turn(t, 1))
+	if len(pending) != 1 || pending[0].Done {
+		t.Fatalf("the tool is running: %+v", pending)
+	}
+	exec(t, path,
+		`INSERT INTO session_part VALUES ('x1', 'ses_x', 0, 'text', NULL, 1790000004000, 1790000004000, '{"type":"text","text":"done elsewhere"}')`,
+	)
+	if stampOf(t, src, "ses_w") != before || stampOf(t, src, "ses_x") == other {
+		t.Error("a part in another session moved this session's stamp, or not its own's")
+	}
+	exec(t, path,
+		`UPDATE session_part SET time_updated = 1790000009000, data = json_set(data, '$.state.status', 'completed', '$.time.completed', 1790000009000,
+			'$.state.content', json('[{"type":"text","text":"woke"}]'), '$.state.metadata', json('{"exit":0}')) WHERE message_id = 'w2'`,
+	)
+	if stampOf(t, src, "ses_w") == before {
+		t.Error("a tool finishing after its response's row was written did not move the session's stamp")
+	}
+	done := sourcetest.Tools(sourcetest.ByID(t, sourcetest.All(t, src), "ses_w").Turn(t, 1))[0]
+	if !done.Done || done.Status != model.StatusOK || done.Output != "woke" || done.DurMs != 6000 {
+		t.Errorf("the tool after it finished = %+v", done)
 	}
 }
 

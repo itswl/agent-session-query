@@ -1089,3 +1089,53 @@ func TestAnOutlineSaysWhetherItsSessionIsKept(t *testing.T) {
 		t.Errorf("sizes: %q, %q, %q", Size(512), Size(1536), Size(3<<20))
 	}
 }
+
+// A tool call's line says how many pictures its result carried — a screenshot is otherwise
+// a call that seems to have returned nothing, and the page says the same beneath it. A
+// step read whole numbers its files for an agent, whose read may ask for one by that
+// number where the transcript holds a picture among them; a person at a terminal has no
+// use for the numbers, and is not given them.
+func TestAStepSaysThePicturesItCarried(t *testing.T) {
+	s, turns := hostile()
+	at := turns[0].StartedAt
+	pictures := []model.Attachment{{Mime: "image/png", Bytes: 70, Inline: true}, {Mime: "image/gif", Bytes: 48*1024 + 300, Inline: true}}
+	turn := model.Turn{Index: 1, StartedAt: at, Ask: "why is the login button blue", Items: []model.Item{
+		{Seq: 0, Kind: model.Prompt, At: at, Text: "why is the login button blue", Attachments: pictures[:1]},
+		{Seq: 1, Kind: model.ToolUse, At: at, Tool: &model.Tool{CallID: "t1", Name: "browser_take_screenshot", Done: true, Status: model.StatusOK, Output: "Took the screenshot"}, Attachments: pictures},
+		{Seq: 2, Kind: model.ToolUse, At: at, Tool: &model.Tool{CallID: "t2", Name: "Read", Done: true, Status: model.StatusOK, Output: "the logo"},
+			Attachments: []model.Attachment{{Mime: "image/*", Name: "two.png"}}},
+		{Seq: 3, Kind: model.ToolUse, At: at, Tool: &model.Tool{CallID: "t3", Name: "Bash", Done: true, Status: model.StatusOK, Command: "ls"},
+			Attachments: []model.Attachment{{Mime: "application/pdf", Bytes: 9, Inline: true}}},
+	}}
+	var b bytes.Buffer
+	Turn(&b, s, &turn, TurnOptions{}, Style{})
+	// The screenshot's two, and the Read's one that is only named — a file that is no
+	// picture is not counted
+	if out := b.String(); !strings.Contains(out, "✓ · 2 pictures") || !strings.Contains(out, "✓ · 1 picture") || strings.Count(out, "picture") != 2 {
+		t.Errorf("a turn:\n%s", out)
+	}
+
+	for _, c := range []struct {
+		name string
+		item int
+		args bool
+		want string
+	}{
+		{"a screenshot, for an agent", 1, true, "files: [0] image/png 70 bytes · [1] image/gif 48.3 KB — picture=N with this seq sends file N"},
+		{"a file only named, for an agent", 2, true, "files: [0] image/*, named only"},
+		{"a file that is no picture, for an agent", 3, true, "files: [0] application/pdf 9 bytes"},
+	} {
+		b.Reset()
+		Item(&b, s, 1, &turn.Items[c.item], Style{Args: c.args})
+		out := b.String()
+		if !strings.Contains(out, c.want) || !c.args && strings.Contains(out, "files:") || c.item > 1 && strings.Contains(out, "picture=") {
+			t.Errorf("%s:\n%s", c.name, out)
+		}
+	}
+	// For a person the step is what it was
+	b.Reset()
+	Item(&b, s, 1, &turn.Items[1], Style{})
+	if out := b.String(); !strings.Contains(out, "Took the screenshot") || strings.Contains(out, "files:") {
+		t.Errorf("a step read whole for a person:\n%s", out)
+	}
+}

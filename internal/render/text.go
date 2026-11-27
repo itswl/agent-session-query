@@ -1,6 +1,7 @@
 package render
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -705,6 +706,9 @@ func item(w io.Writer, it *model.Item, o TurnOptions, st Style) {
 		if tool.DurMs > 0 {
 			outcome += st.dim(" · " + txt.Duration(time.Duration(tool.DurMs)*time.Millisecond))
 		}
+		if n := picturesOf(it); n > 0 {
+			outcome += st.dim(" · " + plural(n, "picture"))
+		}
 		fmt.Fprintf(w, "%s %s %s%s%s\n", at, st.cyan(tool.Name), st.fit(txt.OneLine(what, 0), 30+len(tool.Name)), outcome, st.dim("  ["+strconv.Itoa(it.Seq)+"]"))
 		switch {
 		case o.Full:
@@ -781,6 +785,56 @@ func indentJSON(raw json.RawMessage) string {
 func Item(w io.Writer, s *index.Session, turn int, it *model.Item, st Style) {
 	fmt.Fprintln(w, st.dim(fmt.Sprintf("%s#%d · step %d · %s", s.Ref, turn, it.Seq, it.At.Local().Format("2006-01-02 15:04:05"))))
 	item(w, it, TurnOptions{Full: true}, st)
+	// The files the step carried are marked in its text where they came; an agent that is
+	// to ask for one by number (read's picture) needs them numbered. A person at a terminal
+	// has no use for the numbers
+	if line := filesLine(it); line != "" && st.Args {
+		fmt.Fprintln(w, st.dim("    "+line))
+	}
+}
+
+// isPicture says the transcript calls a file a picture, by its type — the page's count on
+// a step's line. Whether it is one is read from its bytes when it is asked for.
+func isPicture(a model.Attachment) bool { return strings.HasPrefix(a.Mime, "image/") }
+
+// picturesOf is how many of the files a step carried are pictures. Said on a tool call's
+// line, where a screenshot is otherwise a call that seems to have returned nothing: the
+// page says the same there.
+func picturesOf(it *model.Item) int {
+	n := 0
+	for _, a := range it.Attachments {
+		if isPicture(a) {
+			n++
+		}
+	}
+	return n
+}
+
+// filesLine is the files a step carried, each by its number: "[0] image/png 70 bytes · [1]
+// image/gif 43 bytes", and of one the transcript only names, that it holds no bytes of it.
+// It ends with how to ask for one where the transcript holds a picture among them.
+func filesLine(it *model.Item) string {
+	if len(it.Attachments) == 0 {
+		return ""
+	}
+	parts := make([]string, len(it.Attachments))
+	held := false
+	for i, a := range it.Attachments {
+		what := cmp.Or(a.Mime, "file")
+		switch {
+		case !a.Inline:
+			what += ", named only"
+		case a.Bytes > 0:
+			what += " " + Size(int64(a.Bytes))
+		}
+		held = held || (a.Inline && isPicture(a))
+		parts[i] = "[" + strconv.Itoa(i) + "] " + what
+	}
+	line := "files: " + strings.Join(parts, " · ")
+	if held {
+		line += " — picture=N with this seq sends file N"
+	}
+	return line
 }
 
 // Usage prints what model calls consumed, one row per group. total, when given, is the

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -134,6 +135,59 @@ func TestCommands(t *testing.T) {
 	}
 }
 
+// search --session is the page's find in a session: one session's own turns, archived or not,
+// and none of its subagents'. Find wants all of them, so the bound on turns of one session is
+// not put on such a search unless --per-session is given; elsewhere it stays.
+func TestSearchInOneSession(t *testing.T) {
+	h, index := setup(t)
+	h.WriteMany(t)
+	alpha, beta, many := "claude/"+fixture.Alpha, "claude/"+fixture.Beta, "claude/"+fixture.Many
+	// A search brings the index up to date; beta is then put away, as Codex puts a session
+	// away — in its own records, not in the transcript — and the searches after find it so
+	if _, errs, code := asq(t, h, index, "search", "flaky"); code != 0 {
+		t.Fatalf("asq search: exit %d: %s", code, errs)
+	}
+	db, err := sql.Open("sqlite", index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE sessions SET archived = 1 WHERE id = ?`, fixture.Beta); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		args []string
+		want []string
+		not  []string
+	}{
+		{[]string{"search", "missing indexes"}, []string{"2 turns in 2 sessions", alpha + "#2", "claude/x1"}, nil},
+		{[]string{"search", "--session", alpha, "missing indexes"}, []string{"1 turn in 1 session", alpha + "#2"}, []string{"claude/x1"}},
+		// a turn on the ref names no turn of the search
+		{[]string{"search", "--session", alpha + "#1", "missing indexes"}, []string{"1 turn in 1 session", alpha + "#2"}, []string{"claude/x1"}},
+		{[]string{"search", "deploy"}, []string{"outside archived sessions holds"}, []string{beta}},
+		{[]string{"search", "--session", beta, "deploy"}, []string{"1 turn in 1 session", beta + "#1"}, nil},
+		{[]string{"search", "rotate"}, []string{"… more turns match"}, nil},
+		{[]string{"search", "--session", many, "rotate"}, []string{"5 turns in 1 session"}, []string{"… more turns match"}},
+		{[]string{"search", "--session", many, "--per-session", "2", "rotate"}, []string{"… more turns match"}, nil},
+	} {
+		out, errs, code := asq(t, h, index, tc.args...)
+		if code != 0 {
+			t.Errorf("asq %s: exit %d: %s", strings.Join(tc.args, " "), code, errs)
+			continue
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(out, want) {
+				t.Errorf("asq %s: no %q in:\n%s", strings.Join(tc.args, " "), want, out)
+			}
+		}
+		for _, not := range tc.not {
+			if strings.Contains(out, not) {
+				t.Errorf("asq %s: %q in:\n%s", strings.Join(tc.args, " "), not, out)
+			}
+		}
+	}
+}
+
 // A session read from a store added by name, and not in the CLI's own: resume prints no
 // command for this machine, and says the one for the machine it came from.
 func TestResumeOfASessionFromAnotherMachine(t *testing.T) {
@@ -211,6 +265,7 @@ func TestWhatGoesWrong(t *testing.T) {
 		{[]string{"show", "aaaa1111", "--seq", "99"}, 1, "no step 99"},
 		{[]string{"show", "aaaa1111", "--turns", "seven"}, 2, "turns: want"},
 		{[]string{"search"}, 2, "what should it look for?"},
+		{[]string{"search", "--session", "zzzz", "rotate"}, 1, "asq ls prints refs"},
 		{[]string{"ls", "--since", "whenever"}, 2, "unreadable time"},
 		{[]string{"ls", "--source", "emacs"}, 2, "unknown source"},
 		{[]string{"ls", "--nope"}, 2, "flag provided but not defined"},

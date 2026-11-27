@@ -31,6 +31,20 @@ func TestNothingFoundSaysWhereItLooked(t *testing.T) {
 		t.Errorf("sessions with no store:\n%s", text)
 	}
 
+	// health says where it looked in its own body, with what to do about it, and is not told
+	// so again beneath — nor that the index is catching up, which it says too
+	text, failed = call(t, s, "health", map[string]any{})
+	lookedLine := false
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "  claude ") && strings.Contains(line, "not there") && strings.HasSuffix(line, nowhere) {
+			lookedLine = true
+		}
+	}
+	if failed || !strings.Contains(text, "\nNo CLI's sessions were found on the machine asq runs on. It looked in:\n") || !lookedLine ||
+		!strings.Contains(text, "named with ASQ_PATH") || !strings.Contains(text, "asq doctor there says more") || strings.Contains(text, "\n[") {
+		t.Errorf("health with no store:\n%s", text)
+	}
+
 	// A person who asks for a handoff or a catch-up is told the same, with why there was none
 	s.Caller = &Caller{Dirs: []string{"/work/alpha"}}
 	for _, name := range []string{"handoff", "catchup"} {

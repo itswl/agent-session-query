@@ -14,7 +14,7 @@ it. It only reads, and one question can span a Claude Code session and a Codex o
 Two ways to ask, the same answers either way:
 
 - **MCP tools** from the `asq` server: `search`, `sessions`, `read`, `brief`, `pack`, `usage`,
-  `failures`, `digest`, `files`, `projects`.
+  `failures`, `digest`, `files`, `projects`, `health`.
 - **The command**, when the server is not configured but a shell is: `asq search …`, `asq ls`,
   `asq show <ref>`, `asq brief <ref>`, … — same names, `--flags` instead of arguments. `asq -h`
   lists them. The command has no ref `this`: `asq brief` or `asq show` with no ref takes the
@@ -42,8 +42,9 @@ Two ways to ask, the same answers either way:
 
 | The user is asking | Reach for |
 |---|---|
-| "How did I solve X before?" / "Where did that error come up?" | `search(query="…")` — hits are turns, each with how it ended, the lines the words were found in, and its answer. Words match their other forms (*retries* finds *retried*) and the session's title; when no turn holds them all, the closest come back marked with the words they lack — try another word for those |
-| "…in this repo" / "…with Codex" / "…last month" | add `project="."` (the directory you work in) or `project="…"` (part of a path), `source="codex"`, `since="30d"` — narrow rather than raise `limit`. A narrowed search that finds nothing says how many turns outside the filters match ("7 turns in 7 sessions outside them match: drop since"): that is not "never dealt with" — drop the filter it names. When none match outside either, it names the words turns outside do hold ("though some hold “retry”"): search those alone |
+| "How did I solve X before?" / "Where did that error come up?" | `search(query="…")` — hits are turns, each with how it ended, the lines the words were found in — each ending with the step it is in, `[57]`, which `read` takes as `seq` — and its answer. Words match their other forms (*retries* finds *retried*) and the session's title; when no turn holds them all, the closest come back marked with the words they lack — try another word for those |
+| "Where in this session did we …?" / "find X in that session" | `search(query="X", session="this")` — or a ref in place of `this`: that session's own turns, archived or not, and all of them (`per_session` only when you give it). `this` as in `brief(ref="this")`: over stdio, and over HTTP from Codex. From a shell, `asq search --session <ref> X` |
+| "…in this repo" / "…with Codex" / "…last month" | add `project="."` (the directory you work in — over stdio; over HTTP only from Codex, which names its thread: else give the path) or `project="…"` (part of a path), `source="codex"`, `since="30d"` — narrow rather than raise `limit`. A narrowed search that finds nothing says how many turns outside the filters match ("7 turns in 7 sessions outside them match: drop since"): that is not "never dealt with" — drop the filter it names. When none match outside either, it names the words turns outside do hold ("though some hold “retry”"): search those alone |
 | "What did I *ask* about X?" | `search(query="ask:X")`. Also `reply:` `thinking:` `tool:` (a tool's input) `output:` (what a tool printed) `title:` (the session's title) |
 | "The exact message was …" | `search(query="\"exit status 1\"")` — quotes match a phrase as written; bare words match as prefixes and in their other forms; `-word` excludes |
 | "Which session made commit 3f9c2ab…?" | `search(query="3f9c2ab4e5f6…")` — a commit's id, as long as you have it, finds the turn whose `git commit` printed it |
@@ -65,22 +66,24 @@ Two ways to ask, the same answers either way:
 | "How long did agents work for me this week, and when?" | `digest(since="monday")` — agent time and days, per project and in a week-by-hour grid; `usage(by="week")` or `"month"` for agent time and tokens over longer |
 | "Where did the tokens go?" / "Which model is eating them?" | `usage()`, or `usage(by="model"\|"day"\|"week"\|"month"\|"project"\|"session")` — by session, each with its title and directory |
 | "Which repos have I used agents on?" | `projects()` |
+| "Which agents' history can you read?" / "What version are you?" / "Are sessions missing?" | `health()` — the version, the index and when it was last brought up to date, and one line per store: which CLIs' histories were found, where, and why one that is there could not be read |
 | "What did the subagents do?" | `read(ref="…")` lists them; each has a ref of its own to `read`. A search hit inside one says "subagent of …" |
 
 ## Moving through a session
 
 ```
 search(query="connection refused", project="api")
-    → 3. claude/3f2a9c1e…#4   ask: deploy to staging   output Bash › … ECONNREFUSED …
+    → 3. claude/3f2a9c1e…#4   ask: deploy to staging   output Bash › … ECONNREFUSED …  [57]
 read(ref="claude/3f2a9c1e#4")
     → the turn, step by step; the failing call is  Bash kubectl apply …  ✗ failed  [57]
 read(ref="claude/3f2a9c1e", seq=57)
     → that call's full input and output
 ```
 
-A step shown in a turn is one line; only a failed call shows the end of its output. Ask for a
-step by `seq` when the whole of it matters. `full=true` on a turn prints every output whole —
-on a turn with build logs that is far more than is wanted.
+The `[57]` at the end of a search hit's line is that step's `seq`: `read` with it opens the step
+without the turn being read first. A step shown in a turn is one line; only a failed call shows
+the end of its output. Ask for a step by `seq` when the whole of it matters. `full=true` on a
+turn prints every output whole — on a turn with build logs that is far more than is wanted.
 
 ## Reading the answers
 
@@ -100,7 +103,8 @@ on a turn with build logs that is far more than is wanted.
   a large history (the answer covers what has been read so far), a store could not be read
   (an empty answer may not mean an empty history), or no CLI's sessions were found at all, with
   the places asq looked — then the history is not empty, it is somewhere asq was not pointed
-  at. Tell the user.
+  at. Tell the user. `health()` says all of this in one answer, with the version and where the
+  index stands.
 - A session whose source carries a label is not in its CLI's store on this machine:
   `claude@kept` is a copy asq kept of one the CLI has since deleted, `claude@box2` one read from
   another machine's store or a backup. Its brief's resume line, if any, is for where it came from.

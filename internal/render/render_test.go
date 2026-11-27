@@ -523,6 +523,45 @@ func TestASearchSaysWhatWouldShowWhatItLeftOut(t *testing.T) {
 	}
 }
 
+// A hit's lines end with the step the words are in, as a turn's own lines do: read takes it
+// as seq, and the turn need not be read first to find it. A session's title is no step, and
+// its line carries no number — though its Seq is 0, as a first step's is. A line cut to the
+// width keeps the number, and gives up the snippet.
+func TestAHitsLinesSayWhichStepTheyAreIn(t *testing.T) {
+	at := time.Date(2026, 11, 23, 23, 41, 0, 0, time.UTC)
+	s := &index.Session{Session: model.Session{Source: "claude", ID: "bbbb2222", Cwd: "/work/beta"}, Ref: "claude/bbbb2222"}
+	one := index.Hit{Session: *s, Turn: 1, Ref: s.Ref + "#1", At: at, Ask: "rotate the deploy key",
+		Answer: "Rotated. The new key is [redacted] and the old one is revoked.",
+		Matches: []index.Match{
+			{Kind: index.KindTitle, Seq: 0, Snippet: "rotate the deploy key"},
+			{Kind: model.Prompt, Seq: 0, Snippet: "rotate the deploy key"},
+			{Kind: model.Thinking, Seq: 0, Snippet: "which key it is"},
+			{Kind: model.ToolUse, Part: "command", Tool: "Bash", Seq: 1, Snippet: "make build"},
+			{Kind: model.ToolUse, Part: "output", Tool: "Bash", Seq: 2, Snippet: strings.Repeat("line of build output ", 4) + "build finished"},
+			{Kind: model.Reply, Seq: 3, Snippet: "the old one is revoked"},
+		}}
+	var b bytes.Buffer
+	Hits(&b, index.SearchResult{Hits: []index.Hit{one}, Total: 1, Sessions: 1}, 0, Style{})
+	want := "1 turn in 1 session\n\n" +
+		"1. claude/bbbb2222#1  " + at.Local().Format("2006-01-02 15:04") + " · /work/beta  ✓\n" +
+		"   ask    rotate the deploy key\n" +
+		"   title  rotate the deploy key\n" +
+		"   thinking which key it is  [0]\n" +
+		"   command Bash › make build  [1]\n" +
+		"   output Bash › line of build output line of build output line of build output line of build output build finished  [2]\n" +
+		"   answer Rotated. The new key is [redacted] and the old one is revoked.\n"
+	if got := b.String(); got != want {
+		t.Errorf("a hit reads:\n%s\nwant\n%s", got, want)
+	}
+
+	b.Reset()
+	Hits(&b, index.SearchResult{Hits: []index.Hit{one}, Total: 1, Sessions: 1}, 0, Style{Width: 60})
+	lines := strings.Split(b.String(), "\n")
+	if len(lines) < 8 || !strings.HasSuffix(lines[7], "  [2]") || strings.Contains(lines[7], "build finished") || len([]rune(lines[7])) > 60 {
+		t.Errorf("a long line, cut to the width, keeps its step:\n%q", lines[6])
+	}
+}
+
 // A failure the same command passed later is a step of the work: the list, the outline and a
 // search's hit say it, muted, and keep the red ✗ for a failure that is still open; a pack, an
 // export and a brief of a stretch count it the same way.

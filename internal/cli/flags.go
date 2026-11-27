@@ -45,6 +45,13 @@ type multi []string
 func (m *multi) String() string     { return strings.Join(*m, ",") }
 func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
 
+// named says whether a flag was given on the command line, whatever its default is.
+func named(fs *flag.FlagSet, name string) bool {
+	found := false
+	fs.Visit(func(f *flag.Flag) { found = found || f.Name == name })
+	return found
+}
+
 func newCommand(name string, stderr io.Writer) *command {
 	c := &command{name: name, fs: flag.NewFlagSet("asq "+name, flag.ContinueOnError)}
 	c.fs.SetOutput(io.Discard) // what goes wrong with a flag is said once, by Run

@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -134,7 +135,7 @@ func TestProtocol(t *testing.T) {
 	}
 
 	list := got["4"].Result.Tools
-	if len(list) != len(tools) || len(list) != 10 {
+	if len(list) != len(tools) || len(list) != 11 {
 		t.Fatalf("tools = %d", len(list))
 	}
 	for _, tool := range list {
@@ -195,6 +196,8 @@ func TestEveryToolAnswers(t *testing.T) {
 		{"sessions", map[string]any{"state": "waiting,idle"}, []string{"claude/aaaa1111  idle · ", "Fix flaky test"}},
 		{"search", map[string]any{"query": "数据库"}, []string{alpha + "#2", "现在给数据库加索引"}},
 		{"search", map[string]any{"query": "ECONNREFUSED", "since": "7d"}, []string{alpha + "#1", "output", "Bash", "✗1 failed", "answer The test depended on map order"}},
+		{"search", map[string]any{"query": "ECONNREFUSED"}, []string{"   output Bash › ", "exit status 1  [2]\n"}},
+		{"search", map[string]any{"query": "missing indexes", "session": "aaaa1111"}, []string{"1 turn in 1 session\n", alpha + "#2"}},
 		{"search", map[string]any{"query": "rotating keys"}, []string{"claude/" + fixture.Beta + "#1", "rotate the deploy key"}},
 		{"search", map[string]any{"query": "ECONNREFUSED 数据库 postgres"}, []string{
 			"No turn holds all 3 words; none holds “postgres”.", "Partial matches, closest first", "lacks  数据库 postgres", "lacks  ECONNREFUSED postgres", "another word for what one lacks"}},
@@ -223,6 +226,8 @@ func TestEveryToolAnswers(t *testing.T) {
 		{"digest", nil, []string{"Total", "/work/alpha", "/work/beta", "claude-opus-5"}},
 		{"files", map[string]any{"path": "schema.sql"}, []string{"changed", alpha + "#2", "/work/alpha/db/schema.sql"}},
 		{"projects", nil, []string{"/work/alpha", "/work/beta"}},
+		{"health", nil, []string{"asq " + app.Version + "\n", " · 2 sessions · 3 turns · 1 subagent transcript\n", "Last brought up to date ",
+			"\nStores:\n  claude       2 sessions · 3 transcripts   "}},
 	} {
 		text, isErr := call(t, s, tc.tool, tc.args)
 		if isErr {
@@ -291,6 +296,7 @@ func TestWhatGoesWrongIsToldToTheModel(t *testing.T) {
 		{"sessions", map[string]any{"source": "emacs"}, "unknown source"},
 		{"sessions", map[string]any{"state": "busy"}, `state: "busy" is not one of working, waiting, idle`},
 		{"search", nil, "search needs query"},
+		{"search", map[string]any{"query": "rotate", "session": "zzzz"}, `no such session: "zzzz" — sessions lists the refs there are`},
 		{"read", map[string]any{"ref": "zzzz"}, "sessions and search print the refs"},
 		{"read", map[string]any{"ref": "aaaa1111", "turns": "seven"}, "turns: want"},
 		{"read", map[string]any{"ref": "aaaa1111#9"}, "no such turn (it has 2)"},
@@ -308,6 +314,53 @@ func TestWhatGoesWrongIsToldToTheModel(t *testing.T) {
 		text, isErr := call(t, s, tc.tool, tc.args)
 		if !isErr || !strings.Contains(text, tc.want) {
 			t.Errorf("%s %v: isError=%v %q, want an error saying %q", tc.tool, tc.args, isErr, text, tc.want)
+		}
+	}
+}
+
+// search's session is the page's find in a session: one session's own turns, archived or
+// not, and none of its subagents'. Find wants all of them, so the bound on turns of one
+// session is not put on such a search unless per_session is given; elsewhere it stays.
+func TestSearchInOneSession(t *testing.T) {
+	s := withMany(t)
+	// Beta archived, as Codex archives a session: a search leaves it out, and find in it
+	// does not
+	db, err := sql.Open("sqlite", s.App.Index.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE sessions SET archived = 1 WHERE id = ?`, fixture.Beta); err != nil {
+		t.Fatal(err)
+	}
+	alpha, beta, many := "claude/"+fixture.Alpha, "claude/"+fixture.Beta, "claude/"+fixture.Many
+	for _, tc := range []struct {
+		args map[string]any
+		want []string
+		not  []string
+	}{
+		{map[string]any{"query": "missing indexes"}, []string{"2 turns in 2 sessions", alpha + "#2", "claude/x1"}, nil},
+		{map[string]any{"query": "missing indexes", "session": "aaaa1111"}, []string{"1 turn in 1 session\n", alpha + "#2"}, []string{"claude/x1"}},
+		{map[string]any{"query": "deploy"}, []string{"No turn outside archived sessions holds “deploy”."}, []string{beta}},
+		{map[string]any{"query": "deploy", "session": "bbbb2222"}, []string{"1 turn in 1 session\n", beta + "#1"}, nil},
+		{map[string]any{"query": "rotate"}, []string{"… more turns match"}, nil},
+		{map[string]any{"query": "rotate", "session": many}, []string{"5 turns in 1 session"}, []string{"… more turns match"}},
+		{map[string]any{"query": "rotate", "session": many, "per_session": 2}, []string{"… more turns match"}, nil},
+	} {
+		text, isErr := call(t, s, "search", tc.args)
+		if isErr {
+			t.Errorf("search %v: %s", tc.args, text)
+			continue
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(text, want) {
+				t.Errorf("search %v: no %q in\n%s", tc.args, want, text)
+			}
+		}
+		for _, not := range tc.not {
+			if strings.Contains(text, not) {
+				t.Errorf("search %v: %q in\n%s", tc.args, not, text)
+			}
 		}
 	}
 }
@@ -389,6 +442,8 @@ func TestThisIsTheSessionAsking(t *testing.T) {
 		{"claude-code", &Caller{Session: fixture.Alpha, Dirs: []string{"/work/beta"}}, "brief", map[string]any{"ref": "this"},
 			[]string{`[ref "this" is ` + alpha + `: the session Claude Code named when it started this server (CLAUDE_CODE_SESSION_ID).]` + "\n\n# Session brief: Fix flaky test"}},
 		{"claude-code", &Caller{Session: fixture.Alpha}, "read", map[string]any{"ref": "this#1"}, []string{`[ref "this" is ` + alpha, "go test ./...", "The test depended on map order"}},
+		{"claude-code", &Caller{Session: fixture.Alpha}, "search", map[string]any{"query": "map order", "session": "this"},
+			[]string{`[ref "this" is ` + alpha + `: the session Claude Code named when it started this server (CLAUDE_CODE_SESSION_ID).]` + "\n\n1 turn in 1 session", alpha + "#1"}},
 		{"claude-code", &Caller{Session: "cccc3333-0000-4000-8000-000000000003", Dirs: []string{"/work/beta"}}, "brief", map[string]any{"ref": "This", "since": "all"},
 			[]string{`[ref "this" is ` + beta + `: the Claude Code session most recently written to in /work/beta. The session CLAUDE_CODE_SESSION_ID names, cccc3333-0000-4000-8000-000000000003, is not in the index: Claude Code started with --continue`, "## The whole session", "rotate the deploy key"}},
 		{"claude-code", &Caller{Project: "/work/beta", Dirs: []string{"/nowhere"}}, "read", map[string]any{"ref": "this"},
@@ -463,6 +518,22 @@ func TestThisIsTheSessionAsking(t *testing.T) {
 			}
 		}
 	}
+}
+
+// withMany is the fixture's history with a session of five turns that each say "rotate".
+func withMany(t *testing.T) *Server {
+	t.Helper()
+	h := fixture.Write(t)
+	h.WriteMany(t)
+	a, err := app.Open(h.Config(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Close() })
+	if _, err := a.Sync(t.Context(), index.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	return New(a, io.Discard)
 }
 
 // withCodex is the fixture's history and a Codex store beside it, with one thread in
@@ -891,7 +962,7 @@ func TestTheStatelessRevision(t *testing.T) {
 		info["name"] != "asq" || d["ttlMs"].(float64) <= 0 || d["cacheScope"] != "public" {
 		t.Errorf("server/discover = %v", d)
 	}
-	if l := result("2"); len(l["tools"].([]any)) != 10 || l["resultType"] != "complete" || l["ttlMs"].(float64) <= 0 || l["cacheScope"] != "public" {
+	if l := result("2"); len(l["tools"].([]any)) != 11 || l["resultType"] != "complete" || l["ttlMs"].(float64) <= 0 || l["cacheScope"] != "public" {
 		t.Errorf("tools/list = %v", l)
 	}
 	if c := result("3"); c["resultType"] != "complete" || !strings.Contains(fmt.Sprint(c["content"]), "/work/alpha") || c["_meta"] == nil || c["ttlMs"] != nil {
@@ -917,7 +988,7 @@ func TestTheStatelessRevision(t *testing.T) {
 	if r := result("9"); r["resultType"] != nil || r["_meta"] != nil {
 		t.Errorf("a call after initialize is answered as it was = %v", r)
 	}
-	if r := result("10"); r["resultType"] != nil || len(r["tools"].([]any)) != 10 {
+	if r := result("10"); r["resultType"] != nil || len(r["tools"].([]any)) != 11 {
 		t.Errorf("a revision of initialize named in _meta = %v", r)
 	}
 

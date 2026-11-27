@@ -71,7 +71,7 @@ Any other client: the URL, and that header in whatever form the client takes hea
 
 ## The tools
 
-All ten only read. Each takes the selection arguments that make sense for it — `source`,
+All eleven only read. Each takes the selection arguments that make sense for it — `source`,
 `project`, `branch`, `since`, `until` — plus `limit` / `offset` where there is a list, and
 `max_chars`.
 
@@ -84,7 +84,7 @@ nothing says, and the answer is an error saying so.
 
 | tool | answers | key arguments |
 |---|---|---|
-| `search` | Where was this said? The turns that match, best first, each with how it ended, the lines the words were found in and its answer — or, when no turn holds every word, the closest, marked with what each lacks, and how many turns the filters given left out that match whole | `query` ([syntax](cli.md#finding)), `recent`, `per_session`, `archived` |
+| `search` | Where was this said? The turns that match, best first, each with how it ended, the lines the words were found in — each ending with the step it is in — and its answer — or, when no turn holds every word, the closest, marked with what each lacks, and how many turns the filters given left out that match whole. With `session`, one session alone, as the page's *find in session* | `query` ([syntax](cli.md#finding)), `session`, `recent`, `per_session`, `archived` |
 | `sessions` | What was worked on, and which agents wait on the person? Recent sessions, one line of where and when — and where the transcript tells, whether the agent is working, waiting on a call, or idle — one of what | `text`, `state`, `archived`, `agents` |
 | `read` | A session at the depth asked for: its outline; some turns step by step; one step whole | `ref`, `turns`, `seq`, `full` |
 | `brief` | A handoff brief of a session, whole unless a part of it is named: what it added up to, then its latest turns — asked, changed and how each file stands now, failed and whether it passed later, concluded | `ref`, and one of `turn`, `from`, `since` |
@@ -94,10 +94,12 @@ nothing says, and the answer is an error saying so.
 | `digest` | What a stretch of work added up to, per project — how long agents worked and when, by weekday and hour, too — and the sessions behind it: each one's ref, title, how it ended and the last thing its agent said | |
 | `files` | Which turns read or changed a file, what was asked there, and whether the file is still as that turn left it | `path`, `changed` |
 | `projects` | The directories sessions ran in | |
+| `health` | Where asq stands: the version answering, the index and when it was last brought up to date, and one line per store — which CLIs' histories were found on this machine, where, and why one that is there could not be read | |
 
 The path an agent usually takes: `search` or `sessions` → a ref → `read` with the ref alone for
 the outline → `read` with `ref#N` for the turn that matters → `read` with `seq` for the one
-output worth seeing whole.
+output worth seeing whole. A hit's lines end with the step each is in, so `read` with `seq` can
+follow a `search` at once, without the turn being read first.
 
 `search` is written for an agent's way of asking — in its own words, which are seldom the
 history's: a word finds its other forms (*retries* finds *retried*), a commit's whole id finds
@@ -106,10 +108,12 @@ first turn, and a query no turn matches whole is answered with the turns that
 come closest, each saying which words it lacks, rather than with nothing. Each hit ends its first
 line with how the turn ended — `✓`, `✗2 failed, 1 passed later`, `✓ 1 failed, passed later`,
 `✗ error`, `⚠ interrupted` — and shows the turn's answer, and the error its work ended on, so
-that which turn to `read` can be decided without reading each. `sessions`, `read`'s outline and
-`digest` count failed calls the same way: a failure the same command passed later is said to
-have, and a turn whose failures all did is `✓`. A turn whose work ended on an error says so in
-each of them, and in a brief, which hands it over as failed rather than cut off or still going.
+that which turn to `read` can be decided without reading each. Each line the words were found
+in ends with the step it is in, `[57]`, the number `read` takes as `seq`; a session's title is
+no step, and its line carries none. `sessions`, `read`'s outline and `digest` count failed
+calls the same way: a failure the same command passed later is said to have, and a turn whose
+failures all did is `✓`. A turn whose work ended on an error says so in each of them, and in a
+brief, which hands it over as failed rather than cut off or still going.
 
 ```
 No turn holds all 3 words; none holds “queue”.
@@ -132,6 +136,12 @@ No turn the filters select holds “retry”.
 7 turns in 7 sessions outside them match: drop since to see them.
 ```
 
+A search of one session — `session`, a ref as the other tools print it, or
+[`this`](#this-the-agents-own-session) — is the page's *find in session*: that session's own
+turns, archived or not, and none of its subagents' transcripts, which are sessions of their
+own. Find wants all of them, so `per_session` is not applied to such a search unless it is
+given. A ref that names no session is an error that says `sessions` lists them.
+
 An agent is told when to take that path before it calls anything. The server's `instructions`
 name the moments — the user pointing at earlier work or another agent's, an error or an approach
 that looks familiar, a command that keeps failing, work handed to another agent or machine, a
@@ -141,9 +151,10 @@ nothing else of the server; Claude Code does so by default.
 
 ### `this`: the agent's own session
 
-`read` and `brief` take the ref `this` (and `this#4`): the session the agent asking is working
-in — to hand it to another agent, or to read back what it did before a compaction. The answer
-opens with a line in brackets that says which session it took, and why:
+`read` and `brief` take the ref `this` (and `this#4`), and `search` takes it as `session`: the
+session the agent asking is working in — to hand it to another agent, to read back what it did
+before a compaction, or to find where in it something was said. The answer opens with a line in
+brackets that says which session it took, and why:
 
 - Codex names, in each tool call its model makes, the thread the call was made in
   (`_meta.threadId`), and that thread is the one, when the index has it — over stdio and over
@@ -236,7 +247,10 @@ seconds. While a first read of a large history is still under way, the answer co
 been read so far and ends with a note saying so. A store that could not be read is named the
 same way, so an empty answer is not mistaken for an empty history; and when no store held a
 session at all, the note says where asq looked — each store's place, and whether it is there
-and could be read.
+and could be read. `health` says all of it in one answer — the version answering, the index and
+when it was last brought up to date, and each store with what it holds, or why it could not be
+read — for an agent asked which agents' history it can read or whether sessions may be missing;
+its own answer carries none of the notes, which it would repeat.
 
 **Errors a model can act on.** A question that cannot be answered — a ref that names nothing, an
 argument misspelled, a time that does not parse — comes back as the tool's answer with

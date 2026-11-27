@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/index"
@@ -35,6 +36,10 @@ type tool struct {
 	props []prop
 	need  []string
 	run   func(ctx context.Context, s *Server, a *args) (string, error)
+	// bare says the answer says for itself what the notes at the end of an answer say —
+	// where the index stood, which stores could not be read, where asq looked when it
+	// found nothing — so that it is not said twice. health.
+	bare bool
 }
 
 // prop is one argument of a tool.
@@ -49,6 +54,7 @@ var (
 	pBranch  = prop{"branch", "string", "Only sessions that opened on a git branch containing this."}
 	pSince   = prop{"since", "string", "Only after this: a span back from now (90m, 12h, 7d, 2w), a date (2026-09-01), or today, yesterday or a weekday (monday) — the midnight that day began with on the clock of the machine asq runs on, which may not be yours."}
 	pUntil   = prop{"until", "string", "Only before this; same forms as since."}
+	pSession = prop{"session", "string", "Only this one session's own turns, archived or not — to find where something was said in a long session. A session as the other tools print it, or \"this\" for the one you are working in. Its subagents' transcripts are not in it."}
 	pLimit   = prop{"limit", "integer", "How many to return."}
 	pOffset  = prop{"offset", "integer", "Skip this many first: the next page."}
 	pChars   = prop{"max_chars", "integer", "Cut the answer at about this many characters (default 16000)."}
@@ -60,7 +66,8 @@ var tools = []tool{
 		name:  "search",
 		title: "Search the history",
 		about: "Full-text search over every turn of every session: what was asked, what the agent replied and thought, the tools it called and what they printed, and the session's title, searched with its first turn. " +
-			"Returns the matching turns, best first, each with its ref (store/id#turn), how the turn ended (✓ no call failed, or each that did the same command passed later: ✓ 1 failed, passed later; ✗N failed, and how many of those passed later; ✗ error, with the error the turn's work ended on; ⚠ interrupted), the lines the words were found in, and the turn's final answer. " +
+			"Returns the matching turns, best first, each with its ref (store/id#turn), how the turn ended (✓ no call failed, or each that did the same command passed later: ✓ 1 failed, passed later; ✗N failed, and how many of those passed later; ✗ error, with the error the turn's work ended on; ⚠ interrupted), the lines the words were found in — each ending with the step it is in, [2], which read takes as seq — and the turn's final answer. " +
+			"With session, only that one session's own turns are searched, archived or not, and all of them: per_session is not applied unless it is given. " +
 			"When no turn holds every word, it says which words no turn holds at all and returns the turns that hold the most of them, marked as partial matches, each with the words it lacks — " +
 			"and when the filters given left out turns that match whole, how many, and which filter to drop to see them. " +
 			"Use it for \"how did I solve this before\", \"where did that error come up\", \"which session touched X\". " +
@@ -68,10 +75,10 @@ var tools = []tool{
 			"ask:word, reply:word, thinking:word, tool:word, output:word and title:word confine a word to the person's ask, the agent's reply, its reasoning, a tool's input, a tool's output, or the session's title.",
 		props: []prop{
 			{"query", "string", "What to look for, e.g.  connection refused  ·  \"rate limit\" -test  ·  ask:deploy output:ECONNREFUSED"},
-			pSource, pProject, pBranch, pSince, pUntil,
+			pSource, pProject, pBranch, pSince, pUntil, pSession,
 			{"archived", "boolean", "Include sessions their CLI has archived."},
 			{"recent", "boolean", "Newest first instead of best match first."},
-			{"per_session", "integer", "At most this many turns of any one session (default 3; 0 for no bound)."},
+			{"per_session", "integer", "At most this many turns of any one session (default 3; 0 for no bound). Not applied to a search of one session (session) unless given."},
 			pLimit, pOffset, pChars,
 		},
 		need: []string{"query"},
@@ -194,6 +201,16 @@ var tools = []tool{
 		about: "The working directories sessions ran in, most recently used first, with how many sessions and turns each holds and which CLIs worked there.",
 		props: []prop{pSource, pProject, pSince, pUntil, pLimit, pChars},
 		run:   runProjects,
+	},
+	{
+		name:  "health",
+		title: "Where asq stands",
+		about: "The version answering and whether an upgrade replaced its program since it started (it goes on as the old one until restarted); the index — where, how large, how many sessions and turns — and when it was last brought up to date, or that it is still reading; " +
+			"and one line per store: which CLIs' histories were found on this machine, where, how many transcripts each holds, and why one that is there could not be read. When no store held a session, it says where asq looked. " +
+			"Use it for \"which agents' history can you read\", \"what version are you\", and whenever an answer says sessions may be missing.",
+		props: []prop{pChars},
+		run:   runHealth,
+		bare:  true,
 	},
 }
 
@@ -363,6 +380,9 @@ func (s *Server) run(ctx context.Context, t tool, given map[string]any, who aske
 	if a.here != "" {
 		notes = append(notes, a.here)
 	}
+	if t.bare {
+		return text + bracketed(notes), nil
+	}
 	return text + bracketed(append(notes, s.notes(ctx, at)...)), nil
 }
 
@@ -522,12 +542,30 @@ func (a *args) query() app.Query {
 func runSearch(ctx context.Context, s *Server, a *args) (string, error) {
 	q := a.query()
 	q.Agents = true // a subagent's turns are found with the rest
+	// A session named confines the search to its own turns, archived or not, as the page's
+	// find in a session asks: its subagents' transcripts are sessions of their own. The
+	// line that says which session "this" was taken to be opens the answer, as a read's does
+	var one index.Session
+	inOne, said := false, ""
+	if ref := a.str("session"); ref != "" {
+		var err error
+		if one, _, said, err = s.session(ctx, ref, a.who); err != nil {
+			if _, this := thisRef(ref); errors.Is(err, index.ErrNotFound) && !this {
+				err = fmt.Errorf("%w — sessions lists the refs there are", err)
+			}
+			return "", err
+		}
+		inOne, q.Archived = true, true
+	}
 	f, err := s.App.Filter(q)
 	if err != nil {
 		return "", err
 	}
+	f.SID = one.SID()
 	per := a.num("per_session", 3)
-	if a.has("per_session") && per <= 0 {
+	// Find wants all of a session: the bound on turns of one session, which keeps one
+	// session from filling a page, is not put on a search of one session unless it is asked
+	if (inOne && !a.has("per_session")) || (a.has("per_session") && per <= 0) {
 		per = -1
 	}
 	opts := index.SearchOptions{Limit: a.limit(8), Offset: a.offset(), PerSession: per, Recent: a.flag("recent")}
@@ -536,6 +574,9 @@ func runSearch(ctx context.Context, s *Server, a *args) (string, error) {
 		return "", err
 	}
 	var b bytes.Buffer
+	if said != "" {
+		b.WriteString(said + "\n\n")
+	}
 	render.Hits(&b, res, opts.Offset, style())
 	if len(res.Hits) > 0 {
 		b.WriteString("\nread with ref=\"<ref>\" opens a turn step by step.\n")
@@ -545,6 +586,98 @@ func runSearch(ctx context.Context, s *Server, a *args) (string, error) {
 	}
 	return b.String(), nil
 }
+
+// runHealth says where the program stands in words: what the notes at the end of an answer
+// say, said once and whole — and what only asq index and the page's status bar said before,
+// the version and the size of the index among them. doctor's reading of each store, of
+// whether its format has drifted, stays with the command line: it is a person's.
+func runHealth(ctx context.Context, s *Server, a *args) (string, error) {
+	h, err := s.App.Health(ctx)
+	if err != nil {
+		return "", err
+	}
+	looked, err := s.App.NothingFound(ctx)
+	if err != nil {
+		return "", err
+	}
+	unread := map[string]string{}
+	for _, w := range h.Warnings {
+		unread[w.Source] = txt.OneLine(w.Error, 200)
+	}
+	st := style()
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "asq %s", h.Version)
+	if h.Replaced {
+		fmt.Fprintf(&b, " — an upgrade has been installed over %s since this server started: it answers as the version it started with until it is restarted", st.Path(h.Executable))
+	}
+	sessions := plural(h.Totals.Sessions, "session")
+	if h.Totals.Archived > 0 {
+		sessions += fmt.Sprintf(" (%d archived)", h.Totals.Archived)
+	}
+	line := fmt.Sprintf("\nIndex %s · %s", st.Path(h.Index), mb(h.Totals.Bytes))
+	if h.Totals.Free >= 1<<20/20 {
+		line += fmt.Sprintf(" (%s of it free)", mb(h.Totals.Free))
+	}
+	line += " · " + sessions + " · " + plural(h.Totals.Turns, "turn")
+	if h.Totals.Agents > 0 {
+		line += " · " + plural(h.Totals.Agents, "subagent transcript")
+	}
+	b.WriteString(line + "\n")
+	switch {
+	case h.Sync.Running:
+		fmt.Fprintf(&b, "The index is reading the history (%s): every answer covers what has been read so far.\n", h.Sync.Progress())
+	case h.Sync.At.IsZero():
+		b.WriteString("The index has not been brought up to date yet: every answer covers what has been read so far.\n")
+	default:
+		fmt.Fprintf(&b, "Last brought up to date %s, in %s.\n", txt.Ago(h.Sync.At, time.Now()), txt.Duration(time.Duration(h.Sync.Took)*time.Millisecond))
+	}
+
+	// One line per store: what was found there, in the words the notes under an answer use,
+	// and where it is. When no store held a session, they are also where asq looked, and the
+	// answer says so in its body
+	states := make([]string, len(h.Stores))
+	width := 20
+	for i, store := range h.Stores {
+		held := ""
+		if store.Transcripts > 0 {
+			held = fmt.Sprintf("; the index holds %s of it", plural(store.Transcripts, "transcript"))
+		}
+		switch {
+		case !store.Found:
+			states[i] = "not there"
+		case unread[store.Source] != "":
+			states[i] = "there, and could not be read (" + unread[store.Source] + ")" + held
+		case store.Transcripts == 0:
+			states[i] = "there, and empty"
+		default:
+			states[i] = plural(store.Sessions, "session") + " · " + plural(store.Transcripts, "transcript")
+		}
+		width = max(width, min(utf8.RuneCountInString(states[i]), 70))
+	}
+	if len(looked) > 0 {
+		b.WriteString("\nNo CLI's sessions were found on the machine asq runs on. It looked in:\n")
+	} else {
+		b.WriteString("\nStores:\n")
+	}
+	for i, store := range h.Stores {
+		fmt.Fprintf(&b, "  %-12s %-*s   %s\n", store.Source, width, states[i], st.Path(store.Location))
+	}
+	if len(looked) > 0 {
+		b.WriteString("A store somewhere else is named with ASQ_PATH, in the environment of the process running asq; asq doctor there says more.\n")
+	}
+	return b.String(), nil
+}
+
+// plural is n things in words: 1 session, 3 transcripts.
+func plural(n int, thing string) string {
+	if n == 1 {
+		return "1 " + thing
+	}
+	return strconv.Itoa(n) + " " + thing + "s"
+}
+
+// mb is a size in megabytes, to a tenth.
+func mb(n int64) string { return strconv.FormatFloat(float64(n)/(1<<20), 'f', 1, 64) + " MB" }
 
 func runSessions(ctx context.Context, s *Server, a *args) (string, error) {
 	q := a.query()

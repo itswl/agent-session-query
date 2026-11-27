@@ -290,7 +290,7 @@ func outside(w io.Writer, o *index.Outside, st Style) {
 }
 
 // hit prints one turn a search found, numbered n: where and when, how it ended, the ask,
-// the lines the words were found in, and the answer.
+// the lines the words were found in — each ending with the step it is in — and the answer.
 func hit(w io.Writer, n int, h index.Hit, st Style) {
 	where := []string{h.At.Local().Format("2006-01-02 15:04")}
 	if h.Session.Cwd != "" {
@@ -319,7 +319,14 @@ func hit(w io.Writer, n int, h index.Hit, st Style) {
 		if m.Tool != "" {
 			text = m.Tool + " › " + text
 		}
-		fmt.Fprintf(w, "   %s %s\n", st.dim(fmt.Sprintf("%-6s", label)), st.fit(text, 10))
+		// A line ends with the step the words are in, as a turn's own lines do, so that
+		// read takes it as seq without the turn being read first. A session's title is
+		// no step. What is left of the width is the snippet's: the number stays.
+		step := ""
+		if m.Kind != index.KindTitle {
+			step = fmt.Sprintf("  [%d]", m.Seq)
+		}
+		fmt.Fprintf(w, "   %s %s%s\n", st.dim(fmt.Sprintf("%-6s", label)), st.fit(text, 10+len(step)+len("…")), st.dim(step))
 	}
 	if answer != "" {
 		fmt.Fprintf(w, "   %s %s\n", st.dim("answer"), answer)

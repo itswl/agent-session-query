@@ -81,8 +81,11 @@ how the turn ended — `✓`, `✗2 failed` (with how many of those calls the sa
 later, in that turn or the three after it: `✗2 failed, 1 passed later`; once each has,
 `✓ 1 failed, passed later`), `✗ error` when its work ended on an error, `⚠ interrupted` —
 then the ask, the lines the words were found in, labelled with where (`reply`, `thinking`, a
-tool's `input`, `command` or `output`, the session's `title`), the turn's `answer`, and the
-first line of the `error` it ended on: enough to tell which turn to open without opening each.
+tool's `input`, `command` or `output`, the session's `title`) and ending with the step each is
+in, `[2]` — the number `show --seq` opens, so that a step is reached without reading the turn
+first; a title match is no step, and carries no number — the turn's `answer`, and the
+first line of the `error` it ended on: enough to tell which turn, and which step, to open
+without opening each.
 
 | query | finds turns where |
 |---|---|
@@ -149,7 +152,11 @@ None outside them matches either, though some hold “retry”.
 ```
 
 `--recent` orders by time instead of relevance; `--per-session N` bounds how many turns of one
-session are shown (default 3, `0` for no bound).
+session are shown (default 3, `0` for no bound). `--session <ref>` searches one session alone —
+the page's *Find in this session*, on the command line: its own turns, archived or not, and
+none of its subagents' transcripts, which are sessions of their own. Find wants all of them, so
+`--per-session` is not applied to such a search unless it is given. The ref is as `asq ls`
+prints it; a `#N` on it names no turn here.
 
 **`asq files <path>`** — the turns that named a file, newest first, each with the ask that led
 to it. `--changed` keeps only turns that changed it. Each says how the file stands now against

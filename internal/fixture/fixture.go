@@ -14,6 +14,7 @@ package fixture
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -112,6 +113,33 @@ func Write(t testing.TB) History {
 			m{"type": "text", "text": "Rotated. The new key is " + Secret + " and the old one is revoked."}),
 	)
 	return h
+}
+
+// The session WriteMany adds: more turns of one session than Write's sessions have.
+const Many = "eeee5555-0000-4000-8000-000000000005"
+
+// WriteMany adds, in /work/delta, a session of five turns that each say "rotate", the
+// latest twenty minutes old — for whatever bounds how many turns of one session are shown.
+// It returns the transcript's path.
+func (h History) WriteMany(t testing.TB) string {
+	t.Helper()
+	at := func(ago time.Duration) string { return h.Now.Add(-ago).Format(time.RFC3339Nano) }
+	path := filepath.Join(h.Dir, "-work-delta", Many+".jsonl")
+	var rows []any
+	for i := 1; i <= 5; i++ {
+		ago := time.Duration(25-i) * time.Minute
+		rows = append(rows,
+			m{"type": "user", "uuid": fmt.Sprintf("m-u%d", i), "timestamp": at(ago), "sessionId": Many, "cwd": "/work/delta", "gitBranch": "main",
+				"version": "2.1.300", "message": m{"role": "user", "content": fmt.Sprintf("rotate key %d", i)}},
+			m{"type": "assistant", "uuid": fmt.Sprintf("m-a%d", i), "timestamp": at(ago - 10*time.Second), "sessionId": Many,
+				"message": m{"id": fmt.Sprintf("msg_m%d", i), "role": "assistant", "model": "claude-opus-5",
+					"content":     []m{{"type": "text", "text": fmt.Sprintf("Rotated key %d.", i)}},
+					"usage":       m{"input_tokens": 5, "output_tokens": 5},
+					"stop_reason": "end_turn"}},
+		)
+	}
+	write(t, path, rows...)
+	return path
 }
 
 // The session WritePictures adds, and the pictures it carries as a transcript holds them:

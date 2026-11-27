@@ -17,7 +17,7 @@ One direction of dependency, top to bottom; nothing below knows what is above it
 cmd/asq                 main: hands the arguments to cli
 internal/cli            the command line: flags in, text or JSON out
 internal/server         the HTTP API, the guards and the token, the live stream; serves web/
-internal/mcp            the MCP server: stdio and HTTP, ten tools and two prompts
+internal/mcp            the MCP server: stdio and HTTP, eleven tools and two prompts
 internal/otel           OTLP export: what a turn becomes, the ledger of what was sent
 internal/skill          the agent-sessions skill, built in: what asq skill prints
 internal/service        asq serve kept running: launchd, systemd, Task Scheduler
@@ -45,8 +45,28 @@ find here — and a test fails when they differ: edit both.
 
 The three faces — `cli`, `server`, `mcp` — are thin on purpose. Each parses its own kind of
 request, calls the same `app` and `index` operations, and renders the answer its own way. A new
-question is answered in `index` (or `app`) once and then exposed three times, in a few lines
-each.
+operation is written in `index` (or `app`) once and then exposed wherever an asker can reach
+it — a person at a terminal, the page, a model — in a few lines each. An operation one of them
+leaves out is a gap rather than a design unless the table below says why; an operation added
+to one of them brings its row up to date. The page asks only the API, so the two middle cells
+go together: what the API has and the page does not is there for a script.
+
+| operation | command line | HTTP API | the page | MCP |
+|---|---|---|---|---|
+| sessions listed, and searched by title or directory | `ls` | `GET /api/sessions` | the list | `sessions` |
+| turns by their words, in every session or in one | `search`, with `--session` | `GET /api/search`, with `session` | the search, and *find in session* | `search`, with `session` |
+| a session read: outline, turns, one step | `show` | `…/turns`, `…/items/{seq}` | a session | `read` |
+| a brief of one session, a pack of several | `brief`, `pack` | `…/brief`, `GET /api/pack` | the brief of the session open | `brief`, `pack`; the prompts `handoff` and `catchup` |
+| the command that resumes a session in its CLI | `resume` | the session's `resume` | shown, to copy | said in a brief |
+| usage, failures, digest, files | the commands of those names | the endpoints of those names | views of those names | tools of those names |
+| the directories sessions ran in | `projects` | `GET /api/projects` | the project picker | `projects` |
+| a session followed as it is written | `show -f` | `GET /api/events` | live | — an agent asks turn by turn: `sessions(state="working")` and `read(turns="last")` are its poll; the server offers no subscriptions, and nothing it offers changes while it runs |
+| a session written to a file | `export` | `…/export` | the download links | — a model reads text in a context, which `read` gives; a file is for programs |
+| why a line is as it is | `why` | — | — | — until #78 brings it to the API and MCP |
+| a copy kept of a session its CLI deletes | `keep` | `POST …/keep` | the Keep control | — until #77: the one operation that writes, and only to asq's own state |
+| a picture pasted into an ask or returned by a tool | — text only | `…/attachments/{n}` | beneath its step | — until #79: an answer is text |
+| where asq stands: version, index, each store | `doctor`, `index` | `GET /api/health` | the status bar | `health`, without doctor's reading of a store's format and without the guard counts, which are for whoever runs the server |
+| asq itself: served, probed, kept running, traced, taken off | `serve`, `ping`, `service`, `otel`, `uninstall` — and `mcp` and `skill`, which open the last column | — | — | — a person's, about asq rather than about the history |
 
 ## How a transcript becomes turns
 

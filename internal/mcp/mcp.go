@@ -78,8 +78,8 @@ const Instructions = "The session history of every agent CLI on the machine asq 
 	"- a command keeps failing — search for its error, and failures, which says where the same command later passed, and by command what is still open;\n" +
 	"- work is handed to another agent or machine — brief for one session, whole (ref \"this\" is your own), pack for several;\n" +
 	"- the question is what was done or spent over a stretch of time — digest for the work, usage for the tokens.\n" +
-	"read opens a session by the ref every line of an answer starts with: the outline first, then ref#N for one turn, then seq for one step whole. " +
-	"files names the turns that read or changed a file; projects, the directories sessions ran in. Narrow with project, source or since rather than raising limit.\n" +
+	"read opens a session by the ref every line of an answer starts with: the outline first, then ref#N for one turn, then seq for one step whole — a search's lines end with that number. To find where something was said in one long session, search with session (\"this\" for your own).\n" +
+	"files names the turns that read or changed a file; projects, the directories sessions ran in; health, which CLIs' histories were found and what version answers. Narrow with project, source or since rather than raising limit.\n" +
 	"What the repository and this conversation say comes first: the history says what was done, not what is true now."
 
 // metaClientInfo is where a request of the 2026-07-28 revision says which client sent it.

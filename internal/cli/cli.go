@@ -290,6 +290,7 @@ func cmdSearch(ctx context.Context, args []string, io *streams) error {
 	c := newCommand("search", io.err).selection(10).budgeted()
 	recent := c.fs.Bool("recent", false, "newest first, instead of best match first")
 	per := c.fs.Int("per-session", 3, "at most this many turns of one session (0: no bound)")
+	session := c.fs.String("session", "", "only this one session's own turns, archived or not, by the ref asq ls prints")
 	rest, err := c.parse(args)
 	if err != nil {
 		return err
@@ -303,10 +304,25 @@ func cmdSearch(ctx context.Context, args []string, io *streams) error {
 	}
 	defer a.Close()
 	c.q.Agents = true // a subagent's turns are found with the rest
+	// A session named is searched for its own turns, archived or not, as the page's find in
+	// a session asks: its subagents' transcripts are sessions of their own, and are not in
+	// it. Find wants all of them, so the bound on turns of one session — which keeps one
+	// session from filling a page — is not put on it unless it is given
+	var one index.Session
+	if *session != "" {
+		if one, _, err = resolve(ctx, a, *session); err != nil {
+			return err
+		}
+		c.q.Archived = true
+		if !named(c.fs, "per-session") {
+			*per = -1
+		}
+	}
 	f, err := a.Filter(c.q)
 	if err != nil {
 		return usageError{err}
 	}
+	f.SID = one.SID()
 	if *per == 0 {
 		*per = -1
 	}

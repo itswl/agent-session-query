@@ -188,7 +188,9 @@ where `path` must be whole and under a directory a session ran in.
 | `asq show claude/3f2a --seq 12` | one step whole: a tool call's full input and output |
 
 Step by step, a tool call is one line — name, command, outcome — and only a failed one shows the
-end of its output. `--full` prints every output and all reasoning whole. An outcome is `✓`,
+end of its output. A call whose result carried pictures says how many, `✓ · 2 pictures`, since a
+screenshot is otherwise a call that seems to have returned nothing; the page shows them beneath that
+step. `--full` prints every output and all reasoning whole. An outcome is `✓`,
 `✗ failed`, `⚠ interrupted` or `(no result)`; a call with no mark at all is one whose CLI did not
 record how it ended.
 

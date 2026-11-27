@@ -64,7 +64,7 @@ go together: what the API has and the page does not is there for a script.
 | a session written to a file | `export` | `…/export` | the download links | — a model reads text in a context, which `read` gives; a file is for programs |
 | why a line is as it is: the commit that last changed it, and the turns behind it | `why` | `GET /api/why` | — asked of an editor or a shell, not of the history | `why`. Over HTTP both run git where the path says, so both want it whole and under a directory a session ran in |
 | a copy kept of a session its CLI deletes | `keep` | `POST …/keep` | the Keep control | `keep`, for one session: the one operation that writes, and only to asq's own state. `--all`, `--off` and `--dir` are a person's, and are not given to an agent |
-| a picture pasted into an ask or returned by a tool | — text only | `…/attachments/{n}` | beneath its step | — until #79: an answer is text |
+| a picture pasted into an ask or returned by a tool | — text only; a tool call's line counts them | `…/attachments/{n}` | beneath its step | `read`, with `seq` and `picture=n`: that file as an image block beside the text, only when it is asked for, of the kinds the page shows and up to 2 MB |
 | where asq stands: version, index, each store | `doctor`, `index` | `GET /api/health` | the status bar | `health`, without doctor's reading of a store's format and without the guard counts, which are for whoever runs the server |
 | asq itself: served, probed, kept running, traced, taken off | `serve`, `ping`, `service`, `otel`, `uninstall` — and `mcp` and `skill`, which open the last column | — | — | — a person's, about asq rather than about the history |
 

@@ -88,7 +88,7 @@ nothing says, and the answer is an error saying so.
 |---|---|---|
 | `search` | Where was this said? The turns that match, best first, each with how it ended, the lines the words were found in — each ending with the step it is in — and its answer — or, when no turn holds every word, the closest, marked with what each lacks, and how many turns the filters given left out that match whole. With `session`, one session alone, as the page's *find in session* | `query` ([syntax](cli.md#finding)), `session`, `recent`, `per_session`, `archived` |
 | `sessions` | What was worked on, and which agents wait on the person? Recent sessions, one line of where and when — and where the transcript tells, whether the agent is working, waiting on a call, or idle — one of what | `text`, `state`, `archived`, `agents` |
-| `read` | A session at the depth asked for: its outline — which says whether asq keeps a copy of the session, and whether it can; some turns step by step; one step whole | `ref`, `turns`, `seq`, `full` |
+| `read` | A session at the depth asked for: its outline — which says whether asq keeps a copy of the session, and whether it can; some turns step by step; one step whole, and one of its files sent as a picture | `ref`, `turns`, `seq`, `picture`, `full` |
 | `brief` | A handoff brief of a session, whole unless a part of it is named: what it added up to, then its latest turns — asked, changed and how each file stands now, failed and whether it passed later, concluded | `ref`, and one of `turn`, `from`, `since` |
 | `pack` | Several sessions as one document, oldest first: each one's first ask, its last and what it concluded | `turns` |
 | `usage` | Tokens in and out, how many were reasoning, the cache hit rate, and how long agents worked | `by` |
@@ -127,7 +127,9 @@ knows whether there is something to ask about.
 The path an agent usually takes: `search` or `sessions` → a ref → `read` with the ref alone for
 the outline → `read` with `ref#N` for the turn that matters → `read` with `seq` for the one
 output worth seeing whole. A hit's lines end with the step each is in, so `read` with `seq` can
-follow a `search` at once, without the turn being read first.
+follow a `search` at once, without the turn being read first. A step read whole numbers the files
+it carried, and `picture=n` with the same `seq` sends one of them to a model that can see
+([below](#how-the-answers-are-shaped)).
 
 `search` is written for an agent's way of asking — in its own words, which are seldom the
 history's: a word finds its other forms (*retries* finds *retried*), a commit's whole id finds
@@ -262,13 +264,26 @@ spells out and what the stretch adds up to, so that where things stood at the en
 last section. Only a budget smaller than the brief's head and that section together — under
 about a thousand characters — cuts it. `digest` names fewer of each project's sessions, the same
 number for each, before it is cut, so that the last project's counts are not left out for the
-first one's sessions.
+first one's sessions. The picture `read` sends with `picture=n` is not text, and is not held to the
+budget.
 
-**Text only.** A picture pasted into an ask or returned by a tool is its mark where it came,
-`[image · png · 48 KB]`, and not the picture: the page shows it, beneath that step.
+**Text, and a picture only when one is asked for.** A picture pasted into an ask or returned by a
+tool is its mark where it came, `[image · png · 48 KB]`, and not the picture: the page shows it,
+beneath that step. A tool call's line says how many pictures its result carried, since a screenshot
+is otherwise a call that seems to have returned nothing. A step read whole numbers its files,
+`files: [0] image/png 70 bytes · [1] image/gif 43 bytes`, and `read` with `seq` and `picture=n`
+sends file `n` as an image block beside the text that says which step's file it is. Only what the
+page shows is sent: a PNG, JPEG, GIF or WebP the transcript holds and by the type its bytes are —
+never a file the transcript only names, whose bytes could be any file on the machine — and no larger
+than 2 MB, since sent as base64 it is a third larger again, and meets whatever limit the client and
+the model's API put on one picture. Anything else is an error saying why, and is not shrunk: one
+past the limit can still be seen on the page.
 
 **Masked.** Whatever is handed to a model leaves the machine with it, so secret-shaped strings
 are replaced with `[redacted]` in every answer (see [what is cleaned](model.md#what-is-cleaned-and-what-is-not)).
+A picture is not: masking covers text, not what a picture shows, and a screenshot with a secret on
+screen goes as it was taken. That is why a picture is sent only when `picture=n` asks for it, with
+a note under the text saying so.
 
 **Honest about freshness.** A call first brings the index up to date, waiting up to eight
 seconds. While a first read of a large history is still under way, the answer covers what has
@@ -299,7 +314,8 @@ before any tool is called:
 > Ask the person before you call it.
 
 It is the calling agent, not the transcript, that decides what happens next. Give this server to
-agents you would let read your history, and be as careful about what such an agent is allowed to
+agents you would let read your history — and look at the pictures in it, which `read` can send to a
+model that asks — and be as careful about what such an agent is allowed to
 *do* afterwards as you would with any tool that reads untrusted text. Since `keep` that has a
 second edge: no transcript can make an agent keep it, but an agent that reads one decides for
 itself what is worth a copy, and the server asks it — in its `instructions` and in the tool's
@@ -362,3 +378,7 @@ transports:
 On stdio each request runs on its own, so a slow search does not hold up a ping, and
 `notifications/cancelled` stops the request it names. stdout carries the protocol and nothing
 else; anything the server has to say goes to stderr.
+
+A tool's answer is one block of text. `read` asked for a picture answers with an `image` block
+after it — `data` in base64, `mimeType` the type its bytes have — and over stdio that is one line
+too, up to about 2.8 MB of it.

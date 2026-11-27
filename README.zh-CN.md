@@ -256,7 +256,7 @@ asq skill > ~/.agents/skills/agent-sessions/SKILL.md    # Codex、Gemini CLI、O
 Windows 上要在 cmd 里执行，写法见 [A skill](docs/mcp.md#a-skill)。
 
 十三个工具——`search`、`sessions`、`read`、`brief`、`pack`、`usage`、`failures`、`digest`、`files`、
-`projects`、`why`、`health` 这十二个只读，`keep` 会先问过你再把一个会话复制进 asq 自己的文件夹——返回紧凑的纯文本而不是 JSON，按预算截断（调用方可以调大），并遮掉形似密钥的字符串：模型读到的每个字都
+`projects`、`why`、`health` 这十二个只读，`keep` 会先问过你再把一个会话复制进 asq 自己的文件夹——返回紧凑的纯文本而不是 JSON（只有 `read` 被按序号要某一张图时才带图，图不遮蔽），按预算截断（调用方可以调大），并遮掉形似密钥的字符串：模型读到的每个字都
 按 token 计费，而且会随它离开这台机器。两个 prompt 在 Claude Code、Gemini CLI 和 OpenCode 里成为斜杠命令。在 Claude Code 里，
 `/asq:handoff` 把这个仓库里最新的另一个会话（不论哪个 CLI 的）整个写成简报放进对话，交给当前 agent 接手；
 `/asq:catchup` 放进这里最近一周的会话。→ [MCP](docs/mcp.md)

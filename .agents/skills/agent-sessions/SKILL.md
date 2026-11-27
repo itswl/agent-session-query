@@ -56,7 +56,8 @@ Two ways to ask, the same answers either way:
 | "Which of my agents are waiting on me?" / "Is it still running?" | `sessions(state="waiting,idle")`, or `state="working"`. A line says `working`, `waiting on <tool>: <command>` — a command still running or a permission prompt, which the record cannot tell apart — or `idle`, the agent done. Said for Claude Code, Codex, Gemini CLI, OpenCode and DeepSeek Harness, from what their transcripts say, not from a look at a process |
 | "What happened in that session?" | `read(ref="…")` — the outline: every turn's ask and how it ended, plus its subagents |
 | "What did it do in turn 4?" | `read(ref="…#4")` — step by step: replies, reasoning, each tool call and its outcome, numbered `[seq]` |
-| "Show me the whole output of that command" | `read(ref="…", seq=57)` — one step whole |
+| "Show me the whole output of that command" | `read(ref="…", seq=57)` — one step whole, its files numbered in the last line |
+| "What did the page look like when it failed?" / "What was in that screenshot?" | `read(ref="…", seq=57, picture=0)` — that file of the step, sent back as a picture; only when the question needs what it showed, since a picture is paid for by the token and is not masked |
 | "How did the last turn go?" | `read(ref="…", turns="last")` |
 | "Pick this up" / "Hand this to another agent" | `brief(ref="…")` — the whole session: what it added up to, then its latest turns, each with what was asked, files changed and how each stands now, what failed and whether it passed later, how it ended; and the command that resumes it |
 | "Hand *this* session over" | `brief(ref="this")` — your own session; the answer's first line says which it took. Over stdio, and over HTTP from Codex. From a shell, `asq brief` with no ref: the newest session in the current directory |
@@ -101,8 +102,13 @@ turn prints every output whole — on a turn with build logs that is far more th
   of the work: a session counts it (`2 failed, 1 passed later`), and a turn whose failures all
   passed later is `✓ 1 failed, passed later`. `✗` is what did not.
 - A picture pasted into an ask or returned by a tool reads as `[image · png · 48 KB]` where it
-  came: the tools return text, and the picture is not in it. Say a screenshot was there, not
-  what it showed; the user can see it on the page, beneath that step.
+  came, and a tool call's line says how many pictures its result carried. When the question needs
+  what one showed, read that step whole with `seq`: its last line numbers the files,
+  `files: [0] image/png 70 bytes · [1] image/gif 43 bytes`, and `picture=n` with the same `seq`
+  sends file `n` back as a picture. Do not ask unless it is needed: a picture is paid for by the
+  token and is not masked, so tell the user if one shows a secret. A file the transcript only
+  names, an SVG, or one over 2 MB is refused with the reason; the user can see it on the page,
+  beneath that step.
 - A note in `[brackets]` at the end of an answer is about the answer: the index is still reading
   a large history (the answer covers what has been read so far), a store could not be read
   (an empty answer may not mean an empty history), or no CLI's sessions were found at all, with

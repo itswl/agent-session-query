@@ -9,7 +9,8 @@ signing in, keeping a session, and the MCP endpoint. The page is a client of thi
   midnight that day began with on the server's clock, a weekday's the latest, today included.
 - An error is `{"error": "…"}` with a status that means it: `400` the request does not parse,
   `401` no token, `403` refused by a guard, `404` no such session, `409` a session that cannot be
-  kept, `429` too many wrong tokens.
+  kept, `429` too many wrong tokens. [`why`](#reports) answers `400` to a path or a line it
+  cannot blame, and `500` when git is not on the machine.
 - Replies are `gzip`-compressed when the caller accepts it, and `Cache-Control: no-store`: the
   record is private and changes under the reader.
 - In JSON, `<`, `>` and `&` are written `\u003c`, `\u003e` and `\u0026`. A JSON parser reads
@@ -180,6 +181,7 @@ a match archived sessions alone hold, and one confined to a `session` never has 
 | `GET /api/failures?by=command` | `{"commands", "total", "open", "passedLater", "byTool"}` — the same calls by the command that failed, the commands with calls still open first, then those that failed most: each `{"command", "count", "open", "sessions", "last"}`, `command` the program and subcommand (`go test`), or for a tool that runs none `tool` instead, and `last` the latest failure, as `failures` has them. `total` counts the commands |
 | `GET /api/digest` | `{"since", "until", "projects", "total"}` — likewise; `since` and `until` are the window on the server's clock. A project's `list` is its latest twelve sessions — `{"ref", "title", "turns", "tools", "failures", "passedLater", "interrupted", "error", "answer", "firstAt", "lastAt"}`, a subagent's work in the session it ran in, `interrupted`, `error` and `answer` of its last turn in the window. `passedLater`, there, in a project and in the total, is how many of the failures the same command passed later, as below. `agentMs` — in a session of the list, a project and the total — is how long agents worked, and `days`, in a project and the total, on how many days of the server's calendar a turn was asked. `when` is when they worked: seven rows of 24 hours, Monday and midnight first, of milliseconds on the server's clock |
 | `GET /api/files?path=&changed=1` | `{"files", "total"}` — each file with `now`, how it stands against what that turn left (below); `waiting` instead names the folder a look at it is waiting in, as macOS asks on the Mac whether `asq` may read it |
+| `GET /api/why?path=&line=` | `{"file", "path", "line", "commit", "subject", "at", "text", "made", "mentioned"}` — which session wrote a line: the commit `git blame` says last changed it (`commit`, `subject`, `at`, left out for a line not committed yet; `text` the line as it is), `made` the turns whose calls made it and `mentioned` the others that name it, each a [search hit](#search) |
 | `GET /api/projects` | `{"projects"}` |
 | `GET /api/pack?turns=1` | `{"pack", "sessions"}` — Markdown |
 
@@ -221,6 +223,16 @@ is all still there, and whether the file's modification time is after the turn e
 `now` is absent when nothing can be said. Only the machine `asq` runs on is looked at: a file
 that is not on it, a session from a labelled store (`--path claude@box2=…`, as a rule another
 machine's), and a session whose directory is not here have none.
+
+**`GET /api/why`** runs `git blame`, which reads the repository and writes nothing in it. Over
+HTTP `path` must be whole, and under a directory a session ran in — `GET /api/projects` lists
+them — however that directory is spelled, through a link or not; a link inside one that leads
+out of it does not count, since where git would run is what is judged. The server would run git
+wherever it is told, and a token to read the history is not a key to every repository on the
+machine. It is a rule of what the token covers, not a wall: a session once run in a home
+directory puts every file under it in reach of anyone with the token. A path or a line that is
+not there is `400`, in asq's words or git's; git missing from the machine is `500`. The `why`
+tool of [the MCP endpoint](mcp.md#the-tools) holds `path` to the same rule.
 
 All take the list's filters. A usage row is
 `{"key", "sessions", "calls", "usage": {"input", "output", "cacheRead", "cacheWrite", "reasoning"}, "total", "cacheHit"}`

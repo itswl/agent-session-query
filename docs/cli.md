@@ -171,7 +171,9 @@ commit that last changed the line, and the answer is the turns whose calls made 
 those whose `git commit` printed its id, however much of it — then the other turns that name it,
 each shown as `search` shows a turn. git is only asked to read: it takes no lock and writes
 nothing in the repository. A line committed outside the sessions asq reads, or not committed yet,
-is said to be, with the `asq files` that names the turns that changed the file.
+is said to be, with the `asq files` that names the turns that changed the file. The same answer
+is had from the [`why` tool over MCP](mcp.md#the-tools) and [`GET /api/why`](api.md#reports),
+where `path` must be whole and under a directory a session ran in.
 
 **`asq projects`** — the working directories sessions ran in, most recently used first.
 

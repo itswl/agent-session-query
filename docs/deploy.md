@@ -50,6 +50,10 @@ front of a server without a token.
   and a state directory that is not yours, or that anyone may write, is not used. Where there is no directory to keep the
   secret in, the server makes one for the run and says that sign-ins will end with it.
 
+A holder of the token, or a page signed in, can have the server run `git blame`, for
+`GET /api/why` and the `why` tool: it reads the repository and writes nothing in it, and is asked
+only of a file under a directory a session ran in — [the rule, and what it is not](api.md#reports).
+
 Ten wrong tokens from one caller in a minute, by either route, and that caller is answered `429`
 until the minute rolls over, whether or not the token it brings is right. Who "one caller" is decides
 whom the limit shuts out:

@@ -71,17 +71,19 @@ func writeError(w http.ResponseWriter, r *http.Request, status int, message stri
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var amb *index.AmbiguousError
 	var bad badRequest
+	var refused app.Refused
 	switch {
 	case errors.Is(err, index.ErrNotFound):
 		writeError(w, r, http.StatusNotFound, err.Error())
-	case errors.As(err, &amb), errors.As(err, &bad):
+	case errors.As(err, &amb), errors.As(err, &bad), errors.As(err, &refused):
 		writeError(w, r, http.StatusBadRequest, err.Error())
 	case r.Context().Err() != nil:
 		// the caller left; nobody reads this
 		w.WriteHeader(499)
 	default:
 		s.logf("%s %s: %v", r.Method, r.URL.Path, err)
-		msg := "the index could not answer: " + err.Error()
+		// Not the index's alone to say: since why, a 500 may be git's, which the index never heard of
+		msg := "asq could not answer: " + err.Error()
 		if s.app.Index.Damage(err) {
 			msg += " — the index is damaged, and is set aside and made anew from the stores within seconds"
 		}
@@ -89,7 +91,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-// badRequest marks an error as the caller's: a filter that does not parse.
+// badRequest marks an error as the caller's: a filter that does not parse. app.Refused is
+// the caller's as well, and needs no marking: a line why was asked for that is not there.
 type badRequest struct{ error }
 
 func flagOf(r *http.Request, name string) bool {
@@ -566,6 +569,29 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, r, http.StatusOK, map[string]any{"files": list, "total": total})
+}
+
+// handleWhy answers which session wrote one line of a file. Over HTTP the path is held to
+// app.WhyOverHTTP's rule, as the MCP endpoint holds it. What is wrong with the question is
+// the caller's, 400; git missing from this machine is the server's own, 500.
+func (s *Server) handleWhy(w http.ResponseWriter, r *http.Request) {
+	s.fresh(r)
+	q := r.URL.Query()
+	file, said := strings.TrimSpace(q.Get("path")), strings.TrimSpace(q.Get("line"))
+	if file == "" || said == "" {
+		s.fail(w, r, badRequest{fmt.Errorf("want path=<file> and line=<n>, counted from 1: got path=%q line=%q", file, said)})
+		return
+	}
+	line, err := strconv.Atoi(said) // not intOf: a line is counted from 1, and 0 is not one
+	if err != nil || line < 1 {
+		s.fail(w, r, badRequest{fmt.Errorf("line: want a whole number, counted from 1, got %q", said)})
+		return
+	}
+	if why, err := s.app.WhyOverHTTP(r.Context(), file, line); err != nil {
+		s.fail(w, r, err)
+	} else {
+		writeJSON(w, r, http.StatusOK, why)
+	}
 }
 
 func (s *Server) handlePack(w http.ResponseWriter, r *http.Request) {

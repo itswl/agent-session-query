@@ -10,6 +10,8 @@
 //	GET  /api/sessions/{source}/{id}/export     the session whole    ?format=md | json | jsonl | html
 //	GET  /api/search                            the turns that match ?q …and the list's filters ?recent ?per_session
 //	GET  /api/usage  /api/failures  /api/digest  /api/files  /api/projects  /api/pack
+//	GET  /api/why                                which session wrote a line of a file  ?path ?line
+//	                                            git blame, read only; path whole and under a directory a session ran in
 //	GET  /api/events                            a stream of what changed (Server-Sent Events)
 //	GET  /api/health                            the stores, the index, and what could not be read
 //	GET  /api/auth   POST /api/login  /api/logout
@@ -295,6 +297,7 @@ func (s *Server) routes() {
 	api("GET /api/failures", s.handleFailures)
 	api("GET /api/digest", s.handleDigest)
 	api("GET /api/files", s.handleFiles)
+	api("GET /api/why", s.handleWhy)
 	api("GET /api/pack", s.handlePack)
 	api("GET /api/events", s.handleEvents)
 	mux.Handle("/mcp", s.private(s.mcp.ServeHTTP))

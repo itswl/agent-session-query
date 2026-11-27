@@ -287,6 +287,8 @@ func TestRoutes(t *testing.T) {
 		"/api/sessions?state=asleep":            http.StatusBadRequest,
 		"/api/usage?by=colour":                  http.StatusBadRequest,
 		"/api/failures?by=tool":                 http.StatusBadRequest,
+		"/api/why":                              http.StatusBadRequest, // no path, no line
+		"/api/why?path=notes.md&line=1":         http.StatusBadRequest, // a relative path names no directory
 		"/api/nothing":                          http.StatusNotFound,
 		"/healthz":                              http.StatusOK,
 		"/api/sessions?source=codex":            http.StatusOK, // a CLI with no store here: an empty list, not an error
@@ -300,6 +302,59 @@ func TestRoutes(t *testing.T) {
 	}
 	if rec := (call{method: http.MethodPost, path: "/api/sessions"}).do(s); rec.Code != http.StatusMethodNotAllowed && rec.Code != http.StatusNotFound {
 		t.Errorf("POST /api/sessions = %d: nothing here can be written", rec.Code)
+	}
+}
+
+// GET /api/why answers which session wrote one line: the commit git blame names, the turns
+// that made it and those that name it, each as a search lists it. The path is held to what
+// the MCP endpoint holds it to — whole, and under a directory a session ran in — since the
+// server would run git where it is told to. What the caller got wrong is 400, in asq's word
+// or git's; git missing from the machine is the server's own, 500.
+func TestWhyOverTheAPI(t *testing.T) {
+	a, c := fixture.OpenCommit(t)
+	s, err := New(a, Options{Page: page})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ask := func(path string, line any) string {
+		t.Helper()
+		return "/api/why?path=" + url.QueryEscape(path) + "&line=" + fmt.Sprint(line)
+	}
+	var why app.Why
+	get(t, s, ask(c.File, 1), &why)
+	if why.File != c.File || why.Path != c.File || why.Line != 1 || why.Commit == "" || why.Text != c.Text ||
+		len(why.Made) != 1 || why.Made[0].Ref != "claude/"+fixture.Committed+"#1" || why.Made[0].Session.Resume == "" {
+		t.Errorf("why = %+v", why)
+	}
+
+	outside := filepath.Join(t.TempDir(), "notes.md")
+	for _, tc := range []struct {
+		path string
+		line any
+		want string
+	}{
+		{"notes.md", 1, `path "notes.md" is relative, and a request over HTTP does not say which directory you mean`},
+		{outside, 1, "is under no directory a session asq reads ran in"},
+		{c.File, 0, "line: want a whole number, counted from 1"},
+		{c.File, -1, "line: want a whole number, counted from 1"},
+		{c.File, "seven", `line: want a whole number, counted from 1, got "seven"`},
+		{c.File, 99, "git blame: file notes.md has only 1 line"},
+		{filepath.Join(c.Dir, "loose.md"), 1, "git blame: no such path 'loose.md' in HEAD"},
+	} {
+		path := ask(tc.path, tc.line)
+		rec := (call{path: path}).do(s)
+		var said struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &said); err != nil || rec.Code != http.StatusBadRequest || !strings.Contains(said.Error, tc.want) {
+			t.Errorf("GET %s = %d %s, want 400 saying %q", path, rec.Code, strings.TrimSpace(rec.Body.String()), tc.want)
+		}
+	}
+
+	// The server's own: git is not on this machine
+	t.Setenv("PATH", t.TempDir())
+	if rec := (call{path: ask(c.File, 1)}).do(s); rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "asq could not answer: git is not on the PATH") {
+		t.Errorf("without git = %d %s, want 500 saying so — asq's, not the index's", rec.Code, strings.TrimSpace(rec.Body.String()))
 	}
 }
 

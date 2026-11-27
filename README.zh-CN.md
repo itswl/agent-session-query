@@ -255,8 +255,8 @@ asq skill > ~/.agents/skills/agent-sessions/SKILL.md    # Codex、Gemini CLI、O
 
 Windows 上要在 cmd 里执行，写法见 [A skill](docs/mcp.md#a-skill)。
 
-十二个只读工具——`search`、`sessions`、`read`、`brief`、`pack`、`usage`、`failures`、`digest`、`files`、
-`projects`、`why`、`health`——返回紧凑的纯文本而不是 JSON，按预算截断（调用方可以调大），并遮掉形似密钥的字符串：模型读到的每个字都
+十三个工具——`search`、`sessions`、`read`、`brief`、`pack`、`usage`、`failures`、`digest`、`files`、
+`projects`、`why`、`health` 这十二个只读，`keep` 会先问过你再把一个会话复制进 asq 自己的文件夹——返回紧凑的纯文本而不是 JSON，按预算截断（调用方可以调大），并遮掉形似密钥的字符串：模型读到的每个字都
 按 token 计费，而且会随它离开这台机器。两个 prompt 在 Claude Code、Gemini CLI 和 OpenCode 里成为斜杠命令。在 Claude Code 里，
 `/asq:handoff` 把这个仓库里最新的另一个会话（不论哪个 CLI 的）整个写成简报放进对话，交给当前 agent 接手；
 `/asq:catchup` 放进这里最近一周的会话。→ [MCP](docs/mcp.md)
@@ -301,7 +301,8 @@ home 目录、一份备份——按名字加进来：`asq ls --path claude@box2=
   重建。它只装着各存储里现有的会话，CLI 删掉的会话也会从索引里消失——而 Claude Code 和 Gemini CLI 会删除 30 天没有
   用过的会话，除非在它们的设置里改掉；它们占的空间会还给磁盘。`asq doctor` 会指出是哪个设置，并说明每个存储最早到哪
   一天。`asq keep --all` 会在 asq 自己的目录里为每个会话留一份副本，CLI 删掉之后就从副本读。
-- **只读。** `asq` 里没有任何东西会写入某个 CLI 的存储。
+- **只读。** `asq` 里没有任何东西会写入某个 CLI 的存储。`keep` 写的——命令、页面上的按钮、
+  MCP 工具——只是 asq 自己文件夹里的一份副本，别处不写。
 - **本地。** 没有遥测，没有网络请求，没有账号。只有两样东西可能把内容发出去，而且都是你自己指定去向的：`asq otel`，
   以及你把 MCP server 交给的那个 agent。
 - **展示时小心。** 工具输出里的终端转义序列在到达你的终端之前就被去掉。凡是给别人看的东西——简报、pack、MCP 回答、

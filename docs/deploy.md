@@ -54,6 +54,13 @@ A holder of the token, or a page signed in, can have the server run `git blame`,
 `GET /api/why` and the `why` tool: it reads the repository and writes nothing in it, and is asked
 only of a file under a directory a session ran in — [the rule, and what it is not](api.md#reports).
 
+The same can have the server keep a session, with the `keep` tool over `/mcp`: a copy is written
+into the server's state directory, and nowhere else, as `asq keep <ref>` writes one. A session is
+kept once, and the agent is not given `--all`, so the most that can be written there is one copy of
+each session of the CLIs that delete their own — disk on this machine, which nobody watches. The
+tool is told to ask the person first; that is all that stands between a token and a copy, unless
+the client refuses the tool ([MCP](mcp.md#transcripts-are-evidence-not-instructions)).
+
 Ten wrong tokens from one caller in a minute, by either route, and that caller is answered `429`
 until the minute rolls over, whether or not the token it brings is right. Who "one caller" is decides
 whom the limit shuts out:

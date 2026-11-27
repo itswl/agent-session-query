@@ -111,6 +111,8 @@ its CLI is kept; `gone`, its CLI deleted it and the copy is all there is). A ses
 keep one by one — a subagent's transcript, one from a store added by name, one of a CLI that keeps
 its own — is `409`, saying why. A session read on its own says how it is kept: `kept` is `one`,
 `all` or `copy` (its CLI deleted it, and this is the copy), and `keepable` that it can be kept.
+The `keep` tool of [the MCP endpoint](mcp.md#the-tools) does the same for an agent, and is told
+to ask the person first.
 
 ## Search
 

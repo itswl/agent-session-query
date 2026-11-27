@@ -384,6 +384,11 @@ too. Nothing is kept unless asked:
 | `asq keep --dir <folder>` | where the copies go, each CLI's in a folder of its name: by default `kept` in the state directory (`ASQ_STATE`); never one that would put them in a store, whether it names the store as asq does, through a link, or in another case where the file system ignores it |
 | `asq keep` | what is kept, where, and how much disk it takes |
 
+An agent can keep a session too: the `keep` tool of [the MCP server](mcp.md#the-tools), which is
+told to ask the person first. `asq show`'s outline says whether a session is kept — `not kept`,
+`kept one by one`, kept with every session of its CLI, or kept because its CLI deleted it — and,
+where it is not, the command that keeps it.
+
 A copy is a session's files as its CLI wrote them, laid out as in the CLI's store, and is read as
 a store of its own: `claude@kept`. While the CLI's store holds a session the copy is not read, so
 nothing is listed or counted twice; once the CLI deleted it, the session is read from the copy, as

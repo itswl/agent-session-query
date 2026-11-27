@@ -281,8 +281,9 @@ asq skill > ~/.agents/skills/agent-sessions/SKILL.md    # Codex, Gemini CLI, Ope
 
 On Windows the lines are cmd's: [A skill](docs/mcp.md#a-skill).
 
-Twelve read-only tools — `search`, `sessions`, `read`, `brief`, `pack`, `usage`, `failures`,
-`digest`, `files`, `projects`, `why`, `health` — return compact plain text rather than JSON, cut to a
+Thirteen tools — `search`, `sessions`, `read`, `brief`, `pack`, `usage`, `failures`, `digest`,
+`files`, `projects`, `why` and `health`, which only read, and `keep`, which copies a session into
+asq's own folder once it has asked you — return compact plain text rather than JSON, cut to a
 budget the caller can raise, with secret-shaped strings masked: what a model reads is paid for by
 the token, and leaves the machine with it. Two prompts become slash commands in Claude Code, Gemini
 CLI and OpenCode. In Claude Code `/asq:handoff` puts the newest other session in the repository,
@@ -336,7 +337,8 @@ A store somewhere else — another machine's home directory, a backup — is add
   30 days, unless a setting of theirs says otherwise; the space they took is given back.
   `asq doctor` names the setting, and says how far back each store goes. `asq keep --all`
   keeps a copy of each session in asq's own folder, read once the CLI has deleted it.
-- **Read-only.** Nothing in `asq` can write to a CLI's store.
+- **Read-only.** Nothing in `asq` can write to a CLI's store. What `keep` writes — the command,
+  the page's control, the MCP tool — is a copy in asq's own folder, and nowhere else.
 - **Local.** No telemetry, no network calls, no account. The two things that can send anything
   anywhere are the ones you point at a destination yourself: `asq otel`, and an agent you gave
   the MCP server to.

@@ -40,6 +40,10 @@ type tool struct {
 	// where the index stood, which stores could not be read, where asq looked when it
 	// found nothing — so that it is not said twice. health.
 	bare bool
+	// open says the answer comes from more than asq's own records — why asks git of a file
+	// on this machine — where the rest read the index and nothing else. It is said in
+	// openWorldHint, for a client that minds.
+	open bool
 }
 
 // prop is one argument of a tool.
@@ -196,6 +200,21 @@ var tools = []tool{
 		run:  runFiles,
 	},
 	{
+		name:  "why",
+		title: "Which session wrote a line",
+		about: "Which commit last changed one line of a file — git blame — and the turns that made it, then those that only name it. Use it before changing a line, for \"who wrote this, and why\". " +
+			"The line of a hit that names the commit ends with the step it is in, [2], which read takes as seq. A line not committed yet says so, and that files names the turns that changed the file. " +
+			"git is only asked to read: it takes no lock and writes nothing in the repository.",
+		props: []prop{
+			{"path", "string", "The file: internal/server/auth.go, or its whole path. A relative one is from where this server was started; over HTTP, give the whole path, under a directory a session ran in (projects lists them)."},
+			{"line", "integer", "The line, counted from 1."},
+			pChars,
+		},
+		need: []string{"path", "line"},
+		run:  runWhy,
+		open: true,
+	},
+	{
 		name:  "projects",
 		title: "Projects",
 		about: "The working directories sessions ran in, most recently used first, with how many sessions and turns each holds and which CLIs worked there.",
@@ -231,8 +250,9 @@ func describe() []map[string]any {
 			"title":       t.title,
 			"description": t.about,
 			"inputSchema": schema,
-			// Nothing here writes, and nothing reaches past this machine's own records
-			"annotations": map[string]any{"readOnlyHint": true, "openWorldHint": false},
+			// Nothing here writes. Nothing reaches past this machine's own records but why,
+			// which asks git of a file the caller names (open)
+			"annotations": map[string]any{"readOnlyHint": true, "openWorldHint": t.open},
 		})
 	}
 	return out
@@ -897,6 +917,27 @@ func runFiles(ctx context.Context, s *Server, a *args) (string, error) {
 	}
 	var b bytes.Buffer
 	render.Files(&b, list, total, style())
+	return b.String(), nil
+}
+
+// runWhy says which session wrote one line of a file, as asq why does. A server answering
+// HTTP has no Caller, and holds the path to app.WhyOverHTTP's rule, as the API's route does.
+func runWhy(ctx context.Context, s *Server, a *args) (string, error) {
+	path, line := a.str("path"), a.num("line", 0)
+	if a.err != nil {
+		return "", a.err
+	}
+	ask := s.App.Why // on stdio, asked as the command line is
+	if s.Caller == nil {
+		ask = s.App.WhyOverHTTP
+	}
+	why, err := ask(ctx, path, line)
+	if err != nil {
+		return "", err
+	}
+	var b bytes.Buffer
+	render.Why(&b, render.Blamed{File: why.File, Path: why.Path, Line: why.Line, Text: why.Text, Commit: why.Commit, Subject: why.Subject, At: why.At},
+		why.Made, why.Mentioned, style())
 	return b.String(), nil
 }
 

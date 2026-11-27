@@ -71,9 +71,10 @@ Any other client: the URL, and that header in whatever form the client takes hea
 
 ## The tools
 
-All eleven only read. Each takes the selection arguments that make sense for it — `source`,
+All twelve only read. Each takes the selection arguments that make sense for it — `source`,
 `project`, `branch`, `since`, `until` — plus `limit` / `offset` where there is a list, and
-`max_chars`.
+`max_chars`. Eleven answer from the index; `why` also asks `git blame` of the file named to it,
+which reads the repository and writes nothing in it.
 
 A `project` of `.` — or `./web`, `..` — is a directory, as it is [on the command
 line](cli.md#flags-that-select-sessions): the one the agent asking works in, and those below
@@ -93,8 +94,19 @@ nothing says, and the answer is an error saying so.
 | `failures` | The tool calls that failed, with the command and the end of the output — and where the same command passed later in the session; or by command, what keeps failing and what of it is still open. The last 7 days unless `since` says otherwise; an answer of none says how many match before then | `tool` (exact, or `prefix*`), `query` (words the command or output holds), `open` (only those whose command did not pass later), `by` (`command`) |
 | `digest` | What a stretch of work added up to, per project — how long agents worked and when, by weekday and hour, too — and the sessions behind it: each one's ref, title, how it ended and the last thing its agent said | |
 | `files` | Which turns read or changed a file, what was asked there, and whether the file is still as that turn left it | `path`, `changed` |
+| `why` | Which session wrote a line of a file: the commit `git blame` says last changed it, the turns whose calls made it — each line naming the commit ending with the step it is in — and the turns that only name it. A line not committed yet says so, and names `files` for the turns that changed the file | `path`, `line` |
 | `projects` | The directories sessions ran in | |
 | `health` | Where asq stands: the version answering, the index and when it was last brought up to date, and one line per store — which CLIs' histories were found on this machine, where, and why one that is there could not be read | |
+
+`why` names a file, so it says where the path is taken from. On stdio a relative `path` is from
+the directory the server was started in, as on the command line. Over HTTP nothing says which
+directory a relative path would be in, and the server would run git wherever it is told: there
+`path` must be whole, and under a directory a session ran in — which `projects` lists — however
+that directory is spelled, through a link or not; a link inside one that leads out of it does
+not count, since where git would run is what is judged. It is a rule of what a token to the
+history covers, not a wall: a session once run in a home directory puts every file under it in
+reach of anyone with the token. A path that breaks the rule is an error saying so, as are a line
+the file has not and a file in no repository, in git's words.
 
 The path an agent usually takes: `search` or `sessions` → a ref → `read` with the ref alone for
 the outline → `read` with `ref#N` for the turn that matters → `read` with `seq` for the one

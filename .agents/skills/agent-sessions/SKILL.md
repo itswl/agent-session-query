@@ -14,7 +14,7 @@ it. It only reads, and one question can span a Claude Code session and a Codex o
 Two ways to ask, the same answers either way:
 
 - **MCP tools** from the `asq` server: `search`, `sessions`, `read`, `brief`, `pack`, `usage`,
-  `failures`, `digest`, `files`, `projects`, `health`.
+  `failures`, `digest`, `files`, `projects`, `why`, `health`.
 - **The command**, when the server is not configured but a shell is: `asq search …`, `asq ls`,
   `asq show <ref>`, `asq brief <ref>`, … — same names, `--flags` instead of arguments. `asq -h`
   lists them. The command has no ref `this`: `asq brief` or `asq show` with no ref takes the
@@ -60,7 +60,7 @@ Two ways to ask, the same answers either way:
 | "What has happened since I handed it over?" | `brief(ref="…", since="2h")`; `from=7` from a turn on, `turn=4` (or `ref="…#4"`) one turn alone |
 | "Catch me up on this project" | `pack(project="…", since="7d")` — each session's first ask, its last and its conclusion, oldest first |
 | "Who changed this file, and why?" | `files(path="auth.go", changed=true)` — then `read` the turn |
-| "Which session wrote this line?" | `asq why auth.go:42` in a shell — git blame's commit, the turn that made it, the turns that name it. The MCP server does not have it |
+| "Which session wrote this line?" | `why(path="auth.go", line=42)` — git blame's commit, the turn that made it, the turns that name it, each line naming the commit ending with the step it is in. From a shell, `asq why auth.go:42`. Over HTTP the path must be whole and under a directory a session ran in |
 | "What keeps failing?" | `failures(by="command", since="7d")` — each command that failed, how often, in how many sessions, how many still open; `open=true` for only the ones whose command never passed later ("what is still broken?"); `tool="Bash"` or `query="ECONNREFUSED"` (words of the command or its output) to narrow. It looks at 7 days unless told; an answer of none says how many match before then — widen `since` before concluding it never failed |
 | "What did this week add up to?" / a standup | `digest(since="7d")` — per project: sessions, turns, failures and how many passed later, tokens, files changed; then its latest sessions, each with its ref, title, how it ended and its last answer |
 | "How long did agents work for me this week, and when?" | `digest(since="monday")` — agent time and days, per project and in a week-by-hour grid; `usage(by="week")` or `"month"` for agent time and tokens over longer |

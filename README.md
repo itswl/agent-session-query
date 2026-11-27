@@ -281,8 +281,8 @@ asq skill > ~/.agents/skills/agent-sessions/SKILL.md    # Codex, Gemini CLI, Ope
 
 On Windows the lines are cmd's: [A skill](docs/mcp.md#a-skill).
 
-Eleven read-only tools — `search`, `sessions`, `read`, `brief`, `pack`, `usage`, `failures`,
-`digest`, `files`, `projects`, `health` — return compact plain text rather than JSON, cut to a
+Twelve read-only tools — `search`, `sessions`, `read`, `brief`, `pack`, `usage`, `failures`,
+`digest`, `files`, `projects`, `why`, `health` — return compact plain text rather than JSON, cut to a
 budget the caller can raise, with secret-shaped strings masked: what a model reads is paid for by
 the token, and leaves the machine with it. Two prompts become slash commands in Claude Code, Gemini
 CLI and OpenCode. In Claude Code `/asq:handoff` puts the newest other session in the repository,

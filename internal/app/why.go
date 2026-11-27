@@ -38,6 +38,16 @@ type Why struct {
 	Mentioned []index.Hit `json:"mentioned"`
 }
 
+// Refused is why a line could not be blamed, where what was asked can be set right by the
+// one asking — the line is not in the file, the file is in no repository, the path is
+// relative over HTTP — in git's words, or asq's. The rest of what goes wrong asking git is
+// the server's own, and is not wrapped: git not on the PATH, or saying nothing of the line.
+// The HTTP API answers the first as the caller's, 400, and the second as its own, 500.
+type Refused struct{ Err error }
+
+func (r Refused) Error() string { return r.Err.Error() }
+func (r Refused) Unwrap() error { return r.Err }
+
 // commitLine is the line git commit — and git merge, cherry-pick, revert, which commit
 // too — prints for the commit it made: "[main 3f9c2ab] Subject", with "(root-commit)" or a
 // detached HEAD's words before the id. Gemini CLI's shell tool hands on what a command
@@ -67,7 +77,7 @@ func made(output, commit string) bool {
 func (a *App) Why(ctx context.Context, file string, line int) (Why, error) {
 	path, err := filepath.Abs(file)
 	if err != nil {
-		return Why{}, err
+		return Why{}, Refused{err}
 	}
 	why := Why{File: file, Path: path, Line: line}
 	if why.Blame, err = blame(ctx, path, line); err != nil || why.Commit == "" {
@@ -87,7 +97,66 @@ func (a *App) Why(ctx context.Context, file string, line int) (Why, error) {
 			why.Mentioned = append(why.Mentioned, h)
 		}
 	}
+	// What the list would show of each turn, as a search's hits are shown: every face that
+	// answers with these reads them so
+	why.Made, why.Mentioned = ListedHits(index.SearchResult{Hits: why.Made}).Hits, ListedHits(index.SearchResult{Hits: why.Mentioned}).Hits
 	return why, nil
+}
+
+// WhyOverHTTP is Why for a request that came over HTTP — the API's route, or the MCP
+// server's — from someone not at this machine's shell, where no process was started in the
+// directory a relative path would be in. So the path must be whole. And the server would run
+// git in the directory named to it, so the path must be under one that a session asq reads
+// ran in, which projects lists: a token to read the history is not a key to every repository
+// on the machine, while the work an agent has in hand is nearly always in one a session ran
+// in. A server started on stdio is asked as the command line is (Why).
+func (a *App) WhyOverHTTP(ctx context.Context, file string, line int) (Why, error) {
+	if !filepath.IsAbs(file) {
+		return Why{}, Refused{fmt.Errorf("path %q is relative, and a request over HTTP does not say which directory you mean: give the whole path", file)}
+	}
+	// The directories of the stores that ran here (hereStores), as Paths takes them
+	cwds, err := a.Index.Cwds(ctx, a.hereStores())
+	if err != nil {
+		return Why{}, err
+	}
+	if !underAny(cwds, file) {
+		return Why{}, Refused{fmt.Errorf("path %q is under no directory a session asq reads ran in, and over HTTP why answers only of those: projects lists them", file)}
+	}
+	return a.Why(ctx, file, line)
+}
+
+// underAny reports whether path is beneath one of dirs, by where each is with its links
+// followed — as /tmp is /private/tmp on a Mac, so either spelling of a directory is taken —
+// and without regard to case, as dirHolds compares them. The path's side is followed all the
+// way, since where git would run is what is judged: a link inside a session's directory that
+// leads out of it does not bring what it leads to in reach.
+func underAny(dirs []string, path string) bool {
+	path = filepath.Clean(path)
+	file := filepath.Join(followed(filepath.Dir(path)), filepath.Base(path))
+	for _, dir := range dirs {
+		if dirHolds(followed(dir), file, true) {
+			return true
+		}
+	}
+	return false
+}
+
+// followed is dir with its links followed, from the nearest parent of it that is there: a
+// directory that is not there is taken to be where its parents lead, and git will only say
+// that it is missing.
+func followed(dir string) string {
+	var tail []string
+	for {
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(append([]string{real}, tail...)...)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return filepath.Join(append([]string{dir}, tail...)...) // the root itself is not there
+		}
+		tail = append([]string{filepath.Base(dir)}, tail...)
+		dir = parent
+	}
 }
 
 // madeIn reports whether one of a turn's calls printed git's word that it made commit.
@@ -119,7 +188,7 @@ func (a *App) madeIn(ctx context.Context, h *index.Hit, commit string) bool {
 // repository, no text conversion a repository configures, and no monitor git would start.
 func blame(ctx context.Context, path string, line int) (Blame, error) {
 	if line < 1 {
-		return Blame{}, fmt.Errorf("line %d: lines are counted from 1", line)
+		return Blame{}, Refused{fmt.Errorf("line %d: lines are counted from 1", line)}
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -134,7 +203,7 @@ func blame(ctx context.Context, path string, line int) (Blame, error) {
 		}
 		if said := strings.TrimSpace(stderr.String()); said != "" {
 			said, _, _ = strings.Cut(said, "\n")
-			return Blame{}, fmt.Errorf("git blame: %s", strings.TrimPrefix(said, "fatal: "))
+			return Blame{}, Refused{fmt.Errorf("git blame: %s", strings.TrimPrefix(said, "fatal: "))}
 		}
 		return Blame{}, fmt.Errorf("git blame: %w", err)
 	}

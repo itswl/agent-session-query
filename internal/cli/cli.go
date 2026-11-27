@@ -830,7 +830,6 @@ func cmdWhy(ctx context.Context, args []string, io *streams) error {
 	if err != nil {
 		return err
 	}
-	why.Made, why.Mentioned = app.ListedHits(index.SearchResult{Hits: why.Made}).Hits, app.ListedHits(index.SearchResult{Hits: why.Mentioned}).Hits
 	if c.json {
 		return printJSON(io.out, why)
 	}

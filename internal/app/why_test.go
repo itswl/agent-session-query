@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -149,5 +150,118 @@ func TestWhy(t *testing.T) {
 	}
 	if _, err := a.Why(ctx, outside, 1); err == nil || !strings.HasPrefix(err.Error(), "git blame: ") {
 		t.Errorf("outside a repository = %v", err)
+	}
+}
+
+// Over HTTP — the API's route, and the MCP server's — the path names no directory a
+// process was started in, and the server would run git where it is told to: so it must be
+// whole, and under a directory a session ran in, by either spelling of it. What is wrong
+// with such a request is the caller's to set right (app.Refused), as is what git refuses of
+// the file; git missing from the machine is the server's own to say.
+func TestWhyOverHTTP(t *testing.T) {
+	a, c := fixture.OpenCommit(t)
+	ctx := context.Background()
+	refused := func(err error) bool {
+		var r app.Refused
+		return errors.As(err, &r)
+	}
+
+	// Whole, and under the directory the session ran in: the command line's answer, its
+	// turn as a list shows it — which every face that answers with one reads
+	why, err := a.WhyOverHTTP(ctx, c.File, 1)
+	if err != nil || why.Path != c.File || why.Commit == "" || len(why.Made) != 1 || why.Made[0].Ref != "claude/"+fixture.Committed+"#1" {
+		t.Fatalf("why = %+v, %v", why, err)
+	}
+	if h := why.Made[0]; h.Session.Resume == "" || h.Session.LastAsk != "" || h.Session.Answer != "" {
+		t.Errorf("the turn is not as a search lists it: resume %q, last ask %q, answer %q", h.Session.Resume, h.Session.LastAsk, h.Session.Answer)
+	}
+	// So is a file beneath it
+	deep := filepath.Join(c.Dir, "doc", "notes.md")
+	if why, err = a.WhyOverHTTP(ctx, deep, 1); !refused(err) || why.Path != deep || !strings.HasPrefix(err.Error(), "git blame: ") {
+		t.Errorf("beneath the directory = %+v, %v: git's word about the file, and only that", why.Path, err)
+	}
+	// And one spelled through a link to it, as /tmp is /private/tmp on a Mac — where a
+	// link can be made
+	link := filepath.Join(t.TempDir(), "here")
+	if err := os.Symlink(c.Dir, link); err == nil {
+		if why, err = a.WhyOverHTTP(ctx, filepath.Join(link, "notes.md"), 1); err != nil || len(why.Made) != 1 {
+			t.Errorf("through a link = %+v, %v", why, err)
+		}
+	}
+
+	// A relative path names no directory the server could know
+	if _, err = a.WhyOverHTTP(ctx, "notes.md", 1); !refused(err) || !strings.Contains(err.Error(), `path "notes.md" is relative`) {
+		t.Errorf("a relative path = %v", err)
+	}
+	// And the directory of a session is where the history gives git to look: elsewhere
+	// the server would run it wherever a caller says
+	outside := filepath.Join(t.TempDir(), "notes.md")
+	if err := os.WriteFile(outside, []byte("in no session's directory\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Nor through a link inside one that leads out of it — of a file that is there, or of
+	// one in a directory that is not: where git would run is what counts
+	if err := os.Symlink(filepath.Dir(outside), filepath.Join(c.Dir, "elsewhere")); err == nil {
+		for _, through := range []string{"notes.md", filepath.Join("not-there-yet", "notes.md")} {
+			if why, err = a.WhyOverHTTP(ctx, filepath.Join(c.Dir, "elsewhere", through), 1); !refused(err) || !strings.Contains(err.Error(), "under no directory") {
+				t.Errorf("through a link out of the directory, %s = %+v, %v", through, why, err)
+			}
+		}
+	}
+	// In a way that says where they are listed
+	if _, err = a.WhyOverHTTP(ctx, outside, 1); !refused(err) || !strings.Contains(err.Error(), "under no directory a session asq reads ran in") ||
+		!strings.Contains(err.Error(), "projects lists them") {
+		t.Errorf("outside every session's directory = %v", err)
+	}
+
+	// What is wrong with the question is the caller's: asq's word of the line, git's of
+	// the file
+	for _, tc := range []struct {
+		line int
+		want string
+	}{
+		{0, "line 0: lines are counted from 1"},
+		{99, "git blame: file notes.md has only 1 line"},
+	} {
+		if _, err = a.WhyOverHTTP(ctx, c.File, tc.line); !refused(err) || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("line %d = %v, want the caller's: %s", tc.line, err, tc.want)
+		}
+	}
+}
+
+// What git refuses is the caller's to set right — on the command line's terms too, since
+// the HTTP API answers it 400 — and it is the caller's wherever the file is: not committed
+// at all is not a repository, and one that names no file names none.
+func TestWhyRefusesInTheCallersWords(t *testing.T) {
+	a, _ := fixture.Open(t)
+	ctx := context.Background()
+	refused := func(err error) bool {
+		var r app.Refused
+		return errors.As(err, &r)
+	}
+	if _, err := a.Why(ctx, "notes.go", 0); !refused(err) || err.Error() != "line 0: lines are counted from 1" {
+		t.Errorf("line 0 = %v", err)
+	}
+	if _, err := a.Why(ctx, "notes.go", -3); !refused(err) || err.Error() != "line -3: lines are counted from 1" {
+		t.Errorf("line -3 = %v", err)
+	}
+	loose := filepath.Join(t.TempDir(), "loose.go")
+	if err := os.WriteFile(loose, []byte("package loose\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Why(ctx, loose, 1); !refused(err) || !strings.HasPrefix(err.Error(), "git blame: ") {
+		t.Errorf("outside a repository = %v, want git's word, as the caller's", err)
+	}
+}
+
+// Git not on the machine is not anything the caller asked wrong: said as the server's own,
+// which the HTTP API answers 500.
+func TestWhyWithoutGitIsTheServersOwn(t *testing.T) {
+	a, c := fixture.OpenCommit(t)
+	t.Setenv("PATH", t.TempDir())
+	_, err := a.WhyOverHTTP(context.Background(), c.File, 1)
+	var r app.Refused
+	if err == nil || errors.As(err, &r) || !strings.Contains(err.Error(), "git is not on the PATH") {
+		t.Errorf("without git = %v, want the server's own word that git is missing", err)
 	}
 }

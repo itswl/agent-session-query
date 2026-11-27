@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -140,6 +141,83 @@ func (h History) WriteMany(t testing.TB) string {
 	}
 	write(t, path, rows...)
 	return path
+}
+
+// The session WriteCommit adds.
+const Committed = "ffff6666-0000-4000-8000-000000000006"
+
+// Commit is what WriteCommit made.
+type Commit struct {
+	Dir   string // the repository, which is the session's working directory as the index holds it
+	File  string // notes.md in it, whose first line is Text
+	Text  string
+	Short string // the commit's id as git commit printed it, which the session's call holds
+}
+
+// WriteCommit makes a git repository under a directory of the test's own, commits one line
+// of notes.md there, and adds a session, in that repository, whose one turn ran git commit
+// and has what it printed:
+//
+//	#1  trim the notes   Bash `git commit -m 'trim the notes'`, which printed the commit's id
+//
+// for why, which asks git blame of a file, and so wants a repository there to ask of. It is
+// kept apart from Write, whose counts the other tests rely on.
+func (h History) WriteCommit(t testing.TB) Commit {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git on the PATH")
+	}
+	dir := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := Commit{Dir: dir, File: filepath.Join(dir, "notes.md"), Text: "rotate the deploy key every 90 days"}
+	// git runs as a test's own: no configuration of the machine's, so no signature and no
+	// hook it asks for, and a made-up name
+	empty := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=test", "-c", "user.email=test",
+			"-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+empty)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q")
+	if err := os.WriteFile(c.File, []byte(c.Text+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "notes.md")
+	// "[main (root-commit) 3f9c2ab] trim the notes": the id is the last word in the brackets
+	said := git("commit", "-m", "trim the notes")
+	end := strings.IndexByte(said, ']')
+	if end < 0 {
+		t.Fatalf("git commit said %q, which names no commit", said)
+	}
+	if words := strings.Fields(said[:end]); len(words) > 0 {
+		c.Short = words[len(words)-1]
+	}
+	at := h.Now.Add(-30 * time.Minute)
+	stamp := func(secs int) string { return at.Add(time.Duration(secs) * time.Second).Format(time.RFC3339Nano) }
+	row := func(kind, id string, secs int, message m) m {
+		return m{"type": kind, "uuid": id, "timestamp": stamp(secs), "sessionId": Committed, "cwd": dir, "gitBranch": "main", "message": message}
+	}
+	write(t, filepath.Join(h.Dir, "-work-commit", Committed+".jsonl"),
+		row("user", "f-u1", 0, m{"role": "user", "content": "trim the notes"}),
+		row("assistant", "f-a1", 5, m{"id": "msg_f1", "role": "assistant", "model": "claude-opus-5",
+			"content": []m{{"type": "tool_use", "id": "t1", "name": "Bash", "input": m{"command": "git commit -m 'trim the notes'"}}},
+			"usage":   m{"input_tokens": 5, "output_tokens": 5}, "stop_reason": "tool_use"}),
+		row("user", "f-u2", 8, m{"role": "user", "content": []m{{"type": "tool_result", "tool_use_id": "t1", "content": said}}}),
+		row("assistant", "f-a2", 10, m{"id": "msg_f2", "role": "assistant", "model": "claude-opus-5",
+			"content": []m{{"type": "text", "text": "Committed."}}, "usage": m{"input_tokens": 5, "output_tokens": 5}, "stop_reason": "end_turn"}),
+	)
+	return c
 }
 
 // The session WritePictures adds, and the pictures it carries as a transcript holds them:
@@ -291,6 +369,22 @@ func (h History) Config(t testing.TB) app.Config {
 func Open(t testing.TB) (*app.App, History) {
 	t.Helper()
 	h := Write(t)
+	return opened(t, h), h
+}
+
+// OpenCommit is Open with, beside the history, a repository a session's call committed in
+// (WriteCommit): for why, which asks git of a file.
+func OpenCommit(t testing.TB) (*app.App, Commit) {
+	t.Helper()
+	h := Write(t)
+	c := h.WriteCommit(t)
+	return opened(t, h), c
+}
+
+// opened opens the program over a history on disk, and brings the index up to date: nothing
+// else does in a test.
+func opened(t testing.TB, h History) *app.App {
+	t.Helper()
 	a, err := app.Open(h.Config(t))
 	if err != nil {
 		t.Fatal(err)
@@ -299,5 +393,5 @@ func Open(t testing.TB) (*app.App, History) {
 	if _, err := a.Sync(t.Context(), index.SyncOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	return a, h
+	return a
 }

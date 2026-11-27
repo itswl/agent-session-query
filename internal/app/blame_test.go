@@ -1,6 +1,8 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -67,5 +69,53 @@ func TestParseBlame(t *testing.T) {
 		if _, err := parseBlame(out); err == nil {
 			t.Errorf("parseBlame(%q) took it for a blame", out)
 		}
+	}
+}
+
+// A path is under a session's directory by where each is with its links followed, so either
+// spelling of the directory is taken; and a link inside it that leads out brings nothing of
+// where it leads in reach, since where git would run is what is judged.
+func TestUnderAny(t *testing.T) {
+	base := t.TempDir()
+	repo, elsewhere := filepath.Join(base, "repo"), filepath.Join(base, "elsewhere")
+	for _, d := range []string{filepath.Join(repo, "vendor"), filepath.Join(elsewhere, "sub")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "a.go"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	alias, link := filepath.Join(base, "alias"), filepath.Join(repo, "link") // to the repository; in it, leading out
+	if err := os.Symlink(repo, alias); err != nil {
+		t.Skipf("no link to make: %v", err)
+	}
+	if err := os.Symlink(elsewhere, link); err != nil {
+		t.Skipf("no link to make: %v", err)
+	}
+	dirs := []string{repo}
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{filepath.Join(repo, "a.go"), true},
+		{filepath.Join(repo, "vendor", "x", "a.go"), true}, // not there yet, but inside
+		{filepath.Join(alias, "a.go"), true},               // the directory by a link to it
+		{filepath.Join(alias, "vendor", "z.go"), true},
+		{filepath.Join(repo, "a.go", "deeper"), true}, // inside; git says it is not a directory
+		{filepath.Join(link, "sub", "a.go"), false},   // a link inside, leading out
+		{filepath.Join(link, "not-there", "a.go"), false},
+		{filepath.Join(elsewhere, "sub", "a.go"), false},
+		{filepath.Join(base, "repo-old", "a.go"), false},
+		{filepath.Join(repo+"-old", "a.go"), false},
+		{base, false},
+	} {
+		if got := underAny(dirs, tc.path); got != tc.want {
+			t.Errorf("underAny(%s) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+	// And a directory recorded through a link holds the repository's own spelling
+	if !underAny([]string{alias}, filepath.Join(repo, "a.go")) {
+		t.Errorf("a directory recorded through a link does not hold its real path")
 	}
 }

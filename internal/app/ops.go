@@ -163,15 +163,7 @@ func (a *App) Paths(ctx context.Context, dirs []string, below bool) ([]string, e
 	if len(reals) == 0 {
 		return out, nil
 	}
-	// A labelled store's paths are another machine's; the copies asq keeps are of this
-	// machine's own stores, and their paths are this machine's
-	var stores []string
-	for _, st := range a.Set.All() {
-		if !strings.Contains(st.Name, "@") || keep.IsKept(st.Source) {
-			stores = append(stores, st.Name)
-		}
-	}
-	cwds, err := a.Index.Cwds(ctx, stores)
+	cwds, err := a.Index.Cwds(ctx, a.hereStores())
 	if err != nil {
 		return nil, err
 	}
@@ -195,6 +187,19 @@ func (a *App) Paths(ctx context.Context, dirs []string, below bool) ([]string, e
 		}
 	}
 	return out, ctx.Err()
+}
+
+// hereStores names the stores whose sessions ran on this machine, so whose directories are
+// this machine's: a labelled store's (name@…) are another machine's, but a copy asq keeps
+// of one is here.
+func (a *App) hereStores() []string {
+	var stores []string
+	for _, st := range a.Set.All() {
+		if !strings.Contains(st.Name, "@") || keep.IsKept(st.Source) {
+			stores = append(stores, st.Name)
+		}
+	}
+	return stores
 }
 
 // dirHolds reports whether path is dir, or with below one beneath it, without regard to case

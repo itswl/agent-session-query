@@ -1045,3 +1045,47 @@ func TestFitting(t *testing.T) {
 		t.Errorf("cut = %q", got)
 	}
 }
+
+// An outline says how a copy of its session is kept — one by one, with every session of its
+// CLI, or because its CLI deleted it — and, where none is and its CLI deletes old sessions
+// of its own accord, that, and how to keep one: a flag for a person, the tool for an agent.
+// Nothing is said where there is nothing to decide: a CLI that keeps its own sessions, a
+// transcript asq keeps no copy of, or a process that keeps nothing.
+func TestAnOutlineSaysWhetherItsSessionIsKept(t *testing.T) {
+	s, turns := hostile()
+	outline := func(kept string, keepable bool, st Style) string {
+		s.Kept, s.Keepable = kept, keepable
+		var b bytes.Buffer
+		Outline(&b, s, turns, nil, st)
+		return b.String()
+	}
+	for _, st := range []Style{{}, {Args: true}} {
+		if out := outline("", false, st); strings.Contains(out, "kept") || strings.Contains(out, "keep(") {
+			t.Errorf("nothing to keep, and the outline speaks of keeping:\n%s", out)
+		}
+	}
+	for _, tc := range []struct{ kept, want string }{
+		{"one", "kept one by one: asq has a copy"},
+		{"all", "kept: asq keeps a copy of every session of its CLI"},
+		{"copy", "kept: its CLI has deleted the session, and this is asq's copy"},
+	} {
+		for _, st := range []Style{{}, {Args: true}} {
+			if out := outline(tc.kept, true, st); !strings.Contains(out, tc.want) || strings.Contains(out, "not kept") {
+				t.Errorf("kept %s, the outline lacks %q:\n%s", tc.kept, tc.want, out)
+			}
+		}
+	}
+	person, agent := outline("", true, Style{}), outline("", true, Style{Args: true})
+	if want := "not kept — its CLI deletes old sessions of its own accord; asq keep " + s.Ref + " keeps a copy"; !strings.Contains(person, want) {
+		t.Errorf("for a person, the outline lacks %q:\n%s", want, person)
+	}
+	if want := "not kept — its CLI deletes old sessions of its own accord; keep(ref, keep=true) keeps a copy, with the person's agreement"; !strings.Contains(agent, want) {
+		t.Errorf("for an agent, the outline lacks %q:\n%s", want, agent)
+	}
+	if strings.Contains(agent, "asq keep ") {
+		t.Errorf("an agent is told of a command-line flag:\n%s", agent)
+	}
+	if Size(512) != "512 bytes" || Size(1536) != "1.5 KB" || Size(3<<20) != "3.0 MB" {
+		t.Errorf("sizes: %q, %q, %q", Size(512), Size(1536), Size(3<<20))
+	}
+}

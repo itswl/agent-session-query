@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/itswl/agent-session-query/internal/app"
+	"github.com/itswl/agent-session-query/internal/catalog"
 	"github.com/itswl/agent-session-query/internal/index"
 	"github.com/itswl/agent-session-query/internal/render"
 	"github.com/itswl/agent-session-query/internal/txt"
@@ -38,12 +39,17 @@ type tool struct {
 	run   func(ctx context.Context, s *Server, a *args) (string, error)
 	// bare says the answer says for itself what the notes at the end of an answer say —
 	// where the index stood, which stores could not be read, where asq looked when it
-	// found nothing — so that it is not said twice. health.
+	// found nothing — so that it is not said twice. health; and keep, whose answer is of
+	// one session, and not of how far the index has got.
 	bare bool
 	// open says the answer comes from more than asq's own records — why asks git of a file
 	// on this machine — where the rest read the index and nothing else. It is said in
 	// openWorldHint, for a client that minds.
 	open bool
+	// writes says the tool changes something, where the rest only read: keep, which copies
+	// a session into asq's own state. It is said in the tool's annotations — not read-only,
+	// destructive of nothing, and the same asked twice — for a client that minds.
+	writes bool
 }
 
 // prop is one argument of a tool.
@@ -231,6 +237,23 @@ var tools = []tool{
 		run:   runHealth,
 		bare:  true,
 	},
+	{
+		name:  "keep",
+		title: "Keep a session",
+		about: "Keeps a copy of one session and its subagents, made now and kept up as it changes, so that it is still there once its CLI deletes it — Claude Code and Gemini CLI delete, by default, the sessions not used for 30 days. " +
+			"Or stops keeping it. The one tool that writes: a copy in asq's own folder, which takes disk; nothing in a CLI's store. " +
+			"Ask the person before you call it: they decide what is worth keeping. " +
+			"read's outline says whether a session is kept, and whether it can be; a subagent's transcript, or a session from a store added by name, cannot be, and the answer says so. " +
+			"keep=false deletes the copy while the CLI still holds the session; once the CLI has deleted the session, the copy is all there is of it, and stays.",
+		props: []prop{
+			{"ref", "string", "A session as the other tools print it — claude/3f2a9c1e — or the start of its id. \"this\" is the session you are working in, which asq mcp started on stdio can tell, and asq over HTTP only when the request names it, as Codex does."},
+			{"keep", "boolean", "true keeps a copy of the session; false stops keeping it one by one."},
+		},
+		need:   []string{"ref", "keep"},
+		run:    runKeep,
+		bare:   true,
+		writes: true,
+	},
 }
 
 // describe is tools/list: every tool with the schema of its arguments.
@@ -250,12 +273,23 @@ func describe() []map[string]any {
 			"title":       t.title,
 			"description": t.about,
 			"inputSchema": schema,
-			// Nothing here writes. Nothing reaches past this machine's own records but why,
-			// which asks git of a file the caller names (open)
-			"annotations": map[string]any{"readOnlyHint": true, "openWorldHint": t.open},
+			// Twelve only read. Nothing reaches past this machine's own records but why,
+			// which asks git of a file the caller names (open). keep writes, and only in
+			// asq's own state: it destroys nothing, and asked twice is as asked once
+			"annotations": hints(t),
 		})
 	}
 	return out
+}
+
+// hints is a tool's annotations, for a client that minds what a tool may do: every tool
+// is read-only but keep; only why reaches past asq's own records.
+func hints(t tool) map[string]any {
+	h := map[string]any{"readOnlyHint": !t.writes, "openWorldHint": t.open}
+	if t.writes {
+		h["destructiveHint"], h["idempotentHint"] = false, true
+	}
+	return h
 }
 
 func find(name string) (tool, bool) {
@@ -939,6 +973,67 @@ func runWhy(ctx context.Context, s *Server, a *args) (string, error) {
 	render.Why(&b, render.Blamed{File: why.File, Path: why.Path, Line: why.Line, Text: why.Text, Commit: why.Commit, Subject: why.Subject, At: why.At},
 		why.Made, why.Mentioned, style())
 	return b.String(), nil
+}
+
+// runKeep keeps one session, or stops keeping it, as asq keep does: what it says is what
+// the command line says, with the tool's argument where that names one of its flags. The
+// one tool that writes, and only in asq's own state (see internal/keep).
+func runKeep(ctx context.Context, s *Server, a *args) (string, error) {
+	on := a.flag("keep")
+	if a.err != nil {
+		return "", a.err
+	}
+	sess, _, said, err := s.session(ctx, a.str("ref"), a.who)
+	if err != nil {
+		if _, this := thisRef(a.str("ref")); errors.Is(err, index.ErrNotFound) && !this {
+			err = fmt.Errorf("%w — sessions and search print the refs there are", err)
+		}
+		return "", err
+	}
+	was := sess.Kept
+	k, err := s.App.KeepSession(ctx, &sess, on)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", sess.Ref, err)
+	}
+	ks, _ := s.App.KeepStatus(ctx)
+	text := keptWords(&sess, was, k, ks.Folder, on)
+	if said != "" {
+		return said + "\n\n" + text, nil
+	}
+	return text, nil
+}
+
+// keptWords is what keeping a session, or no longer keeping it, says: as asq keep says
+// it — what was kept, where, and how much was copied now — and, of a session that was
+// kept already, that it was, so that what was copied now is not taken for its whole size.
+func keptWords(s *index.Session, was string, k app.Keeping, folder string, on bool) string {
+	ref, with := s.Ref, ""
+	if s.Agents > 0 {
+		with = ", and its subagents with it"
+	}
+	spec, _ := catalog.Spec(s.Source)
+	const again = " It is copied again a few minutes after it changes."
+	switch {
+	case !on:
+		switch k.Stays {
+		case "all":
+			return fmt.Sprintf("%s is no longer kept one by one, and is still kept: asq keeps every session of %s, until the person runs asq keep --off.", ref, spec.Title)
+		case "gone":
+			return fmt.Sprintf("%s is no longer kept one by one. Its CLI has deleted it, so its copy is all there is of it, and stays in %s: deleting it there is the person's to do.", ref, folder)
+		}
+		if was == "" {
+			return ref + " was not kept, and asq holds no copy of it: its CLI still holds it."
+		}
+		return ref + " is no longer kept, and its copy is deleted: its CLI still holds it."
+	case was == "all":
+		// Copied with every session of its CLI already: what is copied now is little or
+		// nothing, and the session is kept one by one so that it stays kept should the
+		// person turn that off
+		return fmt.Sprintf("kept one by one now, as well as with every session of %s, which keeps a copy of it already: %s%s, in %s — %s copied now: only what was missing or had changed.%s", spec.Title, ref, with, folder, render.Size(k.Bytes), again)
+	case was != "":
+		return fmt.Sprintf("already kept one by one: %s%s, in %s — %s copied now: only what had changed since it was last copied.%s", ref, with, folder, render.Size(k.Bytes), again)
+	}
+	return fmt.Sprintf("kept %s%s, in %s: %s copied now.%s", ref, with, folder, render.Size(k.Bytes), again)
 }
 
 func runProjects(ctx context.Context, s *Server, a *args) (string, error) {

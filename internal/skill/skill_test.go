@@ -29,7 +29,13 @@ func TestTheSkillSaysWhatItIs(t *testing.T) {
 	if !strings.HasPrefix(text, "---\nname: "+Name+"\ndescription: ") || !strings.Contains(text, "\n---\n") {
 		t.Errorf("the skill does not open with its name and description:\n%s", text[:min(len(text), 300)])
 	}
-	for _, word := range []string{"search", "sessions", "read", "brief", "pack", "usage", "failures", "digest", "files", "projects", "--max-chars", "/asq:handoff"} {
+	// The description is one scalar in single quotes, where an apostrophe of its own ends
+	// it: a CLI reading the front matter then reads a skill with no description
+	line, _, _ := strings.Cut(strings.TrimPrefix(text, "---\nname: "+Name+"\ndescription: "), "\n")
+	if !strings.HasSuffix(line, "'") || strings.Count(strings.ReplaceAll(line, "''", ""), "'") != 2 {
+		t.Errorf("the description is not one single-quoted scalar: %s", line)
+	}
+	for _, word := range []string{"search", "sessions", "read", "brief", "pack", "usage", "failures", "digest", "files", "projects", "keep", "--max-chars", "/asq:handoff"} {
 		if !regexp.MustCompile(`\b` + regexp.QuoteMeta(strings.TrimLeft(word, "-/")) + `\b`).MatchString(text) {
 			t.Errorf("the skill does not name %s", word)
 		}

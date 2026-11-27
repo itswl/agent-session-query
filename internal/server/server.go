@@ -18,7 +18,8 @@
 //	POST /mcp                                   the MCP server
 //	GET  /healthz                               200 while the process serves; says nothing else
 //
-// Everything is read-only. Nothing here can change a session.
+// Nothing here can change a session. What writes is keeping one: a copy in asq's own state,
+// and nowhere else.
 package server
 
 import (

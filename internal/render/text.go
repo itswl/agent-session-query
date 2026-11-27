@@ -408,6 +408,9 @@ func Outline(w io.Writer, s *index.Session, turns []model.Turn, children []index
 	if line := liveLine(s.Live, st); line != "" {
 		fmt.Fprintln(w, line)
 	}
+	if line := keptLine(s, st); line != "" {
+		fmt.Fprintln(w, st.dim(line))
+	}
 	if s.Parent != nil {
 		fmt.Fprintln(w, st.dim("subagent ("+orDash(s.Parent.Type)+") of "+s.Root))
 	}
@@ -454,6 +457,30 @@ func Outline(w io.Writer, s *index.Session, turns []model.Turn, children []index
 			fmt.Fprintf(w, "  %s  %s  %s\n", st.cyan(ref), st.dim(orDash(c.Parent.Type)), st.fit(txt.OneLine(c.Title, 0), len(ref)+20))
 		}
 	}
+}
+
+// keptLine says how asq keeps a copy of the session — kept one by one, with every session
+// of its CLI, or because its CLI has deleted it — or, where its CLI deletes old sessions
+// and no copy is kept, that, and how one is kept: for the reader to decide, whether the
+// reader is a person at a terminal (Style.Args off) or an agent with the keep tool. Nothing
+// where there is nothing to decide: a CLI that keeps its own sessions, a transcript that is
+// not a session asq keeps a copy of, or a process that keeps nothing.
+func keptLine(s *index.Session, st Style) string {
+	switch s.Kept {
+	case "one":
+		return "kept one by one: asq has a copy"
+	case "all":
+		return "kept: asq keeps a copy of every session of its CLI"
+	case "copy":
+		return "kept: its CLI has deleted the session, and this is asq's copy"
+	}
+	if !s.Keepable {
+		return ""
+	}
+	if st.Args {
+		return "not kept — its CLI deletes old sessions of its own accord; keep(ref, keep=true) keeps a copy, with the person's agreement"
+	}
+	return "not kept — its CLI deletes old sessions of its own accord; asq keep " + s.Ref + " keeps a copy"
 }
 
 // liveFact is where a session's latest turn stands, as a fact of its line in a list:
@@ -612,7 +639,7 @@ func item(w io.Writer, it *model.Item, o TurnOptions, st Style) {
 	}
 	more := func(n int) {
 		if n > 0 && !o.Full {
-			fmt.Fprintln(w, st.dim(fmt.Sprintf("    … %s in all: seq %d reads it whole", sizeOf(n), it.Seq)))
+			fmt.Fprintln(w, st.dim(fmt.Sprintf("    … %s in all: seq %d reads it whole", Size(int64(n)), it.Seq)))
 		}
 	}
 	inherited := ""
@@ -700,14 +727,15 @@ func item(w io.Writer, it *model.Item, o TurnOptions, st Style) {
 	}
 }
 
-func sizeOf(n int) string {
+// Size is a number of bytes as a person reads it.
+func Size(n int64) string {
 	switch {
 	case n >= 1<<20:
 		return strconv.FormatFloat(float64(n)/(1<<20), 'f', 1, 64) + " MB"
 	case n >= 1<<10:
 		return strconv.FormatFloat(float64(n)/(1<<10), 'f', 1, 64) + " KB"
 	}
-	return strconv.Itoa(n) + " bytes"
+	return strconv.FormatInt(n, 10) + " bytes"
 }
 
 func compactJSON(raw json.RawMessage) string {

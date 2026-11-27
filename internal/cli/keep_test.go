@@ -38,3 +38,25 @@ func TestKeep(t *testing.T) {
 	check([]string{"keep", "--off"}, 0, "asq keeps nothing more: what it kept stays")
 	check([]string{"keep", "--all", "--off"}, 2, "--all or --off")
 }
+
+// An outline says whether its session is kept, and how to keep it — as an agent's read
+// says, in its own terms — before anything is, and after.
+func TestShowSaysWhetherASessionIsKept(t *testing.T) {
+	h, index := setup(t)
+	ref := "claude/" + fixture.Alpha
+	show := func(want string) {
+		t.Helper()
+		out, errs, got := asq(t, h, index, "show", ref, "--max-chars", "2000")
+		if got != 0 {
+			t.Fatalf("asq show = %d\n%s%s", got, out, errs)
+		}
+		if !strings.Contains(out, want) {
+			t.Errorf("asq show: no %q in\n%s", want, out)
+		}
+	}
+	show("not kept — its CLI deletes old sessions of its own accord; asq keep " + ref + " keeps a copy")
+	if out, errs, got := asq(t, h, index, "keep", ref); got != 0 {
+		t.Fatalf("asq keep = %d\n%s%s", got, out, errs)
+	}
+	show("kept one by one: asq has a copy")
+}

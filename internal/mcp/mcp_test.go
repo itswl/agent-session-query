@@ -135,7 +135,7 @@ func TestProtocol(t *testing.T) {
 	}
 
 	list := got["4"].Result.Tools
-	if len(list) != len(tools) || len(list) != 12 {
+	if len(list) != len(tools) || len(list) != 13 {
 		t.Fatalf("tools = %d", len(list))
 	}
 	for _, tool := range list {
@@ -143,8 +143,13 @@ func TestProtocol(t *testing.T) {
 		if tool.Description == "" || len(props) == 0 || tool.InputSchema["additionalProperties"] != false {
 			t.Errorf("%s: schema = %v", tool.Name, tool.InputSchema)
 		}
-		if tool.Annotations["readOnlyHint"] != true {
-			t.Errorf("%s does not say it only reads", tool.Name)
+		// Every tool reads only but keep, which says so: that it writes, destroys nothing,
+		// and is the same asked twice
+		if reads, keep := tool.Annotations["readOnlyHint"] == true, tool.Name == "keep"; reads == keep {
+			t.Errorf("%s says readOnlyHint = %v", tool.Name, reads)
+		}
+		if keep := tool.Name == "keep"; keep != (tool.Annotations["destructiveHint"] == false && tool.Annotations["idempotentHint"] == true) {
+			t.Errorf("%s says destructiveHint = %v, idempotentHint = %v", tool.Name, tool.Annotations["destructiveHint"], tool.Annotations["idempotentHint"])
 		}
 		// Only why goes past asq's records, to a file and git: the rest are of the index alone
 		if open := tool.Annotations["openWorldHint"] == true; open != (tool.Name == "why") {
@@ -232,7 +237,8 @@ func TestEveryToolAnswers(t *testing.T) {
 		{"projects", nil, []string{"/work/alpha", "/work/beta"}},
 		{"health", nil, []string{"asq " + app.Version + "\n", " · 2 sessions · 3 turns · 1 subagent transcript\n", "Last brought up to date ",
 			"\nStores:\n  claude       2 sessions · 3 transcripts   "}},
-		// why asks git of a file in a repository, which this history has not: TestWhy
+		// why asks git of a file in a repository, which this history has not: TestWhy.
+		// keep writes in a state directory, which this server was given none of: TestKeep
 	} {
 		text, isErr := call(t, s, tc.tool, tc.args)
 		if isErr {
@@ -317,6 +323,10 @@ func TestWhatGoesWrongIsToldToTheModel(t *testing.T) {
 		{"failures", map[string]any{"by": "tool"}, "grouped by command"},
 		{"why", map[string]any{"path": "notes.md", "line": 1}, "is relative, and a request over HTTP does not say which directory you mean"},
 		{"why", map[string]any{"line": 1}, "why needs path"},
+		{"keep", map[string]any{"ref": "aaaa1111"}, "keep needs keep"},
+		{"keep", map[string]any{"ref": "aaaa1111", "keep": true}, "no state directory"},
+		{"keep", map[string]any{"ref": "aaaa1111", "keep": "maybe"}, "keep: want true or false, got maybe"},
+		{"keep", map[string]any{"ref": "zzzz", "keep": true}, "sessions and search print the refs"},
 	} {
 		text, isErr := call(t, s, tc.tool, tc.args)
 		if !isErr || !strings.Contains(text, tc.want) {
@@ -969,7 +979,7 @@ func TestTheStatelessRevision(t *testing.T) {
 		info["name"] != "asq" || d["ttlMs"].(float64) <= 0 || d["cacheScope"] != "public" {
 		t.Errorf("server/discover = %v", d)
 	}
-	if l := result("2"); len(l["tools"].([]any)) != 12 || l["resultType"] != "complete" || l["ttlMs"].(float64) <= 0 || l["cacheScope"] != "public" {
+	if l := result("2"); len(l["tools"].([]any)) != 13 || l["resultType"] != "complete" || l["ttlMs"].(float64) <= 0 || l["cacheScope"] != "public" {
 		t.Errorf("tools/list = %v", l)
 	}
 	if c := result("3"); c["resultType"] != "complete" || !strings.Contains(fmt.Sprint(c["content"]), "/work/alpha") || c["_meta"] == nil || c["ttlMs"] != nil {
@@ -995,7 +1005,7 @@ func TestTheStatelessRevision(t *testing.T) {
 	if r := result("9"); r["resultType"] != nil || r["_meta"] != nil {
 		t.Errorf("a call after initialize is answered as it was = %v", r)
 	}
-	if r := result("10"); r["resultType"] != nil || len(r["tools"].([]any)) != 12 {
+	if r := result("10"); r["resultType"] != nil || len(r["tools"].([]any)) != 13 {
 		t.Errorf("a revision of initialize named in _meta = %v", r)
 	}
 

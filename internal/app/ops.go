@@ -54,7 +54,8 @@ type Self struct {
 // index has it. Otherwise it is the session most recently written to in one of dirs, the
 // directories the agent asks from: an agent at work writes its session as it goes, so
 // that is its own, unless another works in the same directory. Only this machine's stores
-// are looked in: a labelled store is another machine's, or a copy.
+// are looked in: a labelled store is another machine's, or a copy. The session says how it
+// is kept, as Resolve's does.
 func (a *App) Self(ctx context.Context, source, id string, dirs []string) (Self, error) {
 	var stores []string
 	for _, name := range a.Stores() {
@@ -87,6 +88,7 @@ func (a *App) Self(ctx context.Context, source, id string, dirs []string) (Self,
 				}
 			}
 			Resumes(&self.Session)
+			a.keeping(&self.Session)
 			return self, nil
 		case err != nil && !errors.Is(err, index.ErrNotFound) && !errors.As(err, &amb):
 			return Self{}, err
@@ -114,7 +116,9 @@ func (a *App) Self(ctx context.Context, source, id string, dirs []string) (Self,
 	if len(list) == 0 {
 		return Self{}, fmt.Errorf("%w: none has run in %s", index.ErrNotFound, strings.Join(named, " or "))
 	}
-	return Self{Session: Listed(list)[0]}, nil
+	self := Self{Session: Listed(list)[0]}
+	a.keeping(&self.Session)
+	return self, nil
 }
 
 // latestOf is the session its CLI goes on writing under the id s has: s itself, or where

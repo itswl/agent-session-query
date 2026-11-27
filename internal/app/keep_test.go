@@ -578,3 +578,44 @@ func TestAKeptSessionIsFoundThroughALink(t *testing.T) {
 		t.Errorf("the sessions in the directory = %d, %v; want the kept one", len(list), err)
 	}
 }
+
+// A session found as the agent's own — the one its CLI named, or the latest written to in
+// the directory it asks from — says how it is kept, as one resolved by its ref does: an
+// agent's read of "this" is not to call a kept session "not kept", nor to keep one again
+// without saying it was kept already.
+func TestTheAgentsOwnSessionSaysHowItIsKept(t *testing.T) {
+	a, _, _ := keeping(t)
+	ctx := t.Context()
+	own := func(id string, dirs []string) app.Self {
+		t.Helper()
+		self, err := a.Self(ctx, "claude", id, dirs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		byRef, _, err := a.Resolve(ctx, self.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if self.Kept != byRef.Kept || self.Keepable != byRef.Keepable {
+			t.Errorf("%s, found as the agent's own, says kept %q, keepable %v; by its ref, %q, %v", self.Ref, self.Kept, self.Keepable, byRef.Kept, byRef.Keepable)
+		}
+		return self
+	}
+	named, byDir := own(fixture.Alpha, nil), own("", []string{"/work/alpha"})
+	if !named.ByID || !named.Keepable || named.Kept != "" || byDir.ByID || byDir.ID != named.ID {
+		t.Errorf("before anything is kept: named = %s, kept %q, keepable %v; by its directory = %s", named.Ref, named.Kept, named.Keepable, byDir.Ref)
+	}
+	alpha, _, _ := a.Resolve(ctx, fixture.Alpha)
+	if _, err := a.KeepSession(ctx, &alpha, true); err != nil {
+		t.Fatal(err)
+	}
+	if named, byDir = own(fixture.Alpha, nil), own("", []string{"/work/alpha"}); named.Kept != "one" || byDir.Kept != "one" {
+		t.Errorf("kept: named says %q, by its directory %q; want \"one\"", named.Kept, byDir.Kept)
+	}
+	if _, err := a.KeepSession(ctx, &alpha, false); err != nil {
+		t.Fatal(err)
+	}
+	if named, byDir = own(fixture.Alpha, nil), own("", []string{"/work/alpha"}); named.Kept != "" || byDir.Kept != "" {
+		t.Errorf("no longer kept: named says %q, by its directory %q", named.Kept, byDir.Kept)
+	}
+}

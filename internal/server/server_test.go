@@ -303,6 +303,31 @@ func TestRoutes(t *testing.T) {
 	}
 }
 
+// A search of one session is not bounded to three turns of it unless per_session says so, as
+// on the command line and over MCP: the page's find in a session wants all of them, and a bound
+// nobody asked for hides the rest behind a total. Elsewhere the bound stays.
+func TestASearchOfOneSessionIsNotBoundedUnlessAsked(t *testing.T) {
+	s, a, h := build(t, Options{})
+	h.WriteMany(t)
+	if _, err := a.Sync(t.Context(), index.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	one := "/api/search?q=rotate&session=claude/" + fixture.Many
+	var found index.SearchResult
+	get(t, s, one, &found)
+	if found.Total != 5 || len(found.Hits) != 5 {
+		t.Errorf("per_session not given: %d turns match, %d come back; want 5 and 5", found.Total, len(found.Hits))
+	}
+	get(t, s, one+"&per_session=2", &found)
+	if found.Total != 5 || len(found.Hits) != 2 {
+		t.Errorf("per_session=2: %d turns match, %d come back; want 5 and 2", found.Total, len(found.Hits))
+	}
+	get(t, s, "/api/search?q=rotate", &found)
+	if found.Total != 6 || len(found.Hits) != 4 {
+		t.Errorf("everywhere: %d turns match, %d come back; want 6 and 4, three to a session at most", found.Total, len(found.Hits))
+	}
+}
+
 func TestExportIsAlwaysADownload(t *testing.T) {
 	s, _, _ := build(t, Options{})
 	for format, ctype := range map[string]string{"md": "text/markdown", "json": "application/json", "jsonl": "application/x-ndjson", "html": "text/html"} {

@@ -115,7 +115,8 @@ its own — is `409`, saying why. A session read on its own says how it is kept:
 
 **`GET /api/search?q=`** — the turns that match, with the [query syntax](cli.md#finding) of the
 command line. Takes the list's filters, `recent=1` (newest first), `per_session` (default 3, `0`
-for no bound), `limit` (20, at most 100), `offset`, and `session`: a session's ref, which
+for no bound; of a search confined to one session, no bound unless `per_session` is given),
+`limit` (20, at most 100), `offset`, and `session`: a session's ref, which
 confines the search to that session's own turns — archived or not, and without its subagents'
 transcripts, which are sessions of their own. A ref that names no session is `404`.
 

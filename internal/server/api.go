@@ -411,7 +411,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// session asks. Named, it is searched whether or not it is archived; its subagents'
 	// transcripts are sessions of their own, and are not in it.
 	var one index.Session
-	if ref := r.URL.Query().Get("session"); ref != "" {
+	ref := r.URL.Query().Get("session")
+	if ref != "" {
 		var err error
 		if one, _, err = s.app.Resolve(r.Context(), ref); err != nil {
 			s.fail(w, r, err)
@@ -430,7 +431,14 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	per, err := intOf(r, "per_session", 3)
+	// Find in a session wants all of it: the bound on turns of one session, which keeps one
+	// session from filling a page, is not put on a search of one session unless it is asked —
+	// as asq search --session and the MCP server's search take it
+	bound := 3
+	if ref != "" {
+		bound = -1
+	}
+	per, err := intOf(r, "per_session", bound)
 	if err != nil {
 		s.fail(w, r, err)
 		return

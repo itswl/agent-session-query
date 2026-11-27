@@ -40,13 +40,19 @@ type reply struct {
 			InputSchema map[string]any `json:"inputSchema"`
 			Annotations map[string]any `json:"annotations"`
 		} `json:"tools"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		IsError bool `json:"isError"`
+		Content []block `json:"content"`
+		IsError bool    `json:"isError"`
 	} `json:"result"`
 	Error *rpcError `json:"error"`
+}
+
+// block is one content block of a tool's answer: text, or an image, which only read
+// sends and only when asked for a picture.
+type block struct {
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	Data     string `json:"data"`
+	MimeType string `json:"mimeType"`
 }
 
 // talk sends lines over stdio and returns the replies by id.
@@ -80,8 +86,8 @@ func talk(t *testing.T, s *Server, lines ...string) map[string]reply {
 	return replies
 }
 
-// call runs one tool and returns what it said.
-func call(t *testing.T, s *Server, name string, args map[string]any) (string, bool) {
+// answered runs one tool and returns its reply whole.
+func answered(t *testing.T, s *Server, name string, args map[string]any) reply {
 	t.Helper()
 	params, _ := json.Marshal(map[string]any{"name": name, "arguments": args})
 	result, rpcErr := s.dispatch(context.Background(), "tools/call", params)
@@ -90,8 +96,20 @@ func call(t *testing.T, s *Server, name string, args map[string]any) (string, bo
 	}
 	raw, _ := json.Marshal(map[string]any{"result": result})
 	var r reply
-	if err := json.Unmarshal(raw, &r); err != nil || len(r.Result.Content) != 1 || r.Result.Content[0].Type != "text" {
+	if err := json.Unmarshal(raw, &r); err != nil {
 		t.Fatalf("%s: result = %s", name, raw)
+	}
+	return r
+}
+
+// call runs one tool and returns what it said. Every tool answers with one block of text
+// and nothing else — so no pixels leave unasked — but read asked for a picture, which
+// sends the picture beside its text (picture_test.go).
+func call(t *testing.T, s *Server, name string, args map[string]any) (string, bool) {
+	t.Helper()
+	r := answered(t, s, name, args)
+	if len(r.Result.Content) != 1 || r.Result.Content[0].Type != "text" {
+		t.Fatalf("%s: result = %d content blocks, and every tool answers with one of text", name, len(r.Result.Content))
 	}
 	return r.Result.Content[0].Text, r.Result.IsError
 }
@@ -158,6 +176,15 @@ func TestProtocol(t *testing.T) {
 		for name, p := range props {
 			if d, _ := p.(map[string]any)["description"].(string); d == "" {
 				t.Errorf("%s.%s has no description: a model fills in what it is told about", tool.Name, name)
+			}
+		}
+		// A picture is asked for by its number, and goes with the step whose file it is
+		if tool.Name == "read" {
+			if p, _ := props["picture"].(map[string]any); p["type"] != "integer" {
+				t.Errorf("read.picture = %v, want an integer a model may leave out", props["picture"])
+			}
+			if required, _ := tool.InputSchema["required"].([]any); len(required) != 1 || required[0] != "ref" {
+				t.Errorf("read requires %v, and of a picture only ref", tool.InputSchema["required"])
 			}
 		}
 	}
@@ -311,6 +338,8 @@ func TestWhatGoesWrongIsToldToTheModel(t *testing.T) {
 		{"read", map[string]any{"ref": "zzzz"}, "sessions and search print the refs"},
 		{"read", map[string]any{"ref": "aaaa1111", "turns": "seven"}, "turns: want"},
 		{"read", map[string]any{"ref": "aaaa1111#9"}, "no such turn (it has 2)"},
+		{"read", map[string]any{"ref": "aaaa1111", "picture": 0}, "picture goes with seq"},
+		{"read", map[string]any{"ref": "aaaa1111", "seq": 0, "picture": "big"}, "picture: want a whole number"},
 		{"read", map[string]any{"ref": "aaaa1111", "seq": 99}, "no step 99"},
 		{"brief", map[string]any{"ref": "aaaa1111", "from": 9}, "from must be 1..2"},
 		{"brief", map[string]any{"ref": "aaaa1111", "since": "soon"}, "since: unreadable time"},

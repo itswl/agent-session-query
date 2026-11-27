@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/itswl/agent-session-query/internal/app"
 	"github.com/itswl/agent-session-query/internal/catalog"
 	"github.com/itswl/agent-session-query/internal/index"
+	"github.com/itswl/agent-session-query/internal/model"
 	"github.com/itswl/agent-session-query/internal/render"
 	"github.com/itswl/agent-session-query/internal/txt"
 )
@@ -28,6 +30,14 @@ const (
 	maxChars     = 400_000
 	lineWidth    = 240 // where a one-line quote of an ask or an answer is cut
 )
+
+// A picture is sent to a model as the transcript holds it, and no larger than this. The
+// page shows up to app.MaxPicture, 8 MB. Sent to a model, a picture goes out as base64, a
+// third larger again, is paid for by the token, and meets whatever limit the client and
+// the model's API put on one picture, which are theirs to know. One past this is refused
+// and not shrunk — shrinking takes a library — saying how big it is: the person can see
+// it on the page.
+var maxSentPicture = 2 << 20 // a variable for the tests
 
 // tool is one question an agent can ask.
 type tool struct {
@@ -116,12 +126,15 @@ var tools = []tool{
 		about: "Read one session at the depth asked for. " +
 			"With only ref: its outline — every turn's ask and how it ended, and its subagents. " +
 			"With a turn (ref ending #4, or turns): those turns step by step — replies, reasoning, each tool call and how it ended, every step numbered [seq]. " +
-			"With seq: that one step whole — a tool call's full input and output. " +
+			"With seq: that one step whole — a tool call's full input and output, and the files it carried, by number. " +
+			"With seq and picture=n: that file sent as a picture beside the answer, for \"what did the page look like when it failed\" — a PNG, JPEG, GIF or WebP the transcript holds, up to 2 MB. " +
+			"A picture goes as the transcript holds it: masking covers text, not what a picture shows. " +
 			"Read the outline first; a long session read whole does not fit.",
 		props: []prop{
 			pRef,
 			{"turns", "string", "Which turns to read step by step: 3, 3-5, last, or all."},
 			{"seq", "integer", "One step whole, by the number in [brackets] beside it."},
+			{"picture", "integer", "With seq: send this file of the step as a picture beside the answer, by its number in the step's files line. The picture itself is not held to max_chars."},
 			{"full", "boolean", "With turns: print every output and all reasoning whole instead of a line each."},
 			pChars,
 		},
@@ -321,11 +334,17 @@ func (s *Server) call(ctx context.Context, params json.RawMessage) (any, *rpcErr
 		}
 		return nil, &rpcError{Code: codeParams, Message: fmt.Sprintf("unknown tool %q (there are: %s)", p.Name, strings.Join(names, ", "))}
 	}
-	text, err := s.run(ctx, t, p.Arguments, p.Meta.asker())
+	ans, err := s.run(ctx, t, p.Arguments, p.Meta.asker())
 	if err != nil {
 		return map[string]any{"content": []any{map[string]any{"type": "text", "text": s.failed(ctx, err).Error()}}, "isError": true}, nil
 	}
-	return map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}}, nil
+	content := []any{map[string]any{"type": "text", "text": ans.text}}
+	// A picture goes after the text that says what it is, by the type its bytes have and as
+	// the transcript holds it: nothing in it is masked, which the text says
+	if pic := ans.picture; pic != nil {
+		content = append(content, map[string]any{"type": "image", "data": base64.StdEncoding.EncodeToString(pic.Data), "mimeType": pic.Type})
+	}
+	return map[string]any{"content": content}, nil
 }
 
 // failed is what is said of an answer that could not be given: that the question was
@@ -395,14 +414,14 @@ func bracketed(notes []string) string {
 	return "\n\n[" + strings.Join(notes, " ") + "]"
 }
 
-func (s *Server) run(ctx context.Context, t tool, given map[string]any, who asker) (string, error) {
+func (s *Server) run(ctx context.Context, t tool, given map[string]any, who asker) (answer, error) {
 	a := &args{given: given, who: who}
 	if err := a.check(t); err != nil {
-		return "", err
+		return answer{}, err
 	}
 	budget := a.num("max_chars", defaultChars)
 	if a.err != nil {
-		return "", a.err
+		return answer{}, a.err
 	}
 	a.budget = min(max(budget, 500), maxChars)
 
@@ -411,20 +430,20 @@ func (s *Server) run(ctx context.Context, t tool, given map[string]any, who aske
 	if project := a.str("project"); app.Relative(project) {
 		dir, how, err := s.workDir(ctx, who)
 		if err != nil {
-			return "", fmt.Errorf("project %q: %w", project, err)
+			return answer{}, fmt.Errorf("project %q: %w", project, err)
 		}
 		dir = joinDir(dir, project)
 		if a.dirs, err = s.App.Paths(ctx, []string{dir}, true); err != nil {
-			return "", err
+			return answer{}, err
 		}
 		a.here = fmt.Sprintf("project %q is %s and the directories below it: %s.", project, dir, how)
 	}
 	text, err := t.run(ctx, s, a)
 	if err != nil {
-		return "", err
+		return answer{}, err
 	}
 	if a.err != nil {
-		return "", a.err
+		return answer{}, a.err
 	}
 	// What is handed to another model leaves this machine with it: the shapes that
 	// announce themselves as secrets do not go along
@@ -434,10 +453,18 @@ func (s *Server) run(ctx context.Context, t tool, given map[string]any, who aske
 	if a.here != "" {
 		notes = append(notes, a.here)
 	}
+	notes = append(notes, a.notes...)
 	if t.bare {
-		return text + bracketed(notes), nil
+		return answer{text: text + bracketed(notes), picture: a.picture}, nil
 	}
-	return text + bracketed(append(notes, s.notes(ctx, at)...)), nil
+	return answer{text: text + bracketed(append(notes, s.notes(ctx, at)...)), picture: a.picture}, nil
+}
+
+// answer is what a tool hands back: its text, and the picture one step carried, sent
+// beside the text when it was asked for.
+type answer struct {
+	text    string
+	picture *app.Picture
 }
 
 // joinDir is the directory a project of ".", "./web" or ".." names from dir. "." is dir as
@@ -477,6 +504,11 @@ type args struct {
 	// and here says which that was, and why
 	dirs []string
 	here string
+	// picture is a file of a step, asked for with picture=n, sent beside the answer as an
+	// image block; notes are the tool's own, about its answer, said where the notes at the
+	// end of an answer are
+	picture *app.Picture
+	notes   []string
 }
 
 func (a *args) check(t tool) error {
@@ -750,6 +782,9 @@ func runSessions(ctx context.Context, s *Server, a *args) (string, error) {
 }
 
 func runRead(ctx context.Context, s *Server, a *args) (string, error) {
+	if a.has("picture") && !a.has("seq") {
+		return "", errors.New("picture goes with seq, the step whose file it is: read the turn step by step for the step's number, and the step read whole lists its files")
+	}
 	sess, named, said, err := s.session(ctx, a.str("ref"), a.who)
 	if err != nil {
 		if _, this := thisRef(a.str("ref")); errors.Is(err, index.ErrNotFound) && !this {
@@ -771,6 +806,10 @@ func runRead(ctx context.Context, s *Server, a *args) (string, error) {
 		it, turn, err := s.App.Index.Item(ctx, &sess, seq)
 		if err != nil {
 			return "", fmt.Errorf("%s has no step %d (it has %d, numbered from 0)", sess.Ref, seq, sess.Stats.Items)
+		}
+		if a.has("picture") {
+			text, err := a.sendPicture(ctx, s, &sess, &it, turn)
+			return b.String() + text, err
 		}
 		render.Item(&b, &sess, turn, &it, st)
 		return b.String(), nil
@@ -803,6 +842,45 @@ func runRead(ctx context.Context, s *Server, a *args) (string, error) {
 
 // outline prints a session as its turns. One too long for the budget keeps its last
 // turns — where the work stands — and says how to read the ones before.
+// sendPicture reads one file of a step, to send it beside the answer as the page shows it:
+// a picture the transcript holds — PNG, JPEG, GIF or WebP, by what its bytes are — and no
+// larger than a model is sent (maxSentPicture). What cannot be sent says why, as the page's
+// answer does. The text says which step, which file, and of what type and size: the picture
+// itself says the rest, to a model that can see.
+func (a *args) sendPicture(ctx context.Context, s *Server, sess *index.Session, it *model.Item, turn int) (string, error) {
+	n := a.num("picture", -1)
+	if a.err != nil {
+		return "", a.err
+	}
+	// Below zero is not a file that is lacking but a number that is not one
+	given, how := a.given["picture"], "%v"
+	if text, ok := given.(string); ok {
+		given, how = strconv.Quote(text), "%s"
+	}
+	if n < 0 {
+		return "", fmt.Errorf("picture: want the number of a file of the step, from 0, got "+how, given)
+	}
+	if n >= len(it.Attachments) {
+		return "", fmt.Errorf("step %d carried no file %d (it carried %d, numbered from 0)", it.Seq, n, len(it.Attachments))
+	}
+	if att := it.Attachments[n]; att.Inline && app.Shown[att.Mime] && att.Bytes > maxSentPicture {
+		return "", fmt.Errorf("step %d's file %d is %s: a picture is sent to a model only up to %s. The person can see it on the page", it.Seq, n, render.Size(int64(att.Bytes)), render.Size(int64(maxSentPicture)))
+	}
+	pic, err := s.App.Picture(ctx, sess, it.Seq, n)
+	if err != nil {
+		// What is no picture is said so by app, behind the words its route answers with of
+		// anything it was asked for and does not have: here it is a file that is lacking, not
+		// the session
+		if said, ok := strings.CutPrefix(err.Error(), index.ErrNotFound.Error()+": "); ok {
+			return "", errors.New(said)
+		}
+		return "", err
+	}
+	a.picture = &pic
+	a.notes = append(a.notes, "The picture is sent as the transcript holds it: masking covers text, not what a picture shows.")
+	return fmt.Sprintf("%s#%d step %d, file %d: %s, %s.", sess.Ref, turn, it.Seq, n, pic.Type, render.Size(int64(len(pic.Data)))), nil
+}
+
 func outline(ctx context.Context, s *Server, sess *index.Session, budget int, st render.Style) (string, error) {
 	turns, err := s.App.Index.Outline(ctx, sess)
 	if err != nil {

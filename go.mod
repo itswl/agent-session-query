@@ -3,8 +3,8 @@ module github.com/itswl/agent-session-query
 go 1.26.11
 
 require (
-	github.com/klauspost/compress v1.20.4
-	modernc.org/sqlite v1.62.0
+	github.com/klauspost/compress v1.20.5
+	modernc.org/sqlite v1.63.0
 )
 
 require (
